@@ -13,6 +13,8 @@ import { EchoGuard } from '../vad/echoGuard'
 const MAX_QUEUE = 3
 /** 上行能量要高出下发 TTS 帧多少倍，才认定是「真人插话」而不是回声。 */
 const ECHO_ENERGY_RATIO = 1.6
+/** 播报中连续多少帧被 VAD 判为真人语音，才认定是「用户插话」而打断播报。 */
+const BARGEIN_FRAMES = 2
 
 /** 单个语音会话的业务编排：ASR → 智能体 → TTS，并记录日志到数据库。 */
 export interface VoiceSessionDeps {
@@ -55,6 +57,10 @@ export class VoiceSessionService {
   private readonly echo = new EchoGuard()
   /** 当前是否已通知客户端处于半双工，避免重复下发。 */
   private halfDuplex = false
+  /** 播报中连续被 VAD 判为真人语音的帧数，达到阈值即触发打断播报。 */
+  private bargeInCount = 0
+  /** 本轮播报被用户插话打断：让正在下发的 TTS 帧停止，不再喂给客户端。 */
+  private ttsAborted = false
   /** 当前轮还没播完时识别到的用户插话，播完后依次交给大模型。 */
   private readonly queue: string[] = []
   /** 最近送进 TTS 的原文，用于把「收回来的自己的声音」判成回声丢弃。 */
@@ -103,8 +109,15 @@ export class VoiceSessionService {
     // 说明是扬声器收回来的自己，整帧丢弃，绝不喂给 VAD / ASR。
     // 不整体停止拾音：用户插话要能识别并排队。
     if (this.isEchoFrame(chunk)) return
-    // 播报/尾音期间门槛加倍：麦克风里的回声残留不该把助手自己打断
+    // 穿过回声门控到达这里的，只有「非回声的真实人声」—— 播报期间一旦 VAD 连续判出人声，
+    // 就是用户在插话：立刻打断播报、优先识别用户的话，避免用户语音和助手播报混音导致漏字。
     const vad = this.vad.push(chunk, { strict: this.playbackPending })
+    if (this.playbackPending && vad.voiced && this.downlinkRmsRef > 0) {
+      this.bargeInCount += 1
+      if (this.bargeInCount >= BARGEIN_FRAMES) this.triggerBargeIn()
+    } else {
+      this.bargeInCount = 0
+    }
     // 静音帧不喂 ASR：否则缓冲会无限增长，每次定稿都要把整段静音送去识别
     for (const frame of vad.frames) {
       void this.deps.asr.push(frame).then((partial) => {
@@ -113,6 +126,21 @@ export class VoiceSessionService {
     }
     // 只有真正的人声帧才重置句末计时：静音帧持续到达也会让计时器自然到期
     if (vad.voiced) this.armEndpoint()
+  }
+
+  /**
+   * 用户插话打断播报：立刻停掉当前这一句的 TTS（不继续下发、并通知客户端 tts.stop），
+   * 让用户的语音不再和播报混音，从而能被干净识别；用户这句仍会按正常流程定稿、排队、再播报。
+   * 只解除「等播完」握手，不改动 turn / queue，轮到这句时照常处理。
+   */
+  private triggerBargeIn(): void {
+    if (!this.playbackPending) return
+    this.playbackPending = false
+    this.ttsAborted = true
+    this.bargeInCount = 0
+    this.deps.send({ type: 'tts.stop' })
+    this.resolvePlayback()
+    this.syncDuplex()
   }
 
   /** 半双工状态只在切换时下发一次，避免每帧都刷事件。 */
@@ -291,6 +319,7 @@ export class VoiceSessionService {
   private async runAgent(text: string, turn: number): Promise<boolean> {
     if (!this.agent) return false
     const stale = () => this.turn !== turn || this.cancelled
+    this.ttsAborted = false
     let buffer = ''
     let ttsStarted = false
     let ttsChain: Promise<void> = Promise.resolve()
@@ -337,7 +366,7 @@ export class VoiceSessionService {
       this.deps.send({ type: 'llm.done' })
       this.deps.data.insertCommandLog(this.deviceId, text, full.slice(0, 200))
       await ttsChain
-      if (ttsStarted && !stale()) {
+      if (ttsStarted && !stale() && !this.ttsAborted) {
         this.speaking = false
         this.deps.send({ type: 'tts.end' })
       }
@@ -355,7 +384,7 @@ export class VoiceSessionService {
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
     for await (const frame of this.deps.tts.synthesize(sentence)) {
-      if (this.turn !== turn || this.cancelled) return
+      if (this.turn !== turn || this.cancelled || this.ttsAborted) return
       // 参考能量取本句最大值：最后一帧常是静音尾，用它会把门控放空
       this.downlinkRmsRef = Math.max(this.downlinkRmsRef, pcmRms(frame))
       this.downlinkBytes += frame.byteLength
