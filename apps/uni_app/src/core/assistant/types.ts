@@ -11,6 +11,8 @@ export type AssistantEvent =
   | { type: 'DISABLE' }
   | { type: 'WAKE' }
   | { type: 'USER_SPEECH' }
+  | { type: 'ASSISTANT_BUSY' }
+  | { type: 'ASSISTANT_IDLE' }
   | { type: 'T1_TIMEOUT' }
   | { type: 'T2_TIMEOUT' }
   | { type: 'SESSION_DONE' }

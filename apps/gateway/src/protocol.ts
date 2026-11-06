@@ -18,15 +18,25 @@ export type ClientMessage =
     }
   | { type: 'session.cancel' }
   | { type: 'session.end' }
+  /** 客户端本地播放队列清空后回执：网关据此才消费排队的下一句 */
+  | { type: 'session.playback_done' }
 
 /** 服务端 → 客户端（文本控制帧），与契约一致 */
 export type ServerEvent =
   | { type: 'asr.partial'; text: string }
   | { type: 'asr.final'; text: string }
+  /** 当前轮还没播完，这句只识别不回复，按序排队等本轮结束 */
+  | { type: 'asr.queued'; text: string; position: number; size: number; message: string }
+  /** 这句没有被接收，message 为按 lang 本地化的原因 */
+  | { type: 'asr.rejected'; text: string; message: string }
+  | { type: 'llm.thinking'; text: string }
   | { type: 'llm.delta'; text: string }
   | { type: 'llm.done' }
   | { type: 'tts.start'; format: string; sampleRate: number }
+  | { type: 'tts.stop' }
   | { type: 'tts.end' }
+  /** half=回声兜底中，播报期间不拾音，用户需点「打断」；full=正常全双工 */
+  | { type: 'audio.duplex'; mode: 'half' | 'full' }
   | { type: 'error'; code: ServerErrorCode; message: string }
 
 /** 契约定义的错误码 */

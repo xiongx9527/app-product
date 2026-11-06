@@ -1,15 +1,24 @@
 export type PromptCue = 'greeting' | 'stillThere' | 'farewell'
 
-const CUE_TEXT: Record<PromptCue, string> = {
-  greeting: '我在',
-  stillThere: '还在吗？',
-  farewell: '那我先退下了，需要时再叫我。',
-}
-
 const CUE_FILE: Record<PromptCue, string> = {
   greeting: 'greeting',
   stillThere: 'still-there',
   farewell: 'farewell',
+}
+
+/** 本地提示音经扬声器外放会被麦克风收回，这段时间内上行必须静音，否则会自激。
+ *  数值按 static/audio 下 mp3 实测时长（1.22s / 1.42s / 3.14s）留一点尾音余量。 */
+const CUE_MUTE_MS: Record<PromptCue, number> = {
+  greeting: 1400,
+  stillThere: 1700,
+  farewell: 3400,
+}
+
+let cueMuteUntil = 0
+
+/** 当前是否正在播本地提示音：采集回调据此把上行帧清零。 */
+export function isPromptCuePlaying(): boolean {
+  return Date.now() < cueMuteUntil
 }
 
 /**
@@ -17,6 +26,8 @@ const CUE_FILE: Record<PromptCue, string> = {
  * H5 用 WebAudio 生成提示音；App 用 static/audio 下的本地文件。
  */
 export function playPromptCue(cue: PromptCue): void {
+  cueMuteUntil = Math.max(cueMuteUntil, Date.now() + CUE_MUTE_MS[cue])
+
   // #ifdef H5
   playHtmlAudioCue(cue)
   // #endif
@@ -24,12 +35,7 @@ export function playPromptCue(cue: PromptCue): void {
   // #ifndef H5
   playAppCue(cue)
   // #endif
-
-  uni.showToast({
-    title: CUE_TEXT[cue],
-    icon: 'none',
-    duration: cue === 'greeting' ? 1000 : 1500,
-  })
+  // 不弹任何文字浮层：状态由页面 hint / 阶段胶囊表达，提示音只负责出声
 }
 
 // #ifdef H5

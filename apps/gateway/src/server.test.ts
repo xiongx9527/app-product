@@ -24,6 +24,13 @@ const base: GatewayConfig = {
   db: { path: ':memory:', publicKey: dbKeys.publicKey, privateKey: dbKeys.privateKey },
 }
 
+/** 100ms 方波人声帧：客户端持续上行后，静音帧会被 VAD 丢掉，测试得送人声。 */
+function loudFrame(samples = 1600): Buffer {
+  const pcm = new Int16Array(samples)
+  for (let i = 0; i < samples; i += 1) pcm[i] = i % 2 === 0 ? 12000 : -12000
+  return Buffer.from(pcm.buffer)
+}
+
 let gateway: ReturnType<typeof createGateway>
 beforeAll(() => {
   gateway = createGateway(base)
@@ -41,7 +48,9 @@ it('voice flow: asr.final -> llm.delta* -> llm.done -> tts.start/end + audio', a
     const timer = setTimeout(() => reject(new Error('timeout waiting for voice flow')), 8000)
     ws.on('open', () => {
       ws.send(JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN' }))
-      ws.send(Buffer.from(new Uint8Array(64)))
+      // 客户端现在持续上行，静音帧会被 VAD 丢掉，所以这里送两帧人声（连续两帧才确认开口）
+      ws.send(loudFrame())
+      ws.send(loudFrame())
     })
     ws.on('message', (data, isBinary) => {
       if (isBinary) audio.push(new Uint8Array(data as ArrayBuffer))

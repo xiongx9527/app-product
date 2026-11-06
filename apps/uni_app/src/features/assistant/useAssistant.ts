@@ -1,9 +1,9 @@
 import { computed, onUnmounted, ref } from 'vue'
-import { playPromptCue } from '@/core/audio/promptPlayer'
+import { playPromptCue, isPromptCuePlaying } from '@/core/audio/promptPlayer'
 import {
   isH5AudioSupported,
+  onPlaybackIdle,
   playPcm,
-  resetPlayback,
   startCapture,
   stopCapture,
   stopPlayback,
@@ -23,12 +23,32 @@ import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
 import { matchWakeWord } from '@/core/wake/wakeWord'
 import { getLanguage } from '@/core/config'
 
+/** 一轮对话的阶段：界面据此告诉用户「现在在干嘛」，避免以为卡住而插话。 */
+export type Phase = 'idle' | 'listening' | 'thinking' | 'replying' | 'speaking' | 'done'
+
+const PHASE_LABEL: Record<Phase, string> = {
+  idle: '待唤醒',
+  listening: '正在听…',
+  thinking: '正在思考…',
+  replying: '正在回答…',
+  speaking: '正在播报…',
+  done: '本轮完成',
+}
+
 export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG) {
   const state = ref<AssistantState>('idle')
   const transcript = ref('')
   const reply = ref('')
+  const thinking = ref('')
+  const thinkingDone = ref(false)
+  const replyDone = ref(false)
+  const phase = ref<Phase>('idle')
   const isSpeaking = ref(false)
+  // 网关判定回声兜底中：播报期间不拾音，只能点「打断」
+  const halfDuplex = ref(false)
   const errorMessage = ref('')
+  /** 排队/拒收原因，页面固定区域展示，不用浮层 */
+  const queueHint = ref('')
 
   const transport = createTransport()
 
@@ -38,10 +58,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 招呼语先占住“助手”卡片，等模型第一个字到了再换成真实回复
   let assistantTextStarted = false
   let capturing = false
-  let connected = false
   let mode: SessionMode = 'wake'
+  /** 助手正在思考/回答/播报：此时挂起 T1 静默计时，否则长回答会被「还在吗」打断 */
+  let assistantBusy = false
+  /** 本轮回答是否已经开始 TTS：llm.done 早于 tts.end，不能提前算空闲 */
+  let answerHasTts = false
+  /** 等播放队列清空的取消函数：新轮次开始时作废上一轮的等待 */
+  let cancelPlaybackIdle: (() => void) | null = null
 
   const stateLabel = computed(() => STATE_LABEL[state.value])
+  const phaseLabel = computed(() => PHASE_LABEL[phase.value])
   const enabled = computed(() => state.value !== 'idle')
   // 唤醒改为网关本地 ASR（SenseVoice）识别，不依赖浏览器/Google 的语音服务
   const wakeSupported = true
@@ -53,7 +79,19 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   function handleServerEvent(event: ServerEvent): void {
     switch (event.type) {
       case 'asr.partial':
-        if (mode === 'dialog') transcript.value = event.text
+        // 上一句还没播完时，中间识别结果不覆盖「你说」，免得文字先跳到下一句
+        if (mode === 'dialog' && !assistantBusy) {
+          transcript.value = event.text
+          if (phase.value !== 'listening') phase.value = 'listening'
+        }
+        break
+      case 'asr.queued':
+        // 只提示排队状态，不显示这句识别的内容：等播完轮到它才由 asr.final 显示
+        if (mode === 'dialog') queueHint.value = event.message
+        break
+      case 'asr.rejected':
+        // 只说明拒收原因（队列满 / 语言不符），不显示这句识别的内容
+        if (mode === 'dialog') queueHint.value = event.message
         break
       case 'asr.final':
         if (mode === 'wake') {
@@ -62,27 +100,92 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           break
         }
         transcript.value = event.text
+        // 新一轮说话：清掉上一轮的回答与思考，等模型重新流式输出
+        reply.value = ''
+        thinking.value = ''
+        thinkingDone.value = false
+        replyDone.value = false
+        queueHint.value = ''
+        phase.value = 'thinking'
+        assistantTextStarted = false
+        assistantBusy = true
+        answerHasTts = false
+        cancelPendingIdle()
         dispatch({ type: 'USER_SPEECH' })
+        dispatch({ type: 'ASSISTANT_BUSY' })
+        break
+      case 'llm.thinking':
+        thinking.value += event.text
+        if (!assistantTextStarted) phase.value = 'thinking'
         break
       case 'llm.delta':
         if (!assistantTextStarted) {
           assistantTextStarted = true
+          thinkingDone.value = true
           reply.value = ''
         }
         reply.value += event.text
+        if (phase.value !== 'speaking') phase.value = 'replying'
+        break
+      case 'llm.done':
+        thinkingDone.value = true
+        replyDone.value = true
+        if (!isSpeaking.value) phase.value = 'done'
+        // 没有 TTS 的回答到这里就结束了，从现在起重新算静默
+        if (!answerHasTts) markAnswerDone()
         break
       case 'tts.start':
-        resetPlayback()
+        cancelPendingIdle()
+        // 不再 resetPlayback()：网关已等上一句播完才下发这一句，
+        // 清空队列会把「上一句」的尾音掐掉，正是用户听到的中断。
+        answerHasTts = true
         isSpeaking.value = true
+        phase.value = 'speaking'
+        break
+      case 'tts.stop':
+        // 被打断：立刻掐掉已排队的音频，不等它播完
+        cancelPendingIdle()
+        stopPlayback()
+        isSpeaking.value = false
+        phase.value = 'done'
+        markAnswerDone()
         break
       case 'tts.end':
-        isSpeaking.value = false
+        // 网关下发完 ≠ 客户端播完：播完前保持静音上行、挂起 T1，
+        // 否则尾音被收回当成用户说话，或还没播完就触发「还在吗」。
+        cancelPendingIdle()
+        cancelPlaybackIdle = onPlaybackIdle(() => {
+          cancelPlaybackIdle = null
+          isSpeaking.value = false
+          phase.value = 'done'
+          markAnswerDone()
+          // 播完回执：网关等它才消费排队的下一句，保证上一句完整播完
+          transport.notifyPlaybackDone()
+        })
+        break
+      case 'audio.duplex':
+        halfDuplex.value = event.mode === 'half'
         break
       case 'error':
         errorMessage.value = event.message
+        phase.value = 'idle'
+        assistantBusy = false
+        cancelPendingIdle()
         dispatch({ type: 'ERROR' })
         break
     }
+  }
+
+  /** 回答彻底结束，恢复「用户静默」计时。 */
+  function markAnswerDone(): void {
+    assistantBusy = false
+    if (state.value === 'listening') dispatch({ type: 'ASSISTANT_IDLE' })
+  }
+
+  /** 作废上一轮「等播完」的等待，避免新轮次被旧回调误判为结束。 */
+  function cancelPendingIdle(): void {
+    cancelPlaybackIdle?.()
+    cancelPlaybackIdle = null
   }
 
   function dispatch(event: AssistantEvent): void {
@@ -102,19 +205,33 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'startSession':
         transcript.value = ''
         reply.value = ''
+        thinking.value = ''
+        thinkingDone.value = false
+        replyDone.value = false
+        phase.value = 'listening'
         errorMessage.value = ''
+        queueHint.value = ''
         assistantTextStarted = false
-        enterDialog()
+        assistantBusy = false
+        answerHasTts = false
+        cancelPendingIdle()
+        void enterDialog()
         break
       case 'endSession':
+        cancelPendingIdle()
         stopPlayback()
         isSpeaking.value = false
+        queueHint.value = ''
+        phase.value = 'idle'
         assistantTextStarted = false
         break
       case 'cancelSession':
+        cancelPendingIdle()
         stopPlayback()
         transport.sendCancel()
         isSpeaking.value = false
+        queueHint.value = ''
+        phase.value = 'done'
         assistantTextStarted = false
         break
       case 'playGreeting': {
@@ -125,6 +242,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       }
       case 'scheduleT1':
         clearT1()
+        // 助手还在回答时不启动静默计时，避免长回答中途触发「还在吗」
+        if (assistantBusy) break
         t1Timer = setTimeout(() => dispatch({ type: 'T1_TIMEOUT' }), config.t1SilenceMs)
         break
       case 'cancelT1':
@@ -151,23 +270,34 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 待唤醒：连网关（wake 模式，只做 ASR）并开启麦克风上行。 */
   async function enterWake(): Promise<void> {
     mode = 'wake'
+    phase.value = 'idle'
+    assistantBusy = false
+    answerHasTts = false
     await ensureCapture()
+    // 网关可能刚重启过，本地标志会过期；一律以传输层的真实连接状态为准
+    if (transport.isConnected()) {
+      transport.startSession('wake')
+      return
+    }
     try {
-      if (!connected) {
-        await transport.connect('wake')
-        connected = true
-      } else {
-        transport.startSession('wake')
-      }
+      await transport.connect('wake')
     } catch (err) {
       errorMessage.value = (err as Error).message
     }
   }
 
   /** 命中唤醒：在同一条连接上切到 dialog 模式，进入 LLM/TTS。 */
-  function enterDialog(): void {
+  async function enterDialog(): Promise<void> {
     mode = 'dialog'
-    if (connected) transport.startSession('dialog')
+    if (transport.isConnected()) {
+      transport.startSession('dialog')
+      return
+    }
+    try {
+      await transport.connect('dialog')
+    } catch (err) {
+      errorMessage.value = (err as Error).message
+    }
   }
 
   /** 关闭助手：停采集、关连接。 */
@@ -178,14 +308,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
     stopPlayback()
     transport.close()
-    connected = false
   }
 
   async function ensureCapture(): Promise<void> {
     if (capturing || !isH5AudioSupported()) return
     try {
+      // 播报期间继续保持上行：用户插话要能识别并排队，不能掐掉麦克风。
+      // 回声由浏览器 AEC + 网关 strict VAD / 文本比对 / 半双工兜底处理。
+      // 只有本地提示音（扬声器外放的固定短音）期间把上行帧清零。
       await startCapture((pcm) => {
-        if (!isSpeaking.value) transport.sendAudioChunk(pcm)
+        transport.sendAudioChunk(isPromptCuePlaying() ? new ArrayBuffer(pcm.byteLength) : pcm)
       })
       capturing = true
     } catch (err) {
@@ -224,6 +356,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     clearT1()
     clearT2()
     clearClosing()
+    cancelPendingIdle()
     leaveWake()
   })
 
@@ -233,7 +366,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     enabled,
     transcript,
     reply,
+    thinking,
+    thinkingDone,
+    replyDone,
+    phase,
+    phaseLabel,
     isSpeaking,
+    halfDuplex,
+    queueHint,
     errorMessage,
     wakeSupported,
     wakeProviderName,

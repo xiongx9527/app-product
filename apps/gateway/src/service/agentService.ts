@@ -1,6 +1,7 @@
 import { Agent } from '@agentscope-ai/agentscope/agent'
 import {
   OpenAIChatModel,
+  OllamaChatModel,
   DashScopeChatModel,
   DeepSeekChatModel,
 } from '@agentscope-ai/agentscope/model'
@@ -13,7 +14,11 @@ import type { LlmConfig } from '../config'
 
 /** 对话智能体服务：按语言本地化系统提示，流式回传文本增量。 */
 export interface AgentService {
-  reply(userText: string, onDelta: (delta: string) => void): Promise<string>
+  reply(
+    userText: string,
+    onDelta: (delta: string) => void,
+    onThinking?: (delta: string) => void
+  ): Promise<string>
 }
 
 /** 按配置构造真实的 LLM 模型实例（AgentScope 提供的各厂商实现）。 */
@@ -29,6 +34,16 @@ function createModel(cfg: LlmConfig): ChatModelBase {
         stream: true,
         presetGenParams: params,
       })
+    case 'ollama':
+      // 原生 /api/chat：只有它能透出模型的思考过程，OpenAI 兼容层会丢弃 reasoning。
+      return new OllamaChatModel({
+        modelName: model,
+        // 配置里可能写成 http://host:11434/v1，原生接口不接受 /v1 后缀
+        host: baseUrl ? baseUrl.replace(/\/v1\/?$/, '') : undefined,
+        stream: true,
+        options: params,
+        thinkingConfig: { enableThinking: true, thinkingLevel: 'low' },
+      })
     case 'dashscope':
       return new DashScopeChatModel({ modelName: model, apiKey, stream: true, presetGenParams: params })
     case 'deepseek':
@@ -43,13 +58,16 @@ export function createAgentService(config: { llm: LlmConfig }, lang: Lang): Agen
   const model = createModel(config.llm)
   const agent = new Agent({ name: 'Xiong', sysPrompt: messages(lang).systemPrompt, model })
   return {
-    async reply(userText, onDelta) {
+    async reply(userText, onDelta, onThinking) {
       const stream = agent.replyStream({ msgs: UserMsg({ name: 'user', content: userText }) })
       let full = ''
       for await (const ev of stream) {
         if (ev.type === EventType.TEXT_BLOCK_DELTA) {
           onDelta(ev.delta)
           full += ev.delta
+        } else if (ev.type === EventType.THINKING_BLOCK_DELTA) {
+          // 思考过程只用于界面展示，不参与回复正文与 TTS
+          onThinking?.(ev.delta)
         }
       }
       return full
@@ -59,7 +77,12 @@ export function createAgentService(config: { llm: LlmConfig }, lang: Lang): Agen
 
 /** 离线测试用 LLM：不联网，返回本地拼接的回包，便于在 CI / 无 Ollama 环境跑通语音流。 */
 class StubAgentService implements AgentService {
-  async reply(userText: string, onDelta: (delta: string) => void): Promise<string> {
+  async reply(
+    userText: string,
+    onDelta: (delta: string) => void,
+    onThinking?: (delta: string) => void
+  ): Promise<string> {
+    onThinking?.('（离线模式）先想一下该说什么。')
     const reply = `（离线回包）你刚才说：「${userText}」。这是本地 AgentScope 网关的离线回复，接上真实 LLM 后即为真实回答。`
     for (const piece of chunk(reply, 5)) {
       onDelta(piece)

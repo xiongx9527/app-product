@@ -14,6 +14,30 @@ let captureMute: GainNode | null = null
 let playCtx: AudioContext | null = null
 let nextStart = 0
 const activeSources = new Set<AudioBufferSourceNode>()
+/** 等待「排队音频全部播完」的一次性回调；tts.end 早于实际播完，必须靠它对齐。 */
+const idleListeners = new Set<() => void>()
+
+function emitIfIdle(): void {
+  if (activeSources.size > 0) return
+  const pending = [...idleListeners]
+  idleListeners.clear()
+  pending.forEach((fn) => fn())
+}
+
+/**
+ * 注册播放队列清空时的一次性回调，返回取消函数。
+ * 队列本来就空时立即执行；tts.start / 新一轮说话时应主动取消上一轮的等待。
+ */
+export function onPlaybackIdle(fn: () => void): () => void {
+  if (activeSources.size === 0) {
+    fn()
+    return () => {}
+  }
+  idleListeners.add(fn)
+  return () => {
+    idleListeners.delete(fn)
+  }
+}
 
 export function isH5AudioSupported(): boolean {
   return (
@@ -32,8 +56,14 @@ function createContext(sampleRate?: number): AudioContext {
   return sampleRate ? new Ctor({ sampleRate }) : new Ctor()
 }
 
-/** 采集：能量高于门限才回调，静默时不上行，网关据此在 700ms 后判定句末。 */
-export async function startCapture(onChunk: ChunkHandler, minRms = 0.012): Promise<void> {
+/**
+ * 采集：持续上行每一帧（含静音）。
+ *
+ * 以前靠客户端能量门限过滤静音，网关只能看到「有声段」，于是分不清
+ * 「用户停顿」和「麦克风断流」；现在把判定交给网关的 VAD，静音也照样发，
+ * 网关才能用自适应噪声底算出句末。16k/16bit/单声道约 32KB/s，本机链路可忽略。
+ */
+export async function startCapture(onChunk: ChunkHandler): Promise<void> {
   if (captureCtx) return
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -48,10 +78,6 @@ export async function startCapture(onChunk: ChunkHandler, minRms = 0.012): Promi
 
   processor.onaudioprocess = (event: AudioProcessingEvent) => {
     const input = event.inputBuffer.getChannelData(0)
-    let sum = 0
-    for (let i = 0; i < input.length; i += 1) sum += input[i] * input[i]
-    const rms = Math.sqrt(sum / input.length)
-    if (rms < minRms) return
     onChunk(floatToPcm16(input).buffer as ArrayBuffer)
   }
 
@@ -102,7 +128,10 @@ export function playPcm(pcm: ArrayBuffer, sampleRate = 24000): void {
   source.start(startAt)
   nextStart = startAt + buffer.duration
   activeSources.add(source)
-  source.onended = () => activeSources.delete(source)
+  source.onended = () => {
+    activeSources.delete(source)
+    emitIfIdle()
+  }
 }
 
 /** 新一轮 TTS 开始前清空队列，避免旧音频拖尾。 */
@@ -116,6 +145,8 @@ export function resetPlayback(): void {
   })
   activeSources.clear()
   nextStart = 0
+  // stop() 的 onended 不保证触发，主动解除等待避免状态永远挂起
+  emitIfIdle()
 }
 
 export function stopPlayback(): void {

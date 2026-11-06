@@ -46,6 +46,16 @@ export function transition(
       }
       return NOOP(state)
 
+    case 'ASSISTANT_BUSY':
+      // 助手在思考/回答/播报，静默计时必须挂起：否则一句长回答还没说完就触发「还在吗」
+      if (state !== 'listening') return NOOP(state)
+      return { state, effects: ['cancelT1'] }
+
+    case 'ASSISTANT_IDLE':
+      // 本轮回答彻底结束，从这一刻重新开始算用户静默
+      if (state !== 'listening') return NOOP(state)
+      return { state, effects: ['scheduleT1'] }
+
     case 'T1_TIMEOUT':
       if (state !== 'listening') return NOOP(state)
       return {

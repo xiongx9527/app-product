@@ -30,9 +30,16 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.end" }
+{ "type": "session.playback_done" }
 ```
 
 音频二进制帧与 `audio.chunk` 二选一，最终以实现为准。
+
+`session.playback_done` 是客户端在**本地播放队列真正清空**后发给网关的回执。
+`tts.end` 只代表服务端音频帧下发完毕，不代表播完；**队列还有下一句时**网关必须等
+这个回执才消费，否则新一轮 `tts.start` 会掐掉上一轮还没播完的音频。
+队列为空时不等回执，立刻释放，避免用户下一句被误排队。
+网关同时按已下发音频时长设超时兜底，客户端没回执也不会把队列卡死。
 
 `session.start` 的 `lang` 当前仅支持 `zh-CN`：唤醒词、ASR、TTS 均为中文，客户端不做多语言切换。
 
@@ -41,12 +48,42 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 ```json
 { "type": "asr.partial", "text": "今天" }
 { "type": "asr.final", "text": "今天天气怎么样" }
+{ "type": "asr.queued", "text": "那明天呢", "position": 1, "size": 3, "message": "已排到第 1 句（共 3 句）…" }
+{ "type": "asr.rejected", "text": "还有后天", "message": "排队已满（最多 3 句）…" }
+{ "type": "llm.thinking", "text": "用户想知道天气，" }
 { "type": "llm.delta", "text": "今天" }
 { "type": "llm.done" }
 { "type": "tts.start", "format": "pcm16", "sampleRate": 24000 }
+{ "type": "tts.stop" }
 { "type": "tts.end" }
+{ "type": "audio.duplex", "mode": "half" }
 { "type": "error", "code": "ASR_TIMEOUT", "message": "识别超时" }
 ```
+
+`asr.partial` 是网关对已收音频的滚动重识别结果，可重复、可回退，客户端只用于展示；
+`asr.final` 才是定稿文本。**只有 `asr.final` 之后才会请求大模型**，中间结果不会触发回复。
+
+`llm.thinking` 是模型的思考过程，仅用于界面展示，不进入回复正文、不参与 TTS；
+客户端可丢弃，丢弃不影响对话。
+
+`tts.stop` 表示被打断：客户端要立刻丢弃已排队/正在播的音频；`tts.end` 只表示本轮下发完毕。
+
+打断规则：一轮还没结束（思考或回复中）时用户又开口，**不打断当前轮**；
+网关只做识别并把这句放入队列（最多 3 句），当前轮播完后按序再交给大模型，
+消费队首时同样下发 `asr.final`。队列已满则下发 `asr.rejected`，
+`message` 是本地化的拒收原因，客户端在页面固定区域展示，不用浮层。
+客户端主动点「打断」仍走 `session.cancel`，会清空队列。
+
+回声与杂音：网关在播报期间用 strict VAD、下行帧能量门控、已播文本比对三层
+把「收回来的自己的声音」在进 ASR 之前拦掉；ASR 定稿后还会过滤极短的
+环境杂音幻觉文本，以及**不属于当前 `lang` 的文字**（此时下发 `asr.rejected`，
+`message` 提示用户去设置里切换语言）。送进 TTS 的文本会剥掉 markdown / emoji /
+特殊符号，只保留可朗读内容；界面展示的仍是 LLM 原文。
+
+回声兜底：浏览器 AEC 失效时，助手会被自己的回声反复打断。网关连续检测到
+「紧跟播报的打断」后下发 `audio.duplex: half`，此后**播报期间不拾音**，
+用户改用「打断」按钮；冷却结束自动恢复并下发 `audio.duplex: full`。
+客户端收到 `half` 时应在界面上说明，避免用户以为语音失灵。
 
 ## 错误码
 

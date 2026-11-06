@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import {
   CAPABILITIES,
   LANGUAGE_OPTIONS,
@@ -28,6 +28,8 @@ const testing = reactive<Record<Capability, boolean>>({
 const results = reactive<
   Record<Capability, { ok: boolean; message: string } | null>
 >({ asr: null, llm: null, tts: null })
+/** 保存/恢复的结果用页面内文字展示，不用浮层 */
+const saveHint = ref('')
 
 const cards = computed(() =>
   CAPABILITIES.map((item) => ({
@@ -179,12 +181,12 @@ function onReset(capability: Capability): void {
   resetCapability(capability)
   results[capability] = null
   persistConfig()
-  uni.showToast({ title: '已恢复默认', icon: 'none' })
+  saveHint.value = '已恢复默认'
 }
 
 function onSave(): void {
   persistConfig()
-  uni.showToast({ title: '已保存，重开语音助手生效', icon: 'none' })
+  saveHint.value = '已保存，重开语音助手生效'
 }
 </script>
 
@@ -331,6 +333,7 @@ function onSave(): void {
     </view>
 
     <button class="save" @tap="onSave">保存配置</button>
+    <text v-if="saveHint" class="save-hint">{{ saveHint }}</text>
     <text class="foot">
       配置只保存在本机。切换厂商会保留各自参数，换回来不用重填。
     </text>
@@ -552,6 +555,12 @@ function onSave(): void {
 
 .save::after {
   border: none;
+}
+
+.save-hint {
+  font-size: 12px;
+  color: #a8c0ff;
+  text-align: center;
 }
 
 .foot {

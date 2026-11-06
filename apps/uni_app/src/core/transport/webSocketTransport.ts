@@ -18,6 +18,8 @@ export class WebSocketTransport implements AssistantTransport {
   private readonly lang: 'zh-CN'
   private sessionId = ''
   private pendingMode: SessionMode = 'dialog'
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private intentionalClose = false
 
   constructor(url = resolveGatewayUrl(), lang: 'zh-CN' = 'zh-CN') {
     this.url = url
@@ -29,6 +31,12 @@ export class WebSocketTransport implements AssistantTransport {
       return Promise.reject(new Error('当前环境不支持 WebSocket'))
     }
     this.pendingMode = mode
+    this.intentionalClose = false
+    // 外部主动连接时取消待执行的重连，避免同时建两条 socket
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.sendStart(mode)
       return Promise.resolve()
@@ -47,9 +55,21 @@ export class WebSocketTransport implements AssistantTransport {
       }
       ws.onclose = () => {
         this.ws = null
+        // 网关重启/网络抖动会让页面停留在旧状态，按当前模式自动重连并重新开会话
+        if (!this.intentionalClose) this.scheduleReconnect()
       }
       ws.onmessage = (ev: MessageEvent) => this.handleMessage(ev.data)
     })
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      void this.connect(this.pendingMode).catch(() => {
+        // 连不上时 onclose 会继续安排下一次重试
+      })
+    }, 1000)
   }
 
   sendAudioChunk(chunk: ArrayBuffer): void {
@@ -60,11 +80,22 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendStart(mode)
   }
 
+  isConnected(): boolean {
+    return !!this.ws && this.ws.readyState === WebSocket.OPEN
+  }
+
   sendCancel(): void {
     this.sendJson({ type: 'session.cancel' })
   }
 
+  notifyPlaybackDone(): void {
+    this.sendJson({ type: 'session.playback_done' })
+  }
+
   close(): void {
+    this.intentionalClose = true
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
     this.sendJson({ type: 'session.end' })
     this.ws?.close()
     this.ws = null

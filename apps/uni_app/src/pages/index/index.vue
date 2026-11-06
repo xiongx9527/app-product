@@ -9,7 +9,14 @@ const {
   enabled,
   transcript,
   reply,
+  thinking,
+  thinkingDone,
+  replyDone,
+  phase,
+  phaseLabel,
   isSpeaking,
+  halfDuplex,
+  queueHint,
   errorMessage,
   wakeSupported,
   wakeProviderName,
@@ -21,21 +28,30 @@ const {
 const screen = ref<ScreenInfo>(readScreenInfo())
 
 const isActive = computed(() => state.value === 'listening' || state.value === 'confirming')
+// 思考过程会很长，界面只留最近一段，避免卡片被撑爆
+const thinkingTail = computed(() =>
+  thinking.value.length > 240 ? `…${thinking.value.slice(-240)}` : thinking.value
+)
 
 const hint = computed(() => {
-  switch (state.value) {
-    case 'idle':
-      return '打开语音助手，开始待唤醒'
-    case 'standby':
-      return '说「小熊小熊」唤醒，或点一下中间的开始'
+  // 静默提示与退出优先，其余按对话阶段说明「现在在干嘛」，免得用户以为卡住
+  if (state.value === 'confirming') return '等你继续说，没出声就先退下了'
+  if (state.value === 'closing') return '本轮结束，马上回到待唤醒'
+  switch (phase.value) {
     case 'listening':
-      return isSpeaking.value ? '助手正在回答，可随时打断' : '我在听，说完可以停一下'
-    case 'confirming':
-      return '还在吗？再不出声我就先退下了'
-    case 'closing':
-      return '本轮结束，马上回到待唤醒'
+      return '正在听，说完停一下就行'
+    case 'thinking':
+      return '正在思考，想换话题直接开口'
+    case 'replying':
+      return '正在回答，想打断直接开口'
+    case 'speaking':
+      return halfDuplex.value
+        ? '检测到回声，播报时不拾音，可点「打断」'
+        : '正在播报，想打断直接开口'
+    case 'done':
+      return '本轮完成，继续说下一句'
     default:
-      return ''
+      return state.value === 'idle' ? '打开语音助手，开始待唤醒' : '说「小熊小熊」唤醒'
   }
 })
 
@@ -92,6 +108,8 @@ function onOrbTap(): void {
         </view>
       </view>
       <text class="hint">{{ hint }}</text>
+      <text class="phase" :class="phase">{{ phaseLabel }}</text>
+      <text v-if="queueHint" class="queue-hint">{{ queueHint }}</text>
       <text v-if="errorMessage" class="error">{{ errorMessage }}</text>
     </view>
 
@@ -100,8 +118,22 @@ function onOrbTap(): void {
         <text class="card-label">你说</text>
         <text class="card-text">{{ transcript || '……' }}</text>
       </view>
+      <view v-if="thinking" class="card thinking">
+        <view class="card-head">
+          <text class="card-label">思考</text>
+          <text class="card-badge" :class="{ done: thinkingDone }">
+            {{ thinkingDone ? '已完成' : '思考中…' }}
+          </text>
+        </view>
+        <text class="card-text thinking-text">{{ thinkingTail }}</text>
+      </view>
       <view class="card reply">
-        <text class="card-label">助手</text>
+        <view class="card-head">
+          <text class="card-label">助手</text>
+          <text v-if="reply" class="card-badge" :class="{ done: replyDone }">
+            {{ replyDone ? '已完成' : '生成中…' }}
+          </text>
+        </view>
         <text class="card-text">{{ reply || '……' }}</text>
       </view>
     </view>
@@ -119,6 +151,9 @@ function onOrbTap(): void {
         <button class="btn ghost" :disabled="!isActive" @tap="interrupt">打断</button>
       </view>
       <text v-if="state === 'standby'" class="talk-hint">对着麦克风说「小熊小熊」唤醒</text>
+      <text v-else-if="halfDuplex" class="talk-hint warn">
+        已加强回声抑制；插话仍会排队，也可点「打断」
+      </text>
       <text v-else-if="isActive" class="talk-hint">正在听，直接说话即可（说完停顿一下）</text>
     </view>
 
@@ -250,6 +285,44 @@ function onOrbTap(): void {
   text-align: center;
 }
 
+.phase {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: #8b91ab;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.phase.listening {
+  color: #9fd8ff;
+  border-color: rgba(108, 168, 255, 0.45);
+}
+
+.phase.thinking {
+  color: #c9b8ff;
+  border-color: rgba(150, 120, 255, 0.45);
+}
+
+.phase.replying {
+  color: #cfd8ff;
+  border-color: rgba(108, 140, 255, 0.5);
+}
+
+.phase.speaking {
+  color: #8ee0bd;
+  border-color: rgba(92, 214, 178, 0.45);
+}
+
+.phase.done {
+  color: #8b91ab;
+}
+
+.queue-hint {
+  font-size: 11px;
+  color: #a8c0ff;
+  text-align: center;
+}
+
 .error {
   font-size: 12px;
   color: #ff9a9a;
@@ -281,6 +354,32 @@ function onOrbTap(): void {
   font-size: 11px;
   color: #8b91ab;
   letter-spacing: 1px;
+}
+
+.card.thinking {
+  background: rgba(255, 255, 255, 0.025);
+  border-style: dashed;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.card-badge {
+  font-size: 10px;
+  color: #8f9bd6;
+}
+
+.card-badge.done {
+  color: #6f7691;
+}
+
+.thinking-text {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #9aa1bd;
 }
 
 .card-text {
@@ -359,6 +458,10 @@ function onOrbTap(): void {
   font-size: 11px;
   color: #8b91ab;
   text-align: center;
+}
+
+.talk-hint.warn {
+  color: #ffcf8a;
 }
 
 .footer {

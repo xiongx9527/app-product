@@ -1,7 +1,11 @@
 /** 网关运行配置，全部可由环境变量覆盖。 */
 
-/** LLM 能力提供方：stub 为离线测试实现；openai 兼容端点（本地 Ollama 的 /v1 也在内）、dashscope、deepseek 等为真实厂商。 */
-export type LlmProviderKind = 'stub' | 'openai' | 'dashscope' | 'deepseek'
+/**
+ * LLM 能力提供方：stub 为离线测试实现；openai 兼容端点（本地 Ollama 的 /v1 也在内）、
+ * dashscope、deepseek 等为真实厂商。
+ * ollama 走原生 /api/chat：只有这条路径能拿到模型思考过程（OpenAI 兼容层会丢掉 reasoning）。
+ */
+export type LlmProviderKind = 'stub' | 'openai' | 'ollama' | 'dashscope' | 'deepseek'
 /** ASR 提供方：whisper/azure/aliyun/xunfei 等真实厂商（统一走本地 HTTP baseUrl）；stub 为离线测试实现。 */
 export type AsrProviderKind = 'stub' | 'whisper' | 'azure' | 'aliyun' | 'xunfei'
 /** TTS 提供方：edge/azure/aliyun/xunfei 等真实厂商（统一走本地 HTTP baseUrl）；stub 为离线测试实现。 */

@@ -66,6 +66,22 @@ describe('assistant state machine', () => {
     })
   })
 
+  it('助手开始回答会挂起静默计时，回答结束后重新计时', () => {
+    expect(next('listening', 'ASSISTANT_BUSY')).toEqual({
+      state: 'listening',
+      effects: ['cancelT1'],
+    })
+    expect(next('listening', 'ASSISTANT_IDLE')).toEqual({
+      state: 'listening',
+      effects: ['scheduleT1'],
+    })
+  })
+
+  it('提示态/结束态收到助手空闲不会重新拉起计时', () => {
+    expect(next('confirming', 'ASSISTANT_IDLE')).toEqual({ state: 'confirming', effects: [] })
+    expect(next('closing', 'ASSISTANT_IDLE')).toEqual({ state: 'closing', effects: [] })
+  })
+
   it('会话异常会降级回待唤醒而不是卡死', () => {
     expect(next('confirming', 'ERROR')).toEqual({
       state: 'standby',
