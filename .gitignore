@@ -1,0 +1,41 @@
+# 依赖
+node_modules/
+.pnp
+.pnp.js
+
+# 构建产物
+dist/
+dist-ssr/
+unpackage/
+apps/uni_app/dist/
+apps/uni_app/unpackage/
+
+# 本地配置与密钥，禁止入库
+.env
+.env.*
+!.env.example
+*.local
+*.keystore
+*.p12
+*.mobileprovision
+keystore/
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 日志与缓存
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.cache/
+.eslintcache
+
+# CodeGraph 本地索引
+.codegraph/

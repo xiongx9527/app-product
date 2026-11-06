@@ -1,0 +1,87 @@
+import type { AssistantEffect, AssistantEvent, AssistantState } from './types'
+
+export interface TransitionResult {
+  state: AssistantState
+  effects: AssistantEffect[]
+}
+
+const NOOP = (state: AssistantState): TransitionResult => ({ state, effects: [] })
+
+/**
+ * 纯状态机：不碰定时器、不碰音频、不碰网络。
+ * 好处是可单测，也方便以后把同一套逻辑复用到别的端。
+ */
+export function transition(
+  state: AssistantState,
+  event: AssistantEvent
+): TransitionResult {
+  switch (event.type) {
+    case 'ENABLE':
+      if (state !== 'idle') return NOOP(state)
+      return { state: 'standby', effects: ['startWake'] }
+
+    case 'DISABLE':
+      if (state === 'idle') return NOOP(state)
+      return {
+        state: 'idle',
+        effects: ['cancelT1', 'cancelT2', 'cancelSession', 'stopWake'],
+      }
+
+    case 'WAKE':
+      if (state !== 'standby') return NOOP(state)
+      // 唤醒后先打招呼，让用户立刻知道“它醒了”，再开始静默计时
+      return {
+        state: 'listening',
+        effects: ['startSession', 'playGreeting', 'scheduleT1'],
+      }
+
+    case 'USER_SPEECH':
+      if (state === 'confirming') {
+        // 用户回应了提示：取消退出，继续本轮
+        return { state: 'listening', effects: ['cancelT2', 'scheduleT1'] }
+      }
+      if (state === 'listening') {
+        // 用户还在说：重置静默计时
+        return { state, effects: ['cancelT1', 'scheduleT1'] }
+      }
+      return NOOP(state)
+
+    case 'T1_TIMEOUT':
+      if (state !== 'listening') return NOOP(state)
+      return {
+        state: 'confirming',
+        effects: ['cancelT1', 'playPrompt', 'scheduleT2'],
+      }
+
+    case 'T2_TIMEOUT':
+      if (state !== 'confirming') return NOOP(state)
+      return { state: 'closing', effects: ['cancelT2', 'playFarewell'] }
+
+    case 'SESSION_DONE':
+      if (state !== 'closing') return NOOP(state)
+      // 退出本轮后回到待唤醒，随时可以再次唤醒
+      return { state: 'standby', effects: ['endSession', 'startWake'] }
+
+    case 'CANCEL':
+      if (state === 'listening' || state === 'confirming') {
+        return {
+          state: 'standby',
+          effects: ['cancelT1', 'cancelT2', 'cancelSession', 'startWake'],
+        }
+      }
+      if (state === 'closing') {
+        return { state: 'standby', effects: ['cancelT2', 'endSession', 'startWake'] }
+      }
+      return NOOP(state)
+
+    case 'ERROR':
+      if (state === 'standby' || state === 'idle') return NOOP(state)
+      return {
+        state: 'standby',
+        effects: ['cancelT1', 'cancelT2', 'endSession', 'startWake'],
+      }
+
+    default:
+      return NOOP(state)
+  }
+}
