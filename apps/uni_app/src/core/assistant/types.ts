@@ -42,7 +42,7 @@ export interface AssistantConfig {
 }
 
 export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
-  t1SilenceMs: 10_000,
+  t1SilenceMs: 20_000,
   t2GraceMs: 10_000,
 }
 

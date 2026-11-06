@@ -17,7 +17,6 @@ const {
   phaseLabel,
   isSpeaking,
   halfDuplex,
-  queueHint,
   queuePending,
   queueFullMsg,
   liveText,
@@ -114,7 +113,6 @@ function onOrbTap(): void {
       <text class="hint">{{ hint }}</text>
       <text class="phase" :class="phase">{{ phaseLabel }}</text>
       <text v-if="liveText" class="live-text">{{ liveText }}</text>
-      <text v-if="queueHint" class="queue-hint">{{ queueHint }}</text>
       <text v-if="errorMessage" class="error">{{ errorMessage }}</text>
     </view>
 
@@ -126,7 +124,7 @@ function onOrbTap(): void {
         </view>
         <text class="card-text">{{ transcript || t('card.placeholder') }}</text>
       </view>
-      <view v-if="thinking" class="card thinking">
+      <view v-if="thinking && !thinkingDone" class="card thinking">
         <view class="card-head">
           <text class="card-label">{{ t('card.thinking') }}</text>
           <text class="card-badge" :class="{ done: thinkingDone }">
@@ -323,12 +321,6 @@ function onOrbTap(): void {
 
 .phase.done {
   color: #8b91ab;
-}
-
-.queue-hint {
-  font-size: 11px;
-  color: #a8c0ff;
-  text-align: center;
 }
 
 .error {

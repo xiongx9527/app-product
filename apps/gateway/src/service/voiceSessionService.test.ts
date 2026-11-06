@@ -41,7 +41,10 @@ interface Harness {
   asrFrames: () => number
 }
 
-function createHarness(ttsFrames: Uint8Array[] = []): Harness {
+function createHarness(
+  opts: { ttsFrames?: Uint8Array[]; delayDelta?: boolean } = {}
+): Harness {
+  const ttsFrames = opts.ttsFrames ?? []
   const events: ServerEvent[] = []
   let calls = 0
   let frames = 0
@@ -49,6 +52,19 @@ function createHarness(ttsFrames: Uint8Array[] = []): Harness {
   const agent: AgentService = {
     reply(_text, onDelta) {
       calls += 1
+      if (opts.delayDelta) {
+        // 思考阶段不下发 TTS：processing 已为 true、playbackPending 仍为 false，
+        // 用来验证「未播放时用户插话进队列」这条生存下来的排队路径。
+        let resolveReply!: (value: string) => void
+        const pending = new Promise<string>((resolve) => {
+          resolveReply = resolve
+        })
+        finish = () => {
+          onDelta('好的，我来说一句。')
+          resolveReply('好的，我来说一句。')
+        }
+        return pending
+      }
       onDelta('好的，我来说一句。')
       return new Promise<string>((resolve) => {
         finish = () => resolve('好的，我来说一句。')
@@ -132,59 +148,62 @@ describe('语音会话：句末判定、排队与去噪', () => {
     h.finishReply()
   })
 
-  it('当前轮没播完时用户插话：不打断，只识别并排队', async () => {
+  it('播放过程中不识别用户插话：播完之后才作为新一轮处理', async () => {
     const h = createHarness()
     await startDialog(h.service)
     await speakUtterance(h)
     expect(h.agentCalls()).toBe(1)
     expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
 
+    // 播放过程中（未回执播完）再说的话，一律不识别、不排队、不触发新回答
     await speakUtterance(h)
     await speakUtterance(h)
     await speakUtterance(h)
-    const queued = h.events.filter((e) => e.type === 'asr.queued')
-    expect(queued).toHaveLength(3)
+    expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(0)
+    expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(1)
     expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
-    expect(queued[2]).toMatchObject({ position: 3, size: 3 })
-
-    await speakUtterance(h)
-    const rejected = h.events.find((e) => e.type === 'asr.rejected')
-    expect(rejected).toBeDefined()
-    if (rejected?.type === 'asr.rejected') {
-      expect(rejected.message).toBe('你说的太多了，我记不住。')
-      expect(rejected.reason).toBe('queue-full')
-    }
-    expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(3)
-
-    h.finishReply()
-    await sleep(20)
     expect(h.agentCalls()).toBe(1)
+
+    // 客户端回执播完，本轮真正结束；之后再说才作为新一轮处理
     h.playbackDone()
     await sleep(30)
+    h.finishReply()
+    await sleep(20)
+    await speakUtterance(h)
     expect(h.agentCalls()).toBe(2)
-
-    // asr.final 带权威剩余数，客户端据此同步而不靠本地 ±1 猜测
-    const finals = h.events.filter((e) => e.type === 'asr.final')
-    expect(finals[0]).toMatchObject({ queueRemaining: 0 })
-    expect(finals[1]).toMatchObject({ queueRemaining: 2 })
+    expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(2)
   })
 
-  it('没有播完回执时，链不会提前开始下一句', async () => {
-    const h = createHarness()
+  it('思考阶段（未播放）用户插话：正常进队列，播完后依次处理', async () => {
+    // delayDelta：智能体先思考、不下发 TTS，制造「processing=true 且 playbackPending=false」的窗口
+    const h = createHarness({ delayDelta: true })
     await startDialog(h.service)
     await speakUtterance(h)
-    await speakUtterance(h)
-    expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(1)
+    expect(h.agentCalls()).toBe(1)
 
+    // 思考阶段插话 → 排队（此时还没开始播放，所以允许识别）
+    await speakUtterance(h)
+    const queued = h.events.filter((e) => e.type === 'asr.queued')
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toMatchObject({ position: 1, size: 3 })
+
+    // 思考结束并播报
     h.finishReply()
     await sleep(40)
     expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
     expect(h.agentCalls()).toBe(1)
+
+    // 播完回执后，队列里的那句被消费成新一轮
+    h.playbackDone()
+    await sleep(30)
+    expect(h.agentCalls()).toBe(2)
+    const finals = h.events.filter((e) => e.type === 'asr.final')
+    expect(finals[1]).toMatchObject({ queueRemaining: 0 })
   })
 
   it('tts.end 之后、playback_done 之前，尾音回声仍被挡在 ASR 之前', async () => {
     // 下发一帧高能量 TTS 音频，让门控拿到参考值
-    const h = createHarness([loudFrame()])
+    const h = createHarness({ ttsFrames: [loudFrame()] })
     await startDialog(h.service)
     await speakUtterance(h)
     h.finishReply()

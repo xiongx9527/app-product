@@ -65,6 +65,11 @@ export class VoiceSessionService {
   private readonly queue: string[] = []
   /** 最近送进 TTS 的原文，用于把「收回来的自己的声音」判成回声丢弃。 */
   private readonly spoken: string[] = []
+  /**
+   * 最后一次下发音频之后的回声保护窗口（毫秒）：窗口内定稿的文本一律按回声对待。
+   * 播放结束（含被打断）后仍留一小段尾巴，盖住扬声器余音经空气/回路传回麦克风的延迟。
+   */
+  private echoUntil = 0
   /** 本句下发过的最大帧能量，作为回声门控的参考（不能用最后一帧，可能是静音尾）。 */
   private downlinkRmsRef = 0
   /** 本轮已下发的音频字节数，用于估算播放时长做握手超时兜底。 */
@@ -110,7 +115,7 @@ export class VoiceSessionService {
     // 不整体停止拾音：用户插话要能识别并排队。
     if (this.isEchoFrame(chunk)) return
     // 穿过回声门控到达这里的，只有「非回声的真实人声」—— 播报期间一旦 VAD 连续判出人声，
-    // 就是用户在插话：立刻打断播报、优先识别用户的话，避免用户语音和助手播报混音导致漏字。
+    // 就是用户在插话：立刻打断播报（barge-in），让用户的语音不再和播报混音。
     const vad = this.vad.push(chunk, { strict: this.playbackPending })
     if (this.playbackPending && vad.voiced && this.downlinkRmsRef > 0) {
       this.bargeInCount += 1
@@ -118,11 +123,14 @@ export class VoiceSessionService {
     } else {
       this.bargeInCount = 0
     }
-    // 静音帧不喂 ASR：否则缓冲会无限增长，每次定稿都要把整段静音送去识别
-    for (const frame of vad.frames) {
-      void this.deps.asr.push(frame).then((partial) => {
-        if (partial) this.deps.send({ type: 'asr.partial', text: partial })
-      })
+    // 播放期间禁止识别：上行只用于上面的插话检测，绝不喂给 ASR，
+    // 否则扬声器回声会进识别缓冲、或与用户语音混音导致漏字。播放结束后再恢复正常识别。
+    if (!this.playbackPending) {
+      for (const frame of vad.frames) {
+        void this.deps.asr.push(frame).then((partial) => {
+          if (partial) this.deps.send({ type: 'asr.partial', text: partial })
+        })
+      }
     }
     // 只有真正的人声帧才重置句末计时：静音帧持续到达也会让计时器自然到期
     if (vad.voiced) this.armEndpoint()
@@ -138,6 +146,8 @@ export class VoiceSessionService {
     this.playbackPending = false
     this.ttsAborted = true
     this.bargeInCount = 0
+    // 被打断：这一句的 TTS 已停，待播放状态也结束，恢复正常识别
+    this.speaking = false
     this.deps.send({ type: 'tts.stop' })
     this.resolvePlayback()
     this.syncDuplex()
@@ -184,8 +194,12 @@ export class VoiceSessionService {
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
     // 不进模型也不进队列，避免凭空多出一轮回答和 TTS
     if (!text || isNoise(text)) return
-    if (this.playbackPending && resemblesSpoken(text, this.spoken)) {
-      // 文本级兜底：还是被识别成了自己刚播过的话 → 加严波形门控，但不停止拾音
+    // 播放过程中禁止识别：播报还没结束就定稿，基本是扬声器收回来的回声，
+    // 或用户中途插话（已通过 barge-in 先停了播放）。等播放真正结束后再采信识别结果。
+    if (this.playbackPending) return
+    // 文本级回声兜底：刚播完的尾巴里仍可能混进助手说过的原话（含复述用户），
+    // 播放结束后的保护窗口内按回声丢弃，避免被当成用户新的一句。
+    if (Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)) {
       this.echo.noteBargeIn()
       this.syncDuplex()
       return
@@ -389,6 +403,8 @@ export class VoiceSessionService {
       this.downlinkRmsRef = Math.max(this.downlinkRmsRef, pcmRms(frame))
       this.downlinkBytes += frame.byteLength
       this.echo.onDownlink()
+      // 每下发一帧就把回声保护窗口往后挪：窗口始终盖住「最后一帧之后的一小段余音」
+      this.echoUntil = Date.now() + 1200
       this.deps.sendAudio(frame)
     }
   }
@@ -407,6 +423,9 @@ export class VoiceSessionService {
     this.processing = false
     this.speaking = false
     this.playbackPending = false
+    this.ttsAborted = false
+    this.bargeInCount = 0
+    this.echoUntil = 0
     this.queue.length = 0
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
@@ -427,6 +446,9 @@ export class VoiceSessionService {
     this.processing = false
     this.speaking = false
     this.playbackPending = false
+    this.ttsAborted = false
+    this.bargeInCount = 0
+    this.echoUntil = 0
     this.queue.length = 0
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
@@ -445,6 +467,9 @@ export class VoiceSessionService {
     this.turn += 1
     this.speaking = false
     this.playbackPending = false
+    this.ttsAborted = false
+    this.bargeInCount = 0
+    this.echoUntil = 0
     this.queue.length = 0
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
@@ -461,6 +486,9 @@ export class VoiceSessionService {
   close(): void {
     this.active = false
     this.playbackPending = false
+    this.ttsAborted = false
+    this.bargeInCount = 0
+    this.echoUntil = 0
     this.queue.length = 0
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()

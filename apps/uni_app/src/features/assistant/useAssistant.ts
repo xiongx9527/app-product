@@ -73,8 +73,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 用 ref 暴露给页面，在「你说」卡片右上角显示排队数量。
    */
   const queuePending = ref(0)
-  /** 排队相关的轻量提示文字，显示在页面底部；随轮次切换/取消清空 */
-  const queueHint = ref('')
 
   const stateLabel = computed(() => STATE_LABEL[state.value])
   const phaseLabel = computed(() => PHASE_LABEL[phase.value])
@@ -126,7 +124,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         thinking.value = ''
         thinkingDone.value = false
         replyDone.value = false
-        queueHint.value = ''
         phase.value = 'thinking'
         assistantTextStarted = false
         assistantBusy = true
@@ -259,7 +256,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         stopPlayback()
         transport.sendCancel()
         isSpeaking.value = false
-        queueHint.value = ''
         queuePending.value = 0
         liveText.value = ''
         queueFullMsg.value = ''
@@ -405,7 +401,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     phaseLabel,
     isSpeaking,
     halfDuplex,
-    queueHint,
     queuePending,
     queueFullMsg,
     liveText,
