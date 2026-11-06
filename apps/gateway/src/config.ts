@@ -79,6 +79,8 @@ export interface GatewayConfig {
   rsaBackendPrivateKey: string
   /** 前端 RSA 公钥（PEM）：用于加密发往前端的响应参数 */
   rsaFrontendPublicKey: string
+  /** 时区：时间工具据此返回本地时间，默认东八区（Asia/Shanghai） */
+  timeZone: string
   /** 各能力对象 */
   ws: WsConfig
   llm: LlmConfig
@@ -110,6 +112,7 @@ export function loadConfig(): GatewayConfig {
     paramEncrypt: process.env.PARAM_ENCRYPT === 'true',
     rsaBackendPrivateKey: process.env.RSA_BACKEND_PRIVATE_KEY ?? '',
     rsaFrontendPublicKey: process.env.RSA_FRONTEND_PUBLIC_KEY ?? '',
+    timeZone: process.env.TIME_ZONE ?? 'Asia/Shanghai',
     ws: { path: process.env.WS_PATH ?? '/ws' },
     llm: {
       provider: oneOf(process.env.LLM_PROVIDER, 'stub'),

@@ -19,7 +19,8 @@ export interface VoiceControllerDeps {
 export function createVoiceConnection(ws: WebSocket, deps: VoiceControllerDeps): () => void {
   const { config, data } = deps
   const session = new VoiceSessionService({
-    agentFactory: (lang) => createAgentService(config, lang),
+    agentFactory: (lang, timezone) =>
+      createAgentService({ ...config, timeZone: timezone }, lang, () => session.getLocation()),
     asr: createAsr(config),
     tts: createTts(config),
     data,

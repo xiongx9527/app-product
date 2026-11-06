@@ -17,6 +17,7 @@ const base: GatewayConfig = {
   paramEncrypt: false,
   rsaBackendPrivateKey: '',
   rsaFrontendPublicKey: '',
+  timeZone: 'Asia/Shanghai',
   ws: { path: '/ws' },
   llm: { provider: 'stub', baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5', apiKey: '', params: {} },
   asr: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', endpointMs: 30, params: {} },

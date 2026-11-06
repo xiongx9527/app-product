@@ -7,17 +7,30 @@
 
 export type Lang = 'zh-CN'
 
+/** 设备上报的位置：经纬度必填，address 为客户端反向地理编码得到的可读地址（城市/街道） */
+export interface LocationInfo {
+  latitude: number
+  longitude: number
+  address?: string
+}
+
 /** 客户端 → 服务端（文本控制帧） */
 export type ClientMessage =
   | {
       type: 'session.start'
       sessionId: string
       lang: Lang
+      /** 客户端本地 IANA 时区（如 Asia/Shanghai），用于时间类工具按用户时区返回，缺省走服务端本地时区 */
+      timezone?: string
+      /** 设备当前位置（经纬度 + 可选地址），用于位置类工具返回，缺省由 session.location 补齐 */
+      location?: LocationInfo
       /** wake=只做 ASR（用于本地唤醒词检测，不跑 LLM/TTS）；dialog=完整对话，默认 */
       mode?: 'wake' | 'dialog'
     }
   | { type: 'session.cancel' }
   | { type: 'session.end' }
+  /** 客户端定位更新：连接后或位置变化时补报/刷新最新位置 */
+  | { type: 'session.location'; latitude: number; longitude: number; address?: string }
   /** 客户端本地播放队列清空后回执：网关据此才消费排队的下一句 */
   | { type: 'session.playback_done' }
 

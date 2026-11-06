@@ -1,6 +1,32 @@
 /** 语言可配置，默认中文 */
 export const DEFAULT_LANGUAGE = 'zh-CN'
 
+/** 时区可配置，默认东 8 区（中国标准时间） */
+export const DEFAULT_TIMEZONE = 'Asia/Shanghai'
+
+/**
+ * 常用时区选项；值用 IANA 名，标签含城市与 UTC 偏移方便辨识。
+ * 默认且置顶东 8 区，其余按 UTC 偏移升序排列。
+ */
+export const TIMEZONE_OPTIONS: Array<{ label: string; value: string }> = [
+  { label: '北京 / 上海 (UTC+8)', value: 'Asia/Shanghai' },
+  { label: '东京 (UTC+9)', value: 'Asia/Tokyo' },
+  { label: '新加坡 (UTC+8)', value: 'Asia/Singapore' },
+  { label: '伦敦 (UTC+0)', value: 'Europe/London' },
+  { label: '纽约 (UTC-5)', value: 'America/New_York' },
+  { label: '洛杉矶 (UTC-8)', value: 'America/Los_Angeles' },
+  { label: '协调世界时 (UTC+0)', value: 'UTC' },
+]
+
+/** 把任意输入收敛到列表里的合法时区，非法或缺省回退东 8 区 */
+export function normalizeTimezone(value: unknown): string {
+  const raw = String(value ?? '').trim()
+  if ((TIMEZONE_OPTIONS as Array<{ value: string }>).some((o) => o.value === raw)) {
+    return raw
+  }
+  return DEFAULT_TIMEZONE
+}
+
 export const SUPPORTED_LANGUAGES = ['zh-CN', 'en-US', 'ja-JP'] as const
 export type AppLanguage = (typeof SUPPORTED_LANGUAGES)[number]
 

@@ -49,6 +49,8 @@ export interface AppConfig {
   mode: ServiceMode
   /** 全局语言，ASR / TTS 没单独填时用它；唤醒识别也用 */
   language: string
+  /** 全局时区（IANA，如 Asia/Shanghai）；时间类工具按它返回用户所在时区的时间，默认东 8 区 */
+  timezone: string
   asr: CapabilityConfig
   llm: CapabilityConfig
   tts: CapabilityConfig

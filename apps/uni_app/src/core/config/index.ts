@@ -1,5 +1,11 @@
 import { reactive } from 'vue'
-import { DEFAULT_LANGUAGE, LANGUAGE_OPTIONS } from './constants'
+import {
+  DEFAULT_LANGUAGE,
+  DEFAULT_TIMEZONE,
+  LANGUAGE_OPTIONS,
+  TIMEZONE_OPTIONS,
+  normalizeTimezone,
+} from './constants'
 import { PROVIDERS, findProvider } from './providers'
 import {
   coerceFieldValue,
@@ -16,7 +22,14 @@ import type {
   ServiceMode,
 } from './types'
 
-export { DEFAULT_LANGUAGE, LANGUAGE_OPTIONS, languageLabel } from './constants'
+export {
+  DEFAULT_LANGUAGE,
+  DEFAULT_TIMEZONE,
+  LANGUAGE_OPTIONS,
+  TIMEZONE_OPTIONS,
+  languageLabel,
+  normalizeTimezone,
+} from './constants'
 export {
   CONFIG_STORAGE_KEY,
   createDefaultCapability,

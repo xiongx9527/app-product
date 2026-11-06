@@ -2,7 +2,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, Lang, ServerEvent, ServerErrorCode } from '../protocol'
+import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -14,7 +14,11 @@ const MAX_QUEUE = 3
 
 /** 单个语音会话的业务编排：ASR → 智能体 → TTS，并记录日志到数据库。 */
 export interface VoiceSessionDeps {
-  agentFactory: (lang: Lang) => AgentService
+  agentFactory: (
+    lang: Lang,
+    timezone?: string,
+    locationProvider?: () => LocationInfo | null
+  ) => AgentService
   asr: AsrProvider
   tts: TtsProvider
   data: DataService
@@ -30,6 +34,10 @@ export class VoiceSessionService {
   private processing = false
   private endpointTimer: ReturnType<typeof setTimeout> | null = null
   private lang: Lang = 'zh-CN'
+  /** 用户时区（IANA），时间类工具按它返回；缺省东 8 区 */
+  private timezone = 'Asia/Shanghai'
+  /** 设备最近一次上报的位置；位置类工具实时读取它 */
+  private location: LocationInfo | null = null
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
@@ -82,7 +90,16 @@ export class VoiceSessionService {
     }
     switch (msg.type) {
       case 'session.start':
-        void this.start(msg.sessionId, msg.lang, msg.mode)
+        this.location = msg.location ?? null
+        void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode)
+        break
+      case 'session.location':
+        // 连接后或位置变化时刷新最新位置，不影响其它会话状态
+        this.location = {
+          latitude: msg.latitude,
+          longitude: msg.longitude,
+          address: msg.address,
+        }
         break
       case 'session.cancel':
         this.cancel()
@@ -94,6 +111,11 @@ export class VoiceSessionService {
         this.resolvePlayback()
         break
     }
+  }
+
+  /** 供位置类工具实时读取会话最近一次上报的设备位置。 */
+  getLocation(): LocationInfo | null {
+    return this.location
   }
 
   handleBinary(chunk: Uint8Array): void {
@@ -354,9 +376,12 @@ export class VoiceSessionService {
   private async start(
     _sessionId: string,
     lang: Lang,
+    timezone?: string,
     mode: 'wake' | 'dialog' = 'dialog'
   ): Promise<void> {
     this.lang = lang
+    // 用户没带时区或带的是非法值就退回东 8 区
+    this.timezone = timezone?.trim() || 'Asia/Shanghai'
     this.mode = mode
     this.active = true
     // 新会话作废旧会话的在途回调与排队
@@ -374,7 +399,8 @@ export class VoiceSessionService {
     this.deps.asr.reset()
     this.vad.reset()
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
-    this.agent = mode === 'wake' ? null : this.deps.agentFactory(lang)
+    this.agent =
+      mode === 'wake' ? null : this.deps.agentFactory(lang, this.timezone, () => this.getLocation())
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }
 

@@ -1,3 +1,4 @@
+import { appConfig } from '@/core/config'
 import type { AssistantTransport, ServerEvent, SessionMode } from './types'
 
 /** 网关默认 WebSocket 地址：H5 桌面调试直连本机；可用 VITE_GATEWAY_WS_URL 覆盖（如模拟器用 10.0.2.2）。 */
@@ -113,7 +114,14 @@ export class WebSocketTransport implements AssistantTransport {
 
   private sendStart(mode: SessionMode): void {
     this.sessionId = `s-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
-    this.sendJson({ type: 'session.start', sessionId: this.sessionId, lang: this.lang, mode })
+    // 时区带当前配置值（默认东 8 区），让时间类工具按用户所在时区返回
+    this.sendJson({
+      type: 'session.start',
+      sessionId: this.sessionId,
+      lang: this.lang,
+      timezone: appConfig.timezone,
+      mode,
+    })
   }
 
   private sendJson(payload: Record<string, unknown>): void {

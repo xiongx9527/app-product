@@ -3,6 +3,7 @@ import { computed, reactive, ref } from 'vue'
 import {
   CAPABILITIES,
   LANGUAGE_OPTIONS,
+  TIMEZONE_OPTIONS,
   appConfig,
   getProvider,
   getProviderValues,
@@ -16,6 +17,7 @@ import {
   type ConfigValue,
   type ProviderField,
 } from '@/core/config'
+import { t } from '@/core/i18n'
 import { testConnection } from '@/core/config/tester'
 
 const reveal = reactive<Record<string, boolean>>({})
@@ -46,6 +48,14 @@ const languageIndex = computed(() =>
   )
 )
 const languageLabels = LANGUAGE_OPTIONS.map((item) => item.label)
+
+const timezoneIndex = computed(() =>
+  Math.max(
+    0,
+    TIMEZONE_OPTIONS.findIndex((item) => item.value === appConfig.timezone)
+  )
+)
+const timezoneLabels = TIMEZONE_OPTIONS.map((item) => item.label)
 
 function eventValue(event: Event): unknown {
   return (event as unknown as { detail?: { value?: unknown } }).detail?.value
@@ -123,6 +133,12 @@ function onLanguageChange(event: Event): void {
   const index = Number(eventValue(event))
   const option = LANGUAGE_OPTIONS[index]
   if (option) appConfig.language = option.value
+}
+
+function onTimezoneChange(event: Event): void {
+  const index = Number(eventValue(event))
+  const option = TIMEZONE_OPTIONS[index]
+  if (option) appConfig.timezone = option.value
 }
 
 function onFieldInput(
@@ -215,6 +231,24 @@ function onSave(): void {
         </view>
       </picker>
       <text class="hint">厂商里语言留空时使用这里的值；唤醒识别同样跟随。</text>
+    </view>
+
+    <view class="card">
+      <view class="card-head">
+        <text class="card-title">{{ t('settings.timezone.title') }}</text>
+        <text class="card-sub">{{ t('settings.timezone.sub') }}</text>
+      </view>
+      <picker
+        :range="timezoneLabels"
+        :value="timezoneIndex"
+        @change="onTimezoneChange"
+      >
+        <view class="picker-row">
+          <text class="picker-value">{{ timezoneLabels[timezoneIndex] }}</text>
+          <text class="picker-arrow">›</text>
+        </view>
+      </picker>
+      <text class="hint">{{ t('settings.timezone.hint') }}</text>
     </view>
 
     <view v-for="card in cards" :key="card.key" class="card">

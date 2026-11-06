@@ -55,6 +55,9 @@ const zhCN: Messages = {
   'settings.language.title': '语言',
   'settings.language.sub': '唤醒、ASR、TTS 的默认语言',
   'settings.language.hint': '厂商里语言留空时使用这里的值；唤醒识别同样跟随。',
+  'settings.timezone.title': '时区',
+  'settings.timezone.sub': '时间类回答按此时区返回，默认东 8 区',
+  'settings.timezone.hint': '问“现在几点”等时间问题时，按所选时区给出。',
   'settings.provider.label': '厂商',
   'settings.test': '测试连接',
   'settings.testing': '测试中…',
@@ -210,6 +213,10 @@ const enUS: Messages = {
   'settings.language.sub': 'Default language for wake word, ASR and TTS',
   'settings.language.hint':
     'Used when a vendor language is left empty. Wake word recognition follows it too.',
+  'settings.timezone.title': 'Time zone',
+  'settings.timezone.sub': 'Time-related answers use this zone; default UTC+8',
+  'settings.timezone.hint':
+    'When asked “what time is it”, the answer follows the selected zone.',
   'settings.provider.label': 'Vendor',
   'settings.test': 'Test connection',
   'settings.testing': 'Testing…',
@@ -371,6 +378,10 @@ const jaJP: Messages = {
   'settings.language.sub': 'ウェイク・ASR・TTS の既定言語',
   'settings.language.hint':
     'ベンダー側の言語が空の場合に使われます。ウェイク認識もこれに従います。',
+  'settings.timezone.title': 'タイムゾーン',
+  'settings.timezone.sub': '時刻回答の基準。既定は UTC+8',
+  'settings.timezone.hint':
+    '「今何時」などと聞かれたとき、選んだタイムゾーンで答えます。',
   'settings.provider.label': 'ベンダー',
   'settings.test': '接続テスト',
   'settings.testing': 'テスト中…',

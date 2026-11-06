@@ -1,4 +1,4 @@
-import { DEFAULT_LANGUAGE } from './constants'
+import { DEFAULT_LANGUAGE, DEFAULT_TIMEZONE, normalizeTimezone } from './constants'
 import { PROVIDERS, findProvider } from './providers'
 import type {
   AppConfig,
@@ -30,6 +30,7 @@ export function createDefaultConfig(): AppConfig {
     version: 1,
     mode: 'byok',
     language: DEFAULT_LANGUAGE,
+    timezone: DEFAULT_TIMEZONE,
     asr: createDefaultCapability('asr'),
     llm: createDefaultCapability('llm'),
     tts: createDefaultCapability('tts'),
@@ -118,10 +119,13 @@ export function normalizeConfig(
       ? source.language
       : base.language
 
+  const timezone = normalizeTimezone(source.timezone ?? base.timezone)
+
   return {
     version: 1,
     mode,
     language,
+    timezone,
     asr: normalizeCapability('asr', source.asr, base.asr),
     llm: normalizeCapability('llm', source.llm, base.llm),
     tts: normalizeCapability('tts', source.tts, base.tts),
