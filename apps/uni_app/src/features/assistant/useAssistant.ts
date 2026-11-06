@@ -38,6 +38,8 @@ const PHASE_LABEL: Record<Phase, string> = {
 export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG) {
   const state = ref<AssistantState>('idle')
   const transcript = ref('')
+  /** 监听阶段实时识别的「草稿」文字，展示在页面下方；定稿后才进「你说」卡片 */
+  const liveText = ref('')
   const reply = ref('')
   const thinking = ref('')
   const thinkingDone = ref(false)
@@ -47,8 +49,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 网关判定回声兜底中：播报期间不拾音，只能点「打断」
   const halfDuplex = ref(false)
   const errorMessage = ref('')
-  /** 排队/拒收原因，页面固定区域展示，不用浮层 */
-  const queueHint = ref('')
+  /** 队列已满（排队数超上限）的专用话术，显示在页面顶部横幅，不进「你说」卡片 */
+  const queueFullMsg = ref('')
 
   const transport = createTransport()
 
@@ -65,6 +67,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let answerHasTts = false
   /** 等播放队列清空的取消函数：新轮次开始时作废上一轮的等待 */
   let cancelPlaybackIdle: (() => void) | null = null
+  /**
+   * 网关还有几句排队没轮到：期间「你说」必须锁在当前句，
+   * 中间识别结果、播完回执都不能把文字顶掉。
+   * 用 ref 暴露给页面，在「你说」卡片右上角显示排队数量。
+   */
+  const queuePending = ref(0)
+  /** 排队相关的轻量提示文字，显示在页面底部；随轮次切换/取消清空 */
+  const queueHint = ref('')
 
   const stateLabel = computed(() => STATE_LABEL[state.value])
   const phaseLabel = computed(() => PHASE_LABEL[phase.value])
@@ -79,19 +89,24 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   function handleServerEvent(event: ServerEvent): void {
     switch (event.type) {
       case 'asr.partial':
-        // 上一句还没播完时，中间识别结果不覆盖「你说」，免得文字先跳到下一句
-        if (mode === 'dialog' && !assistantBusy) {
-          transcript.value = event.text
+        // 监听阶段把实时识别文字作为「草稿」展示在页面下方，不进「你说」卡片；
+        // 本轮（思考/回答/播报）或排队未消费时不更新，避免顶掉定稿
+        if (mode === 'dialog' && !assistantBusy && !queuePending.value) {
+          liveText.value = event.text
           if (phase.value !== 'listening') phase.value = 'listening'
         }
         break
       case 'asr.queued':
-        // 只提示排队状态，不显示这句识别的内容：等播完轮到它才由 asr.final 显示
-        if (mode === 'dialog') queueHint.value = event.message
+        // 只更新排队数量（「你说」卡片右上角的红标）；不展示多余提示文字，
+        // 这句话等播完轮到它才由 asr.final 进入「你说」卡片
+        if (mode === 'dialog') {
+          queuePending.value = Math.max(queuePending.value, event.position)
+        }
         break
       case 'asr.rejected':
-        // 只说明拒收原因（队列满 / 语言不符），不显示这句识别的内容
-        if (mode === 'dialog') queueHint.value = event.message
+        // 队列已满（排队数超上限）时服务端拒收，把专用话术放到页面顶部横幅；
+        // 不显示这句识别的内容，也不进「你说」卡片，更不弹浮层
+        if (mode === 'dialog') queueFullMsg.value = event.message
         break
       case 'asr.final':
         if (mode === 'wake') {
@@ -99,7 +114,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
           break
         }
+        // 定稿后这一句进入队列成为「当前项」，你说始终显示队列当前项（不显示监听草稿）。
+        // 直接采信服务端的权威剩余数，避免拒收/超时等路径下本地计数漂移。
+        queuePending.value = event.queueRemaining
         transcript.value = event.text
+        // 清掉监听草稿与队列溢出提示；这句轮到被处理，溢出横幅自然失效
+        liveText.value = ''
+        queueFullMsg.value = ''
         // 新一轮说话：清掉上一轮的回答与思考，等模型重新流式输出
         reply.value = ''
         thinking.value = ''
@@ -170,15 +191,19 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         errorMessage.value = event.message
         phase.value = 'idle'
         assistantBusy = false
+        queuePending.value = 0
+        liveText.value = ''
+        queueFullMsg.value = ''
         cancelPendingIdle()
         dispatch({ type: 'ERROR' })
         break
     }
   }
 
-  /** 回答彻底结束，恢复「用户静默」计时。 */
+  /** 回答彻底结束，恢复「用户静默」计时。还有排队句时不启动 T1，避免插话被静默提示打断。 */
   function markAnswerDone(): void {
     assistantBusy = false
+    if (queuePending.value > 0) return
     if (state.value === 'listening') dispatch({ type: 'ASSISTANT_IDLE' })
   }
 
@@ -210,7 +235,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         replyDone.value = false
         phase.value = 'listening'
         errorMessage.value = ''
-        queueHint.value = ''
+        queuePending.value = 0
+        liveText.value = ''
+        queueFullMsg.value = ''
         assistantTextStarted = false
         assistantBusy = false
         answerHasTts = false
@@ -221,7 +248,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         cancelPendingIdle()
         stopPlayback()
         isSpeaking.value = false
-        queueHint.value = ''
+        queuePending.value = 0
+        liveText.value = ''
+        queueFullMsg.value = ''
         phase.value = 'idle'
         assistantTextStarted = false
         break
@@ -231,6 +260,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         transport.sendCancel()
         isSpeaking.value = false
         queueHint.value = ''
+        queuePending.value = 0
+        liveText.value = ''
+        queueFullMsg.value = ''
         phase.value = 'done'
         assistantTextStarted = false
         break
@@ -374,6 +406,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     isSpeaking,
     halfDuplex,
     queueHint,
+    queuePending,
+    queueFullMsg,
+    liveText,
     errorMessage,
     wakeSupported,
     wakeProviderName,

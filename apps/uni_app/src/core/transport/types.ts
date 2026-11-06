@@ -1,11 +1,12 @@
 /** 服务端下行事件（与 contracts/README.md 保持一致） */
 export type ServerEvent =
   | { type: 'asr.partial'; text: string }
-  | { type: 'asr.final'; text: string }
+  /** queueRemaining 是服务端给出的队列剩余数，客户端据此同步，不靠本地猜测 */
+  | { type: 'asr.final'; text: string; queueRemaining: number }
   /** 当前轮还没播完，这句只识别不打断，排进队列 */
   | { type: 'asr.queued'; text: string; position: number; size: number; message: string }
-  /** 这句没被接收（队列满），message 是服务端本地化的原因 */
-  | { type: 'asr.rejected'; text: string; message: string }
+  /** 这句没被接收（队列满），message 是服务端本地化的原因；reason 标记队列满 */
+  | { type: 'asr.rejected'; text: string; message: string; reason: 'queue-full' }
   | { type: 'llm.thinking'; text: string }
   | { type: 'llm.delta'; text: string }
   | { type: 'llm.done' }

@@ -47,7 +47,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 ```json
 { "type": "asr.partial", "text": "今天" }
-{ "type": "asr.final", "text": "今天天气怎么样" }
+{ "type": "asr.final", "text": "今天天气怎么样", "queueRemaining": 0 }
 { "type": "asr.queued", "text": "那明天呢", "position": 1, "size": 3, "message": "已排到第 1 句（共 3 句）…" }
 { "type": "asr.rejected", "text": "还有后天", "message": "排队已满（最多 3 句）…" }
 { "type": "llm.thinking", "text": "用户想知道天气，" }
@@ -62,6 +62,8 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `asr.partial` 是网关对已收音频的滚动重识别结果，可重复、可回退，客户端只用于展示；
 `asr.final` 才是定稿文本。**只有 `asr.final` 之后才会请求大模型**，中间结果不会触发回复。
+`queueRemaining` 是服务端队列此刻剩余的句数（权威值）：大于 0 时客户端必须把「你说」
+锁在当前句，直到这些排队句被逐个消费完，避免中间结果或下一句把当前句顶掉。
 
 `llm.thinking` 是模型的思考过程，仅用于界面展示，不进入回复正文、不参与 TTS；
 客户端可丢弃，丢弃不影响对话。

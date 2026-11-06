@@ -138,6 +138,22 @@ const zhCN: Messages = {
   'test.funasrReady': 'FunASR 服务已就绪',
   'test.reachable': '服务可达（HTTP {status}），该厂商没有轻量探测接口',
   'test.failed': '连接失败：{message}',
+
+  'card.thinking': '思考',
+  'card.done': '已完成',
+  'card.thinkingBadge': '思考中…',
+  'card.generating': '生成中…',
+  'queue.badge': '{count} 条排队',
+
+  'hint.thinking': '正在思考，想换话题直接开口',
+  'hint.replying': '正在回答，想打断直接开口',
+  'hint.speakingHalf': '检测到回声，播报时不拾音，可点「打断」',
+  'hint.speakingFull': '正在播报，想打断直接开口',
+  'hint.done': '本轮完成，继续说下一句',
+
+  'talk.standby': '对着麦克风说「小熊小熊」唤醒',
+  'talk.echo': '已加强回声抑制；插话仍会排队，也可点「打断」',
+  'talk.listening': '正在听，直接说话即可（说完停顿一下）',
 }
 
 const enUS: Messages = {
@@ -283,6 +299,22 @@ const enUS: Messages = {
   'test.funasrReady': 'FunASR service is ready',
   'test.reachable': 'Service reachable (HTTP {status}); no lightweight probe available',
   'test.failed': 'Connection failed: {message}',
+
+  'card.thinking': 'Thinking',
+  'card.done': 'Done',
+  'card.thinkingBadge': 'Thinking…',
+  'card.generating': 'Generating…',
+  'queue.badge': '{count} queued',
+
+  'hint.thinking': 'Thinking. Speak up to change the topic',
+  'hint.replying': 'Replying. Speak up to interrupt',
+  'hint.speakingHalf': 'Echo detected; mic is muted while speaking. Tap Interrupt',
+  'hint.speakingFull': 'Speaking. Speak up to interrupt',
+  'hint.done': 'Done. Say the next thing',
+
+  'talk.standby': 'Say “Xiaoxiong Xiaoxiong” to the mic to wake',
+  'talk.echo': 'Echo suppression boosted; barge-ins queue. Or tap Interrupt',
+  'talk.listening': 'Listening. Just talk (pause when done)',
 }
 
 const jaJP: Messages = {
@@ -428,6 +460,22 @@ const jaJP: Messages = {
   'test.funasrReady': 'FunASR サービスの準備ができています',
   'test.reachable': 'サービスに到達可能（HTTP {status}）。軽量な確認APIはありません',
   'test.failed': '接続に失敗しました：{message}',
+
+  'card.thinking': '思考',
+  'card.done': '完了',
+  'card.thinkingBadge': '思考中…',
+  'card.generating': '生成中…',
+  'queue.badge': '{count} 件待ち',
+
+  'hint.thinking': '考え中。話題を変えたい場合はそのまま話してください',
+  'hint.replying': '回答中。割り込みたい場合はそのまま話してください',
+  'hint.speakingHalf': 'エコーを検出。発話中はマイクをミュート。「中断」をタップ可',
+  'hint.speakingFull': '発話中。割り込みたい場合はそのまま話してください',
+  'hint.done': '完了。次の用件をどうぞ',
+
+  'talk.standby': 'マイクに向かって「小熊小熊」と話しかけて起動',
+  'talk.echo': 'エコー抑制を強化。割り込みは予約されます。「中断」も可',
+  'talk.listening': '聞いています。そのまま話してください（終わったら少し止めて）',
 }
 
 export const MESSAGES: Record<Locale, Messages> = {

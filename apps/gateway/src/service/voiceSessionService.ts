@@ -3,18 +3,16 @@ import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
 import type { ClientMessage, Lang, ServerEvent, ServerErrorCode } from '../protocol'
-import { messages, languageLabel } from '../i18n'
-import { isNoise, resemblesSpoken, pcmRms, matchesLanguage } from '../asr/noiseFilter'
+import { messages } from '../i18n'
+import { isNoise, resemblesSpoken, pcmRms } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
 
 /** 播报期间最多排几句用户插话，超出直接拒收。 */
 const MAX_QUEUE = 3
-/** 上行能量要高出最近下发 TTS 帧多少倍，才认定是「真人插话」而不是回声。 */
+/** 上行能量要高出下发 TTS 帧多少倍，才认定是「真人插话」而不是回声。 */
 const ECHO_ENERGY_RATIO = 1.6
-/** 下发过 TTS 帧后多久内启用回声门控；超出说明这段已经播完。 */
-const ECHO_WINDOW_MS = 1500
 
 /** 单个语音会话的业务编排：ASR → 智能体 → TTS，并记录日志到数据库。 */
 export interface VoiceSessionDeps {
@@ -45,8 +43,14 @@ export class VoiceSessionService {
   private readonly vad = new EnergyVad()
   /** 轮次编号：旧轮的在途回调据此作废，避免两轮抢着发事件。 */
   private turn = 0
-  /** 是否已经给客户端发过 tts.start（播报中）。 */
+  /** 是否已经给客户端发过 tts.start（音频帧下发中）。 */
   private speaking = false
+  /**
+   * 客户端还在播这一句：从 tts.start 起，到 playback_done 回执（或超时）为止。
+   * 比 speaking 更晚结束 —— tts.end 只代表下发完，尾音还在扬声器里，
+   * 这段时间的上行帧照样是回声，门控必须继续生效。
+   */
+  private playbackPending = false
   /** AEC 失效兜底：连续被自己的回声打断就降级成半双工。 */
   private readonly echo = new EchoGuard()
   /** 当前是否已通知客户端处于半双工，避免重复下发。 */
@@ -55,9 +59,8 @@ export class VoiceSessionService {
   private readonly queue: string[] = []
   /** 最近送进 TTS 的原文，用于把「收回来的自己的声音」判成回声丢弃。 */
   private readonly spoken: string[] = []
-  /** 最近下发的 TTS 帧能量与时刻，用于波形级回声门控。 */
-  private lastDownlinkRms = 0
-  private lastDownlinkAt = 0
+  /** 本句下发过的最大帧能量，作为回声门控的参考（不能用最后一帧，可能是静音尾）。 */
+  private downlinkRmsRef = 0
   /** 本轮已下发的音频字节数，用于估算播放时长做握手超时兜底。 */
   private downlinkBytes = 0
   /** 等待客户端「播完」回执的 resolve；processing 会一直保持到它触发。 */
@@ -96,12 +99,12 @@ export class VoiceSessionService {
     if (!this.active) return
     // 帧一直会来，顺手把到期的回声抑制恢复掉
     if (this.halfDuplex && !this.echo.muted()) this.syncDuplex()
-    // 波形级回声门控：播报刚下发过音频，而这一帧上行能量没有明显超过播报本身，
+    // 波形级回声门控：客户端还在播这一句时，上行能量没有明显超过下发音频，
     // 说明是扬声器收回来的自己，整帧丢弃，绝不喂给 VAD / ASR。
     // 不整体停止拾音：用户插话要能识别并排队。
     if (this.isEchoFrame(chunk)) return
-    // 播报期间门槛加倍：麦克风里的回声残留不该把助手自己打断
-    const vad = this.vad.push(chunk, { strict: this.speaking })
+    // 播报/尾音期间门槛加倍：麦克风里的回声残留不该把助手自己打断
+    const vad = this.vad.push(chunk, { strict: this.playbackPending })
     // 静音帧不喂 ASR：否则缓冲会无限增长，每次定稿都要把整段静音送去识别
     for (const frame of vad.frames) {
       void this.deps.asr.push(frame).then((partial) => {
@@ -122,16 +125,16 @@ export class VoiceSessionService {
 
   /**
    * 只靠文本比对拦回声太晚（文字已经生成、甚至已经进队列）。
-   * 这里在下发过 TTS 音频的短窗口内，用能量差把回声帧在进 VAD 之前丢掉：
+   * 这里在「客户端还没回执播完」的整个窗口内，用能量差把回声帧在进 VAD 之前丢掉：
    * 真人插话会叠加在播报之上，能量明显高于纯回声。
+   * 参考值取本句下发过的最大帧能量，避免最后一帧恰好是静音导致门槛失效。
    * 回声反复漏网时倍率自动抬高（只加严，不停拾音），保证插话仍能排队。
    */
   private isEchoFrame(chunk: Uint8Array): boolean {
-    if (!this.speaking) return false
-    if (Date.now() - this.lastDownlinkAt > ECHO_WINDOW_MS) return false
-    if (this.lastDownlinkRms <= 0) return false
+    if (!this.playbackPending) return false
+    if (this.downlinkRmsRef <= 0) return false
     const ratio = ECHO_ENERGY_RATIO * (this.echo.muted() ? 2 : 1)
-    return pcmRms(chunk) < this.lastDownlinkRms * ratio
+    return pcmRms(chunk) < this.downlinkRmsRef * ratio
   }
 
   private armEndpoint(): void {
@@ -145,31 +148,24 @@ export class VoiceSessionService {
   }
 
   private async finalizeUtterance(): Promise<void> {
+    // 打断/关闭后串行链里可能还挂着定稿，不能让它再发 asr.final 或排队
+    if (!this.active || this.cancelled) return
     // 只有确认用户说完了（静音够久）才定稿；中间结果从不触发回复
     const text = await this.deps.asr.finalize()
+    if (!this.active || this.cancelled) return
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
     // 不进模型也不进队列，避免凭空多出一轮回答和 TTS
     if (!text || isNoise(text)) return
-    if (this.speaking && resemblesSpoken(text, this.spoken)) {
+    if (this.playbackPending && resemblesSpoken(text, this.spoken)) {
       // 文本级兜底：还是被识别成了自己刚播过的话 → 加严波形门控，但不停止拾音
       this.echo.noteBargeIn()
       this.syncDuplex()
       return
     }
 
-    // 只认当前语言的文字；其它语言不接收，并提示用户去设置里切换
-    if (!matchesLanguage(text, this.lang)) {
-      this.deps.send({
-        type: 'asr.rejected',
-        text,
-        message: messages(this.lang).languageMismatch(languageLabel(this.lang)),
-      })
-      return
-    }
-
     // 唤醒模式只回识别结果给客户端做唤醒词匹配，不进入 LLM/TTS
     if (this.mode === 'wake') {
-      this.deps.send({ type: 'asr.final', text })
+      this.deps.send({ type: 'asr.final', text, queueRemaining: 0 })
       return
     }
 
@@ -179,7 +175,8 @@ export class VoiceSessionService {
         this.deps.send({
           type: 'asr.rejected',
           text,
-          message: messages(this.lang).queue.full(MAX_QUEUE),
+          reason: 'queue-full',
+          message: messages(this.lang).queue.full(),
         })
         return
       }
@@ -194,7 +191,7 @@ export class VoiceSessionService {
       return
     }
 
-    this.deps.send({ type: 'asr.final', text })
+    this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
     void this.runTurn(text)
   }
 
@@ -235,8 +232,8 @@ export class VoiceSessionService {
         if (this.turn !== turn || this.cancelled) break
         const next = this.queue.shift()
         if (!next) break
-        // 让客户端把界面切到这句：与正常 asr.final 同样的语义
-        this.deps.send({ type: 'asr.final', text: next })
+        // 让客户端把界面切到这句，并同步权威剩余数（客户端不靠 ±1 猜测）
+        this.deps.send({ type: 'asr.final', text: next, queueRemaining: this.queue.length })
         current = next
       }
     } finally {
@@ -252,11 +249,13 @@ export class VoiceSessionService {
         if (this.playbackTimer) clearTimeout(this.playbackTimer)
         this.playbackTimer = null
         this.playbackResolve = null
+        // 播完（或超时）后关闭回声门控窗口
+        this.playbackPending = false
         resolve()
       }
       this.playbackResolve = done
-      // 24kHz/16bit/mono = 48000 字节/秒；时长在开播前还不知道，
-      // 用固定上限兜底，客户端没回执也不会把队列卡死。
+      // 用固定上限兜底，客户端没回执也不会把队列卡死；
+      // 下发完音频后会按实际时长收紧。
       this.playbackTimer = setTimeout(done, 30_000)
     })
   }
@@ -302,11 +301,9 @@ export class VoiceSessionService {
       if (!ttsStarted) {
         ttsStarted = true
         this.speaking = true
-        // 从宣布播报起就算「正在出声」：TTS 合成往往慢于用户插话
-        this.echo.onDownlink()
-        // 新的一轮播报开始时清空上一帧的能量样本
-        this.lastDownlinkRms = 0
-        this.lastDownlinkAt = 0
+        // 从宣布播报起就进入回声门控窗口，直到客户端回执播完
+        this.playbackPending = true
+        this.downlinkRmsRef = 0
         this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
       }
       ttsChain = ttsChain.then(() => this.speakSentence(clean, turn))
@@ -359,11 +356,10 @@ export class VoiceSessionService {
     if (this.spoken.length > 6) this.spoken.shift()
     for await (const frame of this.deps.tts.synthesize(sentence)) {
       if (this.turn !== turn || this.cancelled) return
-      // 记下最后一次下发的时刻与能量：紧随其后的上行帧靠它判回声
-      this.echo.onDownlink()
-      this.lastDownlinkRms = pcmRms(frame)
-      this.lastDownlinkAt = Date.now()
+      // 参考能量取本句最大值：最后一帧常是静音尾，用它会把门控放空
+      this.downlinkRmsRef = Math.max(this.downlinkRmsRef, pcmRms(frame))
       this.downlinkBytes += frame.byteLength
+      this.echo.onDownlink()
       this.deps.sendAudio(frame)
     }
   }
@@ -381,7 +377,9 @@ export class VoiceSessionService {
     this.cancelled = false
     this.processing = false
     this.speaking = false
+    this.playbackPending = false
     this.queue.length = 0
+    this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     this.echo.release()
     this.syncDuplex()
@@ -394,15 +392,16 @@ export class VoiceSessionService {
 
   private cancel(): void {
     // 手动打断：作废当前轮、清空排队，在途回调靠 turn 号退出
+    const wasSpeaking = this.speaking
     this.turn += 1
     this.cancelled = true
     this.processing = false
+    this.speaking = false
+    this.playbackPending = false
     this.queue.length = 0
+    this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
-    if (this.speaking) {
-      this.speaking = false
-      this.deps.send({ type: 'tts.stop' })
-    }
+    if (wasSpeaking) this.deps.send({ type: 'tts.stop' })
     // 手动打断证明是真人，解除回声兜底
     this.echo.release()
     this.syncDuplex()
@@ -416,7 +415,9 @@ export class VoiceSessionService {
     this.cancelled = true
     this.turn += 1
     this.speaking = false
+    this.playbackPending = false
     this.queue.length = 0
+    this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
     if (this.sessionRowId) this.deps.data.endSession(this.sessionRowId, Date.now())
@@ -430,7 +431,9 @@ export class VoiceSessionService {
 
   close(): void {
     this.active = false
+    this.playbackPending = false
     this.queue.length = 0
+    this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
     this.deps.asr.reset()

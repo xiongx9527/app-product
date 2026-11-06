@@ -10,7 +10,7 @@ export interface Messages {
   /** 排队提示与拒绝原因，按 lang 本地化后下发给客户端展示 */
   queue: {
     accepted: (position: number, size: number) => string
-    full: (size: number) => string
+    full: () => string
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
@@ -27,7 +27,7 @@ const zhCN: Messages = {
   },
   queue: {
     accepted: (position, size) => `已排到第 ${position} 句（共 ${size} 句），当前回答播完就处理`,
-    full: (size) => `排队已满（最多 ${size} 句），这句没有接收；等当前回答播完再说`,
+    full: () => '你说的太多了，我记不住。',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
 }

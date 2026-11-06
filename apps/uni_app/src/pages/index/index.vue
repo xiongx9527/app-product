@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { readScreenInfo, type ScreenInfo } from '@/core/adaptation/screen'
 import { useAssistant } from '@/features/assistant/useAssistant'
+import { t } from '@/core/i18n'
 
 const {
   state,
@@ -17,6 +18,9 @@ const {
   isSpeaking,
   halfDuplex,
   queueHint,
+  queuePending,
+  queueFullMsg,
+  liveText,
   errorMessage,
   wakeSupported,
   wakeProviderName,
@@ -35,23 +39,21 @@ const thinkingTail = computed(() =>
 
 const hint = computed(() => {
   // 静默提示与退出优先，其余按对话阶段说明「现在在干嘛」，免得用户以为卡住
-  if (state.value === 'confirming') return '等你继续说，没出声就先退下了'
-  if (state.value === 'closing') return '本轮结束，马上回到待唤醒'
+  if (state.value === 'confirming') return t('hint.confirming')
+  if (state.value === 'closing') return t('hint.closing')
   switch (phase.value) {
     case 'listening':
-      return '正在听，说完停一下就行'
+      return t('hint.listening')
     case 'thinking':
-      return '正在思考，想换话题直接开口'
+      return t('hint.thinking')
     case 'replying':
-      return '正在回答，想打断直接开口'
+      return t('hint.replying')
     case 'speaking':
-      return halfDuplex.value
-        ? '检测到回声，播报时不拾音，可点「打断」'
-        : '正在播报，想打断直接开口'
+      return halfDuplex.value ? t('hint.speakingHalf') : t('hint.speakingFull')
     case 'done':
-      return '本轮完成，继续说下一句'
+      return t('hint.done')
     default:
-      return state.value === 'idle' ? '打开语音助手，开始待唤醒' : '说「小熊小熊」唤醒'
+      return state.value === 'idle' ? t('hint.idle') : t('hint.standby')
   }
 })
 
@@ -88,14 +90,16 @@ function onOrbTap(): void {
   <view class="page" :class="`bp-${screen.breakpoint}`">
     <view class="header">
       <view class="brand">
-        <text class="title">语音助手</text>
-        <text class="subtitle">唤醒 · 对话 · 静默退出</text>
+        <text class="title">{{ t('app.title') }}</text>
+        <text class="subtitle">{{ t('app.subtitle') }}</text>
       </view>
       <view class="header-actions">
         <view class="pill" :class="state">{{ stateLabel }}</view>
         <view class="gear" @tap="openSettings">⚙</view>
       </view>
     </view>
+
+    <view v-if="queueFullMsg" class="queue-full-banner">{{ queueFullMsg }}</view>
 
     <view class="stage">
       <view
@@ -109,52 +113,56 @@ function onOrbTap(): void {
       </view>
       <text class="hint">{{ hint }}</text>
       <text class="phase" :class="phase">{{ phaseLabel }}</text>
+      <text v-if="liveText" class="live-text">{{ liveText }}</text>
       <text v-if="queueHint" class="queue-hint">{{ queueHint }}</text>
       <text v-if="errorMessage" class="error">{{ errorMessage }}</text>
     </view>
 
     <view class="cards">
       <view class="card">
-        <text class="card-label">你说</text>
-        <text class="card-text">{{ transcript || '……' }}</text>
+        <view class="card-head">
+          <text class="card-label">{{ t('card.you') }}</text>
+          <text v-if="queuePending > 0" class="queue-badge">{{ t('queue.badge', { count: queuePending }) }}</text>
+        </view>
+        <text class="card-text">{{ transcript || t('card.placeholder') }}</text>
       </view>
       <view v-if="thinking" class="card thinking">
         <view class="card-head">
-          <text class="card-label">思考</text>
+          <text class="card-label">{{ t('card.thinking') }}</text>
           <text class="card-badge" :class="{ done: thinkingDone }">
-            {{ thinkingDone ? '已完成' : '思考中…' }}
+            {{ thinkingDone ? t('card.done') : t('card.thinkingBadge') }}
           </text>
         </view>
         <text class="card-text thinking-text">{{ thinkingTail }}</text>
       </view>
       <view class="card reply">
         <view class="card-head">
-          <text class="card-label">助手</text>
+          <text class="card-label">{{ t('card.assistant') }}</text>
           <text v-if="reply" class="card-badge" :class="{ done: replyDone }">
-            {{ replyDone ? '已完成' : '生成中…' }}
+            {{ replyDone ? t('card.done') : t('card.generating') }}
           </text>
         </view>
-        <text class="card-text">{{ reply || '……' }}</text>
+        <text class="card-text">{{ reply || t('card.placeholder') }}</text>
       </view>
     </view>
 
     <view class="controls">
       <view class="switch-row">
         <view class="switch-copy">
-          <text class="switch-title">语音助手</text>
-          <text class="switch-desc">关闭后释放麦克风</text>
+          <text class="switch-title">{{ t('switch.title') }}</text>
+          <text class="switch-desc">{{ t('switch.desc') }}</text>
         </view>
         <switch :checked="enabled" color="#6c8cff" @change="onToggle" />
       </view>
 
       <view class="buttons">
-        <button class="btn ghost" :disabled="!isActive" @tap="interrupt">打断</button>
+        <button class="btn ghost" :disabled="!isActive" @tap="interrupt">{{ t('btn.interrupt') }}</button>
       </view>
-      <text v-if="state === 'standby'" class="talk-hint">对着麦克风说「小熊小熊」唤醒</text>
+      <text v-if="state === 'standby'" class="talk-hint">{{ t('talk.standby') }}</text>
       <text v-else-if="halfDuplex" class="talk-hint warn">
-        已加强回声抑制；插话仍会排队，也可点「打断」
+        {{ t('talk.echo') }}
       </text>
-      <text v-else-if="isActive" class="talk-hint">正在听，直接说话即可（说完停顿一下）</text>
+      <text v-else-if="isActive" class="talk-hint">{{ t('talk.listening') }}</text>
     </view>
 
     <view class="footer">
@@ -374,6 +382,34 @@ function onOrbTap(): void {
 
 .card-badge.done {
   color: #6f7691;
+}
+
+.queue-badge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #fff;
+  background: #e5484d;
+}
+
+.queue-full-banner {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  text-align: center;
+  color: #fff;
+  background: linear-gradient(135deg, #e5484d, #f0743f);
+  box-shadow: 0 4px 16px rgba(229, 72, 77, 0.28);
+}
+
+.live-text {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #c7cde6;
+  text-align: center;
+  min-height: 20px;
+  word-break: break-word;
 }
 
 .thinking-text {
