@@ -87,34 +87,56 @@ export class VoiceSessionService {
     }
   }
 
+  /**
+   * 边生成边合成：LLM 流式出字，遇到句末标点就把这句立刻交给 TTS，
+   * 让首声在 LLM 还没生成完时就响，显著降低语音延迟。
+   */
   private async runAgent(text: string): Promise<void> {
     if (!this.agent) return
+    let buffer = ''
+    let ttsStarted = false
+    let ttsChain: Promise<void> = Promise.resolve()
+    const enqueue = (sentence: string) => {
+      const trimmed = sentence.trim()
+      if (!trimmed) return
+      if (!ttsStarted) {
+        ttsStarted = true
+        this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
+      }
+      ttsChain = ttsChain.then(() => this.speakSentence(trimmed))
+    }
     try {
       const full = await this.agent.reply(text, (delta) => {
-        if (!this.cancelled) this.deps.send({ type: 'llm.delta', text: delta })
+        if (this.cancelled) return
+        this.deps.send({ type: 'llm.delta', text: delta })
+        buffer += delta
+        let cut = sentenceCut(buffer)
+        while (cut > 0) {
+          enqueue(buffer.slice(0, cut))
+          buffer = buffer.slice(cut)
+          cut = sentenceCut(buffer)
+        }
       })
       if (this.cancelled) {
         this.deps.data.insertCommandLog(this.deviceId, text, 'cancelled')
         return
       }
+      enqueue(buffer)
+      buffer = ''
       this.deps.send({ type: 'llm.done' })
       this.deps.data.insertCommandLog(this.deviceId, text, full.slice(0, 200))
-      await this.runTts(full)
+      await ttsChain
+      if (ttsStarted && !this.cancelled) this.deps.send({ type: 'tts.end' })
     } catch (err) {
       this.sendError('LLM_ERROR', (err as Error).message)
     }
   }
 
-  private async runTts(text: string): Promise<void> {
-    try {
-      this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
-      for await (const frame of this.deps.tts.synthesize(text)) {
-        if (this.cancelled) break
-        this.deps.sendAudio(frame)
-      }
-      this.deps.send({ type: 'tts.end' })
-    } catch (err) {
-      this.sendError('LLM_ERROR', (err as Error).message)
+  private async speakSentence(sentence: string): Promise<void> {
+    if (this.cancelled) return
+    for await (const frame of this.deps.tts.synthesize(sentence)) {
+      if (this.cancelled) return
+      this.deps.sendAudio(frame)
     }
   }
 
@@ -156,4 +178,18 @@ export class VoiceSessionService {
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
     this.deps.asr.reset()
   }
+}
+
+/**
+ * 返回一句的切分位置（含句末标点），用于边生成边合成。
+ * 无标点时若缓冲过长，退而按逗号或固定长度切，避免迟迟不出声。
+ */
+function sentenceCut(text: string): number {
+  const match = text.match(/[。！？；!?;\n]/)
+  if (match && match.index !== undefined) return match.index + 1
+  if (text.length >= 60) {
+    const comma = Math.max(text.lastIndexOf('，'), text.lastIndexOf(','))
+    return comma > 0 ? comma + 1 : 60
+  }
+  return -1
 }
