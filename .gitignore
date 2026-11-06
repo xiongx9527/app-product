@@ -39,3 +39,11 @@ pnpm-debug.log*
 
 # CodeGraph 本地索引
 .codegraph/
+
+# 本地数据库
+app.db
+app.db-*
+apps/gateway/data/app.db
+
+# 网关依赖锁文件
+apps/gateway/package-lock.json

@@ -9,7 +9,13 @@ export type Lang = 'zh-CN'
 
 /** 客户端 → 服务端（文本控制帧） */
 export type ClientMessage =
-  | { type: 'session.start'; sessionId: string; lang: Lang }
+  | {
+      type: 'session.start'
+      sessionId: string
+      lang: Lang
+      /** wake=只做 ASR（用于本地唤醒词检测，不跑 LLM/TTS）；dialog=完整对话，默认 */
+      mode?: 'wake' | 'dialog'
+    }
   | { type: 'session.cancel' }
   | { type: 'session.end' }
 

@@ -15,7 +15,6 @@ const {
   wakeProviderName,
   enable,
   disable,
-  wakeNow,
   interrupt,
 } = useAssistant()
 
@@ -64,13 +63,8 @@ function onToggle(event: Event): void {
 }
 
 function onOrbTap(): void {
-  if (state.value === 'idle') {
-    enable()
-    return
-  }
-  if (state.value === 'standby') {
-    wakeNow()
-  }
+  // 只负责开启/关闭；唤醒靠语音「小熊小熊」，不做手动唤醒
+  if (state.value === 'idle') enable()
 }
 </script>
 
@@ -122,10 +116,10 @@ function onOrbTap(): void {
       </view>
 
       <view class="buttons">
-        <button class="btn ghost" :disabled="!enabled" @tap="wakeNow">唤醒</button>
         <button class="btn ghost" :disabled="!isActive" @tap="interrupt">打断</button>
       </view>
-      <text v-if="isActive" class="talk-hint">正在听，直接说话即可（说完停顿一下）</text>
+      <text v-if="state === 'standby'" class="talk-hint">对着麦克风说「小熊小熊」唤醒</text>
+      <text v-else-if="isActive" class="talk-hint">正在听，直接说话即可（说完停顿一下）</text>
     </view>
 
     <view class="footer">

@@ -18,7 +18,7 @@ const CUE_FILE: Record<PromptCue, string> = {
  */
 export function playPromptCue(cue: PromptCue): void {
   // #ifdef H5
-  playWebAudioCue(cue)
+  playHtmlAudioCue(cue)
   // #endif
 
   // #ifndef H5
@@ -33,6 +33,19 @@ export function playPromptCue(cue: PromptCue): void {
 }
 
 // #ifdef H5
+/** H5 优先播放本地 mp3（与 App 同音色），被浏览器拦截或缺失时回退到合成音。 */
+function playHtmlAudioCue(cue: PromptCue): void {
+  try {
+    const audio = new Audio(`/static/audio/${CUE_FILE[cue]}.mp3`)
+    const result = audio.play()
+    if (result && typeof result.catch === 'function') {
+      result.catch(() => playWebAudioCue(cue))
+    }
+  } catch {
+    playWebAudioCue(cue)
+  }
+}
+
 function playWebAudioCue(cue: PromptCue): void {
   try {
     const Ctor =

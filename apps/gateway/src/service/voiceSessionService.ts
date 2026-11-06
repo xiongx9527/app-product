@@ -22,6 +22,7 @@ export class VoiceSessionService {
   private processing = false
   private endpointTimer: ReturnType<typeof setTimeout> | null = null
   private lang: Lang = 'zh-CN'
+  private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
   private readonly deviceId: string | null = null
@@ -38,7 +39,7 @@ export class VoiceSessionService {
     }
     switch (msg.type) {
       case 'session.start':
-        void this.start(msg.sessionId, msg.lang)
+        void this.start(msg.sessionId, msg.lang, msg.mode)
         break
       case 'session.cancel':
         this.cancel()
@@ -75,6 +76,8 @@ export class VoiceSessionService {
         return
       }
       this.deps.send({ type: 'asr.final', text })
+      // 唤醒模式只回识别结果给客户端做唤醒词匹配，不进入 LLM/TTS
+      if (this.mode === 'wake') return
       this.deps.data.insertCommandLog(this.deviceId, text, 'pending')
       await this.runAgent(text)
     } catch (err) {
@@ -115,12 +118,18 @@ export class VoiceSessionService {
     }
   }
 
-  private async start(_sessionId: string, lang: Lang): Promise<void> {
+  private async start(
+    _sessionId: string,
+    lang: Lang,
+    mode: 'wake' | 'dialog' = 'dialog'
+  ): Promise<void> {
     this.lang = lang
+    this.mode = mode
     this.active = true
     this.cancelled = false
     this.deps.asr.reset()
-    this.agent = this.deps.agentFactory(lang)
+    // 唤醒模式不需要 LLM，省掉一次模型实例构造
+    this.agent = mode === 'wake' ? null : this.deps.agentFactory(lang)
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }
 

@@ -18,8 +18,9 @@ import {
   type AssistantEffect,
 } from '@/core/assistant/types'
 import { createTransport } from '@/core/transport'
-import type { ServerEvent } from '@/core/transport/types'
-import { createWakeService } from '@/core/wake/wakeService'
+import type { ServerEvent, SessionMode } from '@/core/transport/types'
+import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
+import { matchWakeWord } from '@/core/wake/wakeWord'
 import { getLanguage } from '@/core/config'
 
 export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG) {
@@ -30,13 +31,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const errorMessage = ref('')
 
   const transport = createTransport()
-  const wake = createWakeService({
-    onWake: () => dispatch({ type: 'WAKE' }),
-    onError: (message) => {
-      errorMessage.value = message
-    },
-    lang: getLanguage(),
-  })
 
   let t1Timer: ReturnType<typeof setTimeout> | null = null
   let t2Timer: ReturnType<typeof setTimeout> | null = null
@@ -44,11 +38,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 招呼语先占住“助手”卡片，等模型第一个字到了再换成真实回复
   let assistantTextStarted = false
   let capturing = false
+  let connected = false
+  let mode: SessionMode = 'wake'
 
   const stateLabel = computed(() => STATE_LABEL[state.value])
   const enabled = computed(() => state.value !== 'idle')
-  const wakeSupported = wake.isSupported()
-  const wakeProviderName = wake.providerName
+  // 唤醒改为网关本地 ASR（SenseVoice）识别，不依赖浏览器/Google 的语音服务
+  const wakeSupported = true
+  const wakeProviderName = '网关语音（本地 ASR）'
 
   transport.onEvent(handleServerEvent)
   transport.onAudio((chunk) => playPcm(chunk, 24000))
@@ -56,9 +53,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   function handleServerEvent(event: ServerEvent): void {
     switch (event.type) {
       case 'asr.partial':
-        transcript.value = event.text
+        if (mode === 'dialog') transcript.value = event.text
         break
       case 'asr.final':
+        if (mode === 'wake') {
+          // 待唤醒阶段只做唤醒词匹配，命中后进入对话
+          if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
+          break
+        }
         transcript.value = event.text
         dispatch({ type: 'USER_SPEECH' })
         break
@@ -92,28 +94,26 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   function applyEffect(effect: AssistantEffect): void {
     switch (effect) {
       case 'startWake':
-        wake.start()
+        void enterWake()
         break
       case 'stopWake':
-        wake.stop()
+        leaveWake()
         break
       case 'startSession':
         transcript.value = ''
         reply.value = ''
         errorMessage.value = ''
         assistantTextStarted = false
-        void beginSession()
+        enterDialog()
         break
       case 'endSession':
-        endAudio()
-        transport.close()
+        stopPlayback()
         isSpeaking.value = false
         assistantTextStarted = false
         break
       case 'cancelSession':
-        endAudio()
+        stopPlayback()
         transport.sendCancel()
-        transport.close()
         isSpeaking.value = false
         assistantTextStarted = false
         break
@@ -148,16 +148,41 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
   }
 
-  /** 连网关并开启麦克风上行；TTS 播放期间不发送，避免把助手自己的声音再识别一遍。 */
-  async function beginSession(): Promise<void> {
+  /** 待唤醒：连网关（wake 模式，只做 ASR）并开启麦克风上行。 */
+  async function enterWake(): Promise<void> {
+    mode = 'wake'
+    await ensureCapture()
     try {
-      await transport.connect()
+      if (!connected) {
+        await transport.connect('wake')
+        connected = true
+      } else {
+        transport.startSession('wake')
+      }
     } catch (err) {
       errorMessage.value = (err as Error).message
-      dispatch({ type: 'ERROR' })
-      return
     }
-    if (!isH5AudioSupported()) return
+  }
+
+  /** 命中唤醒：在同一条连接上切到 dialog 模式，进入 LLM/TTS。 */
+  function enterDialog(): void {
+    mode = 'dialog'
+    if (connected) transport.startSession('dialog')
+  }
+
+  /** 关闭助手：停采集、关连接。 */
+  function leaveWake(): void {
+    if (capturing) {
+      stopCapture()
+      capturing = false
+    }
+    stopPlayback()
+    transport.close()
+    connected = false
+  }
+
+  async function ensureCapture(): Promise<void> {
+    if (capturing || !isH5AudioSupported()) return
     try {
       await startCapture((pcm) => {
         if (!isSpeaking.value) transport.sendAudioChunk(pcm)
@@ -166,14 +191,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     } catch (err) {
       errorMessage.value = `麦克风不可用：${(err as Error).message}`
     }
-  }
-
-  function endAudio(): void {
-    if (capturing) {
-      stopCapture()
-      capturing = false
-    }
-    stopPlayback()
   }
 
   function clearT1(): void {
@@ -199,10 +216,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     dispatch({ type: 'DISABLE' })
   }
 
-  function wakeNow(): void {
-    dispatch({ type: 'WAKE' })
-  }
-
   function interrupt(): void {
     dispatch({ type: 'CANCEL' })
   }
@@ -211,9 +224,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     clearT1()
     clearT2()
     clearClosing()
-    endAudio()
-    transport.close()
-    wake.stop()
+    leaveWake()
   })
 
   return {
@@ -228,7 +239,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     wakeProviderName,
     enable,
     disable,
-    wakeNow,
     interrupt,
   }
 }

@@ -1,4 +1,4 @@
-import type { AssistantTransport, ServerEvent } from './types'
+import type { AssistantTransport, ServerEvent, SessionMode } from './types'
 
 /** 网关默认 WebSocket 地址：H5 桌面调试直连本机；可用 VITE_GATEWAY_WS_URL 覆盖（如模拟器用 10.0.2.2）。 */
 function resolveGatewayUrl(): string {
@@ -17,18 +17,20 @@ export class WebSocketTransport implements AssistantTransport {
   private readonly url: string
   private readonly lang: 'zh-CN'
   private sessionId = ''
+  private pendingMode: SessionMode = 'dialog'
 
   constructor(url = resolveGatewayUrl(), lang: 'zh-CN' = 'zh-CN') {
     this.url = url
     this.lang = lang
   }
 
-  connect(): Promise<void> {
+  connect(mode: SessionMode = 'dialog'): Promise<void> {
     if (typeof WebSocket === 'undefined') {
       return Promise.reject(new Error('当前环境不支持 WebSocket'))
     }
+    this.pendingMode = mode
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.sendStart()
+      this.sendStart(mode)
       return Promise.resolve()
     }
     return new Promise((resolve, reject) => {
@@ -37,7 +39,7 @@ export class WebSocketTransport implements AssistantTransport {
       this.ws = ws
 
       ws.onopen = () => {
-        this.sendStart()
+        this.sendStart(this.pendingMode)
         resolve()
       }
       ws.onerror = () => {
@@ -52,6 +54,10 @@ export class WebSocketTransport implements AssistantTransport {
 
   sendAudioChunk(chunk: ArrayBuffer): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(chunk)
+  }
+
+  startSession(mode: SessionMode): void {
+    this.sendStart(mode)
   }
 
   sendCancel(): void {
@@ -74,9 +80,9 @@ export class WebSocketTransport implements AssistantTransport {
     return () => this.audioListeners.delete(listener)
   }
 
-  private sendStart(): void {
+  private sendStart(mode: SessionMode): void {
     this.sessionId = `s-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
-    this.sendJson({ type: 'session.start', sessionId: this.sessionId, lang: this.lang })
+    this.sendJson({ type: 'session.start', sessionId: this.sessionId, lang: this.lang, mode })
   }
 
   private sendJson(payload: Record<string, unknown>): void {

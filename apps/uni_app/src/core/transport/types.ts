@@ -8,9 +8,14 @@ export type ServerEvent =
   | { type: 'tts.end' }
   | { type: 'error'; code: string; message: string }
 
+export type SessionMode = 'wake' | 'dialog'
+
 /** 客户端会话传输层：真实实现走 WebSocket */
 export interface AssistantTransport {
-  connect(): Promise<void>
+  /** 建立连接并按模式开启会话（wake=只做识别用于唤醒词检测） */
+  connect(mode?: SessionMode): Promise<void>
+  /** 在同一条连接上切换会话模式（重新下发 session.start） */
+  startSession(mode: SessionMode): void
   sendAudioChunk(chunk: ArrayBuffer): void
   sendCancel(): void
   close(): void
