@@ -578,6 +578,44 @@ describe('说话被切断（句末端点过激）', () => {
     const finals = h.events.filter((e) => e.type === 'asr.final')
     expect(finals).toHaveLength(1)
   })
+
+  it('长句含多处停顿（endpointMs=2500，当前线上配置）：整体定稿一次，不被切成多段', async () => {
+    // 复现用户“唤醒后说长句”的场景：一句带多处自然停顿的长话，停顿都 < 2500ms，
+    // 应整体定稿为一整段交给大模型；之前 endpointMs=700 会把长句切碎（像失忆）。
+    const h = createHarness({
+      asrEndpointMs: 2500,
+      finalizeText: '帮我记一下，明天上午十点健身，下午三点开会',
+    })
+    await startDialog(h.service)
+    for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
+    await sleep(600) // 自然停顿 600ms（< 2500），不应提前定稿
+    expect(h.events.filter((e) => e.type === 'asr.final' || e.type === 'asr.queued')).toHaveLength(0)
+    for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
+    await sleep(600)
+    for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
+    // 句末停顿 > 2500ms，整句只定稿一次（不论 final 还是 queued 都算一段）
+    await sleep(3000)
+    const segments = h.events.filter((e) => e.type === 'asr.final' || e.type === 'asr.queued')
+    expect(segments).toHaveLength(1)
+  })
+
+  it('endpointMs=700（旧误设值）：句中停顿把长句切成多段（失忆根因）', async () => {
+    // 复现用户反馈的“只识别前一段”：停顿一超过 700ms 就定稿，长句被切碎成多轮。
+    const h = createHarness({
+      asrEndpointMs: 700,
+      finalizeText: '帮我记一下，明天上午十点健身，下午三点开会',
+    })
+    await startDialog(h.service)
+    for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
+    await sleep(900) // > 700：第一段在此被定稿（切断）
+    for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
+    await sleep(900) // > 700：又定稿一段
+    for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
+    await sleep(1500) // 句末定稿
+    // 长句被切成多段（final + queued 合计 >= 2）
+    const segments = h.events.filter((e) => e.type === 'asr.final' || e.type === 'asr.queued')
+    expect(segments.length).toBeGreaterThanOrEqual(2)
+  })
 })
 
 describe('会话与连接解耦：重武装（deviceId 复用不丢记忆）', () => {
