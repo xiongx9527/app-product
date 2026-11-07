@@ -9,7 +9,6 @@ let captureCtx: AudioContext | null = null
 let captureStream: MediaStream | null = null
 let captureSource: MediaStreamAudioSourceNode | null = null
 let captureProcessor: ScriptProcessorNode | null = null
-let captureMute: GainNode | null = null
 
 let playCtx: AudioContext | null = null
 let nextStart = 0
@@ -135,8 +134,6 @@ export async function startCapture(onChunk: ChunkHandler): Promise<void> {
 
   const source = ctx.createMediaStreamSource(stream)
   const processor = ctx.createScriptProcessor(4096, 1, 1)
-  const mute = ctx.createGain()
-  mute.gain.value = 0
 
   processor.onaudioprocess = (event: AudioProcessingEvent) => {
     const input = event.inputBuffer.getChannelData(0)
@@ -144,28 +141,27 @@ export async function startCapture(onChunk: ChunkHandler): Promise<void> {
   }
 
   source.connect(processor)
-  processor.connect(mute)
-  mute.connect(ctx.destination)
+  // 直接连到 destination：processor 不写输出（静音），既不会有回声，又能被音频图持续拉取、
+  // 保证 onaudioprocess 触发。之前中间串一个 gain=0 的静音节点，Chrome 会把这个静音子图优化掉，
+  // 导致 processor 不再被拉取、收不到任何音频帧（表现为「无实时识别文字 / 无法唤醒」）。
+  processor.connect(ctx.destination)
 
   captureCtx = ctx
   captureStream = stream
   captureSource = source
   captureProcessor = processor
-  captureMute = mute
 }
 
 export function stopCapture(): void {
   if (captureProcessor) captureProcessor.onaudioprocess = null
   captureProcessor?.disconnect()
   captureSource?.disconnect()
-  captureMute?.disconnect()
   captureStream?.getTracks().forEach((track) => track.stop())
   void captureCtx?.close()
   captureCtx = null
   captureStream = null
   captureSource = null
   captureProcessor = null
-  captureMute = null
 }
 
 /** 播放一段 16bit PCM；按到达顺序首尾相接，避免重叠或断裂。 */
