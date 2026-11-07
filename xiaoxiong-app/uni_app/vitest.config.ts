@@ -8,6 +8,12 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  // 允许测试跨包导入网关源码（cross-compat 测试验证前后端信封格式一致）
+  server: {
+    fs: {
+      allow: [fileURLToPath(new URL('../..', import.meta.url))],
+    },
+  },
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',

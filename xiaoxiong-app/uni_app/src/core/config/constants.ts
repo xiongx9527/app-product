@@ -49,9 +49,12 @@ export function normalizeGeocodeProvider(value: unknown): GeocodeProvider {
   return DEFAULT_GEOCODE.provider
 }
 
-/** 网关默认 WebSocket 地址：仅当构建期未注入 VITE_GATEWAY_WS_URL 时回退本机地址。
- * 真正的地址来源统一为 VITE_GATEWAY_WS_URL（由 dev 脚本按后端 PORT 注入 / .env 配置）。 */
-export const DEFAULT_GATEWAY_WS_URL = 'ws://127.0.0.1:8787/ws'
+/** 网关默认主机与端口：仅当构建期未注入 VITE_GATEWAY_WS_URL 时回退。
+ * 真正的地址来源统一为 VITE_GATEWAY_WS_URL（由 dev 脚本按后端 PORT 注入 / .env 配置）；
+ * 这里的默认值刻意与后端 config.ts 的 PORT 默认（8787）对齐，仅作兜底、不要当业务常量依赖。 */
+export const DEFAULT_GATEWAY_HOST = '127.0.0.1'
+export const DEFAULT_GATEWAY_PORT = 8787
+export const DEFAULT_GATEWAY_WS_URL = `ws://${DEFAULT_GATEWAY_HOST}:${DEFAULT_GATEWAY_PORT}/ws`
 
 export const SUPPORTED_LANGUAGES = ['zh-CN', 'en-US'] as const
 export type AppLanguage = (typeof SUPPORTED_LANGUAGES)[number]

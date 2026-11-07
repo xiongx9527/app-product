@@ -31,6 +31,8 @@ Thumbs.db
 # 日志与缓存
 *.log
 .dev-*.pid
+# dev 脚本随机生成的 RSA 密钥对（前后端共用一套，禁止入库）
+.rsa-keys.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

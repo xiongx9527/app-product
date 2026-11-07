@@ -27,6 +27,7 @@ import {
   openSync,
   mkdirSync,
 } from 'node:fs'
+import { generateKeyPairSync } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -52,6 +53,38 @@ const logsDir = join(appsDir, 'logs')
  * 避免前端把 8787 写死、后端改了 PORT 前端跟不上。 */
 function gatewayPort() {
   return Number(process.env.PORT ?? 8787)
+}
+
+/** RSA 密钥存放路径：打包/dev 时随机生成一次后复用，确保前后端用的是同一套密钥，
+ * 避免「前后端配置不一致」导致加解密失败。已被 .gitignore 忽略。 */
+const rsaKeysPath = join(appsDir, '.rsa-keys.json')
+
+/** 生成（或读取已生成的）两套 RSA-2048 密钥：前端一对 + 后端一对。
+ * 前后端模型是「各持自己私钥 + 对方公钥」，因此必须来自同一份生成结果，不能各生各的。 */
+function ensureRsaKeys() {
+  if (existsSync(rsaKeysPath)) {
+    try {
+      return JSON.parse(readFileSync(rsaKeysPath, 'utf8'))
+    } catch {
+      // 文件损坏则重新生成
+    }
+  }
+  const gen = () =>
+    generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    })
+  const frontend = gen()
+  const backend = gen()
+  const out = {
+    frontendPublic: frontend.publicKey,
+    frontendPrivate: frontend.privateKey,
+    backendPublic: backend.publicKey,
+    backendPrivate: backend.privateKey,
+  }
+  writeFileSync(rsaKeysPath, JSON.stringify(out, null, 2))
+  return out
 }
 
 /** 受管服务清单：新增服务只需在这里加一项；cwd 用 appsDir 拼接，天然适配目录改名。 */
@@ -106,11 +139,19 @@ function startOne(s) {
   const fd = openSync(file, 'a')
   // detached + unref：子进程进入独立会话/进程组，脱离当前终端，父进程退出后继续存活。
   // 这正是 setsid/nohup 在三个平台上统一替代方案。
-  // 注入前端网关地址：与后端 PORT 统一来源，前端不再写死端口，后端改 PORT 前端自动跟上。
-  // 仅当未显式设置时才注入，避免覆盖用户在 shell/.env 里的自定义值。
+  // 统一来源：网关地址 + RSA 加解密密钥都由 dev 脚本注入，前后端用同一套、避免配置不一致。
+  // 仅当用户未在 shell/.env 显式设置时才注入，避免覆盖自定义值。
   const childEnv = { ...process.env }
-  if (s.key === 'uniapp' && !childEnv.VITE_GATEWAY_WS_URL) {
-    childEnv.VITE_GATEWAY_WS_URL = `ws://127.0.0.1:${gatewayPort()}/ws`
+  const keys = ensureRsaKeys()
+  if (s.key === 'gateway') {
+    if (!childEnv.RSA_BACKEND_PRIVATE_KEY) childEnv.RSA_BACKEND_PRIVATE_KEY = keys.backendPrivate
+    if (!childEnv.RSA_FRONTEND_PUBLIC_KEY) childEnv.RSA_FRONTEND_PUBLIC_KEY = keys.frontendPublic
+    if (childEnv.PARAM_ENCRYPT === undefined) childEnv.PARAM_ENCRYPT = 'true'
+  } else if (s.key === 'uniapp') {
+    if (!childEnv.VITE_GATEWAY_WS_URL) childEnv.VITE_GATEWAY_WS_URL = `ws://127.0.0.1:${gatewayPort()}/ws`
+    if (!childEnv.VITE_RSA_FRONTEND_PRIVATE_KEY) childEnv.VITE_RSA_FRONTEND_PRIVATE_KEY = keys.frontendPrivate
+    if (!childEnv.VITE_RSA_BACKEND_PUBLIC_KEY) childEnv.VITE_RSA_BACKEND_PUBLIC_KEY = keys.backendPublic
+    if (childEnv.VITE_PARAM_ENCRYPT === undefined) childEnv.VITE_PARAM_ENCRYPT = 'true'
   }
   const child = spawn(npmBin, ['run', s.script], {
     cwd: s.cwd,
