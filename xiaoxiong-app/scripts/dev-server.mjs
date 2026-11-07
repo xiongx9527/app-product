@@ -146,12 +146,13 @@ function startOne(s) {
   if (s.key === 'gateway') {
     if (!childEnv.RSA_BACKEND_PRIVATE_KEY) childEnv.RSA_BACKEND_PRIVATE_KEY = keys.backendPrivate
     if (!childEnv.RSA_FRONTEND_PUBLIC_KEY) childEnv.RSA_FRONTEND_PUBLIC_KEY = keys.frontendPublic
-    if (childEnv.PARAM_ENCRYPT === undefined) childEnv.PARAM_ENCRYPT = 'true'
+    // PARAM_ENCRYPT 默认不开启：不强制注入 true，沿用网关自身默认值（false）。
+    // 仅在 shell / .env 显式设置时才生效，方便「默认明文调试、按需开启加密」。
   } else if (s.key === 'uniapp') {
     if (!childEnv.VITE_GATEWAY_WS_URL) childEnv.VITE_GATEWAY_WS_URL = `ws://127.0.0.1:${gatewayPort()}/ws`
     if (!childEnv.VITE_RSA_FRONTEND_PRIVATE_KEY) childEnv.VITE_RSA_FRONTEND_PRIVATE_KEY = keys.frontendPrivate
     if (!childEnv.VITE_RSA_BACKEND_PUBLIC_KEY) childEnv.VITE_RSA_BACKEND_PUBLIC_KEY = keys.backendPublic
-    if (childEnv.VITE_PARAM_ENCRYPT === undefined) childEnv.VITE_PARAM_ENCRYPT = 'true'
+    // 同上：VITE_PARAM_ENCRYPT 不强制，默认关闭，按需开启。
   }
   const child = spawn(npmBin, ['run', s.script], {
     cwd: s.cwd,
