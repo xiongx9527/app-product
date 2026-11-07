@@ -29,7 +29,9 @@ export async function serveSwagger(pathname: string): Promise<{ status: number; 
     // 站点根目录（/swagger-ui-bundle.js → 404），整页空白。注入 <base> 让所有相对路径
     // 始终落到 /docs/ 下，无论用户访问 /docs 还是 /docs/。
     if (ext === '.html') {
-      body = buf.toString().replace('</head>', '<base href="/docs/"></head>')
+      // <base> 必须放在 <head> 开头，才能对后面的 CSS/JS 链接生效；放在 </head> 前则只对它
+      // 之后的标签生效，而 CSS 链接已经在它前面，会导致样式加载失败（页面「没样式」）。
+      body = buf.toString().replace('<head>', '<head><base href="/docs/">')
     } else if (name === 'swagger-initializer.js') {
       // swagger-ui-dist 自带的 swagger-initializer.js 写死了 petstore 的 demo 地址，改成我们的
       // /api/openapi.json；只针对这「一个」文件改写——库文件内部也含 `url:` 代码，盲目替换

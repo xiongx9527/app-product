@@ -49,7 +49,27 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
         }
         return
       }
-      if (url.pathname === '/docs' || url.pathname.startsWith('/docs/')) {
+      if (url.pathname === '/doc.html') {
+        // 单文件入口：直接返回 /docs 的 index.html（内含 <base href="/docs/">，资源仍走 /docs/）
+        const out = await docs('/docs')
+        if (out) {
+          res.writeHead(out.status, {
+            'content-type': out.contentType,
+            'cache-control': 'no-store',
+          })
+          res.end(out.body)
+          return
+        }
+      }
+      if (url.pathname === '/docs') {
+        // 无结尾斜杠时浏览器会按站点根目录解析 index.html 里的相对资源（./swagger-ui.css →
+        // /swagger-ui.css → 404），导致整页无样式。301 到 /docs/ 让相对路径自然落点；
+        // 同时 HTML 内仍注入 <base href="/docs/"> 作双保险。
+        res.writeHead(301, { location: '/docs/' })
+        res.end()
+        return
+      }
+      if (url.pathname.startsWith('/docs/')) {
         const out = await docs(url.pathname)
         if (!out) {
           res.writeHead(404)

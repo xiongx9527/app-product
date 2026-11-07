@@ -170,7 +170,7 @@ function startOne(s) {
   if (s.key === 'gateway') {
     const port = gatewayPort()
     console.log(`  访问：http://localhost:${port}`)
-    console.log(`        WebSocket 同端口；Swagger 文档：http://localhost:${port}/docs`)
+    console.log(`        WebSocket 同端口；Swagger 文档：http://localhost:${port}/doc.html （或 /docs）`)
   } else if (s.key === 'uniapp') {
     console.log(`  访问：dev:app 是 Android/iOS 原生打包模式，无浏览器端口。`)
     console.log(`        真机/模拟器请用 HBuilderX「运行到手机或模拟器」；`)
