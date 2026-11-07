@@ -30,6 +30,7 @@ Thumbs.db
 
 # 日志与缓存
 *.log
+.dev-*.pid
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
