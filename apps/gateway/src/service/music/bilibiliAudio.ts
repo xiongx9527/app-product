@@ -97,3 +97,13 @@ export function extractBvidFromUrl(url: string): string | null {
   const m = /bilibili\.com\/video\/(BV[0-9A-Za-z]+)/.exec(url)
   return m?.[1] ?? null
 }
+
+/**
+ * 从整段 HTML 里批量抽取 BVID（去重、保序）。
+ * 百度搜索结果把落地 URL 直接写在 mu="..." 属性里，B 站结果并不都走 /link 跳转，
+ * 所以从 SERP 全文直接抓 BVID 比逐条跟随 /link 命中率高得多。
+ */
+export function extractBvidsFromHtml(html: string): string[] {
+  const found = html.match(/bilibili\.com\/video\/(BV[0-9A-Za-z]+)/g) ?? []
+  return [...new Set(found.map((m) => m.slice(m.lastIndexOf('/') + 1)))]
+}

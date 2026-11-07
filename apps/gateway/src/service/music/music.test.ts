@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { createSomaSource } from './somaSource'
 import { createBaiduSource } from './baiduSource'
+import { extractBvidsFromHtml } from './bilibiliAudio'
 import { createMusicSource } from './index'
 import { SOMA_CHANNELS } from '../tools/musicChannels'
 import type { MusicFetcher } from './types'
@@ -51,82 +52,71 @@ describe('genre 分流', () => {
 })
 
 describe('百度搜索引擎兜底源', () => {
-  it('搜到 B 站视频则抽音轨返回可播放地址', async () => {
-    const fetcher: MusicFetcher = async (url) => {
+  /** 构造一个 fetcher：SERP 返回指定 html，/link 落地到指定 url，B 站 wbi 三步返回固定音轨。 */
+  function biliFetcher(serpHtml: string, linkLanding = 'https://haokan.baidu.com/v?vid=1'): MusicFetcher {
+    return async (url) => {
       if (url.includes('baidu.com/s')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({}),
-          text: async () => '<a href="/link?url=abc">B站</a><a href="/link?url=def">好看</a>',
-          url: url,
-        }
+        return { ok: true, status: 200, json: async () => ({}), text: async () => serpHtml, url }
       }
-      // 第一个 /link 跳到 B 站视频页，抽到 bvid
-      if (url.includes('/link?url=abc')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({}),
-          text: async () => '',
-          url: 'https://www.bilibili.com/video/BV1xx411c7mD',
-        }
+      if (url.includes('/link?url=')) {
+        return { ok: true, status: 200, json: async () => ({}), text: async () => '', url: linkLanding }
       }
-      // B 站 wbi 签名所需的 nav（拿 wbi_img）
       if (url.includes('x/web-interface/nav')) {
         return {
-          ok: true,
-          status: 200,
+          ok: true, status: 200,
           json: async () => ({ data: { wbi_img: { img_url: 'https://i0.hdslb.com/wbi/xxx.png', sub_url: 'https://i0.hdslb.com/wbi/yyy.png' } } }),
           text: async () => '',
         }
       }
-      // B 站音轨接口
       if (url.includes('wbi/view')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ code: 0, data: { cid: 123, title: '稻香' } }),
-          text: async () => '',
-        }
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 123, title: '稻香' } }), text: async () => '' }
       }
       expect(url).toContain('wbi/playurl')
       return {
-        ok: true,
-        status: 200,
+        ok: true, status: 200,
         json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: 'https://bili/audio.m4s' }] } } }),
         text: async () => '',
       }
     }
-    const source = createBaiduSource({}, fetcher)
-    const track = await source.resolve('稻香')
+  }
+
+  it('优先取 SERP 里 mu= 内嵌的 B 站直链抽音轨（真实百度结构）', async () => {
+    const html =
+      '<div mu="https://www.bilibili.com/video/BV1jk3z6TEgo/">稻香</div>' +
+      '<a href="/link?url=abc">好看视频</a>'
+    const track = await createBaiduSource({}, biliFetcher(html)).resolve('稻香')
     expect(track.url).toBe('https://bili/audio.m4s')
     expect(track.channel).toBe('bilibili')
     expect(track.title).toBe('稻香')
   })
 
-  it('所有结果都抽不到音轨时抛错', async () => {
-    const fetcher: MusicFetcher = async (url) => {
-      if (url.includes('baidu.com/s')) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({}),
-          text: async () => '<a href="/link?url=abc">x</a>',
-          url: url,
-        }
-      }
-      // 跳转结果不是 B 站，抽不到音轨
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({}),
-        text: async () => '',
-        url: 'https://other.com/page',
-      }
-    }
-    const source = createBaiduSource({}, fetcher)
+  it('无内嵌 BVID 时，跟随 /link 跳转到 B 站视频页兜底', async () => {
+    const html = '<a href="/link?url=abc">x</a><a href="/link?url=def">y</a>'
+    const fetcher = biliFetcher(html, 'https://www.bilibili.com/video/BV1xx411c7mD')
+    const track = await createBaiduSource({}, fetcher).resolve('稻香')
+    expect(track.url).toBe('https://bili/audio.m4s')
+    expect(track.channel).toBe('bilibili')
+  })
+
+  it('mu= 与 /link 都取不到音轨时抛错', async () => {
+    // /link 落到好看视频（无 BVID），也没有内嵌 B站直链
+    const html = '<a href="/link?url=abc">x</a>'
+    const source = createBaiduSource({}, biliFetcher(html))
     await expect(source.resolve('不存在的歌')).rejects.toThrow()
+  })
+})
+
+describe('extractBvidsFromHtml', () => {
+  it('从 mu=/href 里的 B 站直链抽 BVID，去重保序', () => {
+    const html =
+      'mu="https://www.bilibili.com/video/BV1111111111/" ' +
+      'href="https://www.bilibili.com/video/BV2222222222/?p=1" ' +
+      'mu="https://www.bilibili.com/video/BV1111111111/"'
+    expect(extractBvidsFromHtml(html)).toEqual(['BV1111111111', 'BV2222222222'])
+  })
+
+  it('没有 B 站链接时返回空数组', () => {
+    expect(extractBvidsFromHtml('<a href="https://haokan.baidu.com/v">x</a>')).toEqual([])
   })
 })
 
