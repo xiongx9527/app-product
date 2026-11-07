@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createSomaSource } from './somaSource'
-import { createBilibiliSearchSource, titleMatchesKeyword } from './bilibiliSearchSource'
+import { createBilibiliSearchSource, titleMatchesKeyword, looksLikeCompilation } from './bilibiliSearchSource'
 import { extractBvidsFromHtml } from './bilibiliAudio'
 import { createMusicSource } from './index'
 import { SOMA_CHANNELS } from '../tools/musicChannels'
@@ -137,6 +137,21 @@ describe('B 站搜索兜底源', () => {
     await expect(source.resolve('周杰伦 稻香')).rejects.toThrow()
   })
 
+  it('多歌曲合集（串烧/歌单）被硬排除，绝不播成乱播放', async () => {
+    // 合集标题同时含歌手+歌名（会过 token 校验），但属于「一串烧/合集」不是那一首
+    const titles = ['陈奕迅经典串烧：十年+富士山下+爱情转移', '《十年》陈奕迅 完整版']
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
+    const track = await source.resolve('陈奕迅 十年')
+    // 合集被排除，应落到干净的那条
+    expect(track.title).toBe('《十年》陈奕迅 完整版')
+  })
+
+  it('搜索结果只有合集、没有干净版本时，报没找到而非乱播', async () => {
+    const titles = ['陈奕迅经典歌曲串烧版：十年等15首']
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
+    await expect(source.resolve('陈奕迅 十年')).rejects.toThrow()
+  })
+
   it('next() 依次换到下一首不同的曲目（换一首不再必失败）', async () => {
     const titles = ['《稻香》周杰伦 完整版', '周杰伦《稻香》Live', '稻香-周杰伦 伴奏']
     const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
@@ -263,6 +278,19 @@ describe('titleMatchesKeyword（歌手、歌名要一样，杜绝乱播放）', 
 
   it('空标题不命中', () => {
     expect(titleMatchesKeyword('', '稻香')).toBe(false)
+  })
+})
+
+describe('looksLikeCompilation（合集/串烧硬排除，杜绝乱播放）', () => {
+  it('串烧/合集/歌单/合辑/集锦类标题判为合集', () => {
+    for (const t of ['陈奕迅经典串烧：十年', '周杰伦歌曲合集', '华语金曲歌单', '流行合辑 vol.2', '80后集锦']) {
+      expect(looksLikeCompilation(t)).toBe(true)
+    }
+  })
+  it('单曲标题（含现场版/MV）不算合集', () => {
+    for (const t of ['《十年》陈奕迅 完整版', '周杰伦 稻香 Live', '稻香-周杰伦 高清MV']) {
+      expect(looksLikeCompilation(t)).toBe(false)
+    }
   })
 })
 

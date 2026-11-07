@@ -203,4 +203,20 @@ describe('musicPlayer 进度与时长', () => {
     expect(player.musicState.musicError.value).toBe(false)
     expect(player.musicState.playing.value).toBe(true)
   })
+
+  it('播放失败时音乐条仍可见（visible 保持 true），便于展示歌名与失败提示', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    expect(player.musicState.visible.value).toBe(true)
+    fake.emit('error')
+    expect(player.musicState.visible.value).toBe(true)
+    expect(player.musicState.musicError.value).toBe(true)
+    expect(player.musicState.playing.value).toBe(false)
+  })
+
+  it('停止后音乐条隐藏', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    expect(player.musicState.visible.value).toBe(true)
+    player.stopMusic()
+    expect(player.musicState.visible.value).toBe(false)
+  })
 })

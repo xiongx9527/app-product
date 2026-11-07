@@ -38,6 +38,7 @@ const {
   musicPlaying,
   musicPaused,
   musicError,
+  musicVisible,
   musicTitle,
   musicCurrent,
   musicDuration,
@@ -215,7 +216,7 @@ function onOrbTap(): void {
       </view>
     </view>
 
-    <view v-if="musicPlaying" class="music-bar">
+    <view v-if="musicVisible" class="music-bar">
       <view class="music-row">
         <view class="music-info">
           <text class="music-label">{{ t('music.nowPlaying') }}</text>

@@ -16,8 +16,15 @@ const duration = ref(0)
 const live = ref(false)
 /** 是否处于暂停状态（暂停后进度不再推进） */
 const paused = ref(false)
-/** 播放是否出错（如地址失效/网络不通）；用于界面提示，不弹浮层 */
+/** 播放是否出错（如地址失效/网络不通/被浏览器自动播放策略拦截）；用于界面提示，不弹浮层 */
 const musicError = ref(false)
+/**
+ * 音乐条是否应当显示：只要下发过一首歌（playMusic）就为 true，停止才清掉。
+ * 与 playing 解耦——播放被浏览器自动播放策略拦截或地址失效时，playing 会变回
+ * false，但我们仍要保留音乐条，把歌名与「播放失败」提示展示出来，而不是整条消失
+ * （否则用户只看到助手说「正在播放」却什么都没有，误以为没播）。
+ */
+const visible = ref(false)
 
 let ctx: UniApp.InnerAudioContext | null = null
 /** 是否处于 TTS 播报中；播报中新建/恢复播放也要保持压低音量 */
@@ -90,6 +97,7 @@ export function playMusic(nextUrl: string, nextTitle: string): void {
   live.value = false
   paused.value = false
   musicError.value = false
+  visible.value = true
   try {
     instance.stop()
   } catch {
@@ -99,7 +107,15 @@ export function playMusic(nextUrl: string, nextTitle: string): void {
   // 电台是无限流、歌曲是有限时长：统一不循环，播完即停
   instance.loop = false
   instance.volume = ducked ? 0.2 : 1
-  instance.play()
+  const playPromise = instance.play() as unknown as Promise<void> | undefined
+  if (playPromise && typeof playPromise.catch === 'function') {
+    // 浏览器自动播放策略可能在用户手势之外拦截：保留 visible，把 playing 置回
+    // false 并标记错误，等用户在音乐条上点「换/暂/停」（手势）时重试。
+    playPromise.catch(() => {
+      playing.value = false
+      musicError.value = true
+    })
+  }
   playing.value = true
 }
 
@@ -140,6 +156,7 @@ export function stopMusic(): void {
   duration.value = 0
   live.value = false
   musicError.value = false
+  visible.value = false
 }
 
 /** 拖动进度条：只在有总时长的歌曲上有效，电台忽略。 */
@@ -170,6 +187,7 @@ export const musicState = {
   playing,
   paused,
   musicError,
+  visible,
   title,
   url,
   currentTime,

@@ -477,6 +477,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     musicPlaying: musicState.playing,
     musicPaused: musicState.paused,
     musicError: musicState.musicError,
+    musicVisible: musicState.visible,
     musicTitle: musicState.title,
     musicCurrent: musicState.currentTime,
     musicDuration: musicState.duration,

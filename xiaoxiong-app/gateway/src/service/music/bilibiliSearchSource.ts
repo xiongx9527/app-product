@@ -46,13 +46,30 @@ const nativeFetch: MusicFetcher = (url, init) =>
   fetch(url, init as RequestInit) as unknown as ReturnType<MusicFetcher>
 
 /** 相关性加分词：更像「原唱/官方正片」的视频优先。 */
-const PREFER = ['官方', 'official', 'mv', 'hd', '无损', '原唱', '完整版', '音频', 'opus', '现场版']
-/** 相关性减分词：教学/翻唱/Reaction/纯音乐等不是用户要的那一版，尽量靠后。 */
+const PREFER = ['官方', 'official', 'mv', 'hd', '无损', '原唱', '完整版', '音频', 'opus']
+/**
+ * 相关性减分词：教学/翻唱/Reaction/纯音乐/现场等不是用户要的那一版，尽量靠后。
+ * 注意「现场版」不放这里——它含「现场」子串，会和下面的「现场」一同命中，
+ * 一加一减互相抵消反而没起到排序作用；现场版整体仍略逊于录音室原版，故不加分。
+ */
 const AVOID = [
   '鼓谱', '吉他谱', '钢琴谱', '教学', '教程', '翻唱', 'cover', 'covers',
   'reaction', '反应', '纯音乐', '卡点', '舞蹈', '编舞', '动态', '赏析',
   '解说', '盘点', '混剪', '二创', 'remix', '伴奏', '现场',
 ]
+/**
+ * 多歌曲合集类标题：串烧/歌单/合辑等根本不是用户点的那一首，宁可报「没找到」
+ * 也不能播——这是「播放的不是我要的歌曲」最典型的来源。与上面的 AVOID 不同，
+ * 这里是**硬排除**（直接视为不匹配），而不是靠排序靠后，避免它作为唯一/最高相关结果被播出来。
+ */
+const COMPILATION_WORDS = ['串烧', '合集', '歌单', '合辑', '集锦', '盘点', '歌曲大全', '音乐大全', '串烧版']
+
+/** 标题是否明显是多歌曲合集（不是单一曲目），应被排除，杜绝乱播放。 */
+export function looksLikeCompilation(title: string): boolean {
+  if (!title) return false
+  const t = normalize(title)
+  return COMPILATION_WORDS.some((w) => t.includes(normalize(w)))
+}
 
 /** 归一化：去空白、标点、书名号等，统一小写，便于子串比对。 */
 function normalize(text: string): string {
@@ -135,9 +152,10 @@ async function searchOrdered(keyword: string, fetcher: MusicFetcher): Promise<Bi
   const resp = await fetcher(`${BILI_SEARCH}?${qs}`, { headers: BILI_HEADERS })
   const json = (await resp.json()) as unknown
   const results = collectResults(json)
-  // 先按「歌手歌名全命中」过滤（杜绝乱播放），再按相关性打分降序、同分保留 B 站原序
+  // 先按「歌手歌名全命中」过滤（杜绝乱播放），再排除多歌曲合集（串烧/歌单…），
+  // 最后按相关性打分降序、同分保留 B 站原序
   return results
-    .filter((r) => titleMatchesKeyword(r.title, keyword))
+    .filter((r) => titleMatchesKeyword(r.title, keyword) && !looksLikeCompilation(r.title))
     .map((r, i) => ({ r, i }))
     .sort((a, b) => relevanceScore(b.r.title) - relevanceScore(a.r.title) || a.i - b.i)
     .map((x) => x.r)
@@ -197,8 +215,13 @@ export function createBilibiliSearchSource(
     for (const bvid of bvids) {
       try {
         const audio = await extractBilibiliAudio(bvid, fetcher)
-        // 关键：百度找回来的视频也得通过「歌手、歌名要一样」校验，杜绝乱播
-        if (audio.url && audio.title && titleMatchesKeyword(audio.title, keyword)) {
+        // 关键：百度找回来的视频也得通过「歌手、歌名要一样」校验，且不能是合集，杜绝乱播
+        if (
+          audio.url &&
+          audio.title &&
+          titleMatchesKeyword(audio.title, keyword) &&
+          !looksLikeCompilation(audio.title)
+        ) {
           return { url: audio.url, title: audio.title, channel: 'bilibili' }
         }
       } catch {
