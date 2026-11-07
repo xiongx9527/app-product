@@ -68,7 +68,7 @@ function isFilled(s: string | undefined): s is string {
   return typeof s === 'string' && s.trim().length > 0
 }
 
-function b64ToBytes(b64: string): Uint8Array {
+function b64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(b64)
   const out = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
@@ -82,7 +82,7 @@ function bytesToB64(bytes: Uint8Array): string {
 }
 
 /** PEM（SPKI/PKCS8）→ DER：去掉头尾与换行后 base64 解码。 */
-function pemToDer(pem: string): Uint8Array {
+function pemToDer(pem: string): Uint8Array<ArrayBuffer> {
   const b64 = pem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '')
   return b64ToBytes(b64)
 }

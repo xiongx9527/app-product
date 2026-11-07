@@ -127,7 +127,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 - Base：网关地址，如 `http://<host>:<port>`。
 - 数据格式：`application/json`。
-- 参数加密：由网关开关 `PARAM_ENCRYPT` 控制。开启时，请求体/响应体为密文（见下文），关闭时为明文 JSON。
+- 参数加密：由网关开关 `PARAM_ENCRYPT` 控制。开启时，`/api/*` 的请求体/响应体为密文（见下文），关闭时为明文 JSON。
 - 数据库只在网关落地（SQLite），客户端经这些接口读写，不直接写业务数据。
 
 ### 端点
@@ -161,12 +161,21 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 #### 参数加密（PARAM_ENCRYPT=true）
 
-开启后：
+非对称 + 混合加密（**不是**单密钥对称方案）。前后端各持一对 RSA-2048 公私钥（共 2 对）：
 
-- 请求：HTTP body 直接是 base64 密文（AES-256-GCM，密钥 `ENCRYPTION_KEY`），不再包 JSON。
-- 响应：`{ "encrypted": true, "data": "<base64 密文>" }`，解密后得到原本的 JSON body。
+- **请求方向（前端 → 后端）**：前端用「后端 RSA 公钥」加密，后端用「后端 RSA 私钥」解密。
+- **响应方向（后端 → 前端）**：后端用「前端 RSA 公钥」加密，前端用「前端 RSA 私钥」解密。
 
-关闭时均为明文 JSON，便于开发与调试。
+RSA 只能加密小块数据，故采用混合加密：每次随机生成 `AES-256-GCM` 会话密钥加密业务数据，再用 RSA 公钥加密该会话密钥，三者封装为如下 JSON「信封」（字段均为 base64）：
+
+```json
+{ "k": "<RSA 加密后的会话密钥>", "iv": "<GCM 初始向量>", "t": "<GCM 认证标签>", "d": "<GCM 密文(不含 tag)>" }
+```
+
+- 请求：`POST/PUT` 的 HTTP body 直接是该信封 JSON 字符串（不再包业务 JSON）。
+- 响应：`{ "encrypted": true, "data": "<信封 JSON 字符串>" }`，前端用「前端 RSA 私钥」解开信封得到原本的 JSON body。
+
+密钥由 dev 脚本一次性随机生成（`scripts/dev-server.mjs` 生成到 `.rsa-keys.json` 并分别注入两端的环境变量：前端 `VITE_RSA_FRONTEND_PRIVATE_KEY` / `VITE_RSA_BACKEND_PUBLIC_KEY`，后端 `RSA_BACKEND_PRIVATE_KEY` / `RSA_FRONTEND_PUBLIC_KEY`），**两套半钥必须来自同一生成结果**，否则解密失败。关闭时（默认）均为明文 JSON，便于开发与调试。
 
 ### 错误码（REST 层）
 
