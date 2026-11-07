@@ -65,7 +65,6 @@ export const CAPABILITIES: Array<{
   { key: 'llm', title: '大模型 LLM', subtitle: '生成回复；复杂任务可走 AgentScope 网关' },
   { key: 'asr', title: '语音识别 ASR', subtitle: '把麦克风音频转成文字' },
   { key: 'tts', title: '语音合成 TTS', subtitle: '把回复文字转成语音' },
-  { key: 'music', title: '音乐播放源', subtitle: '电台 / 网易云 / QQ / Spotify' },
 ]
 
 /** 全局响应式配置，页面直接改，保存时整体落本地存储 */

@@ -11,11 +11,25 @@ interface LocationSnapshot {
 /** 网关 WebSocket 地址解析：
  * 优先级：设置页填的 gatewayWsUrl > 构建期 VITE_GATEWAY_WS_URL > 内置默认本机地址。
  * 每次连接都重新解析，使设置页改地址后在下一次重连生效。 */
-function resolveGatewayUrl(): string {
+export function resolveGatewayUrl(): string {
   const configured = appConfig.gatewayWsUrl?.trim()
   if (configured) return configured
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
   return env?.VITE_GATEWAY_WS_URL ?? 'ws://127.0.0.1:8787/ws'
+}
+
+/**
+ * 由网关 WS 地址派生 HTTP 基地址（scheme://host:port），供 /music/stream 代理拼 URL。
+ * 不依赖全局 URL（App/Harmony 的 JS 引擎未必有），纯字符串处理。
+ */
+export function resolveGatewayHttpBase(): string {
+  let http = resolveGatewayUrl()
+    .replace(/^wss:\/\//, 'https://')
+    .replace(/^ws:\/\//, 'http://')
+  const schemeEnd = http.indexOf('://') + 3
+  const slash = http.indexOf('/', schemeEnd)
+  if (slash !== -1) http = http.slice(0, slash)
+  return http
 }
 
 /**
@@ -145,11 +159,7 @@ export class WebSocketTransport implements AssistantTransport {
       timezone: appConfig.timezone,
       // 地图服务商配置（逆地理编码）：客户端设置页选择并填 Key，随会话上报
       geocode: { provider: appConfig.geocode.provider, key: appConfig.geocode.key },
-      // 音乐播放源：选中的厂商 + 该厂商参数（与 asr/llm/tts 同构的 BYOK 配置）
-      music: {
-        provider: appConfig.music.provider,
-        params: appConfig.music.byProvider[appConfig.music.provider] ?? {},
-      },
+      // 音乐为网关内置能力，无需客户端上报配置
       location: this.lastLocation ?? undefined,
       mode,
     })

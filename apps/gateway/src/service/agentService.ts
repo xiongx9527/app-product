@@ -13,6 +13,7 @@ import type { Lang } from '../protocol'
 import type { LlmConfig } from '../config'
 import { createToolkit, type LocationProvider, type ReverseGeocoder, type MediaEmitter } from './tools'
 import type { MusicSource } from './music/types'
+import { ChannelSplitter } from './channelSplitter'
 
 /** 对话智能体服务：按语言本地化系统提示，流式回传文本增量。 */
 export interface AgentService {
@@ -74,16 +75,25 @@ export function createAgentService(
   return {
     async reply(userText, onDelta, onThinking) {
       const stream = agent.replyStream({ msgs: UserMsg({ name: 'user', content: userText }) })
+      // 推理模型会把思考过程连同控制符当作普通文本流下发，这里按 channel 拆开：
+      // 思考走 onThinking（不进 TTS），最终答案走 onDelta。
       let full = ''
+      const splitter = new ChannelSplitter(
+        (s) => {
+          full += s
+          onDelta(s)
+        },
+        (s) => onThinking?.(s)
+      )
       for await (const ev of stream) {
         if (ev.type === EventType.TEXT_BLOCK_DELTA) {
-          onDelta(ev.delta)
-          full += ev.delta
+          splitter.push(ev.delta)
         } else if (ev.type === EventType.THINKING_BLOCK_DELTA) {
           // 思考过程只用于界面展示，不参与回复正文与 TTS
           onThinking?.(ev.delta)
         }
       }
+      splitter.end()
       return full
     },
   }

@@ -26,7 +26,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "geocode": { "provider": "tianditu", "key": "客户端天地图 tk" }, "music": { "provider": "soma", "params": { "station": "groovesalad" } } }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "geocode": { "provider": "tianditu", "key": "客户端天地图 tk" } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.end" }
@@ -50,13 +50,11 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `session.start` 的 `geocode` 为客户端选择的位置服务商配置（`provider`: `tianditu` / `tencent` / `amap` / `baidu` + `key`），逆地理编码（坐标→地址）在网关侧据此完成；`key` 留空时退回网关兜底天地图 tk（环境变量 `TIANDITU_TK`）。四家均免费，坐标均为 GCJ-02（天地图、百度除外：天地图网关内部将 GCJ-02 转 WGS-84 再请求；百度用 `coordtype=gcj02ll` 直接收 GCJ-02）。客户端可在设置页选择服务商并填入自有 Key（byok），不填则使用网关兜底。
 
-`session.start` 的 `music` 为客户端选择的音乐播放源（与 asr/llm/tts 同构的 BYOK 配置）：`provider` 为厂商 id，`params` 为该厂商参数。网关据此决定「放什么源」，音乐类工具（`play_music` / `stop_music` / `search_music` / `get_lyrics`）只在配置了 `music` 时注册。支持的 `provider`：
-- `soma`：SomaFM 免费电台，`params.station` 为默认频道（如 `groovesalad`）。
-- `custom`：自定义电台，`params.streamUrl` 为可直接播放的音频流地址，`params.title` 为展示标题（可选）。
-- `netease` / `qq`：走公开 Web API 搜歌取直链（无需 Key，限速/部分歌曲无直链，属尽力而为）。
-- `spotify`：需 `params.clientId` / `params.clientSecret`，播放 30 秒试听。
+音乐播放为网关内置能力，**不再由客户端配置**：`session.start` 不含 `music` 字段。网关始终注册音乐工具（`play_music` / `stop_music` / `pause_music` / `resume_music` / `next_music`），按请求类型自动分流——
+- 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台（直接 mp3 流，无需 Key）；
+- 具体歌名/歌手请求 → 百度搜索引擎兜底，抽到 B 站音轨返回可播放直链（视频也能播放）。
 
-`music` 缺省时不注册音乐工具，`play_music` 等不会被调用。
+两边都搜不到时，工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。B 站直链带防盗链，由网关 `/music/stream` 代理转发给客户端。
 
 服务端 → 客户端：
 

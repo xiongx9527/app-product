@@ -22,14 +22,6 @@ export interface GeocodeInfo {
   key: string
 }
 
-/** 音乐播放源配置：客户端设置页选择厂商并填参数，随会话上报（BYOK，与 asr/llm/tts 同构）。 */
-export interface MusicInfo {
-  /** 播放源厂商：soma=免费网络电台；custom=自定义电台 URL；netease/qq/spotify=正版音乐服务 */
-  provider: string
-  /** 该厂商的参数字典（如 custom 的 streamUrl，或 spotify 的 clientId/clientSecret），由设置页按厂商字段保存 */
-  params: Record<string, string | number | boolean>
-}
-
 /** 客户端 → 服务端（文本控制帧） */
 export type ClientMessage =
   | {
@@ -42,8 +34,6 @@ export type ClientMessage =
       location?: LocationInfo
       /** 地图服务商配置（逆地理编码用）：客户端设置页选择并填 Key，随会话上报 */
       geocode?: GeocodeInfo
-      /** 音乐播放源配置：客户端设置页选择厂商并填参数，随会话上报；智能体据此下发 media.play 的播放地址 */
-      music?: MusicInfo
       /** wake=只做 ASR（用于本地唤醒词检测，不跑 LLM/TTS）；dialog=完整对话，默认 */
       mode?: 'wake' | 'dialog'
     }

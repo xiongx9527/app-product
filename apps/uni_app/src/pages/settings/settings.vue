@@ -28,12 +28,11 @@ const testing = reactive<Record<Capability, boolean>>({
   asr: false,
   llm: false,
   tts: false,
-  music: false,
 })
 const results = reactive<
   Record<Capability, { ok: boolean; message: string } | null>
->({ asr: null, llm: null, tts: null, music: null })
-/** 音乐播放源没有统一的探测地址，不提供「测试连接」 */
+>({ asr: null, llm: null, tts: null })
+/** 音乐为网关内置能力，无客户端配置，不在此列出 */
 const testableCapabilities: Capability[] = ['asr', 'llm', 'tts']
 /** 各厂商拉取到的模型列表，key = `${capability}.${providerId}`；有值时「模型」渲染成下拉 */
 const modelOptions = reactive<Record<string, string[]>>({})

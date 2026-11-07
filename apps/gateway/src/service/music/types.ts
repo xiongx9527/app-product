@@ -13,19 +13,10 @@ export interface MusicSource {
   resolve(genre?: string): ResolvedTrack | Promise<ResolvedTrack>
   /**
    * 换一首 / 下一首 / 换个风格：返回与当前不同的曲目。
-   * 不传 genre 表示「同类型换一首」；传 genre 表示「换个风格」（电台按标签换台，正版服务换搜索词）。
-   * 可选——没有「下一首」概念的源（如固定自定义流）可不实现，调用方据此回退到 resolve。
+   * 不传 genre 表示「同类型换一首」；传 genre 表示「换个风格」。
+   * 可选——没有「下一首」概念的源可不实现，调用方据此回退到 resolve。
    */
   next?(genre?: string): ResolvedTrack | Promise<ResolvedTrack>
-}
-
-/** 音乐播放源厂商：与客户端设置页的厂商 id 对齐。 */
-export type MusicProviderKind = 'soma' | 'custom' | 'netease' | 'qq' | 'spotify'
-
-/** 客户端上报的音乐配置（已拍平为当前选中厂商的参数）。 */
-export interface MusicConfig {
-  provider: MusicProviderKind
-  params: Record<string, string | number | boolean>
 }
 
 /** 可注入的 fetch：便于单测用桩替换，缺省走全局 fetch。 */
@@ -34,6 +25,8 @@ export interface MusicFetcher {
     ok: boolean
     status: number
     json(): Promise<unknown>
+    /** 跟随重定向后的最终地址；用于从百度 /link?url= 跳转里拿真实视频页地址 */
+    url?: string
     text(): Promise<string>
   }>
 }
@@ -67,6 +60,16 @@ export function genreToKeyword(genre?: string): string {
   }
   kw = kw.replace(/的/g, ' ').replace(/\s+/g, ' ').trim()
   return kw || '轻音乐'
+}
+
+/**
+ * 判断用户的描述是否“风格/氛围”请求（轻音乐/电子/爵士…），而非具体歌名/歌手。
+ * 聚合音乐源据此分流：风格走 SomaFM 电台，点歌走百度搜索兜底。
+ */
+export function isGenreRequest(genre?: string): boolean {
+  if (!genre) return true
+  const trimmed = genre.trim()
+  return GENRE_KEYWORDS.some((entry) => entry.match.test(trimmed))
 }
 
 /** 用户口头指令里常见的填充词，从歌名里剔除（不会出现在歌名/歌手名中）。 */

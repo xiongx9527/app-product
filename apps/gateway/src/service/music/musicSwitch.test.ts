@@ -6,7 +6,6 @@ import type { AsrProvider } from '../../asr'
 import type { TtsProvider } from '../../tts'
 import type { DataService } from '../dataService'
 import type { MusicSource } from './types'
-import type { MusicInfo } from '../../protocol'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -14,7 +13,7 @@ function sleep(ms: number): Promise<void> {
 
 interface Harness {
   service: VoiceSessionService
-  /** 每次会话 start 时传给 agentFactory 的 musicSource，用来验证切换 */
+  /** 每次会话 start 时传给 agentFactory 的 musicSource，用来验证始终可用 */
   captured: Array<MusicSource | undefined>
 }
 
@@ -53,46 +52,34 @@ function createHarness(): Harness {
   return { service: new VoiceSessionService(deps), captured }
 }
 
-async function startWith(service: VoiceSessionService, music?: MusicInfo): Promise<void> {
+async function startSession(service: VoiceSessionService): Promise<void> {
   service.handleText(
-    JSON.stringify({ type: 'session.start', sessionId: 's', lang: 'zh-CN', mode: 'dialog', music })
+    JSON.stringify({ type: 'session.start', sessionId: 's', lang: 'zh-CN', mode: 'dialog' })
   )
   await sleep(5)
 }
 
-describe('音乐播放源切换', () => {
-  it('切换 provider 后，新会话用对应的播放源解析出不同地址', async () => {
+describe('音乐播放源（无配置、始终可用）', () => {
+  it('每次会话都构造音乐源，音乐工具始终注册', async () => {
     const h = createHarness()
-
-    await startWith(h.service, { provider: 'soma', params: { station: 'sonicuniverse' } })
-    const jazz = await h.captured[0]!.resolve()
-    expect(jazz.channel).toBe('sonicuniverse')
-    expect(jazz.url).toContain('sonicuniverse')
-
-    await startWith(h.service, {
-      provider: 'custom',
-      params: { streamUrl: 'https://my.example/stream.mp3', title: '我的电台' },
-    })
-    const custom = await h.captured[1]!.resolve()
-    expect(custom.url).toBe('https://my.example/stream.mp3')
-    expect(custom.title).toBe('我的电台')
-
-    // 切回 SomaFM 的另一个频道
-    await startWith(h.service, { provider: 'soma', params: { station: 'lush' } })
-    const lush = await h.captured[2]!.resolve()
-    expect(lush.channel).toBe('lush')
-    expect(lush.url).toContain('lush')
+    await startSession(h.service)
+    expect(h.captured[0]).toBeTruthy()
   })
 
-  it('未上报 music 时不构造播放源（音乐工具不注册）', async () => {
+  it('风格请求走 SomaFM（离线可验证）', async () => {
     const h = createHarness()
-    await startWith(h.service, undefined)
-    expect(h.captured[0]).toBeUndefined()
+    await startSession(h.service)
+    const track = await h.captured[0]!.resolve('放点爵士')
+    expect(track.url).toContain('somafm.com')
   })
 
-  it('未知 provider 回退为不构造播放源', async () => {
+  it('换一首在不传风格时返回与当前不同的 SomaFM 频道', async () => {
     const h = createHarness()
-    await startWith(h.service, { provider: 'not-exist', params: {} })
-    expect(h.captured[0]).toBeUndefined()
+    await startSession(h.service)
+    const source = h.captured[0]!
+    const first = await source.resolve('放点爵士')
+    const second = await source.next!('放点爵士')
+    expect(second.channel).not.toBe(first.channel)
   })
 })
+

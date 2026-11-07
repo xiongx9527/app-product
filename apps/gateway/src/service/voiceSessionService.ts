@@ -50,7 +50,7 @@ export class VoiceSessionService {
   private location: LocationInfo | null = null
   /** 天地图逆地理编码（配置了 tk 才有），把经纬度翻成中文地址 */
   private reverseGeocoder: ReverseGeocoder | undefined = undefined
-  /** 音乐播放源：按客户端上报的 music 配置构造；未配置则音乐工具不注册 */
+  /** 音乐播放源：无配置、始终可用（SomaFM 电台 + 百度搜索兜底），随会话构建 */
   private musicSource: MusicSource | undefined = undefined
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
@@ -118,8 +118,8 @@ export class VoiceSessionService {
         this.location = msg.location ?? null
         // 逆地理编码：优先用客户端上报的 geocode 配置；没上报则退回网关兜底天地图 tk
         this.reverseGeocoder = this.buildGeocode(msg.geocode)
-        // 音乐播放源：按客户端上报的 music 配置构造；未配置（旧客户端/未设置）则音乐工具不注册
-        this.musicSource = createMusicSource(msg.music)
+        // 音乐播放源：无配置、始终可用（SomaFM 电台 + 百度搜索兜底），音乐工具始终注册
+        this.musicSource = createMusicSource()
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, this.reverseGeocoder)
         break
       case 'session.location':
@@ -161,8 +161,8 @@ export class VoiceSessionService {
         channel: track.channel,
       })
     } catch {
-      // 解析失败（网络/无直链等）：交由 withSomaFallback 时已尽量兜底；这里静默，
-      // 客户端会保留上一首而不打断。
+      // 解析失败（SomaFM/百度都搜不到）：静默忽略，客户端保留上一首而不打断，
+      // 由上层（工具/口播）统一告知用户「没找到这首歌」。
     }
   }
 

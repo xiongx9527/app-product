@@ -1,62 +1,33 @@
-import type { MusicProviderKind, MusicSource } from './types'
-import type { MusicInfo } from '../../protocol'
+import type { MusicFetcher, MusicSource } from './types'
+import { isGenreRequest } from './types'
 import { createSomaSource } from './somaSource'
-import { createCustomSource } from './customSource'
-import { createNeteaseSource } from './neteaseSource'
-import { createQqSource } from './qqSource'
-import { createSpotifySource } from './spotifySource'
+import { createBaiduSource } from './baiduSource'
 
-export type { MusicProviderKind, MusicSource, MusicInfo }
+export type { MusicSource }
 
-/**
- * 按客户端上报的音乐配置构造播放源；与 geocode 的 createGeocodeAdapter 同构。
- * 未配置或厂商未知时返回 undefined，调用方据此不注册音乐工具。
- */
-export function createMusicSource(config?: MusicInfo): MusicSource | undefined {
-  if (!config?.provider) return undefined
-  const kind = config.provider as MusicProviderKind
-  const params = config.params ?? {}
-  switch (kind) {
-    case 'soma':
-      return createSomaSource(params)
-    case 'custom':
-      return withSomaFallback(createCustomSource(params))
-    case 'netease':
-      return withSomaFallback(createNeteaseSource(params))
-    case 'qq':
-      return withSomaFallback(createQqSource(params))
-    case 'spotify':
-      return withSomaFallback(createSpotifySource(params))
-    default:
-      return undefined
-  }
-}
+const nativeFetch: MusicFetcher = (url, init) =>
+  fetch(url, { method: init?.method, headers: init?.headers, body: init?.body }) as unknown as ReturnType<MusicFetcher>
 
 /**
- * 给非 SomaFM 的播放源包一层兜底：解析失败（网络/403/无直链/无 Key）或拿不到
- * 可播放地址时，自动回退到 SomaFM 免费电台，保证「播放音乐」总能出声，
- * 而不是甩一句「无法播放 / 找不到」。SomaFM 本身无需兜底。
+ * 无配置的音乐聚合源，始终可用（不再有「未配置则不注册音乐工具」的概念）。
+ * 分发规则：
+ *  - 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台；
+ *  - 具体歌名/歌手请求 → 百度搜索引擎兜底，抽到 B 站音轨返回可播放直链。
+ * 两边都搜不到时由上层工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。
+ * 直链带防盗链，由网关 /music/stream 代理转发给客户端。
  */
-export function withSomaFallback(primary: MusicSource): MusicSource {
-  const fallback = createSomaSource()
+export function createMusicSource(fetcher: MusicFetcher = nativeFetch): MusicSource {
+  const soma = createSomaSource()
+  const baidu = createBaiduSource({}, fetcher)
+  const pick = (genre?: string): MusicSource => (isGenreRequest(genre) ? soma : baidu)
   return {
     async resolve(genre?: string) {
-      try {
-        const track = await primary.resolve(genre)
-        if (track && track.url) return track
-      } catch {
-        // 解析失败，落到下面的兜底
-      }
-      return fallback.resolve(genre)
+      const source = pick(genre)
+      return source.resolve(genre)
     },
     async next(genre?: string) {
-      try {
-        const track = primary.next ? await primary.next(genre) : await primary.resolve(genre)
-        if (track && track.url) return track
-      } catch {
-        // 换一首失败，同样落到兜底电台
-      }
-      return fallback.next ? fallback.next(genre) : fallback.resolve(genre)
+      const source = pick(genre)
+      return source.next ? source.next(genre) : source.resolve(genre)
     },
   }
 }

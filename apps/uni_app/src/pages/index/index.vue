@@ -727,22 +727,6 @@ function onOrbTap(): void {
   word-break: break-word;
 }
 
-.mini-action {
-  margin: 0;
-  padding: 0 12px;
-  height: 32px;
-  line-height: 32px;
-  border-radius: 10px;
-  font-size: 12px;
-  color: #e8eaf6;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-
-.mini-action::after {
-  border: none;
-}
-
 .lyrics {
   display: flex;
   flex-direction: column;

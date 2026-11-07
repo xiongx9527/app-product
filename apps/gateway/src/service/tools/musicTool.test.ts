@@ -58,6 +58,25 @@ describe('音乐控制工具', () => {
     expect(msg).toContain('歌A')
   })
 
+  it('play_music 搜不到时告知找不到且不下发 media.play（不乱播电台）', async () => {
+    const source: MusicSource = { resolve: async () => { throw new Error('not found') } }
+    const { directives, emit } = collect()
+    const msg = await createMusicTool('zh-CN', source, emit).call({ genre: '不存在的歌' })
+    expect(directives).toEqual([])
+    expect(msg).toContain('没找到这首歌')
+  })
+
+  it('next_music 搜不到时也告知找不到且不下发 media.play', async () => {
+    const source: MusicSource = {
+      resolve: async () => sample,
+      next: async () => { throw new Error('not found') },
+    }
+    const { directives, emit } = collect()
+    const msg = await createNextMusicTool('zh-CN', source, emit).call({ genre: '不存在的歌' })
+    expect(directives).toEqual([])
+    expect(msg).toContain('没找到这首歌')
+  })
+
   it('next_music 优先用 source.next 换一首，并下发 media.play', async () => {
     const nextTrack: ResolvedTrack = { url: 'https://x/2.mp3', title: '歌B', channel: 'soma' }
     const source: MusicSource = {

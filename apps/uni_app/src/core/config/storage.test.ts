@@ -116,27 +116,16 @@ describe('app config', () => {
     })
   })
 
-  it('音乐：默认为 SomaFM，且各厂商参数预置', () => {
+  it('音乐为网关内置能力：配置不再含 music 字段', () => {
     const config = createDefaultConfig()
-    expect(config.music.provider).toBe('soma')
-    expect(config.music.byProvider.soma.station).toBe('groovesalad')
-    expect(Object.keys(config.music.byProvider)).toEqual(
-      PROVIDERS.music.map((item) => item.id)
-    )
+    expect('music' in config).toBe(false)
+    expect(Object.keys(PROVIDERS)).toEqual(['asr', 'llm', 'tts'])
   })
 
-  it('音乐：自定义电台参数被保留，未知厂商回退 SomaFM', () => {
+  it('旧的 music 配置被忽略（脏存档不复活音乐设置）', () => {
     const config = normalizeConfig({
-      music: {
-        provider: 'custom',
-        byProvider: { custom: { streamUrl: 'https://x/y.mp3', title: '我的电台' } },
-      },
+      music: { provider: 'custom', byProvider: { custom: { streamUrl: 'https://x' } } },
     })
-    expect(config.music.provider).toBe('custom')
-    expect(config.music.byProvider.custom.streamUrl).toBe('https://x/y.mp3')
-    expect(config.music.byProvider.custom.title).toBe('我的电台')
-
-    const fallback = normalizeConfig({ music: { provider: 'nope' } })
-    expect(fallback.music.provider).toBe('soma')
+    expect('music' in config).toBe(false)
   })
 })

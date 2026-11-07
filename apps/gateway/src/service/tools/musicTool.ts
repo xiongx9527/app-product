@@ -37,11 +37,18 @@ export function createMusicTool(
       genre: z.string().optional().describe('风格，如 轻音乐/电子/爵士/流行'),
     }),
     async call(args: { genre?: string }) {
-      const track = await source.resolve(args?.genre)
-      emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
-      return prefix === 'en'
-        ? `Now playing: ${track.title}. (${track.url})`
-        : `正在为你播放：${track.title}。`
+      try {
+        const track = await source.resolve(args?.genre)
+        emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
+        return prefix === 'en'
+          ? `Now playing: ${track.title}. (${track.url})`
+          : `正在为你播放：${track.title}。`
+      } catch {
+        // 平台与百度都搜不到：明确告知，不播随机电台（避免乱播放）
+        return prefix === 'en'
+          ? `Sorry, I couldn't find that song. Try another name or artist?`
+          : `没找到这首歌，换个名字或歌手试试？`
+      }
     },
   }
 }
@@ -125,11 +132,18 @@ export function createNextMusicTool(
       genre: z.string().optional().describe('新风格，如 爵士/电子/流行；不传则同类型换一首'),
     }),
     async call(args: { genre?: string }) {
-      const track = await (source.next ? source.next(args?.genre) : source.resolve(args?.genre))
-      emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
-      return prefix === 'en'
-        ? `Now playing: ${track.title}. (${track.url})`
-        : `已为你切换到：${track.title}。`
+      try {
+        const track = await (source.next ? source.next(args?.genre) : source.resolve(args?.genre))
+        emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
+        return prefix === 'en'
+          ? `Now playing: ${track.title}. (${track.url})`
+          : `已为你切换到：${track.title}。`
+      } catch {
+        // 平台与百度都搜不到：明确告知，不播随机电台（避免乱播放）
+        return prefix === 'en'
+          ? `Sorry, I couldn't find that song. Try another name or artist?`
+          : `没找到这首歌，换个名字或歌手试试？`
+      }
     },
   }
 }
