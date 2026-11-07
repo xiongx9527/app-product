@@ -13,10 +13,9 @@ H5 / 微信小程序不是当前目标，只保留可编译与降级能力，不
 ## 常用命令
 
 ```bash
-cd apps/uni_app
+cd xiaoxiong-app/uni_app
 npm run test        # vitest，必须全绿
 npm run type-check  # vue-tsc，必须零报错
-npm run dev:h5      # 浏览器调试，最快的可视验证
 npm run dev:app     # App，需要 HBuilderX / 自定义基座
 npm run dev:app-harmony
 ```
@@ -26,7 +25,7 @@ npm run dev:app-harmony
 ## 目录与依赖方向
 
 ```
-apps/uni_app/src/
+xiaoxiong-app/uni_app/src/
 ├── core/            # 与业务无关，禁止依赖 features / pages
 │   ├── assistant/   # 纯状态机 + 单测
 │   ├── audio/       # 本地提示音、后续采集与播放
@@ -55,9 +54,9 @@ apps/uni_app/src/
 ### 语言与国际化
 
 - 默认中文 `zh-CN`，语言可配置（`core/config` 的 `language`）。
-- **前端（uni-app）与后端（网关 `apps/gateway`）都必须支持国际化（i18n）**，禁止在代码里硬编码中文用户文案。
+- **前端（uni-app）与后端（网关 `xiaoxiong-app/gateway`）都必须支持国际化（i18n）**，禁止在代码里硬编码中文用户文案。
 - 前端：文案走 `core/i18n` 消息目录，按 `language` 取值；不引入 `vue-i18n`。
-- 后端：智能体系统提示、下发给客户端的 `error` 文案等都按 `session.start` 的 `lang` 本地化，文案进 `apps/gateway/src/i18n.ts` 的目录，按 `lang` 取值。
+- 后端：智能体系统提示、下发给客户端的 `error` 文案等都按 `session.start` 的 `lang` 本地化，文案进 `xiaoxiong-app/gateway/src/i18n.ts` 的目录，按 `lang` 取值。
 - 唤醒词、ASR、TTS 的默认语言跟随全局配置；厂商参数留空即继承。
 
 ### 配置
@@ -73,7 +72,7 @@ apps/uni_app/src/
 ### 本地数据
 
 - 小、同步读的配置：`uni.setStorageSync` / `getStorageSync`。
-- **设备数据、会话记录、命令日志的权威存储移到 Node 网关（`apps/gateway` 的 SQLite），客户端经 REST 接口读写**；`core/database` 仅作离线缓存或降级，不直接写业务数据。
+- **设备数据、会话记录、命令日志的权威存储移到 Node 网关（`xiaoxiong-app/gateway` 的 SQLite），客户端经 REST 接口读写**；`core/database` 仅作离线缓存或降级，不直接写业务数据。
 - SQL（网关侧 Node 端）必须用参数化查询，禁止把外部字符串直接拼进 SQL。
 - 鸿蒙 / H5 / 小程序没有 `plus.sqlite`，`isSupported()` 为 false，调用方需降级。
 - 设备数据默认存本地；付费用户后续可同步云端，云端不是当前实现。
@@ -86,7 +85,7 @@ apps/uni_app/src/
 
 ### 网关（后端 Node.js）
 
-- 后端是独立 Node 服务 `apps/gateway`，是客户端**唯一**允许的通信对象：语音走 WebSocket，数据走 REST，第三方能力（ASR / LLM / TTS / 数据库）只在网关这一侧落地。
+- 后端是独立 Node 服务 `xiaoxiong-app/gateway`，是客户端**唯一**允许的通信对象：语音走 WebSocket，数据走 REST，第三方能力（ASR / LLM / TTS / 数据库）只在网关这一侧落地。
 - **前端不得直接调用任何第三方服务**，一律经 Node 网关转发；客户端只与网关通信。
 - 数据库只在 Node 端落地（SQLite via `node:sqlite`）；客户端经 REST 读写，不再直接写业务数据到 `plus.sqlite`（`core/database` 仅作离线缓存/降级）。
 - 所有后端接口需提供 Swagger / OpenAPI 文档（网关 `/docs`），新增或修改接口先更文档。

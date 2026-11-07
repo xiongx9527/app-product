@@ -3,9 +3,9 @@
 //
 // 兼容 Windows / macOS / Linux：用 Node child_process 的 detached + unref 让子进程
 // 脱离当前终端独立存活（等价于 setsid/nohup，但三平台通用）；终止时 Windows 用
-// taskkill、其它平台按进程组用 kill，pid 与日志分别记录在各服务目录。
+// taskkill、其它平台按进程组用 kill。pid 与日志统一放在 <apps>/logs 下。
 //
-// 用法（在 apps/gateway 目录下，或任意位置用绝对/相对路径调用本脚本）：
+// 用法（任意位置运行本脚本即可，它会自动向上找到 apps 目录）：
 //   node scripts/dev-server.mjs                 # 等同 start（启动全部）
 //   node scripts/dev-server.mjs start           # 启动全部（热重载）
 //   node scripts/dev-server.mjs stop            # 停止全部
@@ -13,9 +13,9 @@
 //   node scripts/dev-server.mjs status          # 查看各服务是否在跑
 //   node scripts/dev-server.mjs log             # 打印各服务日志尾部
 //   node scripts/dev-server.mjs start uniapp    # 只启动某个服务（gateway / uniapp）
-//   node scripts/dev-server.mjs log gateway     # 只看某个服务日志
 //
-// 说明：uni_app 默认用 dev:h5（Vite，跨平台可跑、HMR）；真机 App 仍走 HBuilderX。
+// 说明：uni_app 默认用 dev:app（uni -p app，仅 Android / iOS）；真机部署走 HBuilderX。
+// 日志与 pid 文件都在 apps/logs 下，已被 .gitignore 忽略，不会入库。
 
 import { spawn } from 'node:child_process'
 import {
@@ -25,34 +25,49 @@ import {
   unlinkSync,
   appendFileSync,
   openSync,
+  mkdirSync,
 } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-// 脚本位于 apps/gateway/scripts/，向上三级到仓库根
-const repoRoot = join(__dirname, '..', '..', '..')
 
-/** 受管服务清单：新增服务只需在这里加一项 */
+/** 向上查找同时含 gateway 与 uni_app 子目录的「apps 目录」——无论它叫 apps 还是
+ *  xiaoxiong-app、也不管本脚本被放在仓库何处都能定位；找不到则回退为脚本所在目录的父目录。 */
+function findAppsDir() {
+  let dir = __dirname
+  while (true) {
+    if (existsSync(join(dir, 'gateway')) && existsSync(join(dir, 'uni_app'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) break // 走到文件系统根
+    dir = parent
+  }
+  return dirname(__dirname)
+}
+
+const appsDir = findAppsDir()
+const logsDir = join(appsDir, 'logs')
+
+/** 受管服务清单：新增服务只需在这里加一项；cwd 用 appsDir 拼接，天然适配目录改名。 */
 const services = [
   {
     key: 'gateway',
     name: '网关 (gateway / nodejs)',
-    cwd: join(repoRoot, 'apps', 'gateway'),
+    cwd: join(appsDir, 'gateway'),
     script: 'dev', // tsx watch，热重载
   },
   {
     key: 'uniapp',
     name: '前端 (uni_app)',
-    cwd: join(repoRoot, 'apps', 'uni_app'),
-    script: 'dev:h5', // uni + Vite，HMR 热更新；真机 App 仍需 HBuilderX
+    cwd: join(appsDir, 'uni_app'),
+    script: 'dev:app', // uni -p app，仅 Android / iOS；真机部署走 HBuilderX
   },
 ]
 
 const isWin = process.platform === 'win32'
 const npmBin = isWin ? 'npm.cmd' : 'npm'
-const pidPath = (s) => join(s.cwd, `.dev-${s.key}.pid`)
-const logPath = (s) => join(s.cwd, `dev-${s.key}.log`)
+const pidPath = (s) => join(logsDir, `.dev-${s.key}.pid`)
+const logPath = (s) => join(logsDir, `dev-${s.key}.log`)
 
 /** 进程是否存在：signal 0 只探测、不发送真实信号。Windows 上无权限也可能抛 EPERM，算存在。 */
 function isAlive(pid) {
@@ -78,6 +93,7 @@ function startOne(s) {
     console.log(`${s.name} 已在运行 (pid=${existing})，无需重复启动。日志：${logPath(s)}`)
     return
   }
+  mkdirSync(logsDir, { recursive: true }) // 确保日志目录存在，避免 ENOENT
   const file = logPath(s)
   appendFileSync(file, `\n=== start @ ${new Date().toISOString()} ===\n`)
   // 同步开 fd 再传入 stdio，避免 WriteStream 异步打开时 fd 为 null 导致 spawn 失败
@@ -96,6 +112,16 @@ function startOne(s) {
   console.log(`${s.name} 已后台启动（热重载），pid=${child.pid}`)
   console.log(`  日志：${file}`)
   console.log(`  停止：node scripts/dev-server.mjs stop ${s.key}`)
+  // 启动后把访问地址打出来，省得再去翻日志/猜端口
+  if (s.key === 'gateway') {
+    const port = Number(process.env.PORT ?? 8787)
+    console.log(`  访问：http://localhost:${port}`)
+    console.log(`        WebSocket 同端口；Swagger 文档：http://localhost:${port}/docs`)
+  } else if (s.key === 'uniapp') {
+    console.log(`  访问：dev:app 是 Android/iOS 原生打包模式，无浏览器端口。`)
+    console.log(`        真机/模拟器请用 HBuilderX「运行到手机或模拟器」；`)
+    console.log(`        浏览器预览请改用：cd ${s.cwd} && npm run dev:h5`)
+  }
 }
 
 function stopOne(s) {
@@ -144,8 +170,7 @@ function logOne(s, tailLines = 60) {
   }
   const text = readFileSync(file, 'utf8')
   const lines = text.split('\n')
-  const slice = lines.slice(-tailLines)
-  console.log(slice.join('\n'))
+  console.log(lines.slice(-tailLines).join('\n'))
 }
 
 const arg = process.argv[2] ?? 'start'

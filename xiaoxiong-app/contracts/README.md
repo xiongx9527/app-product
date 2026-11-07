@@ -1,6 +1,8 @@
 # 客户端接口契约
 
-本目录是 Flutter / uni-app / 未来其他客户端与服务端之间的**唯一协议来源**。协议变更先改这里，再改客户端与服务端。
+本目录是 uni-app / 未来其他客户端与服务端之间的**唯一协议来源**。协议变更先改这里，再改客户端与服务端。
+
+> 网关（`xiaoxiong-app/gateway`）是客户端**唯一**允许通信的后端。前端不得直接调用第三方服务，所有数据读写都走这里。接口同时提供 Swagger 文档：`/docs`（可视化）、`/api/openapi.json`。
 
 ## 传输
 
@@ -52,7 +54,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 音乐播放为网关内置能力，**不再由客户端配置**：`session.start` 不含 `music` 字段。网关始终注册音乐工具（`play_music` / `stop_music` / `pause_music` / `resume_music` / `next_music`），按请求类型自动分流——
 - 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台（直接 mp3 流，无需 Key）；
-- 具体歌名/歌手请求 → 百度搜索引擎兜底，抽到 B 站音轨返回可播放直链（视频也能播放）。
+- 具体歌名/歌手请求 → B 站原生搜索 API 兜底（WBI 签名），命中视频后抽取音轨返回可播放直链（视频也能播放）。
 
 两边都搜不到时，工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。B 站直链带防盗链，由网关 `/music/stream` 代理转发给客户端。
 
@@ -105,7 +107,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 用户改用「打断」按钮；冷却结束自动恢复并下发 `audio.duplex: full`。
 客户端收到 `half` 时应在界面上说明，避免用户以为语音失灵。
 
-## 错误码
+## 错误码（语音链路）
 
 | code | 含义 | 客户端行为 |
 |---|---|---|
@@ -114,6 +116,61 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 | `LLM_ERROR` | 模型异常 | 提示后回到待唤醒 |
 | `RATE_LIMITED` | 限流 | 退避重试，提示稍后再试 |
 | `SESSION_CLOSED` | 会话已关闭 | 清理本地状态，回到待唤醒 |
+
+---
+
+## REST 数据接口
+
+> 语音 WebSocket 协议见上文，本节只覆盖 REST 数据接口。
+
+### 通用约定
+
+- Base：网关地址，如 `http://<host>:<port>`。
+- 数据格式：`application/json`。
+- 参数加密：由网关开关 `PARAM_ENCRYPT` 控制。开启时，请求体/响应体为密文（见下文），关闭时为明文 JSON。
+- 数据库只在网关落地（SQLite），客户端经这些接口读写，不直接写业务数据。
+
+### 端点
+
+#### GET /api/health
+健康检查。
+
+- 响应 `200`：`{ "ok": true }`
+
+#### 会话记录 sessions
+
+- `POST /api/sessions`：新建一条会话记录。
+  - body：`{ "deviceId": string?, "startedAt": number? }`
+  - 响应 `201`：`{ "id": number }`
+- `GET /api/sessions?deviceId=xxx`：列出会话（按 id 倒序，最多 100）。
+  - 响应 `200`：数组，元素含 `id / device_id / started_at / ended_at / created_at`。
+
+#### 设备数据 device-data
+
+- `POST /api/device-data`：写入一条设备数据。
+  - body：`{ "type": string, "payload": object }`
+  - 响应 `201`：`{ "id": number }`
+- `GET /api/device-data?deviceId=xxx`：列出（倒序，最多 200）。
+
+#### 命令日志 command-logs
+
+- `POST /api/command-logs`：写入一条命令日志。
+  - body：`{ "command": string, "result": string }`
+  - 响应 `201`：`{ "id": number }`
+- `GET /api/command-logs?deviceId=xxx`：列出（倒序，最多 200）。
+
+#### 参数加密（PARAM_ENCRYPT=true）
+
+开启后：
+
+- 请求：HTTP body 直接是 base64 密文（AES-256-GCM，密钥 `ENCRYPTION_KEY`），不再包 JSON。
+- 响应：`{ "encrypted": true, "data": "<base64 密文>" }`，解密后得到原本的 JSON body。
+
+关闭时均为明文 JSON，便于开发与调试。
+
+### 错误码（REST 层）
+
+REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 事件。
 
 ## 约束
 

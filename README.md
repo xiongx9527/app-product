@@ -28,27 +28,30 @@
 
 ```
 app-product/
-├── apps/uni_app/           # 客户端
-│   └── src/
-│       ├── core/           # 与业务无关：状态机、唤醒、音频、配置、传输、适配
-│       ├── features/       # 业务编排与页面逻辑
-│       ├── pages/          # 路由页面（index / settings）
-│       └── static/audio/   # 本地招呼与提示音
-├── contracts/              # 客户端 ↔ 服务端消息契约
+├── xiaoxiong-app/
+│   ├── uni_app/            # 客户端
+│   │   └── src/
+│   │       ├── core/       # 与业务无关：状态机、唤醒、音频、配置、传输、适配
+│   │       ├── features/   # 业务编排与页面逻辑
+│   │       ├── pages/      # 路由页面（index / settings）
+│   │       └── static/audio/   # 本地招呼与提示音
+│   ├── gateway/            # 后端 Node 网关（WebSocket 语音 + REST 数据）
+│   ├── scripts/            # 跨平台开发服务器管理器（start/stop/restart/status/log）
+│   └── contracts/          # 客户端 ↔ 服务端消息契约
 └── docs/superpowers/specs/ # 设计文档
 ```
 
 ## 快速开始
 
 ```bash
-cd apps/uni_app
+cd xiaoxiong-app/uni_app
 npm install
-npm run dev:h5        # 浏览器，最快看到界面
+npm run dev:app       # Android / iOS 真机（HBuilderX 自定义基座）
 npm run test          # 状态机 / 唤醒词 / 配置 单测
 npm run type-check
 ```
 
-App 与鸿蒙需要 HBuilderX / DevEco Studio 自定义基座，原生唤醒插件落地后才能在真机验证。详见 `apps/uni_app/README.md`。
+App 与鸿蒙需要 HBuilderX / DevEco Studio 自定义基座，原生唤醒插件落地后才能在真机验证。详见 `xiaoxiong-app/uni_app/README.md`。
 
 ## 配置模型
 
@@ -89,5 +92,5 @@ App 与鸿蒙需要 HBuilderX / DevEco Studio 自定义基座，原生唤醒插�
 
 - 设计文档：`docs/superpowers/specs/2026-11-06-app-product-design.md`
 - 协议契约：`contracts/README.md`
-- 客户端说明：`apps/uni_app/README.md`
+- 客户端说明：`xiaoxiong-app/uni_app/README.md`
 - 协作约定：`AGENTS.md`
