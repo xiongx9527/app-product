@@ -1,7 +1,11 @@
 /**
  * SomaFM 免费网络电台频道表（无需 Key、直接 mp3 流）。
  * 作为「播放音乐」的音频源：用户说“放点轻音乐/电子/爵士”时按标签选台。
- * 流地址为公开 128k mp3，客户端用 <audio>/InnerAudioContext 直接播放，无需 CORS。
+ *
+ * 频道 id 与流地址取自 SomaFM 官方 channels.json / *.pls（2026-11 核对）：
+ * - 直链格式为 `https://ice6.somafm.com/<id>-128-mp3`，ice6 是官方 .pls 里的首选主机；
+ * - 注意 SomaFM 的 Icecast 会拒绝非浏览器 User-Agent（返回 403），H5 的 <audio> 用浏览器 UA 正常；
+ *   原生 App 播放器若 UA 被拒，需要网关代理转发（后续处理）。
  */
 
 export interface SomaChannel {
@@ -18,43 +22,43 @@ export interface SomaChannel {
 /** 默认频道：轻电子/氛围，最百搭 */
 export const DEFAULT_CHANNEL = 'groovesalad'
 
-/** 约 6 个频道，覆盖常见风格 */
+/** 常用频道，覆盖常见风格（id 均为 SomaFM 官方真实频道） */
 export const SOMA_CHANNELS: SomaChannel[] = [
   {
     id: 'groovesalad',
     title: { zh: 'Groove Salad（轻电子/氛围）', en: 'Groove Salad (ambient/electronic)' },
-    url: 'https://ice1.somafm.com/groovesalad-128-mp3',
+    url: 'https://ice6.somafm.com/groovesalad-128-mp3',
     tags: ['轻', '电子', '氛围', '放松', 'ambient', 'electronic', 'chill', 'lofi', '纯音乐'],
   },
   {
     id: 'dronezone',
     title: { zh: 'Drone Zone（极简氛围）', en: 'Drone Zone (minimal ambient)' },
-    url: 'https://ice1.somafm.com/dronezone-128-mp3',
+    url: 'https://ice6.somafm.com/dronezone-128-mp3',
     tags: ['极简', '氛围', 'ambient', 'drone', '睡眠', '冥想'],
   },
   {
     id: 'lush',
     title: { zh: 'Lush（柔和人声）', en: 'Lush (soft vocals)' },
-    url: 'https://ice1.somafm.com/lush-128-mp3',
+    url: 'https://ice6.somafm.com/lush-128-mp3',
     tags: ['人声', '柔和', 'vocal', 'pop', '流行', '轻音乐'],
   },
   {
     id: 'indiepop',
     title: { zh: 'Indie Pop（独立流行）', en: 'Indie Pop' },
-    url: 'https://ice1.somafm.com/indiepop-128-mp3',
+    url: 'https://ice6.somafm.com/indiepop-128-mp3',
     tags: ['独立', '流行', 'indie', 'pop', '摇滚', 'rock'],
   },
   {
-    id: 'jazzgroove',
-    title: { zh: 'Jazz Groove（爵士）', en: 'Jazz Groove' },
-    url: 'https://ice1.somafm.com/jazzgroove-128-mp3',
+    id: 'sonicuniverse',
+    title: { zh: 'Sonic Universe（爵士）', en: 'Sonic Universe (jazz)' },
+    url: 'https://ice6.somafm.com/sonicuniverse-128-mp3',
     tags: ['爵士', 'jazz', '蓝调', 'blues', '萨克斯'],
   },
   {
-    id: 'seven',
-    title: { zh: '7soul（节奏/灵歌）', en: '7soul (soul/R&B)' },
-    url: 'https://ice1.somafm.com/seven-128-mp3',
-    tags: ['灵歌', '节奏', 'soul', 'rnb', 'r&b', '舞曲', 'dance'],
+    id: '7soul',
+    title: { zh: 'Seven Inch Soul（灵歌/节奏）', en: 'Seven Inch Soul (soul/R&B)' },
+    url: 'https://ice6.somafm.com/7soul-128-mp3',
+    tags: ['灵歌', '灵魂乐', '节奏', 'soul', 'rnb', 'r&b', '舞曲', 'dance', '老歌'],
   },
 ]
 

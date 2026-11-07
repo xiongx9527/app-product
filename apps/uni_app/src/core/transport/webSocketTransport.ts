@@ -141,6 +141,11 @@ export class WebSocketTransport implements AssistantTransport {
       timezone: appConfig.timezone,
       // 地图服务商配置（逆地理编码）：客户端设置页选择并填 Key，随会话上报
       geocode: { provider: appConfig.geocode.provider, key: appConfig.geocode.key },
+      // 音乐播放源：选中的厂商 + 该厂商参数（与 asr/llm/tts 同构的 BYOK 配置）
+      music: {
+        provider: appConfig.music.provider,
+        params: appConfig.music.byProvider[appConfig.music.provider] ?? {},
+      },
       location: this.lastLocation ?? undefined,
       mode,
     })

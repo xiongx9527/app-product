@@ -10,8 +10,6 @@ const DESCRIPTIONS: Record<string, string> = {
   en: 'Get and display the lyrics of a song. Call when the user asks for the lyrics of a song, with artist and title. The lyrics are sent to the client for display.',
 }
 
-const noopEmit = (_media: MediaDirective): void => undefined
-
 /** 默认用全局 fetch；测试可注入桩，避免真实联网。 */
 export type Fetcher = (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
 

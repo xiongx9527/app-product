@@ -11,7 +11,8 @@ import { EventType } from '@agentscope-ai/agentscope/event'
 import { messages } from '../i18n'
 import type { Lang } from '../protocol'
 import type { LlmConfig } from '../config'
-import { createToolkit, type LocationProvider, type ReverseGeocoder } from './tools'
+import { createToolkit, type LocationProvider, type ReverseGeocoder, type MediaEmitter } from './tools'
+import type { MusicSource } from './music/types'
 
 /** 对话智能体服务：按语言本地化系统提示，流式回传文本增量。 */
 export interface AgentService {
@@ -58,7 +59,9 @@ export function createAgentService(
   config: { llm: LlmConfig; timeZone?: string },
   lang: Lang,
   locationProvider: LocationProvider = () => null,
-  reverseGeocoder?: ReverseGeocoder
+  reverseGeocoder?: ReverseGeocoder,
+  musicSource?: MusicSource,
+  emit?: MediaEmitter
 ): AgentService {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
@@ -66,7 +69,7 @@ export function createAgentService(
     name: 'Xiong',
     sysPrompt: messages(lang).systemPrompt,
     model,
-    toolkit: createToolkit(lang, config.timeZone, locationProvider, reverseGeocoder),
+    toolkit: createToolkit(lang, config.timeZone, locationProvider, reverseGeocoder, musicSource, emit),
   })
   return {
     async reply(userText, onDelta, onThinking) {

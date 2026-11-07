@@ -1,5 +1,5 @@
-/** 三类能力，配置页与运行时按这个顺序处理 */
-export type Capability = 'asr' | 'llm' | 'tts'
+/** 四类能力，配置页与运行时按这个顺序处理 */
+export type Capability = 'asr' | 'llm' | 'tts' | 'music'
 
 /** 配置值只有这三种，方便存本地 JSON 与做类型收敛 */
 export type ConfigValue = string | number | boolean
@@ -67,4 +67,5 @@ export interface AppConfig {
   asr: CapabilityConfig
   llm: CapabilityConfig
   tts: CapabilityConfig
+  music: CapabilityConfig
 }

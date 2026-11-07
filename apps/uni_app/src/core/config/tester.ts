@@ -117,6 +117,44 @@ async function probe(
   }
 }
 
+/**
+ * 拉取该厂商可用的模型列表，供设置页把「模型」做成下拉选择。
+ * openai 兼容走 GET /models（data[].id）；Ollama 走 GET /api/tags（models[].name）；
+ * 其余厂商没有标准列举接口，返回空数组（调用方保留手填/静态选项）。
+ */
+export async function fetchModelList(
+  capability: Capability,
+  template: ProviderTemplate,
+  values: Record<string, ConfigValue>
+): Promise<string[]> {
+  const baseUrl = baseUrlOf(values)
+  if (!baseUrl) return []
+  const timeout = timeoutOf(values)
+  const header = {
+    'Content-Type': 'application/json',
+    ...authHeader(values),
+  }
+  try {
+    if (capability === 'llm' && template.id === 'ollama') {
+      const response = await request({ url: joinUrl(baseUrl, '/api/tags'), header, timeout })
+      if (!statusOk(response.statusCode)) return []
+      return arrayOf(response.data, 'models')
+        .map((item) => record(item).name)
+        .filter((name): name is string => typeof name === 'string' && name.length > 0)
+    }
+    if (template.id === 'openai-compatible') {
+      const response = await request({ url: joinUrl(baseUrl, '/models'), header, timeout })
+      if (!statusOk(response.statusCode)) return []
+      return arrayOf(response.data, 'data')
+        .map((item) => record(item).id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    }
+    return []
+  } catch {
+    return []
+  }
+}
+
 export async function testConnection(
   capability: Capability,
   template: ProviderTemplate,

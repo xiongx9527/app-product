@@ -78,8 +78,6 @@ export type ServerEvent =
   | { type: 'media.stop' }
   /** 让客户端展示某首歌的歌词 */
   | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
-  /** 预约播放成功回执：minutes 为多久后自动播放，便于客户端提示 */
-  | { type: 'media.scheduled'; minutes: number; channel?: string }
   | { type: 'error'; code: ServerErrorCode; message: string }
 
 /** 契约定义的错误码 */

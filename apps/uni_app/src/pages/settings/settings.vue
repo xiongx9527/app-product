@@ -20,7 +20,7 @@ import {
   type ProviderField,
 } from '@/core/config'
 import { t } from '@/core/i18n'
-import { testConnection } from '@/core/config/tester'
+import { fetchModelList, testConnection } from '@/core/config/tester'
 
 const reveal = reactive<Record<string, boolean>>({})
 const drafts = reactive<Record<string, string>>({})
@@ -28,10 +28,16 @@ const testing = reactive<Record<Capability, boolean>>({
   asr: false,
   llm: false,
   tts: false,
+  music: false,
 })
 const results = reactive<
   Record<Capability, { ok: boolean; message: string } | null>
->({ asr: null, llm: null, tts: null })
+>({ asr: null, llm: null, tts: null, music: null })
+/** 音乐播放源没有统一的探测地址，不提供「测试连接」 */
+const testableCapabilities: Capability[] = ['asr', 'llm', 'tts']
+/** 各厂商拉取到的模型列表，key = `${capability}.${providerId}`；有值时「模型」渲染成下拉 */
+const modelOptions = reactive<Record<string, string[]>>({})
+const fetchingModel = reactive<Record<string, boolean>>({})
 /** 保存/恢复的结果用页面内文字展示，不用浮层 */
 const saveHint = ref('')
 
@@ -121,6 +127,70 @@ function fieldSelectLabel(
     fieldOptions(field).find((option) => option.value === current)?.label ??
     current
   )
+}
+
+/** 仅「模型」这类自由文本字段支持拉取下拉；已是静态 select 的厂商不重复处理 */
+function isModelFetchable(field: ProviderField): boolean {
+  return field.key === 'model' && field.type === 'text'
+}
+
+function modelKey(capability: Capability): string {
+  return `${capability}.${appConfig[capability].provider}`
+}
+
+function modelList(capability: Capability): string[] {
+  return modelOptions[modelKey(capability)] ?? []
+}
+
+function modelSelectIndex(capability: Capability): number {
+  const list = modelList(capability)
+  const current = String(getProviderValues(capability).model ?? '')
+  const index = list.findIndex((item) => item === current)
+  return index < 0 ? 0 : index
+}
+
+/** 从厂商接口拉取模型列表；拉到后把「模型」变成下拉，当前值不在列表则取第一项 */
+async function onFetchModels(capability: Capability): Promise<void> {
+  const key = modelKey(capability)
+  if (fetchingModel[key]) return
+  fetchingModel[key] = true
+  try {
+    const list = await fetchModelList(capability, getProvider(capability), {
+      ...getProviderValues(capability),
+    })
+    if (!list.length) {
+      results[capability] = {
+        ok: false,
+        message: '未获取到模型列表，请检查地址 / Key，或手动填写模型名',
+      }
+      return
+    }
+    modelOptions[key] = list
+    const current = String(getProviderValues(capability).model ?? '')
+    if (!list.includes(current)) {
+      setFieldValue(capability, modelSelectField(list), list[0])
+    }
+    results[capability] = { ok: true, message: `已获取 ${list.length} 个模型` }
+  } finally {
+    fetchingModel[key] = false
+  }
+}
+
+function modelSelectField(list: string[]): ProviderField {
+  return {
+    key: 'model',
+    label: '模型',
+    type: 'select',
+    options: list.map((value) => ({ label: value, value })),
+  }
+}
+
+function onModelSelect(capability: Capability, event: Event): void {
+  const index = Number(eventValue(event))
+  const list = modelList(capability)
+  const value = list[index]
+  if (value === undefined) return
+  setFieldValue(capability, modelSelectField(list), value)
 }
 
 function inputType(field: ProviderField): string {
@@ -243,7 +313,7 @@ function onSave(): void {
     <view class="notice">
       <text class="notice-title">当前模式：自带服务（BYOK）</text>
       <text class="notice-text">
-        登录与计费上线后，付费用户可切换到平台托管，无需配置下面的三项。
+        登录与计费上线后，付费用户可切换到平台托管，无需配置下面的各项。
       </text>
     </view>
 
@@ -281,6 +351,143 @@ function onSave(): void {
         </view>
       </picker>
       <text class="hint">{{ t('settings.timezone.hint') }}</text>
+    </view>
+
+    <view v-for="card in cards" :key="card.key" class="card">
+      <view class="card-head">
+        <text class="card-title">{{ card.title }}</text>
+        <text class="card-sub">{{ card.subtitle }}</text>
+      </view>
+
+      <picker
+        :range="providerLabels(card.key)"
+        :value="providerIndex(card.key)"
+        @change="onProviderChange(card.key, $event)"
+      >
+        <view class="picker-row">
+          <text class="picker-label">厂商</text>
+          <view class="picker-right">
+            <text class="picker-value">{{ card.template.vendor }}</text>
+            <text class="picker-arrow">›</text>
+          </view>
+        </view>
+      </picker>
+
+      <text class="provider-name">{{ card.template.name }}</text>
+      <text v-if="card.template.description" class="provider-desc">
+        {{ card.template.description }}
+      </text>
+
+      <view
+        v-for="field in card.template.fields"
+        :key="field.key"
+        class="field"
+        :class="{ inline: field.type === 'switch' }"
+      >
+        <view class="field-head">
+          <text class="field-label">{{ field.label }}</text>
+          <text
+            v-if="field.type === 'password'"
+            class="field-toggle"
+            @tap="toggleReveal(card.key, field)"
+          >
+            {{ reveal[fieldKey(card.key, field)] ? '隐藏' : '显示' }}
+          </text>
+          <text
+            v-if="isModelFetchable(field)"
+            class="field-toggle"
+            @tap="onFetchModels(card.key)"
+          >
+            {{ fetchingModel[modelKey(card.key)] ? '获取中…' : '获取模型' }}
+          </text>
+        </view>
+
+        <picker
+          v-if="isModelFetchable(field) && modelList(card.key).length"
+          :range="modelList(card.key)"
+          :value="modelSelectIndex(card.key)"
+          @change="onModelSelect(card.key, $event)"
+        >
+          <view class="picker-row compact">
+            <text class="picker-value">
+              {{ String(valueOf(card.key, field) ?? '') || '选择模型' }}
+            </text>
+            <text class="picker-arrow">›</text>
+          </view>
+        </picker>
+
+        <picker
+          v-else-if="field.type === 'select'"
+          :range="fieldLabels(field)"
+          :value="fieldSelectIndex(card.key, field)"
+          @change="onFieldSelect(card.key, field, $event)"
+        >
+          <view class="picker-row compact">
+            <text class="picker-value">
+              {{ fieldSelectLabel(card.key, field) }}
+            </text>
+            <text class="picker-arrow">›</text>
+          </view>
+        </picker>
+
+        <switch
+          v-else-if="field.type === 'switch'"
+          :checked="valueOf(card.key, field) === true"
+          color="#6c8cff"
+          @change="onFieldInput(card.key, field, $event)"
+        />
+
+        <textarea
+          v-else-if="field.type === 'textarea'"
+          class="input textarea"
+          :value="String(valueOf(card.key, field) ?? '')"
+          :placeholder="field.placeholder"
+          auto-height
+          @input="onFieldInput(card.key, field, $event)"
+        />
+
+        <input
+          v-else
+          class="input"
+          :type="inputType(field)"
+          :password="
+            field.type === 'password' && !reveal[fieldKey(card.key, field)]
+          "
+          :value="
+            field.type === 'number'
+              ? drafts[fieldKey(card.key, field)] ??
+                String(valueOf(card.key, field) ?? '')
+              : String(valueOf(card.key, field) ?? '')
+          "
+          :placeholder="field.placeholder"
+          @input="onFieldInput(card.key, field, $event)"
+          @blur="commitNumber(card.key, field)"
+        />
+
+        <text v-if="field.hint" class="field-hint">{{ field.hint }}</text>
+      </view>
+
+      <view class="card-actions">
+        <button
+          v-if="testableCapabilities.includes(card.key)"
+          class="mini-btn"
+          :disabled="testing[card.key]"
+          @tap="runTest(card.key)"
+        >
+          {{ testing[card.key] ? '测试中…' : '测试连接' }}
+        </button>
+        <button class="mini-btn ghost" @tap="onReset(card.key)">
+          恢复默认
+        </button>
+      </view>
+
+      <text
+        v-if="results[card.key]"
+        class="result"
+        :class="{ bad: results[card.key]?.ok === false }"
+      >
+        {{ results[card.key]?.message }}
+      </text>
     </view>
 
     <view class="card">
@@ -335,121 +542,6 @@ function onSave(): void {
         </button>
       </view>
       <text class="hint">{{ t('settings.gateway.hint') }}</text>
-    </view>
-
-    <view v-for="card in cards" :key="card.key" class="card">
-      <view class="card-head">
-        <text class="card-title">{{ card.title }}</text>
-        <text class="card-sub">{{ card.subtitle }}</text>
-      </view>
-
-      <picker
-        :range="providerLabels(card.key)"
-        :value="providerIndex(card.key)"
-        @change="onProviderChange(card.key, $event)"
-      >
-        <view class="picker-row">
-          <text class="picker-label">厂商</text>
-          <view class="picker-right">
-            <text class="picker-value">{{ card.template.vendor }}</text>
-            <text class="picker-arrow">›</text>
-          </view>
-        </view>
-      </picker>
-
-      <text class="provider-name">{{ card.template.name }}</text>
-      <text v-if="card.template.description" class="provider-desc">
-        {{ card.template.description }}
-      </text>
-
-      <view
-        v-for="field in card.template.fields"
-        :key="field.key"
-        class="field"
-        :class="{ inline: field.type === 'switch' }"
-      >
-        <view class="field-head">
-          <text class="field-label">{{ field.label }}</text>
-          <text
-            v-if="field.type === 'password'"
-            class="field-toggle"
-            @tap="toggleReveal(card.key, field)"
-          >
-            {{ reveal[fieldKey(card.key, field)] ? '隐藏' : '显示' }}
-          </text>
-        </view>
-
-        <picker
-          v-if="field.type === 'select'"
-          :range="fieldLabels(field)"
-          :value="fieldSelectIndex(card.key, field)"
-          @change="onFieldSelect(card.key, field, $event)"
-        >
-          <view class="picker-row compact">
-            <text class="picker-value">
-              {{ fieldSelectLabel(card.key, field) }}
-            </text>
-            <text class="picker-arrow">›</text>
-          </view>
-        </picker>
-
-        <switch
-          v-else-if="field.type === 'switch'"
-          :checked="valueOf(card.key, field) === true"
-          color="#6c8cff"
-          @change="onFieldInput(card.key, field, $event)"
-        />
-
-        <textarea
-          v-else-if="field.type === 'textarea'"
-          class="input textarea"
-          :value="String(valueOf(card.key, field) ?? '')"
-          :placeholder="field.placeholder"
-          auto-height
-          @input="onFieldInput(card.key, field, $event)"
-        />
-
-        <input
-          v-else
-          class="input"
-          :type="inputType(field)"
-          :password="
-            field.type === 'password' && !reveal[fieldKey(card.key, field)]
-          "
-          :value="
-            field.type === 'number'
-              ? drafts[fieldKey(card.key, field)] ??
-                String(valueOf(card.key, field) ?? '')
-              : String(valueOf(card.key, field) ?? '')
-          "
-          :placeholder="field.placeholder"
-          @input="onFieldInput(card.key, field, $event)"
-          @blur="commitNumber(card.key, field)"
-        />
-
-        <text v-if="field.hint" class="field-hint">{{ field.hint }}</text>
-      </view>
-
-      <view class="card-actions">
-        <button
-          class="mini-btn"
-          :disabled="testing[card.key]"
-          @tap="runTest(card.key)"
-        >
-          {{ testing[card.key] ? '测试中…' : '测试连接' }}
-        </button>
-        <button class="mini-btn ghost" @tap="onReset(card.key)">
-          恢复默认
-        </button>
-      </view>
-
-      <text
-        v-if="results[card.key]"
-        class="result"
-        :class="{ bad: results[card.key]?.ok === false }"
-      >
-        {{ results[card.key]?.message }}
-      </text>
     </view>
 
     <button class="save" @tap="onSave">保存配置</button>

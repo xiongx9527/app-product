@@ -8,9 +8,9 @@ export interface ResolvedTrack {
   channel?: string
 }
 
-/** 音乐播放源抽象：给定风格返回可播放曲目。各厂商各自实现。 */
+/** 音乐播放源抽象：给定风格返回可播放曲目（可异步，如需要联网搜歌的厂商）。 */
 export interface MusicSource {
-  resolve(genre?: string): ResolvedTrack
+  resolve(genre?: string): ResolvedTrack | Promise<ResolvedTrack>
 }
 
 /** 音乐播放源厂商：与客户端设置页的厂商 id 对齐。 */

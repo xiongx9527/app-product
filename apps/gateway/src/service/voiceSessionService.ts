@@ -5,6 +5,7 @@ import type { DataService } from './dataService'
 import type { ClientMessage, GeocodeInfo, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
 import type { ReverseGeocoder } from './geocode/types'
 import { createGeocodeAdapter } from './geocode'
+import { createMusicSource, type MusicSource } from './music'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -20,7 +21,9 @@ export interface VoiceSessionDeps {
     lang: Lang,
     timezone?: string,
     locationProvider?: () => LocationInfo | null,
-    reverseGeocoder?: ReverseGeocoder
+    reverseGeocoder?: ReverseGeocoder,
+    musicSource?: MusicSource,
+    emit?: (m: ServerEvent) => void
   ) => AgentService
   asr: AsrProvider
   tts: TtsProvider
@@ -45,6 +48,8 @@ export class VoiceSessionService {
   private location: LocationInfo | null = null
   /** 天地图逆地理编码（配置了 tk 才有），把经纬度翻成中文地址 */
   private reverseGeocoder: ReverseGeocoder | undefined = undefined
+  /** 音乐播放源：按客户端上报的 music 配置构造；未配置则音乐工具不注册 */
+  private musicSource: MusicSource | undefined = undefined
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
@@ -111,6 +116,8 @@ export class VoiceSessionService {
         this.location = msg.location ?? null
         // 逆地理编码：优先用客户端上报的 geocode 配置；没上报则退回网关兜底天地图 tk
         this.reverseGeocoder = this.buildGeocode(msg.geocode)
+        // 音乐播放源：按客户端上报的 music 配置构造；未配置（旧客户端/未设置）则音乐工具不注册
+        this.musicSource = createMusicSource(msg.music)
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, this.reverseGeocoder)
         break
       case 'session.location':
@@ -424,7 +431,14 @@ export class VoiceSessionService {
     this.agent =
       mode === 'wake'
         ? null
-        : this.deps.agentFactory(lang, this.timezone, () => this.getLocation(), this.reverseGeocoder)
+        : this.deps.agentFactory(
+            lang,
+            this.timezone,
+            () => this.getLocation(),
+            this.reverseGeocoder,
+            this.musicSource,
+            (m) => this.deps.send(m)
+          )
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }
 

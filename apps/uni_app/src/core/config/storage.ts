@@ -44,6 +44,7 @@ export function createDefaultConfig(): AppConfig {
     asr: createDefaultCapability('asr'),
     llm: createDefaultCapability('llm'),
     tts: createDefaultCapability('tts'),
+    music: createDefaultCapability('music'),
   }
 }
 
@@ -149,6 +150,7 @@ export function normalizeConfig(
     asr: normalizeCapability('asr', source.asr, base.asr),
     llm: normalizeCapability('llm', source.llm, base.llm),
     tts: normalizeCapability('tts', source.tts, base.tts),
+    music: normalizeCapability('music', source.music, base.music),
   }
 }
 

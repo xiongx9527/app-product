@@ -14,6 +14,12 @@ export type ServerEvent =
   | { type: 'tts.stop' }
   | { type: 'tts.end' }
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
+  /** 让客户端播放一段音频流（电台/歌曲）：客户端用独立播放器，不与 TTS 冲突 */
+  | { type: 'media.play'; url: string; title: string; channel?: string }
+  /** 让客户端停止当前播放 */
+  | { type: 'media.stop' }
+  /** 让客户端展示某首歌的歌词 */
+  | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
   | { type: 'error'; code: string; message: string }
 
 export type SessionMode = 'wake' | 'dialog'

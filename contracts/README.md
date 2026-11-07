@@ -26,7 +26,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "geocode": { "provider": "tianditu", "key": "客户端天地图 tk" } }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "geocode": { "provider": "tianditu", "key": "客户端天地图 tk" }, "music": { "provider": "soma", "params": { "station": "groovesalad" } } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.end" }
@@ -50,6 +50,14 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `session.start` 的 `geocode` 为客户端选择的位置服务商配置（`provider`: `tianditu` / `tencent` / `amap` / `baidu` + `key`），逆地理编码（坐标→地址）在网关侧据此完成；`key` 留空时退回网关兜底天地图 tk（环境变量 `TIANDITU_TK`）。四家均免费，坐标均为 GCJ-02（天地图、百度除外：天地图网关内部将 GCJ-02 转 WGS-84 再请求；百度用 `coordtype=gcj02ll` 直接收 GCJ-02）。客户端可在设置页选择服务商并填入自有 Key（byok），不填则使用网关兜底。
 
+`session.start` 的 `music` 为客户端选择的音乐播放源（与 asr/llm/tts 同构的 BYOK 配置）：`provider` 为厂商 id，`params` 为该厂商参数。网关据此决定「放什么源」，音乐类工具（`play_music` / `stop_music` / `search_music` / `get_lyrics`）只在配置了 `music` 时注册。支持的 `provider`：
+- `soma`：SomaFM 免费电台，`params.station` 为默认频道（如 `groovesalad`）。
+- `custom`：自定义电台，`params.streamUrl` 为可直接播放的音频流地址，`params.title` 为展示标题（可选）。
+- `netease` / `qq`：走公开 Web API 搜歌取直链（无需 Key，限速/部分歌曲无直链，属尽力而为）。
+- `spotify`：需 `params.clientId` / `params.clientSecret`，播放 30 秒试听。
+
+`music` 缺省时不注册音乐工具，`play_music` 等不会被调用。
+
 服务端 → 客户端：
 
 ```json
@@ -64,8 +72,13 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "tts.stop" }
 { "type": "tts.end" }
 { "type": "audio.duplex", "mode": "half" }
+{ "type": "media.play", "url": "https://ice6.somafm.com/groovesalad-128-mp3", "title": "Groove Salad（轻电子/氛围）", "channel": "groovesalad" }
+{ "type": "media.stop" }
+{ "type": "media.lyrics", "title": "七里香", "artist": "周杰伦", "lyrics": "窗外的麻雀…" }
 { "type": "error", "code": "ASR_TIMEOUT", "message": "识别超时" }
 ```
+
+`media.play` 让客户端用**独立播放器**播放一段音频流（电台/歌曲），与 TTS 的音频播放互不冲突；`media.stop` 停止当前播放。客户端在 TTS 播报期间应压低（duck）音乐音量，播完恢复。`media.lyrics` 携带歌词文本供客户端在页面展示。音乐只在用户要求时播放，不做预约/定时播放。
 
 `asr.partial` 是网关对已收音频的滚动重识别结果，可重复、可回退，客户端只用于展示；
 `asr.final` 才是定稿文本。**只有 `asr.final` 之后才会请求大模型**，中间结果不会触发回复。

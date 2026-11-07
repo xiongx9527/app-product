@@ -5,11 +5,8 @@ import type { MusicSource } from '../music/types'
 /** 媒体指令：直接透传给客户端；客户端据此播放/停止/展示。 */
 export type MediaDirective = Extract<
   ServerEvent,
-  { type: 'media.play' | 'media.stop' | 'media.lyrics' | 'media.scheduled' }
+  { type: 'media.play' | 'media.stop' | 'media.lyrics' }
 >
-
-/** 没有真实联网/无 emitter 时给调用方的兜底 no-op */
-const noopEmit = (_media: MediaDirective): void => undefined
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const MUSIC_TOOL_NAME = 'play_music'
@@ -36,8 +33,8 @@ export function createMusicTool(
     inputSchema: z.object({
       genre: z.string().optional().describe('风格，如 轻音乐/电子/爵士/流行'),
     }),
-    call: (args: { genre?: string }) => {
-      const track = source.resolve(args?.genre)
+    async call(args: { genre?: string }) {
+      const track = await source.resolve(args?.genre)
       emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
       return prefix === 'en'
         ? `Now playing: ${track.title}. (${track.url})`
@@ -58,7 +55,7 @@ export function createStopMusicTool(lang: Lang | string, emit?: (m: MediaDirecti
     name: STOP_MUSIC_TOOL_NAME,
     description: STOP_DESCRIPTIONS[prefix] ?? STOP_DESCRIPTIONS.zh,
     inputSchema: z.object({}),
-    call: () => {
+    async call() {
       emit?.({ type: 'media.stop' })
       return prefix === 'en' ? 'Music stopped.' : '已停止播放。'
     },

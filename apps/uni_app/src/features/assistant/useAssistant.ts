@@ -1,5 +1,6 @@
 import { computed, onUnmounted, ref } from 'vue'
 import { playPromptCue, isPromptCuePlaying } from '@/core/audio/promptPlayer'
+import { playMusic, stopMusic, duckMusic, seekMusic, musicState } from '@/core/audio/musicPlayer'
 import {
   isH5AudioSupported,
   onPlaybackIdle,
@@ -51,6 +52,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const errorMessage = ref('')
   /** 队列已满（排队数超上限）的专用话术，显示在页面顶部横幅，不进「你说」卡片 */
   const queueFullMsg = ref('')
+  /** 歌词面板：网关下发 media.lyrics 后展示 */
+  const lyrics = ref<{ title: string; artist?: string; lyrics: string } | null>(null)
 
   const transport = createTransport()
 
@@ -159,11 +162,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         answerHasTts = true
         isSpeaking.value = true
         phase.value = 'speaking'
+        // 播报期间压低正在播放的音乐，避免盖住助手说话
+        duckMusic(true)
         break
       case 'tts.stop':
         // 被打断：立刻掐掉已排队的音频，不等它播完
         cancelPendingIdle()
         stopPlayback()
+        duckMusic(false)
         isSpeaking.value = false
         phase.value = 'done'
         markAnswerDone()
@@ -174,12 +180,22 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         cancelPendingIdle()
         cancelPlaybackIdle = onPlaybackIdle(() => {
           cancelPlaybackIdle = null
+          duckMusic(false)
           isSpeaking.value = false
           phase.value = 'done'
           markAnswerDone()
           // 播完回执：网关等它才消费排队的下一句，保证上一句完整播完
           transport.notifyPlaybackDone()
         })
+        break
+      case 'media.play':
+        playMusic(event.url, event.title)
+        break
+      case 'media.stop':
+        stopMusic()
+        break
+      case 'media.lyrics':
+        lyrics.value = { title: event.title, artist: event.artist, lyrics: event.lyrics }
         break
       case 'audio.duplex':
         halfDuplex.value = event.mode === 'half'
@@ -328,13 +344,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
   }
 
-  /** 关闭助手：停采集、关连接。 */
+  /** 关闭助手：停采集、关连接，并停掉音乐。 */
   function leaveWake(): void {
     if (capturing) {
       stopCapture()
       capturing = false
     }
     stopPlayback()
+    stopMusic()
+    lyrics.value = null
     transport.close()
   }
 
@@ -380,6 +398,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     dispatch({ type: 'CANCEL' })
   }
 
+  /** 关闭歌词面板 */
+  function closeLyrics(): void {
+    lyrics.value = null
+  }
+
   onUnmounted(() => {
     clearT1()
     clearT2()
@@ -410,5 +433,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     enable,
     disable,
     interrupt,
+    // 音乐播放 / 歌词
+    musicPlaying: musicState.playing,
+    musicTitle: musicState.title,
+    musicCurrent: musicState.currentTime,
+    musicDuration: musicState.duration,
+    musicLive: musicState.live,
+    lyrics,
+    stopMusic,
+    seekMusic,
+    closeLyrics,
   }
 }

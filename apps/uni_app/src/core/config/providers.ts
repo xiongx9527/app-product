@@ -474,10 +474,95 @@ const TTS_PROVIDERS: ProviderTemplate[] = [
   },
 ]
 
+/**
+ * 音乐播放源：与 asr/llm/tts 同构的 BYOK 配置。
+ * 各厂商只声明「参数」，具体怎么把 genre/关键词解析成可播放地址由网关负责；
+ * 客户端只把选中的 provider + 参数随 session.start 上报。
+ */
+const MUSIC_PROVIDERS: ProviderTemplate[] = [
+  {
+    id: 'soma',
+    vendor: 'SomaFM 免费电台',
+    name: '无需 Key 的国外网络电台',
+    description: '免费的互联网电台（轻电子/爵士/人声等），直接 mp3 流，无需任何账号。',
+    defaults: {
+      station: 'groovesalad',
+    },
+    fields: [
+      {
+        key: 'station',
+        label: '默认频道',
+        type: 'select',
+        options: [
+          { label: 'Groove Salad（轻电子/氛围）', value: 'groovesalad' },
+          { label: 'Drone Zone（极简氛围）', value: 'dronezone' },
+          { label: 'Lush（柔和人声）', value: 'lush' },
+          { label: 'Indie Pop（独立流行）', value: 'indiepop' },
+          { label: 'Sonic Universe（爵士）', value: 'sonicuniverse' },
+          { label: 'Seven Inch Soul（灵歌/节奏）', value: '7soul' },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'custom',
+    vendor: '自定义电台',
+    name: '你自己填一个音频流地址',
+    description: '完全不固定来源：填一个可直接播放的音频流/歌单直链（自建电台、网络收音机等）。',
+    defaults: {
+      streamUrl: '',
+      title: '',
+    },
+    fields: [
+      { key: 'streamUrl', label: '音频流地址', type: 'text', placeholder: 'https://.../xxx.mp3 或 m3u8' },
+      { key: 'title', label: '展示标题（可选）', type: 'text', placeholder: '留空用地址本身' },
+    ],
+  },
+  {
+    id: 'netease',
+    vendor: '网易云音乐',
+    name: '公开 Web API 搜歌播放',
+    description: '走网易云公开接口搜歌并取直链，无需 Key（限速/偶发 403，属尽力而为）。',
+    defaults: {
+      limit: 1,
+    },
+    fields: [
+      { key: 'limit', label: '返回候选数', type: 'number', min: 1, max: 10, step: 1 },
+    ],
+  },
+  {
+    id: 'qq',
+    vendor: 'QQ 音乐',
+    name: '公开 Web API 搜歌播放',
+    description: '走 QQ 音乐公开接口搜歌并取直链，无需 Key（部分 VIP 歌曲无直链）。',
+    defaults: {
+      limit: 1,
+    },
+    fields: [
+      { key: 'limit', label: '返回候选数', type: 'number', min: 1, max: 30, step: 1 },
+    ],
+  },
+  {
+    id: 'spotify',
+    vendor: 'Spotify',
+    name: '需 clientId / clientSecret',
+    description: '用你的 Spotify 应用凭据取 token 并搜歌，播放 30 秒试听（Spotify 开放接口限制）。',
+    defaults: {
+      clientId: '',
+      clientSecret: '',
+    },
+    fields: [
+      { key: 'clientId', label: 'Client ID', type: 'text', placeholder: 'Spotify 应用 ID' },
+      { key: 'clientSecret', label: 'Client Secret', type: 'password', placeholder: 'Spotify 应用 Secret' },
+    ],
+  },
+]
+
 export const PROVIDERS: Record<Capability, ProviderTemplate[]> = {
   asr: ASR_PROVIDERS,
   llm: LLM_PROVIDERS,
   tts: TTS_PROVIDERS,
+  music: MUSIC_PROVIDERS,
 }
 
 export function findProvider(

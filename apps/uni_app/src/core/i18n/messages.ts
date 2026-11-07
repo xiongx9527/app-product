@@ -172,6 +172,13 @@ const zhCN: Messages = {
   'talk.standby': '对着麦克风说「小熊小熊」唤醒',
   'talk.echo': '已加强回声抑制；插话仍会排队，也可点「打断」',
   'talk.listening': '正在听，直接说话即可（说完停顿一下）',
+
+  'music.nowPlaying': '正在播放',
+  'music.stop': '停止播放',
+  'music.lyrics': '歌词',
+  'music.close': '关闭',
+  'music.noLyrics': '暂无歌词',
+  'music.live': '直播',
 }
 
 const enUS: Messages = {
@@ -352,6 +359,13 @@ const enUS: Messages = {
   'talk.standby': 'Say “Xiaoxiong Xiaoxiong” to the mic to wake',
   'talk.echo': 'Echo suppression boosted; barge-ins queue. Or tap Interrupt',
   'talk.listening': 'Listening. Just talk (pause when done)',
+
+  'music.nowPlaying': 'Now playing',
+  'music.stop': 'Stop',
+  'music.lyrics': 'Lyrics',
+  'music.close': 'Close',
+  'music.noLyrics': 'No lyrics',
+  'music.live': 'Live',
 }
 
 export const MESSAGES: Record<Locale, Messages> = {

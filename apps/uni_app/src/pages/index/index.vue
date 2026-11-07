@@ -2,6 +2,15 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { readScreenInfo, type ScreenInfo } from '@/core/adaptation/screen'
 import { useAssistant } from '@/features/assistant/useAssistant'
+import { toDisplayText } from '@/core/text/displayText'
+import { toReplyHtml } from '@/core/text/replyHtml'
+import {
+  elapsedLabel,
+  isSeekable,
+  progressPercent,
+  seekSeconds,
+  totalLabel,
+} from '@/core/audio/musicProgress'
 import { t } from '@/core/i18n'
 
 const {
@@ -26,15 +35,61 @@ const {
   enable,
   disable,
   interrupt,
+  musicPlaying,
+  musicTitle,
+  musicCurrent,
+  musicDuration,
+  musicLive,
+  lyrics,
+  stopMusic,
+  seekMusic,
+  closeLyrics,
 } = useAssistant()
 
 const screen = ref<ScreenInfo>(readScreenInfo())
 
 const isActive = computed(() => state.value === 'listening' || state.value === 'confirming')
+// 模型回复可能是 Markdown 或 HTML，统一转成 rich-text 能渲染的安全 HTML
+const replyHtml = computed(() => toReplyHtml(reply.value))
 // 思考过程会很长，界面只留最近一段，避免卡片被撑爆
-const thinkingTail = computed(() =>
-  thinking.value.length > 240 ? `…${thinking.value.slice(-240)}` : thinking.value
-)
+const thinkingTail = computed(() => {
+  const text = toDisplayText(thinking.value)
+  return text.length > 240 ? `…${text.slice(-240)}` : text
+})
+
+// 拖动进度条时先用手指位置显示，松手才真正 seek，避免 timeupdate 把滑块拽回去
+const seekPreview = ref<number | null>(null)
+const musicProgress = computed(() => ({
+  currentTime: musicCurrent.value,
+  duration: musicDuration.value,
+  live: musicLive.value,
+}))
+const musicSeekable = computed(() => isSeekable(musicProgress.value))
+const musicPercent = computed(() => progressPercent(musicProgress.value, seekPreview.value))
+const musicElapsed = computed(() => elapsedLabel(musicProgress.value, seekPreview.value))
+const musicTotal = computed(() => totalLabel(musicProgress.value))
+
+function readSliderValue(event: unknown): number {
+  const detail = (event as { detail?: { value?: unknown } } | null)?.detail
+  const value = Number(detail?.value)
+  return Number.isFinite(value) ? value : 0
+}
+
+function onSeekPreview(event: unknown): void {
+  if (!musicSeekable.value) return
+  seekPreview.value = seekSeconds(readSliderValue(event), musicDuration.value)
+}
+
+function onSeekCommit(event: unknown): void {
+  if (!musicSeekable.value) return
+  seekMusic(seekSeconds(readSliderValue(event), musicDuration.value))
+  seekPreview.value = null
+}
+
+function onStopMusic(): void {
+  seekPreview.value = null
+  stopMusic()
+}
 
 const hint = computed(() => {
   // 静默提示与退出优先，其余按对话阶段说明「现在在干嘛」，免得用户以为卡住
@@ -140,8 +195,47 @@ function onOrbTap(): void {
             {{ replyDone ? t('card.done') : t('card.generating') }}
           </text>
         </view>
-        <text class="card-text">{{ reply || t('card.placeholder') }}</text>
+        <rich-text v-if="reply" class="card-text reply-rich" :nodes="replyHtml" />
+        <text v-else class="card-text">{{ t('card.placeholder') }}</text>
       </view>
+    </view>
+
+    <view v-if="musicPlaying" class="music-bar">
+      <view class="music-row">
+        <view class="music-info">
+          <text class="music-label">{{ t('music.nowPlaying') }}</text>
+          <text class="music-title">{{ musicTitle }}</text>
+        </view>
+        <button class="mini-action" @tap="onStopMusic">{{ t('music.stop') }}</button>
+      </view>
+      <view class="music-progress">
+        <text class="music-time">{{ musicElapsed }}</text>
+        <slider
+          v-if="musicSeekable"
+          class="music-slider"
+          :value="musicPercent"
+          :max="100"
+          activeColor="#5cd6b2"
+          backgroundColor="rgba(255, 255, 255, 0.14)"
+          block-size="10"
+          @changing="onSeekPreview"
+          @change="onSeekCommit"
+        />
+        <view v-else class="music-live">
+          <view class="music-live-dot" />
+          <text class="music-live-text">{{ t('music.live') }}</text>
+        </view>
+        <text v-if="musicSeekable" class="music-time">{{ musicTotal }}</text>
+      </view>
+    </view>
+
+    <view v-if="lyrics" class="lyrics">
+      <view class="lyrics-head">
+        <text class="lyrics-title">{{ t('music.lyrics') }} · {{ lyrics.title }}</text>
+        <text class="lyrics-close" @tap="closeLyrics">{{ t('music.close') }}</text>
+      </view>
+      <text v-if="lyrics.artist" class="lyrics-artist">{{ lyrics.artist }}</text>
+      <text class="lyrics-body">{{ lyrics.lyrics || t('music.noLyrics') }}</text>
     </view>
 
     <view class="controls">
@@ -500,6 +594,140 @@ function onOrbTap(): void {
   font-size: 11px;
   color: #6f7691;
   text-align: center;
+}
+
+.music-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(92, 214, 178, 0.08);
+  border: 1px solid rgba(92, 214, 178, 0.28);
+}
+
+.music-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.music-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.music-time {
+  font-size: 11px;
+  color: #8ee0bd;
+  min-width: 30px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.music-slider {
+  flex: 1;
+  margin: 0;
+}
+
+.music-live {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.music-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #5cd6b2;
+}
+
+.music-live-text {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #8ee0bd;
+}
+
+.music-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.music-label {
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: #8ee0bd;
+}
+
+.music-title {
+  font-size: 14px;
+  color: #e8eaf6;
+  word-break: break-word;
+}
+
+.mini-action {
+  margin: 0;
+  padding: 0 12px;
+  height: 32px;
+  line-height: 32px;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #e8eaf6;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.mini-action::after {
+  border: none;
+}
+
+.lyrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(108, 140, 255, 0.07);
+  border: 1px solid rgba(108, 140, 255, 0.22);
+}
+
+.lyrics-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.lyrics-title {
+  font-size: 12px;
+  color: #cfd8ff;
+  word-break: break-word;
+}
+
+.lyrics-close {
+  font-size: 12px;
+  color: #8b91ab;
+}
+
+.lyrics-artist {
+  font-size: 11px;
+  color: #8b91ab;
+}
+
+.lyrics-body {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #dfe5ff;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 /* 平板与折叠屏展开态：内容限宽，布局更舒展 */
