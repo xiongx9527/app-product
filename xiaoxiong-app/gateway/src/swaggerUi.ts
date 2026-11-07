@@ -25,11 +25,15 @@ export async function serveSwagger(pathname: string): Promise<{ status: number; 
     const ext = extname(filePath)
     const name = basename(filePath)
     let body: Buffer | string = buf
-    // swagger-ui-dist 自带的 swagger-initializer.js 写死了 petstore 的 demo 地址，必须改成我们的
-    // /api/openapi.json，否则 Swagger UI 拉不到契约、页面空白。
-    // 注意：只能针对这「一个」文件改写——swagger-ui-bundle.js 等库文件内部也含 `url:` 样式的
-    // 代码，盲目替换会破坏 bundle（之前就是这么把包改坏导致页面空白的）。
-    if (name === 'swagger-initializer.js') {
+    // /docs 没有结尾斜杠时，浏览器会把 index.html 里的相对资源 ./swagger-ui-bundle.js 解析到
+    // 站点根目录（/swagger-ui-bundle.js → 404），整页空白。注入 <base> 让所有相对路径
+    // 始终落到 /docs/ 下，无论用户访问 /docs 还是 /docs/。
+    if (ext === '.html') {
+      body = buf.toString().replace('</head>', '<base href="/docs/"></head>')
+    } else if (name === 'swagger-initializer.js') {
+      // swagger-ui-dist 自带的 swagger-initializer.js 写死了 petstore 的 demo 地址，改成我们的
+      // /api/openapi.json；只针对这「一个」文件改写——库文件内部也含 `url:` 代码，盲目替换
+      // 会破坏 bundle（之前就是这么把包改坏导致页面空白的）。
       body = buf.toString().replace(/url:\s*["'][^"']+["']/, "url: '/api/openapi.json'")
     }
     return { status: 200, contentType: MIME[ext] ?? 'application/octet-stream', body }
