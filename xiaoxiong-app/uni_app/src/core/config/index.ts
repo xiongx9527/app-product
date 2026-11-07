@@ -8,7 +8,6 @@ import {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
   languageLabel,
-  normalizeGatewayWsUrl,
   normalizeGeocodeProvider,
   normalizeTimezone,
 } from './constants'
@@ -39,7 +38,6 @@ export {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
   languageLabel,
-  normalizeGatewayWsUrl,
   normalizeGeocodeProvider,
   normalizeTimezone,
 } from './constants'

@@ -1,4 +1,5 @@
 import { appConfig } from '@/core/config'
+import { DEFAULT_GATEWAY_WS_URL } from '@/core/config/constants'
 import type { AssistantTransport, ServerEvent, SessionMode } from './types'
 
 /** 客户端上报给网关的位置快照（经纬度必填，address 为反向地理编码结果）。 */
@@ -8,14 +9,19 @@ interface LocationSnapshot {
   address?: string
 }
 
-/** 网关 WebSocket 地址解析：
- * 优先级：设置页填的 gatewayWsUrl > 构建期 VITE_GATEWAY_WS_URL > 内置默认本机地址。
- * 每次连接都重新解析，使设置页改地址后在下一次重连生效。 */
+/** 网关 WebSocket 地址解析：唯一来源是构建期 VITE_GATEWAY_WS_URL（由 dev 脚本按后端
+ * PORT 注入，或 .env 配置）；未注入时回退内置默认本机地址。不再提供设置页手动配置，
+ * 前后端地址统一由这一个来源决定。每次连接都重新解析。
+ * 浏览器走 import.meta.env；Node / 单元测试环境 vitest 经 process.env 注入，一并兼容。 */
 export function resolveGatewayUrl(): string {
-  const configured = appConfig.gatewayWsUrl?.trim()
-  if (configured) return configured
-  const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
-  return env?.VITE_GATEWAY_WS_URL ?? 'ws://127.0.0.1:8787/ws'
+  const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+  const fromMeta = metaEnv?.VITE_GATEWAY_WS_URL?.trim()
+  if (fromMeta) return fromMeta
+  if (typeof process !== 'undefined') {
+    const fromProc = process.env?.VITE_GATEWAY_WS_URL?.trim()
+    if (fromProc) return fromProc
+  }
+  return DEFAULT_GATEWAY_WS_URL
 }
 
 /**

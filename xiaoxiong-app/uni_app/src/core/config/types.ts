@@ -62,8 +62,6 @@ export interface AppConfig {
   timezone: string
   /** 位置服务（逆地理编码）：决定「我在哪」等问题的地址来源 */
   geocode: GeocodeConfig
-  /** 网关调试地址：覆盖默认网关 WebSocket 地址，方便切换/联调；留空用默认 */
-  gatewayWsUrl: string
   asr: CapabilityConfig
   llm: CapabilityConfig
   tts: CapabilityConfig

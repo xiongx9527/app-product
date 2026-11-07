@@ -48,6 +48,12 @@ function findAppsDir() {
 const appsDir = findAppsDir()
 const logsDir = join(appsDir, 'logs')
 
+/** 网关端口：与后端 server.ts 的 PORT 保持一致（默认 8787）。前后端共用这一个来源，
+ * 避免前端把 8787 写死、后端改了 PORT 前端跟不上。 */
+function gatewayPort() {
+  return Number(process.env.PORT ?? 8787)
+}
+
 /** 受管服务清单：新增服务只需在这里加一项；cwd 用 appsDir 拼接，天然适配目录改名。 */
 const services = [
   {
@@ -100,11 +106,17 @@ function startOne(s) {
   const fd = openSync(file, 'a')
   // detached + unref：子进程进入独立会话/进程组，脱离当前终端，父进程退出后继续存活。
   // 这正是 setsid/nohup 在三个平台上统一替代方案。
+  // 注入前端网关地址：与后端 PORT 统一来源，前端不再写死端口，后端改 PORT 前端自动跟上。
+  // 仅当未显式设置时才注入，避免覆盖用户在 shell/.env 里的自定义值。
+  const childEnv = { ...process.env }
+  if (s.key === 'uniapp' && !childEnv.VITE_GATEWAY_WS_URL) {
+    childEnv.VITE_GATEWAY_WS_URL = `ws://127.0.0.1:${gatewayPort()}/ws`
+  }
   const child = spawn(npmBin, ['run', s.script], {
     cwd: s.cwd,
     detached: true,
     stdio: ['ignore', fd, fd],
-    env: process.env,
+    env: childEnv,
     windowsHide: true,
   })
   child.unref()
@@ -114,7 +126,7 @@ function startOne(s) {
   console.log(`  停止：node scripts/dev-server.mjs stop ${s.key}`)
   // 启动后把访问地址打出来，省得再去翻日志/猜端口
   if (s.key === 'gateway') {
-    const port = Number(process.env.PORT ?? 8787)
+    const port = gatewayPort()
     console.log(`  访问：http://localhost:${port}`)
     console.log(`        WebSocket 同端口；Swagger 文档：http://localhost:${port}/docs`)
   } else if (s.key === 'uniapp') {

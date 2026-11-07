@@ -49,15 +49,9 @@ export function normalizeGeocodeProvider(value: unknown): GeocodeProvider {
   return DEFAULT_GEOCODE.provider
 }
 
-/** 网关默认 WebSocket 地址：H5 桌面调试直连本机网关 */
+/** 网关默认 WebSocket 地址：仅当构建期未注入 VITE_GATEWAY_WS_URL 时回退本机地址。
+ * 真正的地址来源统一为 VITE_GATEWAY_WS_URL（由 dev 脚本按后端 PORT 注入 / .env 配置）。 */
 export const DEFAULT_GATEWAY_WS_URL = 'ws://127.0.0.1:8787/ws'
-
-/** 把任意输入收敛成合法的网关 WebSocket 地址；空或非 ws(s) 协议回退默认 */
-export function normalizeGatewayWsUrl(value: unknown): string {
-  const raw = String(value ?? '').trim()
-  if (/^wss?:\/\//i.test(raw)) return raw
-  return DEFAULT_GATEWAY_WS_URL
-}
 
 export const SUPPORTED_LANGUAGES = ['zh-CN', 'en-US'] as const
 export type AppLanguage = (typeof SUPPORTED_LANGUAGES)[number]

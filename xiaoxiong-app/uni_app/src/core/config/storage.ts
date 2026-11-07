@@ -1,9 +1,7 @@
 import {
-  DEFAULT_GATEWAY_WS_URL,
   DEFAULT_GEOCODE,
   DEFAULT_LANGUAGE,
   DEFAULT_TIMEZONE,
-  normalizeGatewayWsUrl,
   normalizeGeocodeProvider,
   normalizeTimezone,
 } from './constants'
@@ -40,7 +38,6 @@ export function createDefaultConfig(): AppConfig {
     language: DEFAULT_LANGUAGE,
     timezone: DEFAULT_TIMEZONE,
     geocode: { ...DEFAULT_GEOCODE },
-    gatewayWsUrl: DEFAULT_GATEWAY_WS_URL,
     asr: createDefaultCapability('asr'),
     llm: createDefaultCapability('llm'),
     tts: createDefaultCapability('tts'),
@@ -137,15 +134,12 @@ export function normalizeConfig(
     key: geocodeSource.key != null ? String(geocodeSource.key) : DEFAULT_GEOCODE.key,
   }
 
-  const gatewayWsUrl = normalizeGatewayWsUrl(source.gatewayWsUrl)
-
   return {
     version: 1,
     mode,
     language,
     timezone,
     geocode,
-    gatewayWsUrl,
     asr: normalizeCapability('asr', source.asr, base.asr),
     llm: normalizeCapability('llm', source.llm, base.llm),
     tts: normalizeCapability('tts', source.tts, base.tts),

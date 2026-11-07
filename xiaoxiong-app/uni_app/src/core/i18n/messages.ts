@@ -68,11 +68,6 @@ const zhCN: Messages = {
   'settings.geocode.provider.tencent': '腾讯地图',
   'settings.geocode.provider.amap': '高德地图',
   'settings.geocode.provider.baidu': '百度地图',
-  'settings.gateway.title': '网关调试',
-  'settings.gateway.sub': '语音助手连接的网关地址（WebSocket）',
-  'settings.gateway.hint':
-    '留空使用默认本机网关；改地址后重开语音助手生效。仅本机调试用，不提交到代码。',
-  'settings.gateway.placeholder': 'ws://127.0.0.1:8787/ws',
   'settings.provider.label': '厂商',
   'settings.test': '测试连接',
   'settings.testing': '测试中…',
@@ -253,11 +248,6 @@ const enUS: Messages = {
   'settings.geocode.provider.tencent': 'Tencent Maps',
   'settings.geocode.provider.amap': 'Amap',
   'settings.geocode.provider.baidu': 'Baidu Maps',
-  'settings.gateway.title': 'Gateway debug',
-  'settings.gateway.sub': 'WebSocket address the assistant connects to',
-  'settings.gateway.hint':
-    'Leave empty to use the default local gateway. Reopen the assistant to apply. For local debugging only; not committed.',
-  'settings.gateway.placeholder': 'ws://127.0.0.1:8787/ws',
   'settings.provider.label': 'Vendor',
   'settings.test': 'Test connection',
   'settings.testing': 'Testing…',

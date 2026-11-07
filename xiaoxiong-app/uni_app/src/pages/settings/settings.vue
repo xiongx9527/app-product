@@ -232,16 +232,6 @@ function onGeocodeKeyInput(event: Event): void {
   appConfig.geocode.key = String(eventValue(event) ?? '')
 }
 
-function onGatewayUrlInput(event: Event): void {
-  appConfig.gatewayWsUrl = String(eventValue(event) ?? '')
-}
-
-function resetGatewayUrl(): void {
-  appConfig.gatewayWsUrl = ''
-  persistConfig()
-  saveHint.value = '已恢复默认网关地址'
-}
-
 function onFieldInput(
   capability: Capability,
   field: ProviderField,
@@ -521,26 +511,6 @@ function onSave(): void {
         {{ reveal.geocodeKey ? '隐藏' : '显示' }}
       </text>
       <text class="hint">{{ t('settings.geocode.hint') }}</text>
-    </view>
-
-    <view class="card">
-      <view class="card-head">
-        <text class="card-title">{{ t('settings.gateway.title') }}</text>
-        <text class="card-sub">{{ t('settings.gateway.sub') }}</text>
-      </view>
-      <input
-        class="input"
-        type="text"
-        :value="appConfig.gatewayWsUrl"
-        :placeholder="t('settings.gateway.placeholder')"
-        @input="onGatewayUrlInput"
-      />
-      <view class="card-actions">
-        <button class="mini-btn ghost" @tap="resetGatewayUrl">
-          {{ t('settings.reset') }}
-        </button>
-      </view>
-      <text class="hint">{{ t('settings.gateway.hint') }}</text>
     </view>
 
     <button class="save" @tap="onSave">保存配置</button>
