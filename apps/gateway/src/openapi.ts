@@ -69,5 +69,20 @@ export const openApiSpec = {
         responses: { '201': { description: '已写入' } },
       },
     },
+    '/music/stream': {
+      get: {
+        summary:
+          'B 站音轨代理：直链带防盗链（需 Referer），由网关代拉并流式转发给客户端播放器；仅放行白名单 CDN 域名，支持 Range 与重定向',
+        parameters: [
+          { name: 'url', in: 'query', required: true, schema: { type: 'string' }, description: 'B 站音轨直链（白名单域）' },
+        ],
+        responses: {
+          '200': { description: '音频流（或 206 分段）' },
+          '206': { description: '按 Range 返回的分段内容' },
+          '400': { description: 'url 缺失或域名不在白名单' },
+          '502': { description: '上游拉取失败' },
+        },
+      },
+    },
   },
 }

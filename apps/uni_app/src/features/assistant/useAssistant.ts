@@ -26,7 +26,8 @@ import {
   type AssistantState,
   type AssistantEffect,
 } from '@/core/assistant/types'
-import { createTransport } from '@/core/transport'
+import { createTransport, resolveGatewayHttpBase } from '@/core/transport'
+import { toProxiedMusicUrl } from '@/core/audio/resolveMediaUrl'
 import type { ServerEvent, SessionMode } from '@/core/transport/types'
 import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
 import { matchWakeWord } from '@/core/wake/wakeWord'
@@ -207,7 +208,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         })
         break
       case 'media.play':
-        playMusic(event.url, event.title)
+        // B 站音轨走网关代理补 Referer；SomaFM 等公共流直连。
+        playMusic(
+          toProxiedMusicUrl(event.url, event.channel, resolveGatewayHttpBase()),
+          event.title
+        )
         break
       case 'media.pause':
         pauseMusic()

@@ -6,6 +6,7 @@ import { createDb } from './db/client'
 import { createDataService } from './service/dataService'
 import { createApiController } from './controller/apiController'
 import { createDocsController } from './controller/docsController'
+import { handleMusicStream } from './controller/musicStreamController'
 import { createVoiceConnection } from './controller/voiceController'
 import { encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
 import type { GatewayConfig } from './config'
@@ -55,6 +56,12 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
         }
         res.writeHead(out.status, { 'content-type': out.contentType })
         res.end(out.body)
+        return
+      }
+      // B 站音轨代理：客户端播放器无法自带 Referer，由网关代拉转发。
+      // 路由带 .m4a 后缀，便于部分按扩展名判定格式的播放器识别为音频。
+      if (url.pathname === '/music/stream' || url.pathname === '/music/stream.m4a') {
+        await handleMusicStream(req, res, url.searchParams)
         return
       }
       res.writeHead(404)

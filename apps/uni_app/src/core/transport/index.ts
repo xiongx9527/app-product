@@ -1,4 +1,4 @@
-export { WebSocketTransport } from './webSocketTransport'
+export { WebSocketTransport, resolveGatewayHttpBase } from './webSocketTransport'
 export type { AssistantTransport, ServerEvent } from './types'
 
 import { WebSocketTransport } from './webSocketTransport'
