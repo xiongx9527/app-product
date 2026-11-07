@@ -8,8 +8,6 @@ describe('currentTimeTool', () => {
     expect(zh.description).toContain('时间')
     const en = createCurrentTimeTool('en-US')
     expect(en.description.toLowerCase()).toContain('time')
-    const ja = createCurrentTimeTool('ja-JP')
-    expect(ja.description).toContain('時')
   })
 
   it('call 返回当前时间，含四位年份与时区偏移', () => {

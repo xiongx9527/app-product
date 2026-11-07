@@ -4,6 +4,7 @@ import {
   createTencentGeocoder,
   createAmapGeocoder,
   createTiandituReverseGeocoder,
+  createBaiduGeocoder,
   gcj02ToWgs84,
 } from './index'
 import type { Fetcher } from './types'
@@ -126,11 +127,44 @@ describe('geocode adapters', () => {
     expect(await createTiandituReverseGeocoder('')(39.9, 116.4)).toBeNull()
     expect(await createTencentGeocoder('')(39.9, 116.4)).toBeNull()
     expect(await createAmapGeocoder('')(39.9, 116.4)).toBeNull()
+    expect(await createBaiduGeocoder('')(39.9, 116.4)).toBeNull()
+  })
+
+  it('百度：坐标顺序为 lat,lng（与腾讯一致），coordtype=gcj02ll，status 0 解析地址', async () => {
+    const fetcher = async (url: string) => {
+      expect(url).toContain('api.map.baidu.com/reverse_geocoding/v3/')
+      expect(decodeURIComponent(url)).toContain('location=31.23,121.47')
+      expect(decodeURIComponent(url)).toContain('coordtype=gcj02ll')
+      return {
+        ok: true,
+        json: async () => ({
+          status: 0,
+          result: {
+            formatted_address: '上海市浦东新区世纪大道100号',
+            addressComponent: { city: '上海市', district: '浦东新区', street: '世纪大道' },
+          },
+        }),
+      }
+    }
+    const geocoder = createBaiduGeocoder('TK', fetcher)
+    const res = await geocoder(31.23, 121.47)
+    expect(res?.formattedAddress).toBe('上海市浦东新区世纪大道100号')
+    expect(res?.city).toBe('上海市')
+  })
+
+  it('百度：status 非 0 时返回 null', async () => {
+    const geocoder = createBaiduGeocoder(
+      'TK',
+      jsonFetcher({ status: 1, message: 'AK 错误' })
+    )
+    expect(await geocoder(39.9, 116.4)).toBeNull()
   })
 
   it('createGeocodeAdapter 按 provider 选适配器；空 key 返回 null', async () => {
     const tenc = createGeocodeAdapter({ provider: 'tencent', key: 'K' })
     expect(typeof tenc).toBe('function')
+    const baidu = createGeocodeAdapter({ provider: 'baidu', key: 'K' })
+    expect(typeof baidu).toBe('function')
     const nulled = createGeocodeAdapter({ provider: 'amap', key: '' })
     expect(nulled).toBeNull()
   })

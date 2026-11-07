@@ -1,5 +1,6 @@
 import { reactive } from 'vue'
 import {
+  DEFAULT_GATEWAY_WS_URL,
   DEFAULT_GEOCODE,
   DEFAULT_LANGUAGE,
   DEFAULT_TIMEZONE,
@@ -7,6 +8,7 @@ import {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
   languageLabel,
+  normalizeGatewayWsUrl,
   normalizeGeocodeProvider,
   normalizeTimezone,
 } from './constants'
@@ -29,6 +31,7 @@ import type {
 } from './types'
 
 export {
+  DEFAULT_GATEWAY_WS_URL,
   DEFAULT_GEOCODE,
   DEFAULT_LANGUAGE,
   DEFAULT_TIMEZONE,
@@ -36,6 +39,7 @@ export {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
   languageLabel,
+  normalizeGatewayWsUrl,
   normalizeGeocodeProvider,
   normalizeTimezone,
 } from './constants'

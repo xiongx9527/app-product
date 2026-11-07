@@ -1,7 +1,7 @@
 /** 反向地理编码（坐标 → 地址）相关的类型与适配器抽象。 */
 
-/** 支持的地图服务商。三家都提供免费的逆地理编码接口。 */
-export type GeocodeProviderKind = 'tianditu' | 'tencent' | 'amap'
+/** 支持的地图服务商。均提供免费的逆地理编码接口。 */
+export type GeocodeProviderKind = 'tianditu' | 'tencent' | 'amap' | 'baidu'
 
 /** 客户端上报的地图配置：选中的服务商 + 该服务商的 Key（byok，存本机）。 */
 export interface GeocodeConfig {

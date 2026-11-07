@@ -17,13 +17,11 @@ describe('currentLocationTool', () => {
     expect(
       createCurrentLocationTool('en-US', () => null).description.toLowerCase()
     ).toContain('location')
-    expect(createCurrentLocationTool('ja-JP', () => null).description).toContain('現在地')
   })
 
   it('未获取到位置时返回说明文案', () => {
     expect(formatLocation('zh-CN', null)).toContain('未获取')
     expect(formatLocation('en-US', null)).toMatch(/unavailable/i)
-    expect(formatLocation('ja-JP', null)).toContain('取得できません')
   })
 
   it('有地址时返回地址与经纬度', () => {

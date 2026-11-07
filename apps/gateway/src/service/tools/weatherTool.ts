@@ -6,35 +6,34 @@ import type { LocationProvider } from './currentLocationTool'
 export const WEATHER_TOOL_NAME = 'get_weather'
 
 /** WMO 天气代码 → 各语言描述（覆盖常见现象）。 */
-const WEATHER_CODE: Record<string, { zh: string; en: string; ja: string }> = {
-  '0': { zh: '晴', en: 'Clear', ja: '晴れ' },
-  '1': { zh: '大致晴朗', en: 'Mainly clear', ja: '大体晴れ' },
-  '2': { zh: '局部多云', en: 'Partly cloudy', ja: '一部曇り' },
-  '3': { zh: '阴', en: 'Overcast', ja: '曇り' },
-  '45': { zh: '雾', en: 'Fog', ja: '霧' },
-  '48': { zh: '雾凇', en: 'Rime fog', ja: '霧氷' },
-  '51': { zh: '小毛毛雨', en: 'Light drizzle', ja: '弱い霧雨' },
-  '53': { zh: '毛毛雨', en: 'Drizzle', ja: '霧雨' },
-  '55': { zh: '强毛毛雨', en: 'Dense drizzle', ja: '強い霧雨' },
-  '61': { zh: '小雨', en: 'Slight rain', ja: '弱い雨' },
-  '63': { zh: '中雨', en: 'Rain', ja: '雨' },
-  '65': { zh: '大雨', en: 'Heavy rain', ja: '強い雨' },
-  '71': { zh: '小雪', en: 'Slight snow', ja: '弱い雪' },
-  '73': { zh: '中雪', en: 'Snow', ja: '雪' },
-  '75': { zh: '大雪', en: 'Heavy snow', ja: '強い雪' },
-  '80': { zh: '阵雨', en: 'Rain showers', ja: 'にわか雨' },
-  '81': { zh: '强阵雨', en: 'Heavy showers', ja: '強いにわか雨' },
-  '95': { zh: '雷阵雨', en: 'Thunderstorm', ja: '雷雨' },
-  '96': { zh: '雷阵雨伴冰雹', en: 'Thunderstorm w/ hail', ja: '雹を伴う雷雨' },
+const WEATHER_CODE: Record<string, { zh: string; en: string }> = {
+  '0': { zh: '晴', en: 'Clear' },
+  '1': { zh: '大致晴朗', en: 'Mainly clear' },
+  '2': { zh: '局部多云', en: 'Partly cloudy' },
+  '3': { zh: '阴', en: 'Overcast' },
+  '45': { zh: '雾', en: 'Fog' },
+  '48': { zh: '雾凇', en: 'Rime fog' },
+  '51': { zh: '小毛毛雨', en: 'Light drizzle' },
+  '53': { zh: '毛毛雨', en: 'Drizzle' },
+  '55': { zh: '强毛毛雨', en: 'Dense drizzle' },
+  '61': { zh: '小雨', en: 'Slight rain' },
+  '63': { zh: '中雨', en: 'Rain' },
+  '65': { zh: '大雨', en: 'Heavy rain' },
+  '71': { zh: '小雪', en: 'Slight snow' },
+  '73': { zh: '中雪', en: 'Snow' },
+  '75': { zh: '大雪', en: 'Heavy snow' },
+  '80': { zh: '阵雨', en: 'Rain showers' },
+  '81': { zh: '强阵雨', en: 'Heavy showers' },
+  '95': { zh: '雷阵雨', en: 'Thunderstorm' },
+  '96': { zh: '雷阵雨伴冰雹', en: 'Thunderstorm w/ hail' },
 }
 
 function codeText(code: number | undefined, lang: Lang | string): string {
   const key = String(code ?? '')
   const hit = WEATHER_CODE[key]
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
-  if (!hit) return prefix === 'en' ? 'Unknown' : prefix === 'ja' ? '不明' : '未知'
+  if (!hit) return prefix === 'en' ? 'Unknown' : '未知'
   if (prefix === 'en') return hit.en
-  if (prefix === 'ja') return hit.ja
   return hit.zh
 }
 
@@ -69,32 +68,26 @@ export function formatWeather(
   if (!cur) {
     return prefix === 'en'
       ? `No current weather data for ${where}.`
-      : prefix === 'ja'
-        ? `${where}の現在の天気データがありません。`
-        : `${where}暂无当前天气数据。`
+      : `${where}暂无当前天气数据。`
   }
   const temp = cur.temperature_2m != null ? `${Math.round(cur.temperature_2m)}°` : ''
   const feels = cur.apparent_temperature != null ? `${Math.round(cur.apparent_temperature)}°` : ''
   const cond = codeText(cur.weather_code, lang)
   if (prefix === 'en') {
     lines.push(`Current weather ${where}: ${cond}, ${temp} (feels like ${feels}).`)
-  } else if (prefix === 'ja') {
-    lines.push(`${where}の現在の天気：${cond}、気温${temp}（体感${feels}）。`)
   } else {
     lines.push(`当前${where}：${cond}，气温${temp}（体感${feels}）。`)
   }
   if (cur.relative_humidity_2m != null) {
     const h = `${cur.relative_humidity_2m}%`
-    lines.push(prefix === 'en' ? `Humidity ${h}.` : prefix === 'ja' ? `湿度${h}。` : `湿度${h}。`)
+    lines.push(prefix === 'en' ? `Humidity ${h}.` : `湿度${h}。`)
   }
   if (cur.wind_speed_10m != null) {
     const w = `${Math.round(cur.wind_speed_10m)}`
     lines.push(
       prefix === 'en'
         ? `Wind ${w} m/s.`
-        : prefix === 'ja'
-          ? `風速${w}m/s。`
-          : `风速${w} m/s。`
+        : `风速${w} m/s。`
     )
   }
   const daily = payload.daily
@@ -107,10 +100,10 @@ export function formatWeather(
       const lo = daily.temperature_2m_min?.[i] != null ? `${Math.round(daily.temperature_2m_min[i])}°` : ''
       const c = codeText(daily.weather_code?.[i], lang)
       const pop = daily.precipitation_probability_max?.[i]
-      const popText = pop != null ? (prefix === 'en' ? `, ${pop}% rain` : prefix === 'ja' ? `、降水${pop}%` : `，降水${pop}%`) : ''
+      const popText = pop != null ? (prefix === 'en' ? `, ${pop}% rain` : `，降水${pop}%`) : ''
       parts.push(`${date} ${c} ${hi}/${lo}${popText}`)
     }
-    const head = prefix === 'en' ? 'Next days: ' : prefix === 'ja' ? '今後: ' : '未来几天：'
+    const head = prefix === 'en' ? 'Next days: ' : '未来几天：'
     lines.push(head + parts.join('；'))
   }
   return lines.join('')
@@ -132,7 +125,6 @@ export function createWeatherTool(
   const descriptions: Record<string, string> = {
     zh: '获取设备当前位置的天气（当前温度、体感、湿度、风速，及未来三天预报与降水概率）。当用户问“天气”“下雨吗”“今天多少度”等天气相关问题时调用此工具，不要凭记忆回答。',
     en: "Get the weather at the device's current location (current temperature, feels-like, humidity, wind, and the next 3 days with precipitation chance). Call when the user asks about the weather; do not answer from memory.",
-    ja: 'デバイスの現在地の天気を取得する（現在気温・体感・湿度・風速、および3日間の予報と降水確率）。ユーザーが天気を聞いたら記憶に頼らずこのツールを呼ぶ。',
   }
   return {
     name: WEATHER_TOOL_NAME,
@@ -143,9 +135,7 @@ export function createWeatherTool(
       if (!loc || typeof loc.latitude !== 'number') {
         return prefix === 'en'
           ? 'Current location is unavailable, so I cannot fetch the weather.'
-          : prefix === 'ja'
-            ? '現在地が取得できないため、天気をお知らせできません。'
-            : '当前位置未获取到，无法查询天气。'
+          : '当前位置未获取到，无法查询天气。'
       }
       const url =
         `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}` +
@@ -157,18 +147,14 @@ export function createWeatherTool(
         if (!res.ok) {
           return prefix === 'en'
             ? 'Weather service returned an error.'
-            : prefix === 'ja'
-              ? '天気サービスでエラーが発生しました。'
-              : '天气服务返回异常。'
+            : '天气服务返回异常。'
         }
         const data = (await res.json()) as WeatherPayload
         return formatWeather(lang, loc, data)
       } catch {
         return prefix === 'en'
           ? 'Could not reach the weather service.'
-          : prefix === 'ja'
-            ? '天気サービスに接続できませんでした。'
-            : '无法连接天气服务。'
+          : '无法连接天气服务。'
       }
     },
   }

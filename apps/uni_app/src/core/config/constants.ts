@@ -34,6 +34,7 @@ export const GEOCODE_PROVIDERS: Array<{ label: string; value: GeocodeProvider }>
   { label: '天地图', value: 'tianditu' },
   { label: '腾讯地图', value: 'tencent' },
   { label: '高德地图', value: 'amap' },
+  { label: '百度地图', value: 'baidu' },
 ]
 
 /** 默认位置服务：天地图，未填 Key 时回退到网关兜底配置 */
@@ -48,14 +49,23 @@ export function normalizeGeocodeProvider(value: unknown): GeocodeProvider {
   return DEFAULT_GEOCODE.provider
 }
 
-export const SUPPORTED_LANGUAGES = ['zh-CN', 'en-US', 'ja-JP'] as const
+/** 网关默认 WebSocket 地址：H5 桌面调试直连本机网关 */
+export const DEFAULT_GATEWAY_WS_URL = 'ws://127.0.0.1:8787/ws'
+
+/** 把任意输入收敛成合法的网关 WebSocket 地址；空或非 ws(s) 协议回退默认 */
+export function normalizeGatewayWsUrl(value: unknown): string {
+  const raw = String(value ?? '').trim()
+  if (/^wss?:\/\//i.test(raw)) return raw
+  return DEFAULT_GATEWAY_WS_URL
+}
+
+export const SUPPORTED_LANGUAGES = ['zh-CN', 'en-US'] as const
 export type AppLanguage = (typeof SUPPORTED_LANGUAGES)[number]
 
 /** 语言名用各自母语展示，不随界面语言翻译 */
 export const LANGUAGE_OPTIONS: Array<{ label: string; value: AppLanguage }> = [
   { label: '中文（简体）', value: 'zh-CN' },
   { label: 'English', value: 'en-US' },
-  { label: '日本語', value: 'ja-JP' },
 ]
 
 /** 把系统语言、旧配置等任意输入收敛到支持的语言 */
@@ -67,7 +77,6 @@ export function normalizeLanguage(value: unknown): AppLanguage {
   const lower = raw.toLowerCase()
   if (lower.startsWith('zh')) return 'zh-CN'
   if (lower.startsWith('en')) return 'en-US'
-  if (lower.startsWith('ja')) return 'ja-JP'
   return DEFAULT_LANGUAGE
 }
 

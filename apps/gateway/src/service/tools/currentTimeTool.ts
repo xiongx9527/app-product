@@ -23,7 +23,7 @@ function zoneLabel(timezone?: string): string {
 /** 按语言把当前时间格式化成可读字符串，交给大模型组织进回答。timezone 缺省为东八区（Asia/Shanghai）。 */
 export function formatNow(lang: Lang | string, timezone: string = 'Asia/Shanghai'): string {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
-  const locale = prefix === 'en' ? 'en-US' : prefix === 'ja' ? 'ja-JP' : 'zh-CN'
+  const locale = prefix === 'en' ? 'en-US' : 'zh-CN'
   const now = new Date()
   const dateOpts: Intl.DateTimeFormatOptions = {
     year: 'numeric',
@@ -51,7 +51,6 @@ export function formatNow(lang: Lang | string, timezone: string = 'Asia/Shanghai
 const DESCRIPTIONS: Record<string, string> = {
   zh: '获取当前的日期和时间（年、月、日、星期、时、分、秒）。当用户问“现在几点”“今天几号”“星期几”等时间相关问题时调用此工具，不要凭记忆回答。返回的是用户所在时区的时间。',
   en: "Get the current date and time (year, month, day, weekday, hour, minute, second). Call this whenever the user asks about the current time, today's date, or the day of the week; do not answer from memory. The result is in the user's timezone.",
-  ja: '現在の日付と時刻（年・月・日・曜日・時・分・秒）を取得する。ユーザーが「今何時」「今日は何日」「曜日」など時間に関する質問をしたら、記憶に頼らずこのツールを呼ぶ。返り値はユーザーの現地時刻。',
 }
 
 /**

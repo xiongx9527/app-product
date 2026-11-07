@@ -16,8 +16,8 @@ export interface LocationInfo {
 
 /** 客户端上报的地图服务商配置：选中的逆地理编码服务商 + 该服务商的 Key（byok，存本机）。 */
 export interface GeocodeInfo {
-  /** tianditu=天地图；tencent=腾讯；amap=高德。三者均免费提供逆地理编码。 */
-  provider: 'tianditu' | 'tencent' | 'amap'
+  /** tianditu=天地图；tencent=腾讯；amap=高德；baidu=百度。均免费提供逆地理编码。 */
+  provider: 'tianditu' | 'tencent' | 'amap' | 'baidu'
   /** 该服务商的 API Key；为空时网关退回客户端自带地址或网关兜底 Key。 */
   key: string
 }
@@ -62,6 +62,14 @@ export type ServerEvent =
   | { type: 'tts.end' }
   /** half=回声兜底中，播报期间不拾音，用户需点「打断」；full=正常全双工 */
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
+  /** 让客户端播放一段音频流（如 SomaFM 网络电台）；客户端用独立播放器，不与 TTS 冲突 */
+  | { type: 'media.play'; url: string; title: string; channel?: string }
+  /** 让客户端停止当前播放 */
+  | { type: 'media.stop' }
+  /** 让客户端展示某首歌的歌词 */
+  | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
+  /** 预约播放成功回执：minutes 为多久后自动播放，便于客户端提示 */
+  | { type: 'media.scheduled'; minutes: number; channel?: string }
   | { type: 'error'; code: ServerErrorCode; message: string }
 
 /** 契约定义的错误码 */

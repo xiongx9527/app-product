@@ -96,12 +96,12 @@ describe('app config', () => {
   })
 
   it('位置服务：非法服务商回退天地图，Key 收敛为字符串', () => {
-    const config = normalizeConfig({ geocode: { provider: 'baidu', key: 12345 } })
+    const config = normalizeConfig({ geocode: { provider: 'unknown', key: 12345 } })
     expect(config.geocode.provider).toBe('tianditu')
     expect(config.geocode.key).toBe('12345')
   })
 
-  it('位置服务：合法的腾讯/高德配置被保留', () => {
+  it('位置服务：合法的腾讯/高德/百度配置被保留', () => {
     expect(normalizeConfig({ geocode: { provider: 'tencent', key: 'TK' } }).geocode).toEqual({
       provider: 'tencent',
       key: 'TK',
@@ -109,6 +109,10 @@ describe('app config', () => {
     expect(normalizeConfig({ geocode: { provider: 'amap', key: 'AK' } }).geocode).toEqual({
       provider: 'amap',
       key: 'AK',
+    })
+    expect(normalizeConfig({ geocode: { provider: 'baidu', key: 'BK' } }).geocode).toEqual({
+      provider: 'baidu',
+      key: 'BK',
     })
   })
 })

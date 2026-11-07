@@ -7,6 +7,7 @@ import type { Fetcher, GeocodeConfig, ReverseGeocoder } from './types'
 import { createTiandituReverseGeocoder } from './tiandituReverse'
 import { createTencentGeocoder } from './tencent'
 import { createAmapGeocoder } from './amap'
+import { createBaiduGeocoder } from './baidu'
 
 export {
   createTiandituReverseGeocoder,
@@ -16,6 +17,7 @@ export {
   createTencentGeocoder,
 } from './tencent'
 export { createAmapGeocoder } from './amap'
+export { createBaiduGeocoder } from './baidu'
 export type {
   Fetcher,
   GeocodeConfig,
@@ -35,6 +37,8 @@ export function createGeocodeAdapter(
       return createTencentGeocoder(config.key, fetcher)
     case 'amap':
       return createAmapGeocoder(config.key, fetcher)
+    case 'baidu':
+      return createBaiduGeocoder(config.key, fetcher)
     case 'tianditu':
     default:
       return createTiandituReverseGeocoder(config.key, fetcher)

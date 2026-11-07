@@ -13,7 +13,6 @@ export function formatLocation(lang: Lang | string, loc: LocationInfo | null): s
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   if (!loc || typeof loc.latitude !== 'number' || typeof loc.longitude !== 'number') {
     if (prefix === 'en') return 'Current location is unavailable (device denied or no GPS).'
-    if (prefix === 'ja') return '現在位置を取得できません（権限なし、または GPS 無効）。'
     return '当前位置未获取到（设备未授权定位或暂无 GPS 信号）。'
   }
   const lat = loc.latitude.toFixed(4)
@@ -24,11 +23,6 @@ export function formatLocation(lang: Lang | string, loc: LocationInfo | null): s
       ? `Current location: ${where} (lat ${lat}, lng ${lng}).`
       : `Device location: lat ${lat}, lng ${lng}.`
   }
-  if (prefix === 'ja') {
-    return where
-      ? `現在地：${where}（緯度 ${lat}、経度 ${lng}）`
-      : `デバイス位置：緯度 ${lat}、経度 ${lng}`
-  }
   return where
     ? `当前位置：${where}（纬度 ${lat}，经度 ${lng}）`
     : `纬度 ${lat}，经度 ${lng}（来自设备定位）`
@@ -38,7 +32,6 @@ export function formatLocation(lang: Lang | string, loc: LocationInfo | null): s
 const DESCRIPTIONS: Record<string, string> = {
   zh: '获取设备当前位置（经纬度、城市/地址）。当用户问“我在哪”“附近”“现在的位置”等位置相关问题时调用此工具，不要凭记忆回答。',
   en: "Get the device's current location (latitude, longitude, city/address). Call whenever the user asks where they are or about nearby places; do not answer from memory.",
-  ja: 'デバイスの現在地（緯度・経度・都市/住所）を取得する。ユーザーが「今どこ」「近く」など位置に関する質問をしたら、記憶に頼らずこのツールを呼ぶ。',
 }
 
 /**

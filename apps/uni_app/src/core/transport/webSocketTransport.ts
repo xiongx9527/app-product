@@ -8,8 +8,12 @@ interface LocationSnapshot {
   address?: string
 }
 
-/** 网关默认 WebSocket 地址：H5 桌面调试直连本机；可用 VITE_GATEWAY_WS_URL 覆盖（如模拟器用 10.0.2.2）。 */
+/** 网关 WebSocket 地址解析：
+ * 优先级：设置页填的 gatewayWsUrl > 构建期 VITE_GATEWAY_WS_URL > 内置默认本机地址。
+ * 每次连接都重新解析，使设置页改地址后在下一次重连生效。 */
 function resolveGatewayUrl(): string {
+  const configured = appConfig.gatewayWsUrl?.trim()
+  if (configured) return configured
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
   return env?.VITE_GATEWAY_WS_URL ?? 'ws://127.0.0.1:8787/ws'
 }
@@ -24,6 +28,10 @@ export class WebSocketTransport implements AssistantTransport {
   private readonly audioListeners = new Set<(chunk: ArrayBuffer) => void>()
   private readonly url: string
   private readonly lang: 'zh-CN'
+  /** 构造时显式传入地址则固定使用；否则每次连接按 resolveGatewayUrl() 动态解析 */
+  private get activeUrl(): string {
+    return this.url || resolveGatewayUrl()
+  }
   /** 最近一次获取到的设备位置，连接时随 session.start 上报，之后由 session.location 刷新 */
   private lastLocation: LocationSnapshot | null = null
   private sessionId = ''
@@ -31,8 +39,8 @@ export class WebSocketTransport implements AssistantTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private intentionalClose = false
 
-  constructor(url = resolveGatewayUrl(), lang: 'zh-CN' = 'zh-CN') {
-    this.url = url
+  constructor(url?: string, lang: 'zh-CN' = 'zh-CN') {
+    this.url = url ?? ''
     this.lang = lang
   }
 
@@ -52,7 +60,7 @@ export class WebSocketTransport implements AssistantTransport {
       return Promise.resolve()
     }
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.url)
+      const ws = new WebSocket(this.activeUrl)
       ws.binaryType = 'arraybuffer'
       this.ws = ws
 
@@ -63,7 +71,7 @@ export class WebSocketTransport implements AssistantTransport {
         resolve()
       }
       ws.onerror = () => {
-        reject(new Error(`无法连接网关：${this.url}`))
+        reject(new Error(`无法连接网关：${this.activeUrl}`))
       }
       ws.onclose = () => {
         this.ws = null

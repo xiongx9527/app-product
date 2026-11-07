@@ -44,8 +44,8 @@ export interface CapabilityConfig {
   byProvider: Record<string, Record<string, ConfigValue>>
 }
 
-/** 地图服务商：逆地理编码（坐标→地址）用，三家都免费；坐标均走 GCJ-02 */
-export type GeocodeProvider = 'tianditu' | 'tencent' | 'amap'
+/** 地图服务商：逆地理编码（坐标→地址）用，均免费；坐标均走 GCJ-02（天地图除外，网关转 WGS-84） */
+export type GeocodeProvider = 'tianditu' | 'tencent' | 'amap' | 'baidu'
 
 /** 位置服务配置：选中的地图服务商 + 该服务商的 Key（byok，存本机） */
 export interface GeocodeConfig {
@@ -62,6 +62,8 @@ export interface AppConfig {
   timezone: string
   /** 位置服务（逆地理编码）：决定「我在哪」等问题的地址来源 */
   geocode: GeocodeConfig
+  /** 网关调试地址：覆盖默认网关 WebSocket 地址，方便切换/联调；留空用默认 */
+  gatewayWsUrl: string
   asr: CapabilityConfig
   llm: CapabilityConfig
   tts: CapabilityConfig

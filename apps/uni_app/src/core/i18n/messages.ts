@@ -67,6 +67,12 @@ const zhCN: Messages = {
   'settings.geocode.provider.tianditu': '天地图',
   'settings.geocode.provider.tencent': '腾讯地图',
   'settings.geocode.provider.amap': '高德地图',
+  'settings.geocode.provider.baidu': '百度地图',
+  'settings.gateway.title': '网关调试',
+  'settings.gateway.sub': '语音助手连接的网关地址（WebSocket）',
+  'settings.gateway.hint':
+    '留空使用默认本机网关；改地址后重开语音助手生效。仅本机调试用，不提交到代码。',
+  'settings.gateway.placeholder': 'ws://127.0.0.1:8787/ws',
   'settings.provider.label': '厂商',
   'settings.test': '测试连接',
   'settings.testing': '测试中…',
@@ -235,6 +241,12 @@ const enUS: Messages = {
   'settings.geocode.provider.tianditu': 'Tianditu',
   'settings.geocode.provider.tencent': 'Tencent Maps',
   'settings.geocode.provider.amap': 'Amap',
+  'settings.geocode.provider.baidu': 'Baidu Maps',
+  'settings.gateway.title': 'Gateway debug',
+  'settings.gateway.sub': 'WebSocket address the assistant connects to',
+  'settings.gateway.hint':
+    'Leave empty to use the default local gateway. Reopen the assistant to apply. For local debugging only; not committed.',
+  'settings.gateway.placeholder': 'ws://127.0.0.1:8787/ws',
   'settings.provider.label': 'Vendor',
   'settings.test': 'Test connection',
   'settings.testing': 'Testing…',
@@ -342,182 +354,7 @@ const enUS: Messages = {
   'talk.listening': 'Listening. Just talk (pause when done)',
 }
 
-const jaJP: Messages = {
-  'app.title': '音声アシスタント',
-  'app.subtitle': 'ウェイク · 会話 · 自動終了',
-  'app.settings': '設定',
-
-  'state.idle': 'オフ',
-  'state.standby': '待機中',
-  'state.listening': '会話中',
-  'state.confirming': '応答待ち',
-  'state.closing': '終了中',
-
-  'hint.idle': '音声アシスタントをオンにして待機を開始',
-  'hint.standby': '「小熊小熊」で呼び出すか、中央をタップして開始',
-  'hint.listening': '聞いています。話し終えたら少し待ってください',
-  'hint.listeningSpeaking': 'アシスタントが回答中です。いつでも中断できます',
-  'hint.confirming': 'まだいますか？応答がなければ終了します',
-  'hint.closing': 'このセッションを終了し、待機に戻ります',
-
-  'card.you': 'あなた',
-  'card.assistant': 'アシスタント',
-  'card.placeholder': '……',
-
-  'switch.title': '音声アシスタント',
-  'switch.desc': 'オフにするとマイクを解放します',
-
-  'btn.wake': '疑似ウェイク',
-  'btn.speak': '話しかける',
-  'btn.interrupt': '中断',
-
-  'footer.noWake': 'この環境ではネイティブウェイクが使えません。ボタンは疑似動作です',
-  'footer.wakeReady': 'ウェイク準備完了：{provider}',
-
-  'wake.provider.web': 'ブラウザ音声',
-  'wake.provider.native': 'ネイティブ KWS',
-  'wake.provider.unsupported': 'この環境では常時ウェイクに対応していません',
-  'wake.micDenied': 'マイクが許可されていません。ウェイクを利用できません',
-  'wake.error': 'ウェイクエラー：{code}',
-  'wake.unsupportedBrowser': 'このブラウザは音声認識に未対応です。Chrome または Edge をご利用ください',
-  'wake.startFailed': 'ウェイクの開始に失敗しました。後でもう一度お試しください',
-  'wake.nativeMissing': 'ネイティブウェイクプラグインがありません。カスタムベースが必要です',
-  'wake.nativeStartFailed': 'ネイティブウェイクの開始に失敗しました',
-
-  'cue.greeting': 'ここにいるよ',
-  'cue.stillThere': 'まだいる？',
-  'cue.farewell': '先に失礼します。必要なら呼んでね。',
-
-  'settings.title': '音声設定',
-  'settings.notice.title': '現在のモード：自前サービス（BYOK）',
-  'settings.notice.text':
-    'ログインと課金の開始後、有料ユーザーはプラットフォーム托管に切り替えられ、以下の設定は不要になります。',
-  'settings.language.title': '言語',
-  'settings.language.sub': 'ウェイク・ASR・TTS の既定言語',
-  'settings.language.hint':
-    'ベンダー側の言語が空の場合に使われます。ウェイク認識もこれに従います。',
-  'settings.timezone.title': 'タイムゾーン',
-  'settings.timezone.sub': '時刻回答の基準。既定は UTC+8',
-  'settings.timezone.hint':
-    '「今何時」などと聞かれたとき、選んだタイムゾーンで答えます。',
-  'settings.geocode.title': '位置サービス',
-  'settings.geocode.sub': '「今どこ」などの住所の情報源',
-  'settings.geocode.hint':
-    '地図ベンダーを選び、Key を入力。Key はこの端末にのみ保存。空欄の場合はゲートウェイの既定を使用。',
-  'settings.geocode.provider': 'ベンダー',
-  'settings.geocode.key': 'APIキー',
-  'settings.geocode.provider.tianditu': '天地图',
-  'settings.geocode.provider.tencent': 'Tencent マップ',
-  'settings.geocode.provider.amap': 'Amap',
-  'settings.provider.label': 'ベンダー',
-  'settings.test': '接続テスト',
-  'settings.testing': 'テスト中…',
-  'settings.reset': '既定に戻す',
-  'settings.save': '設定を保存',
-  'settings.foot':
-    '設定はこの端末にのみ保存されます。ベンダーごとに値を保持します。',
-  'settings.saved': '保存しました。アシスタントを開き直すと反映されます',
-  'settings.resetDone': '既定に戻しました',
-
-  'capability.asr.title': '音声認識 ASR',
-  'capability.asr.sub': 'マイク音声をテキストに変換',
-  'capability.llm.title': '大規模言語モデル LLM',
-  'capability.llm.sub': '応答を生成。複雑な処理は AgentScope ゲートウェイへ',
-  'capability.tts.title': '音声合成 TTS',
-  'capability.tts.sub': '応答テキストを音声に変換',
-
-  'field.baseUrl': 'ベースURL',
-  'field.apiKey': 'APIキー',
-  'field.model': 'モデル',
-  'field.language': '言語',
-  'field.responseFormat': '応答形式',
-  'field.temperature': 'Temperature',
-  'field.timeoutMs': 'タイムアウト（ミリ秒）',
-  'field.sampleRate': 'サンプルレート',
-  'field.mode': '接続方式',
-  'field.vadModel': 'VADモデル',
-  'field.puncModel': '句読点モデル',
-  'field.maxTokens': '最大出力トークン',
-  'field.systemPrompt': 'システムプロンプト',
-  'field.stream': 'ストリーミング',
-  'field.numCtx': 'コンテキスト長 num_ctx',
-  'field.agentName': 'エージェント名',
-  'field.sessionMode': 'セッションモード',
-  'field.voice': '声',
-  'field.format': 'フォーマット',
-  'field.speed': '話速',
-
-  'hint.apiKey': '端末内にのみ保存。入力時は Authorization: Bearer で送信',
-  'hint.timeoutMs': 'ローカルモデルは初回読み込みが遅い場合があります',
-  'hint.language': '空欄の場合はグローバル言語を使用',
-  'hint.systemPrompt': '音声向けに短く。回答はそのまま読み上げられます',
-  'hint.voice': '中国語は zf_ / zm_ 接頭辞が一般的。一覧は /health を参照',
-  'hint.temperature': '高いほどランダム。音声用途は 0.3〜0.8 がおすすめ',
-
-  'vendor.openai': 'OpenAI 互換',
-  'vendor.dashscope': 'Alibaba Cloud DashScope',
-  'vendor.funasr': 'セルフホスト FunASR',
-  'vendor.ollama': 'Ollama',
-  'vendor.deepseek': 'DeepSeek',
-  'vendor.agentscope': 'AgentScope ゲートウェイ',
-  'vendor.kokoro': 'Kokoro',
-
-  'provider.asr.openai.desc':
-    'POST /audio/transcriptions。9529 のローカル openai-voice（SenseVoice / Whisper）がこれに該当します。',
-  'provider.asr.dashscope.desc':
-    'Alibaba Cloud の音声認識。APIキーが必要で従量課金です。',
-  'provider.asr.funasr.desc':
-    'セルフホストの FunASR。オフラインで動作し、クラウドアカウント不要です。',
-  'provider.llm.openai.desc':
-    '任意の /v1/chat/completions サービス。ローカル Ollama 互換端点、vLLM、クラウド互換モードに対応。',
-  'provider.llm.ollama.desc':
-    'Ollama ネイティブの /api/chat。num_ctx などのローカル設定に対応。',
-  'provider.llm.dashscope.desc':
-    'DashScope の OpenAI 互換端点経由で Qwen を利用。',
-  'provider.llm.deepseek.desc': 'DeepSeek 公式 API。OpenAI 互換。',
-  'provider.llm.agentscope.desc':
-    '複雑なエージェント処理は自前の Node ゲートウェイで実行。ツール呼び出し、複数ステップ、MCP に対応。',
-  'provider.tts.openai.desc':
-    'POST /audio/speech。9529 の openai-voice は edge-tts と Kokoro を提供し、形式とサンプルレートを選択可能。',
-  'provider.tts.kokoro.desc':
-    'ローカルの kokoro-voice コンテナ。100 音色、pcm / wav ストリーミング、外部依存なし。',
-  'provider.tts.dashscope.desc':
-    'Alibaba Cloud CosyVoice。音色が多く高音質、従量課金です。',
-
-  'test.noBaseUrl': '先にベースURLを入力してください',
-  'test.authFailed': '認証に失敗しました（HTTP {status}）。APIキーを確認してください',
-  'test.httpError': 'サービスが HTTP {status} を返しました{detail}',
-  'test.asrModels': '接続成功。利用可能なモデルは {count} 個です',
-  'test.connected': '接続成功',
-  'test.llmReply': '接続成功。モデルの応答：{text}',
-  'test.ollamaModels': '接続成功。ローカルモデル {count} 個',
-  'test.gatewayReady': 'ゲートウェイの準備ができています',
-  'test.ttsBytes': '接続成功。{size} の音声を取得',
-  'test.ttsEmpty': '空の音声が返されました',
-  'test.kokoroVoices': '接続成功。利用可能な声は {count} 個',
-  'test.funasrReady': 'FunASR サービスの準備ができています',
-  'test.reachable': 'サービスに到達可能（HTTP {status}）。軽量な確認APIはありません',
-  'test.failed': '接続に失敗しました：{message}',
-
-  'card.thinking': '思考',
-  'card.done': '完了',
-  'card.thinkingBadge': '思考中…',
-  'card.generating': '生成中…',
-  'queue.badge': '{count} 件待ち',
-
-  'hint.thinking': '考え中。話題を変えたい場合はそのまま話してください',
-  'hint.replying': '回答中。割り込みたい場合はそのまま話してください',
-  'hint.speakingHalf': 'エコーを検出。発話中はマイクをミュート。「中断」をタップ可',
-  'hint.speakingFull': '発話中。割り込みたい場合はそのまま話してください',
-  'hint.done': '完了。次の用件をどうぞ',
-
-  'talk.standby': 'マイクに向かって「小熊小熊」と話しかけて起動',
-  'talk.echo': 'エコー抑制を強化。割り込みは予約されます。「中断」も可',
-  'talk.listening': '聞いています。そのまま話してください（終わったら少し止めて）',
-}
-
 export const MESSAGES: Record<Locale, Messages> = {
   'zh-CN': zhCN,
   'en-US': enUS,
-  'ja-JP': jaJP,
 }
