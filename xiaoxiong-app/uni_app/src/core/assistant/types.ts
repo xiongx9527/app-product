@@ -43,8 +43,11 @@ export interface AssistantConfig {
 }
 
 export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
-  t1SilenceMs: 20_000,
-  t2GraceMs: 10_000,
+  // 助手答完后，用户连续静默多久才问"还在吗？"。默认 30s，比 20s 更贴合人说话/思考的节奏，
+  // 避免答完没多久就催问（用户反馈"还在吗？过的时间有些短"）。
+  t1SilenceMs: 30_000,
+  // 问完"还在吗？"后，给用户多久回应宽限才正式结束本轮。默认 15s。
+  t2GraceMs: 15_000,
 }
 
 export const STATE_LABEL: Record<AssistantState, string> = {

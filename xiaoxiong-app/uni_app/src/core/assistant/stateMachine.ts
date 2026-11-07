@@ -38,10 +38,20 @@ export function transition(
     case 'REWAKE':
       // 对话进行中再次叫「小熊小熊」：视作重新唤醒。停掉当前轮次、重新招呼，
       // 回到干净的对听状态，不退回待唤醒（不必再说一次唤醒词）。
+      // 注意必须带 startSession：REWAKE 只发了 session.cancel，服务端 cancel() 会把
+      // cancelled 置 true 且不再复位，若不重新 session.start 把 cancelled 复位成 false，
+      // 服务端会一直静默丢弃 asr.final，表现为「重新唤醒后识别不到声音 / 卡死」。
       if (state === 'listening' || state === 'confirming' || state === 'closing') {
         return {
           state: 'listening',
-          effects: ['cancelT1', 'cancelT2', 'cancelSession', 'playGreeting', 'scheduleT1'],
+          effects: [
+            'cancelT1',
+            'cancelT2',
+            'cancelSession',
+            'startSession',
+            'playGreeting',
+            'scheduleT1',
+          ],
         }
       }
       return NOOP(state)

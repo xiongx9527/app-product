@@ -11,7 +11,12 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
 const REFERER = 'https://www.bilibili.com/'
 
-/** 允许代理的上游 CDN 域名后缀（B 站音轨只落在这些域）。 */
+/**
+ * 允许代理的上游 CDN 域名后缀（B 站音轨只落在这些域）。
+ * 后缀匹配，子域自动覆盖：upos-sz-mirrorali.bilivideo.com、xy.mcdn.bilivideo.cn、
+ * nqyu06l.edge.mountaintoys.cn 等都能命中。mountaintoys.cn / biliapi.com 是 B 站
+ * 新版 mcdn 边缘节点域名，缺了会让「播放失败」（直链域名不在白名单被代理 400 拒绝）。
+ */
 const ALLOWED_HOST_SUFFIXES = [
   'bilivideo.com',
   'bilivideo.cn',
@@ -19,6 +24,8 @@ const ALLOWED_HOST_SUFFIXES = [
   'hdslb.com',
   'bilicdn1.com',
   'szbdyd.com',
+  'mountaintoys.cn',
+  'biliapi.com',
 ]
 
 /** 上游地址是否安全可代理：http(s) 协议 + host 命中白名单。导出便于单测。 */
@@ -31,6 +38,20 @@ export function isAllowedUpstreamUrl(raw: string): boolean {
   } catch {
     return false
   }
+}
+
+/** 按上游 URL 扩展名推断音频 MIME；B 站 .m4s/.m4a 是无 moov 头的 fMP4/AAC 片段，标 audio/mp4。 */
+export function inferAudioContentType(raw: string): string {
+  try {
+    const path = new URL(raw).pathname.toLowerCase()
+    if (path.endsWith('.m4s') || path.endsWith('.m4a') || path.endsWith('.mp4')) return 'audio/mp4'
+    if (path.endsWith('.mp3')) return 'audio/mpeg'
+    if (path.endsWith('.aac')) return 'audio/aac'
+    if (path.endsWith('.ogg')) return 'audio/ogg'
+  } catch {
+    // 忽略
+  }
+  return 'audio/mpeg'
 }
 
 /** 逐跳跟随重定向并校验每一跳，避免白名单被 302 绕过。 */
@@ -86,7 +107,13 @@ export async function handleMusicStream(
     const v = upstream.headers.get(key)
     if (v) headers[key] = v
   }
-  if (!headers['content-type']) headers['content-type'] = 'audio/mpeg'
+  // B 站 dash 音轨是 .m4s（fMP4/AAC），上游有时标成 application/octet-stream，有时标成
+  // video/mp4（其实是纯音频流）。浏览器 <audio>/InnerAudioContext 对这两种标签都可能拒绝解码
+  // （MEDIA_ERR_SRC_NOT_SUPPORTED），必须按扩展名统一标成 audio/mp4 才能稳定播放。
+  const ct = headers['content-type']
+  if (!ct || ct === 'application/octet-stream' || ct === 'video/mp4') {
+    headers['content-type'] = inferAudioContentType(raw)
+  }
   res.writeHead(upstream.status, headers)
 
   if (req.method === 'HEAD' || !upstream.body) {

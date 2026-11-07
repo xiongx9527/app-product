@@ -27,6 +27,8 @@ interface Harness {
   service: VoiceSessionService
   events: ServerEvent[]
   agentCalls: () => number
+  /** 智能体工厂被调用的次数：re-arm 不重建 agent 时应保持不变 */
+  agentFactoryCalls: () => number
   /** 让当前这一轮的 reply 立刻 resolve */
   finishReply: () => void
   /** 模拟客户端播完回执 */
@@ -44,12 +46,15 @@ function createHarness(
     finalizeTexts?: string[]
     musicSourceFactory?: () => MusicSource
     candidateFetcher?: (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
+    /** 句末静音定稿阈值（毫秒）；默认 10ms，贴近真实长停顿测试时调大 */
+    asrEndpointMs?: number
   } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
   const events: ServerEvent[] = []
   let calls = 0
   let frames = 0
+  let factoryCalls = 0
   let textIdx = 0
   let finish: (() => void) | null = null
   const agent: AgentService = {
@@ -102,13 +107,16 @@ function createHarness(
 
   let service!: VoiceSessionService
   const deps: VoiceSessionDeps = {
-    agentFactory: () => agent,
+    agentFactory: () => {
+      factoryCalls += 1
+      return agent
+    },
     asr,
     tts,
     data,
     send: (event) => events.push(event),
     sendAudio: () => {},
-    asrEndpointMs: 10,
+    asrEndpointMs: opts.asrEndpointMs ?? 10,
     musicSourceFactory: opts.musicSourceFactory,
     candidateFetcher: opts.candidateFetcher,
   }
@@ -117,6 +125,7 @@ function createHarness(
     service,
     events,
     agentCalls: () => calls,
+    agentFactoryCalls: () => factoryCalls,
     finishReply: () => finish?.(),
     playbackDone: () => service.handleText(JSON.stringify({ type: 'session.playback_done' })),
     asrFrames: () => frames,
@@ -293,6 +302,88 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(texts(h)).toContain('正在为你播放')
   })
 
+  it('暂停播放：下发 media.pause（不是 media.stop），不进 LLM', async () => {
+    // 用户反馈：说「暂停播放」结果被关掉（误判成 stop）。这条端到端用例走真实
+    // finalizeUtterance 路径（带音乐源），验证命中 pause 后下发 media.pause、
+    // 绝不发 media.stop，且绕开大模型。
+    const h = createHarness({
+      finalizeText: '暂停播放',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/x.m4s', title: 'x', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const pauses = h.events.filter((e) => e.type === 'media.pause')
+    const stops = h.events.filter((e) => e.type === 'media.stop')
+    expect(pauses).toHaveLength(1)
+    expect(stops).toHaveLength(0)
+    // 直连绕开 LLM：不应调用 agent
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('已暂停')
+  })
+
+  /** 桩源：把每次播放/换歌时收到的关键词编码进标题，便于断言“换一首”是否沿用当前上下文。 */
+  function contextSource(): MusicSource {
+    let last = ''
+    return {
+      resolve: async (g) => {
+        last = g ?? ''
+        return { url: 'u', title: `R:${last}`, channel: 'bilibili' }
+      },
+      next: async (g) => {
+        const k = g === undefined ? last : g
+        last = k
+        return { url: 'u', title: `N:${k}`, channel: 'bilibili' }
+      },
+    }
+  }
+
+  it('换一首：没指定新偏好时沿用当前上下文（同歌手），不跳到无关电台', async () => {
+    // 用户反馈：播放周杰伦时说“换一首”，结果换了一首和当前无关的歌。
+    // 根因：原逻辑把“换一首”收敛成 genre=轻音乐，被路由到 SomaFM 电台（与周杰伦无关）。
+    // 修复：bare 换一首传 undefined，让音乐源沿用当前 B 站上下文 → 同歌手下一首。
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '换一首'],
+      musicSourceFactory: contextSource,
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(20)
+    const plays1 = h.events.filter((e) => e.type === 'media.play')
+    expect(plays1).toHaveLength(1)
+    expect((plays1[0] as { title: string }).title).toContain('周杰伦')
+
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(20)
+
+    const plays2 = h.events.filter((e) => e.type === 'media.play')
+    expect(plays2).toHaveLength(2)
+    expect((plays2[1] as { title: string }).title).toContain('周杰伦') // 仍是周杰伦（同歌手下一首）
+    expect((plays2[1] as { title: string }).title).not.toContain('轻音乐')
+  })
+
+  it('换一首：明确指定新歌手时才切到新偏好（如“换首刘德华的”）', async () => {
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '换首刘德华的'],
+      musicSourceFactory: contextSource,
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(20)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(20)
+
+    const plays2 = h.events.filter((e) => e.type === 'media.play')
+    expect(plays2).toHaveLength(2)
+    expect((plays2[1] as { title: string }).title).toContain('刘德华') // 按要求切到刘德华
+    expect((plays2[1] as { title: string }).title).not.toContain('周杰伦')
+  })
+
   it('解析失败：仍下发 asr.final，口播「没找到」，绝不出现「操作失败」', async () => {
     const h = createHarness({
       finalizeText: '播放一首不存在的歌',
@@ -358,6 +449,35 @@ describe('点歌信息不足：候选列表 + 语音选择', () => {
     expect(h.agentCalls()).toBe(0)
     expect(resolved).toHaveLength(0) // 还没播，没调 source
     expect(h.events.some((e) => e.type === 'asr.final')).toBe(true)
+  })
+
+  it('「列出、念出3首周杰伦的歌」：剔指令/数量词后同样给候选列表（修复误报没找到）', async () => {
+    // 用户反馈：说「列出、念出3首周杰伦的歌」结果报「没找到这首歌」。
+    // 该句因含「的歌」走播放直连，但检索词若带「列出/念出/3首」会搜不到；
+    // 修复后 genreToKeyword 收敛成「周杰伦」，应正常口播编号列表（即用户要的「念出」），
+    // 既不报没找到、也不直接播、不进 LLM。
+    const resolved: string[] = []
+    const h = createHarness({
+      finalizeText: '列出、念出3首周杰伦的歌',
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).toContain('第一首')
+    expect(texts(h)).toContain('第二首')
+    expect(texts(h)).toContain('第三首')
+    expect(texts(h)).toContain('你想听第几首')
+    expect(texts(h)).not.toContain('没找到')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+    expect(resolved).toHaveLength(0)
   })
 
   it('两轮：给列表后说「第二首」→ 播第 2 首，且「我说」卡片显示选择句', async () => {
@@ -438,5 +558,97 @@ describe('点歌信息不足：候选列表 + 语音选择', () => {
 
     expect(texts(h)).not.toContain('你想听第几首')
     expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
+  })
+})
+
+describe('说话被切断（句末端点过激）', () => {
+  it('句中短停顿：一次说话中途停顿仍定稿为一整段，不被切成两段', async () => {
+    const h = createHarness({ asrEndpointMs: 800, finalizeText: '我今天想出去玩' })
+    await startDialog(h.service)
+    // 前半句
+    for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
+    // 自然思考停顿 400ms（< endpointMs 800）：不应提前定稿
+    await sleep(400)
+    expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(0)
+    // 继续后半句（停顿 < 800ms 内续上，端点计时被重置）
+    for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
+    // 等句末定稿（endpointMs 800 + 余量）
+    await sleep(900)
+    // 整句只定稿一次，没有被切成「前一段 / 后一段」
+    const finals = h.events.filter((e) => e.type === 'asr.final')
+    expect(finals).toHaveLength(1)
+  })
+})
+
+describe('会话与连接解耦：重武装（deviceId 复用不丢记忆）', () => {
+  const playSource = (resolve: MusicSource['resolve']): MusicSource => ({ resolve })
+  const mb = (items: Array<{ title: string; artist: string }>) => async () => ({
+    ok: true,
+    json: async () => ({ recordings: items.map((c) => ({ title: c.title, 'artist-credit': [{ name: c.artist }] })) }),
+  })
+  const three = [
+    { title: '稻香', artist: '周杰伦' },
+    { title: '晴天', artist: '周杰伦' },
+    { title: '七里香', artist: '周杰伦' },
+  ]
+
+  /** 说完一句并等句末定稿（按 800ms 端点阈值留足时间），随后释放播放回执并等播报结束。
+   *  必须等 playbackPending 回落，否则下一句会落在「播报中」分支被当回声/忽略。 */
+  async function speakSettle(h: Harness): Promise<void> {
+    await speakUtterance(h)
+    await sleep(900)
+    h.playbackDone()
+    await sleep(60)
+  }
+
+  it('二次 start（重唤醒/重连）走 re-arm：不重建 agent、保留候选歌单', async () => {
+    const h = createHarness({
+      asrEndpointMs: 800,
+      ttsFrames: [loudFrame()],
+      finalizeTexts: ['周杰伦的歌', '第二首'],
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/a.m4s', title: '晴天', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    expect(h.agentFactoryCalls()).toBe(1) // 首次 start 构造了智能体
+
+    await speakSettle(h) // 给候选列表（周杰伦的歌）
+    h.playbackDone()
+    await sleep(20)
+
+    // 二次 start（模拟设备重唤醒/断线重连）：应走 re-arm
+    await startDialog(h.service)
+    expect(h.agentFactoryCalls()).toBe(1) // 没有重建智能体，记忆保留
+
+    await speakSettle(h) // 回答「第二首」
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ title: string }>
+    // 候选歌单仍在：第二首选中晴天，说明 re-arm 没清空 pendingCandidates
+    expect(plays.some((p) => p.title === '晴天')).toBe(true)
+    // 候选选择不进 LLM
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('session.end 之后 start 视为全新：重建 agent，旧记忆不保留', async () => {
+    // 用普通对话（非音乐/候选流程）验证，避免播报时序与候选分支相互干扰
+    const h = createHarness({ asrEndpointMs: 800, finalizeText: '你好' })
+    await startDialog(h.service)
+    expect(h.agentFactoryCalls()).toBe(1)
+
+    await speakSettle(h) // 一轮普通对话
+    expect(h.agentCalls()).toBe(1) // 首轮进了 LLM
+
+    // 显式结束会话（客户端 close 走 session.end）
+    h.service.handleText(JSON.stringify({ type: 'session.end' }))
+    await sleep(20)
+    expect(h.agentFactoryCalls()).toBe(1) // 结束未重建
+
+    // 再次 start：全新会话，智能体重新构造
+    await startDialog(h.service)
+    expect(h.agentFactoryCalls()).toBe(2)
+
+    // 全新会话：再说一句普通对话，agent 被重建且可用
+    await speakSettle(h)
+    expect(h.agentCalls()).toBe(2)
   })
 })

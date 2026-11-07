@@ -27,18 +27,18 @@ describe('assistant state machine', () => {
   it('对话中再次叫唤醒词：停掉当前轮次并重新招呼，回到对听状态', () => {
     expect(next('listening', 'REWAKE')).toEqual({
       state: 'listening',
-      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'playGreeting', 'scheduleT1'],
+      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'startSession', 'playGreeting', 'scheduleT1'],
     })
   })
 
   it('提示中 / 结束中再次叫唤醒词同样重新唤醒', () => {
     expect(next('confirming', 'REWAKE')).toEqual({
       state: 'listening',
-      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'playGreeting', 'scheduleT1'],
+      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'startSession', 'playGreeting', 'scheduleT1'],
     })
     expect(next('closing', 'REWAKE')).toEqual({
       state: 'listening',
-      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'playGreeting', 'scheduleT1'],
+      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'startSession', 'playGreeting', 'scheduleT1'],
     })
   })
 

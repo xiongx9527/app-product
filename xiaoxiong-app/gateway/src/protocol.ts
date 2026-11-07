@@ -36,6 +36,13 @@ export type ClientMessage =
       geocode?: GeocodeInfo
       /** wake=只做 ASR（用于本地唤醒词检测，不跑 LLM/TTS）；dialog=完整对话，默认 */
       mode?: 'wake' | 'dialog'
+      /**
+       * 设备稳定标识：客户端持久化生成（一次），连接时随 WS URL query 与 payload 上报。
+       * 网关据此把会话与连接解耦——同一设备的重连/重唤醒走「重新武装」复用会话，
+       * 保留 LLM 对话记忆与待选歌单，不再因断线重连而失忆。缺省（旧客户端未上报）时
+       * 每连接独立会话、不复用。
+       */
+      deviceId?: string
     }
   | { type: 'session.cancel' }
   | { type: 'session.end' }

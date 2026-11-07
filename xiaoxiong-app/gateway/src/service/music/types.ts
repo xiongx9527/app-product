@@ -53,6 +53,12 @@ const GENRE_KEYWORDS: Array<{ match: RegExp; keyword: string }> = [
 const GENERIC_PLAY_WORDS =
   /^(歌|歌曲|音乐|乐曲|曲子|曲|个|首|点|些|一点的?|一些|随便|随便来|随便放|随便听|都行|什么都行|任意|来点|放点|听点|来首歌|放首歌|点首歌|听首歌|放个歌|播个|播放个|点点|呗|吧|啊|呢)*$/
 
+/** 判断一句话是否只是泛化点歌/语气（如「歌 / 放首歌 / 播放个音乐」），而非带具体歌手/歌名/风格。 */
+export function isGenericPlayPhrase(text: string): boolean {
+  const c = (text ?? '').replace(/\s/g, '')
+  return c.length > 0 && GENERIC_PLAY_WORDS.test(c)
+}
+
 /** 把风格描述/歌名收敛成搜索词；无匹配给兜底词。 */
 export function genreToKeyword(genre?: string): string {
   if (!genre) return '轻音乐'
@@ -66,7 +72,19 @@ export function genreToKeyword(genre?: string): string {
   for (const word of COMMAND_WORDS) {
     kw = kw.split(word).join('')
   }
+  // 去掉「列出 / 念出 / 报 / 说」这类“列歌单、念名字”的指令动词：用户只是要歌名，
+  // 不是换播放动词；不剔掉会把「列出周杰伦的歌」变成「列出…周杰伦」这种搜不到的垃圾词。
+  // 用「动词 | 标点/空白 | 一?下/个」循环的重复，吃掉动词之间夹的顿号、以及「一下/一个」填充。
+  kw = kw.replace(/^(?:列出|列|念出|念|报出?|说出来?|给我|让我|帮我|想|要|[、，。\s]|一?[下个])+/, '')
+  // 去掉数量词：3首 / 三首 / 几首（用户要“列3首”，检索只需歌手名）。只在这些组合里清「首」，
+  // 绝不全局删「首」——否则「来首歌 / 放首歌」会被拆坏、失去泛化回落轻音乐的兜底。
+  kw = kw.replace(/\d+\s*首/g, '').replace(/[一二两三四五六七八九十]+\s*首/g, '').replace(/几\s*首/g, '')
   kw = kw.replace(/的/g, ' ').replace(/\s+/g, ' ').trim()
+  // 去掉开头可能残留的播放动词（「放 / 播 / 唱 / 听」）：「放刘德华的歌」→「刘德华 歌」、
+  // 「唱周杰伦的歌」→「周杰伦 歌」、「听周杰伦的歌」→「周杰伦 歌」，否则残留动词会让
+  // 候选/检索词变成「放刘德华 / 唱周杰伦」，B 站与 MusicBrainz 都搜不到
+  // （「播放刘德华的歌」能放正是因为它被 COMMAND_WORDS 的「播放」整词剔掉了）。
+  kw = kw.replace(/^[放播唱听]\s*/, '')
   // 剔除后只剩泛化词/语气词（或为空）→ 回落轻音乐电台，别拿去白搜
   const compact = kw.replace(/\s+/g, '')
   if (!compact || GENERIC_PLAY_WORDS.test(compact)) return '轻音乐'

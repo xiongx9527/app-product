@@ -78,4 +78,28 @@ describe('EnergyVad 自适应噪声底', () => {
     expect(c.started).toBe(false)
     expect(d.started).toBe(true)
   })
+
+  it('句中短停顿（默认 hangoverMs=800）不结束当前句，避免被切断', () => {
+    // 用户中途思考停顿：停顿 500ms 不应被当成"说完了"，整句仍是同一段。
+    const vad = new EnergyVad() // 默认 hangoverMs = 800
+    vad.push(frame(0.2), { now: 0 })
+    vad.push(frame(0.2), { now: 100 })
+    expect(vad.speaking).toBe(true)
+
+    // 静音 500ms（< 800）：仍在同一句里
+    const pause = vad.push(frame(0.0005), { now: 600 })
+    expect(pause.speech).toBe(true)
+    expect(pause.voiced).toBe(false)
+    expect(vad.speaking).toBe(true)
+
+    // 继续说话，句仍连续（不会因刚才的停顿被切成两段）
+    const resume = vad.push(frame(0.2), { now: 700 })
+    expect(resume.speech).toBe(true)
+    expect(vad.speaking).toBe(true)
+
+    // 只有静音超过 800ms 才真正结束当前句
+    const ended = vad.push(frame(0.0005), { now: 1600 })
+    expect(ended.speech).toBe(false)
+    expect(vad.speaking).toBe(false)
+  })
 })

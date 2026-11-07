@@ -99,8 +99,8 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
   })
 
   const wss = new WebSocketServer({ server: httpServer, path: config.ws.path })
-  wss.on('connection', (ws) => {
-    createVoiceConnection(ws, { config, data })
+  wss.on('connection', (ws, req) => {
+    createVoiceConnection(ws, req, { config, data })
   })
 
   return {

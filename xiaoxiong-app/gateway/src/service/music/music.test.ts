@@ -49,6 +49,27 @@ describe('genre 分流', () => {
     expect(genreToKeyword('放点电子')).toBe('电子')
     expect(genreToKeyword('我想听周杰伦的稻香')).toBe('周杰伦 稻香')
     expect(genreToKeyword('播放个周杰伦的稻香')).toBe('周杰伦 稻香')
+    // 只说「放」不带「播」：开头播放动词也要剔掉，否则残留「放」让候选/检索词变「放刘德华」
+    // （用户反馈「放刘德华的歌」放不出，只有「播放刘德华的歌」能放）。
+    // 注意：结尾的「歌」属泛化词、在 contentWords 阶段去掉，这里仍随串保留，
+    // 与「播放刘德华的歌」解析结果一致（都是「刘德华 歌」），保证两者行为相同。
+    expect(genreToKeyword('放刘德华的歌')).toBe('刘德华 歌')
+    expect(genreToKeyword('放周杰伦')).toBe('周杰伦')
+    // 其它点歌动词（唱 / 听）作开头也要剔掉，否则同样残留动词导致搜不到
+    // （用户反馈「唱周杰伦的歌」说没播放）。
+    expect(genreToKeyword('唱周杰伦的歌')).toBe('周杰伦 歌')
+    expect(genreToKeyword('听周杰伦的歌')).toBe('周杰伦 歌')
+  })
+
+  it('genreToKeyword：列出/念出/数量词也要剔掉（用户反馈“列出3首周杰伦的歌”报没找到）', () => {
+    // 「列出、念出3首周杰伦的歌」含「的歌」被识别成播放，但检索词若不剔指令/数量词，
+    // 会变成「列出、念出3首周杰伦」这种 MusicBrainz/百度都搜不到的垃圾词 → 误报「没找到这首歌」。
+    // 剔干净后应只剩歌手名，候选列表功能据此检索并口播 3 首歌名（即用户要的「念出」）。
+    expect(genreToKeyword('列出、念出3首周杰伦的歌')).toBe('周杰伦 歌')
+    expect(genreToKeyword('列出周杰伦的歌')).toBe('周杰伦 歌')
+    expect(genreToKeyword('念出几首周杰伦的歌')).toBe('周杰伦 歌')
+    expect(genreToKeyword('列出周杰伦')).toBe('周杰伦')
+    expect(genreToKeyword('报一下周杰伦的歌')).toBe('周杰伦 歌')
   })
 
   it('genreToKeyword：泛化点歌回落轻音乐（避免拿「歌」去百度白搜报操作失败）', () => {
@@ -291,6 +312,15 @@ describe('looksLikeCompilation（合集/串烧硬排除，杜绝乱播放）', (
     for (const t of ['《十年》陈奕迅 完整版', '周杰伦 稻香 Live', '稻香-周杰伦 高清MV']) {
       expect(looksLikeCompilation(t)).toBe(false)
     }
+  })
+  it('新增：精选 / 全MV / “数字+首” 计数也判为合集（避免换一首换到合集）', () => {
+    // 用户反馈：搜“周杰伦”顶部返回「歌曲精选100首 / 最热门100首 / 全MV」这类合集，
+    // 应被硬排除，只播单曲，否则“换一首”会换到合集而非单曲。
+    expect(looksLikeCompilation('【无损音质】周杰伦歌曲精选100首 歌词版')).toBe(true)
+    expect(looksLikeCompilation('【经典】周杰伦全MV 【200P】')).toBe(true)
+    expect(looksLikeCompilation('华语最热门100首热歌 后台循环')).toBe(true)
+    // 注意：单首的“高清MV”不带“全”前缀，不应误伤
+    expect(looksLikeCompilation('稻香-周杰伦 高清MV')).toBe(false)
   })
 })
 

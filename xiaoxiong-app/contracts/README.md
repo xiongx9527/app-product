@@ -52,6 +52,13 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `session.start` 的 `geocode` 为客户端选择的位置服务商配置（`provider`: `tianditu` / `tencent` / `amap` / `baidu` + `key`），逆地理编码（坐标→地址）在网关侧据此完成；`key` 留空时退回网关兜底天地图 tk（环境变量 `TIANDITU_TK`）。四家均免费，坐标均为 GCJ-02（天地图、百度除外：天地图网关内部将 GCJ-02 转 WGS-84 再请求；百度用 `coordtype=gcj02ll` 直接收 GCJ-02）。客户端可在设置页选择服务商并填入自有 Key（byok），不填则使用网关兜底。
 
+`session.start` 的 `deviceId` 为客户端持久化的稳定设备标识（首次生成、之后复用；同时随 WS 连接 URL query 上报为主路径）。网关据此**把会话与连接解耦**，按 `deviceId` 维护进程内会话注册表：
+
+- **同一 `deviceId` 的「再次 `session.start`」（重唤醒/断线重连）走「重新武装」**：不重建 LLM 智能体、不清空 `pendingCandidates`（候选歌单）与对话历史、不新建会话记录行，只复位在途轮次与播放/回声状态。目标：助手在重唤醒/重连后**不丢失上下文记忆**（用户反馈的"很失忆"根因即会话被绑死在连接生命周期上）。
+- **`session.end` 才是真正结束会话**：从注册表移除、销毁对话记忆，之后同一 `deviceId` 的 `session.start` 视为全新会话。
+- **未上报 `deviceId`（旧客户端）**：每连接独立会话、不复用，行为同改造前，向后兼容。
+- 范围：仅保证**一次网关进程内**的多轮记忆；网关重启 = 会话自然结束，跨重启持久化需落库，另行规划。
+
 音乐播放为网关内置能力，**不再由客户端配置**：`session.start` 不含 `music` 字段。网关始终注册音乐工具（`play_music` / `stop_music` / `pause_music` / `resume_music` / `next_music`），按请求类型自动分流——
 - 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台（直接 mp3 流，无需 Key）；
 - 具体歌名/歌手请求 → B 站原生搜索 API 兜底（WBI 签名），命中视频后抽取音轨返回可播放直链（视频也能播放）。

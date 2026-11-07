@@ -6,7 +6,7 @@ import type { ClientMessage, GeocodeInfo, Lang, LocationInfo, ServerEvent, Serve
 import type { ReverseGeocoder } from './geocode/types'
 import { createGeocodeAdapter } from './geocode'
 import { createMusicSource, type MusicSource } from './music'
-import { genreToKeyword } from './music/types'
+import { genreToKeyword, isGenericPlayPhrase } from './music/types'
 import {
   searchCandidates,
   needsCandidateList,
@@ -48,6 +48,32 @@ export interface VoiceSessionDeps {
   musicSourceFactory?: () => MusicSource
   /** 检索候选歌曲（MusicBrainz）；测试可注入桩避免联网 */
   candidateFetcher?: CandidateFetcher
+  /**
+   * 设备稳定标识（来自客户端上报的 deviceId）；用于命令日志/会话落库归属设备。
+   * 缺省空：旧客户端未上报，会话不进注册表、不复用。
+   */
+  deviceId?: string | null
+  /** 会话显式结束（session.end）时回调：控制器据此从注册表移除，下次 start 视为全新 */
+  onEnded?: () => void
+}
+
+/**
+ * “换一首 / 下一首 / 换个风格” 之类指令里，若用户没指定新的歌手/风格，返回 undefined
+ * （让音乐源沿用当前上下文，放同歌手/同风格的下一首）；否则返回收敛后的关键词。
+ * 这样「换一首」不会因没给风格而被路由到完全不相关的电台/歌曲。
+ */
+function nextPreference(text: string): string | undefined {
+  if (!text) return undefined
+  let kw = text
+    .replace(/换一?首|下一?首|换个?风格|换一?个风格|切歌|来点别的|换台/g, '')
+    .replace(/的/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  kw = kw.replace(/^[放播唱听]\s*/, '')
+  if (!kw) return undefined
+  // 只剩泛化点歌词（歌/音乐/放首歌…）也算“没给具体新偏好”
+  if (isGenericPlayPhrase(kw)) return undefined
+  return genreToKeyword(kw)
 }
 
 export class VoiceSessionService {
@@ -109,6 +135,16 @@ export class VoiceSessionService {
 
   constructor(private readonly deps: VoiceSessionDeps) {
     this.reverseGeocoder = undefined
+    this.deviceId = deps.deviceId ?? null
+  }
+
+  /**
+   * 重新挂载传输闭包：同一设备重连时，复用旧会话实例但换成新连接的 ws 收发。
+   * 控制器在每次新建/复用连接后调用，确保 send/sendAudio 指向当前存活的 socket。
+   */
+  bindTransport(send: (event: ServerEvent) => void, sendAudio: (bytes: Uint8Array) => void): void {
+    this.deps.send = send
+    this.deps.sendAudio = sendAudio
   }
 
   /** 按客户端上报（或网关兜底）的配置构造逆地理编码函数；都没配则返回 null。 */
@@ -272,7 +308,10 @@ export class VoiceSessionService {
           break
         }
         case 'next': {
-          const track = source.next ? await source.next(genre) : await source.resolve(genre)
+          // 没指定新歌手/风格（纯粹「换一首」）：传 undefined，让音乐源沿用当前上下文，
+          // 放同歌手/同风格的下一首；指定了才用新关键词。
+          const req = nextPreference(text)
+          const track = source.next ? await source.next(req) : await source.resolve(req)
           if (!track?.url) throw new Error('no track')
           await this.playTrack(track, m.switched(track.title))
           break
@@ -619,7 +658,7 @@ export class VoiceSessionService {
     this.reverseGeocoder = reverseGeocoder
     this.mode = mode
     this.active = true
-    // 新会话作废旧会话的在途回调与排队
+    // 新会话（或重武装）作废旧会话的在途回调与排队
     this.turn += 1
     this.cancelled = false
     this.processing = false
@@ -627,13 +666,20 @@ export class VoiceSessionService {
     this.playbackPending = false
     this.echoUntil = 0
     this.queue.length = 0
-    this.pendingCandidates = null
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     this.echo.release()
     this.syncDuplex()
     this.deps.asr.reset()
     this.vad.reset()
+
+    // 重新武装：同一实例的二次 start（设备重连/重唤醒，agent 已存在）——
+    // 保留 LLM 对话记忆与 pendingCandidates（候选歌单）、sessionRowId（同一会话日志），
+    // 仅复位在途轮次与播放/回声状态，不清空跨轮记忆。这样助手在重唤醒/重连后不"失忆"。
+    if (this.agent !== null) return
+
+    // 全新会话：清空跨轮状态并重建 LLM
+    this.pendingCandidates = null
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
     this.agent =
       mode === 'wake'
@@ -659,7 +705,11 @@ export class VoiceSessionService {
     this.playbackPending = false
     this.echoUntil = 0
     this.queue.length = 0
-    this.pendingCandidates = null
+    // 注意：这里不清空 pendingCandidates（候选歌单）。cancel() 同时服务于
+    // 重唤醒(REWAKE→session.cancel+session.start)与彻底退出(DISABLE/CANCEL)，
+    // 而 agent 在重唤醒后是保留的（start() 的 agent!==null 早返回），
+    // 为保持一致，正在等你「选第几首」的候选列表也应保留，否则重唤醒会丢掉选歌状态。
+    // 候选列表只在新会话(start 全新分支)与会话结束(end)时清空。
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (wasSpeaking) this.deps.send({ type: 'tts.stop' })
@@ -686,6 +736,10 @@ export class VoiceSessionService {
     if (this.sessionRowId) this.deps.data.endSession(this.sessionRowId, Date.now())
     this.deps.asr.reset()
     this.vad.reset()
+    // 会话显式结束：销毁对话记忆，下次 start 视为全新会话（不再保留历史/候选）。
+    this.agent = null
+    // 从设备注册表移除；下次同一 deviceId 的 start 会新建会话而非复用。
+    this.deps.onEnded?.()
   }
 
   private sendError(code: ServerErrorCode, message: string): void {

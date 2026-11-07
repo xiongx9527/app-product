@@ -128,7 +128,11 @@ export function loadConfig(): GatewayConfig {
       provider: oneOf(process.env.ASR_PROVIDER, 'stub'),
       baseUrl: process.env.ASR_BASE_URL ?? 'http://192.168.1.100:9529',
       apiKey: process.env.ASR_API_KEY ?? '',
-      endpointMs: Number(process.env.ASR_ENDPOINT_MS ?? 700),
+      // 句末静音判定：停顿超过该值才定稿为一轮。默认 2500ms——给自然思考的停顿留足余地，
+      // 避免说话中途一停顿（>endpointMs）就被切断、识别成多段（用户反馈"只识别前一段"）。
+      // 这也直接决定"助手像失忆"的体感：阈值太短会让一句话被切成几段、只听到前半句。
+      // 可用 ASR_ENDPOINT_MS 覆盖（之前 .env 误设为 700，导致一停顿就断）。
+      endpointMs: Number(process.env.ASR_ENDPOINT_MS ?? 2500),
       params: paramsFromEnv('ASR_PARAMS'),
     },
     tts: {

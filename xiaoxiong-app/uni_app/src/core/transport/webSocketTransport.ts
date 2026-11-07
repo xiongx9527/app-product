@@ -1,5 +1,6 @@
 import { appConfig } from '@/core/config'
 import { DEFAULT_GATEWAY_WS_URL } from '@/core/config/constants'
+import { getDeviceId } from '@/core/config/deviceId'
 import type { AssistantTransport, ServerEvent, SessionMode } from './types'
 
 /** 客户端上报给网关的位置快照（经纬度必填，address 为反向地理编码结果）。 */
@@ -55,6 +56,12 @@ export class WebSocketTransport implements AssistantTransport {
   private get activeUrl(): string {
     return this.url || resolveGatewayUrl()
   }
+  /** 在 WS 地址上附带本机稳定 deviceId，供网关按设备复用会话（重连/重唤醒不丢记忆）。 */
+  private get deviceWsUrl(): string {
+    const base = this.activeUrl
+    const id = encodeURIComponent(getDeviceId())
+    return base.includes('?') ? `${base}&deviceId=${id}` : `${base}?deviceId=${id}`
+  }
   /** 最近一次获取到的设备位置，连接时随 session.start 上报，之后由 session.location 刷新 */
   private lastLocation: LocationSnapshot | null = null
   private sessionId = ''
@@ -83,7 +90,7 @@ export class WebSocketTransport implements AssistantTransport {
       return Promise.resolve()
     }
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.activeUrl)
+      const ws = new WebSocket(this.deviceWsUrl)
       ws.binaryType = 'arraybuffer'
       this.ws = ws
 
@@ -188,6 +195,8 @@ export class WebSocketTransport implements AssistantTransport {
       // 音乐为网关内置能力，无需客户端上报配置
       location: this.lastLocation ?? undefined,
       mode,
+      // 本机稳定设备标识：网关据此复用会话（重连/重唤醒保留记忆）；URL query 也带一份作主路径
+      deviceId: getDeviceId(),
     })
   }
 

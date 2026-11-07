@@ -62,13 +62,17 @@ const AVOID = [
  * 也不能播——这是「播放的不是我要的歌曲」最典型的来源。与上面的 AVOID 不同，
  * 这里是**硬排除**（直接视为不匹配），而不是靠排序靠后，避免它作为唯一/最高相关结果被播出来。
  */
-const COMPILATION_WORDS = ['串烧', '合集', '歌单', '合辑', '集锦', '盘点', '歌曲大全', '音乐大全', '串烧版']
+const COMPILATION_WORDS = ['串烧', '合集', '歌单', '合辑', '集锦', '盘点', '歌曲大全', '音乐大全', '串烧版', '精选', '全mv']
 
 /** 标题是否明显是多歌曲合集（不是单一曲目），应被排除，杜绝乱播放。 */
 export function looksLikeCompilation(title: string): boolean {
   if (!title) return false
   const t = normalize(title)
-  return COMPILATION_WORDS.some((w) => t.includes(normalize(w)))
+  if (COMPILATION_WORDS.some((w) => t.includes(normalize(w)))) return true
+  // “X首”形式（100首 / 50首 …）是歌单/合集计数，不是单曲——用户要的是某一首，
+  // 搜“周杰伦”返回顶部那些「歌曲精选100首 / 最热门100首」本质都是合集。
+  if (/\d+首/.test(t)) return true
+  return false
 }
 
 /** 归一化：去空白、标点、书名号等，统一小写，便于子串比对。 */

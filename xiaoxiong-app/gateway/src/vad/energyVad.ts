@@ -55,7 +55,11 @@ const DEFAULTS = {
   noiseMultiplier: 3,
   minThreshold: 0.008,
   startFrames: 2,
-  hangoverMs: 300,
+  // 句末挂起：连续静音超过该值才结束当前句、停止喂 ASR。默认 800ms，与 config 的
+  // endpointMs(2500) 配合——短暂停顿不会结束句子，长停顿后由 endpointMs 统一决定何时定稿，
+  // 避免说话中途一停顿就被切断（用户反馈"只识别前一段"）。注意定稿时机主要由 endpointMs 决定，
+  // hangoverMs 只控制静音帧是否继续喂给 ASR，因此要尽量容忍思考停顿需同时把 endpointMs 调大。
+  hangoverMs: 800,
   prerollMs: 600,
   riseRate: 0.05,
   fallRate: 0.3,
