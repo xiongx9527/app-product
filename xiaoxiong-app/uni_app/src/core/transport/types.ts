@@ -36,6 +36,8 @@ export interface AssistantTransport {
   startSession(mode: SessionMode): void
   /** 连接是否仍可用：网关重启后本地标志会过期，必须以此为准 */
   isConnected(): boolean
+  /** 订阅 WS 连接状态变化（网关是否当前连通）；订阅时立即回灌一次当前值 */
+  onStatusChange(listener: (connected: boolean) => void): () => void
   sendAudioChunk(chunk: ArrayBuffer): void
   sendCancel(): void
   /** 客户端点「换一首 / 换个风格」：下发 music.next 让网关解析下一首 */

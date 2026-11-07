@@ -7,6 +7,9 @@ const zhCN: Messages = {
   'app.subtitle': '唤醒 · 对话 · 静默退出',
   'app.settings': '设置',
 
+  'conn.connected': '网关已连接',
+  'conn.disconnected': '网关未连接',
+
   'state.idle': '未开启',
   'state.standby': '待唤醒',
   'state.listening': '对话中',
@@ -184,6 +187,9 @@ const enUS: Messages = {
   'app.title': 'Voice Assistant',
   'app.subtitle': 'Wake · Talk · Auto-exit',
   'app.settings': 'Settings',
+
+  'conn.connected': 'Gateway connected',
+  'conn.disconnected': 'Gateway disconnected',
 
   'state.idle': 'Off',
   'state.standby': 'Standby',

@@ -32,6 +32,7 @@ const {
   errorMessage,
   wakeSupported,
   wakeProviderName,
+  wsConnected,
   enable,
   disable,
   interrupt,
@@ -168,6 +169,11 @@ function onOrbTap(): void {
         <view class="pill" :class="state">{{ stateLabel }}</view>
         <view class="gear" @tap="openSettings">⚙</view>
       </view>
+    </view>
+
+    <view class="conn" :class="wsConnected ? 'ok' : 'down'">
+      <view class="conn-dot" />
+      <text class="conn-text">{{ wsConnected ? t('conn.connected') : t('conn.disconnected') }}</text>
     </view>
 
     <view v-if="queueFullMsg" class="queue-full-banner">{{ queueFullMsg }}</view>
@@ -355,6 +361,45 @@ function onOrbTap(): void {
   color: #cfd8ff;
   border-color: rgba(108, 140, 255, 0.5);
   background: rgba(108, 140, 255, 0.16);
+}
+
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.conn.ok {
+  color: #8ee0bd;
+  border-color: rgba(92, 214, 178, 0.4);
+}
+
+.conn.ok .conn-dot {
+  background: #5cd6b2;
+  box-shadow: 0 0 8px rgba(92, 214, 178, 0.7);
+}
+
+.conn.down {
+  color: #ff9a9a;
+  border-color: rgba(255, 100, 100, 0.4);
+}
+
+.conn.down .conn-dot {
+  background: #ff6b6b;
+  box-shadow: 0 0 8px rgba(255, 100, 100, 0.6);
 }
 
 .stage {

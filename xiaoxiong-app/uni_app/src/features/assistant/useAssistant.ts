@@ -95,6 +95,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   transport.onEvent(handleServerEvent)
   transport.onAudio((chunk) => playPcm(chunk, 24000))
+  // 网关 WS 连接状态：让页面直接显示「已连/未连」，免去开 DevTools 看 101。
+  const wsConnected = ref(transport.isConnected())
+  transport.onStatusChange((connected) => {
+    wsConnected.value = connected
+  })
 
   function handleServerEvent(event: ServerEvent): void {
     switch (event.type) {
@@ -470,6 +475,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     errorMessage,
     wakeSupported,
     wakeProviderName,
+    wsConnected,
     enable,
     disable,
     interrupt,

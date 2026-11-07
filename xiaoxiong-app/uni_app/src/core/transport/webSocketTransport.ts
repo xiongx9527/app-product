@@ -46,6 +46,9 @@ export class WebSocketTransport implements AssistantTransport {
   private ws: WebSocket | null = null
   private readonly eventListeners = new Set<(event: ServerEvent) => void>()
   private readonly audioListeners = new Set<(chunk: ArrayBuffer) => void>()
+  /** 连接状态订阅：界面据此显示「网关已连 / 未连」，免去开 DevTools 看 WS。 */
+  private readonly statusListeners = new Set<(connected: boolean) => void>()
+  private connected = false
   private readonly url: string
   private readonly lang: 'zh-CN'
   /** 构造时显式传入地址则固定使用；否则每次连接按 resolveGatewayUrl() 动态解析 */
@@ -85,16 +88,19 @@ export class WebSocketTransport implements AssistantTransport {
       this.ws = ws
 
       ws.onopen = () => {
+        this.setConnected(true)
         this.sendStart(this.pendingMode)
         // 连接建立后异步取设备位置并上报（不阻塞会话开始）
         void this.fetchAndSendLocation()
         resolve()
       }
       ws.onerror = () => {
+        this.setConnected(false)
         reject(new Error(`无法连接网关：${this.activeUrl}`))
       }
       ws.onclose = () => {
         this.ws = null
+        this.setConnected(false)
         // 网关重启/网络抖动会让页面停留在旧状态，按当前模式自动重连并重新开会话
         if (!this.intentionalClose) this.scheduleReconnect()
       }
@@ -124,6 +130,19 @@ export class WebSocketTransport implements AssistantTransport {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN
   }
 
+  /** 订阅连接状态变化（网关 WS 是否当前连通）；订阅时立即回灌一次当前值。 */
+  onStatusChange(listener: (connected: boolean) => void): () => void {
+    this.statusListeners.add(listener)
+    listener(this.connected)
+    return () => this.statusListeners.delete(listener)
+  }
+
+  private setConnected(value: boolean): void {
+    if (this.connected === value) return
+    this.connected = value
+    this.statusListeners.forEach((listener) => listener(value))
+  }
+
   sendCancel(): void {
     this.sendJson({ type: 'session.cancel' })
   }
@@ -143,6 +162,7 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendJson({ type: 'session.end' })
     this.ws?.close()
     this.ws = null
+    this.setConnected(false)
   }
 
   onEvent(listener: (event: ServerEvent) => void): () => void {
