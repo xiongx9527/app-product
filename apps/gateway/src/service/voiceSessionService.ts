@@ -7,6 +7,15 @@ import type { ReverseGeocoder } from './geocode/types'
 import { createGeocodeAdapter } from './geocode'
 import { createMusicSource, type MusicSource } from './music'
 import { genreToKeyword } from './music/types'
+import {
+  searchCandidates,
+  needsCandidateList,
+  candidateQuery,
+  parseSelection,
+  looksLikeBareMusicQuery,
+  type MusicCandidate,
+  type CandidateFetcher,
+} from './music/musicCandidates'
 import { detectMusicCommand } from './musicControl'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
@@ -37,6 +46,8 @@ export interface VoiceSessionDeps {
   tiandituTk?: string
   /** 构造音乐播放源；测试可注入桩避免联网，缺省用网关内置的无配置源 */
   musicSourceFactory?: () => MusicSource
+  /** 检索候选歌曲（MusicBrainz）；测试可注入桩避免联网 */
+  candidateFetcher?: CandidateFetcher
 }
 
 export class VoiceSessionService {
@@ -54,6 +65,8 @@ export class VoiceSessionService {
   private reverseGeocoder: ReverseGeocoder | undefined = undefined
   /** 音乐播放源：无配置、始终可用（SomaFM 电台 + 百度搜索兜底），随会话构建 */
   private musicSource: MusicSource | undefined = undefined
+  /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
+  private pendingCandidates: { items: MusicCandidate[]; query: string } | null = null
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
@@ -175,6 +188,74 @@ export class VoiceSessionService {
    * 只负责动作本身；asr.final 由 finalizeUtterance 统一下发，保证「我说」卡片显示这句。
    * 解析失败也只友好告知「没找到」，不报「操作失败」这类像系统故障的措辞。
    */
+  /** 下发 media.play 并口播确认。 */
+  private async playTrack(track: { url: string; title: string; channel?: string }, confirm: string): Promise<void> {
+    this.deps.send({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
+    await this.speakReply(confirm)
+  }
+
+  /**
+   * 只给了歌手/歌名：用 MusicBrainz 检索候选。
+   * 多于 1 首 → 口播编号列表并挂起待选；正好 1 首 → 直接播；0 首 → 交回调用方按原逻辑处理。
+   * 返回 true 表示本次已处理（列表已给或已播），调用方不必再 resolve。
+   */
+  private async offerCandidates(text: string): Promise<boolean> {
+    const genre = genreToKeyword(text)
+    if (!needsCandidateList(genre)) return false
+    const query = candidateQuery(genre)
+    if (!query) return false
+    const items = await searchCandidates(query, this.deps.candidateFetcher)
+    if (items.length === 0) return false
+    const m = messages(this.lang).music
+
+    if (items.length === 1) {
+      await this.playChosen(items[0], query)
+      return true
+    }
+    this.pendingCandidates = { items, query }
+    const labels = items.map((c) => (c.artist ? `${c.title}，${c.artist}` : c.title))
+    await this.speakReply(m.candidates(labels) + m.chooseHint())
+    return true
+  }
+
+  /** 用「用户核心词 + 选中歌名」拼成歌手+歌名去抽音轨，接上严格匹配，避免乱播。 */
+  private async playChosen(chosen: MusicCandidate, query: string): Promise<void> {
+    const source = this.musicSource
+    const m = messages(this.lang).music
+    if (!source) {
+      await this.speakReply(m.notFound())
+      return
+    }
+    const keyword = query && query !== chosen.title ? `${query} ${chosen.title}` : chosen.title
+    try {
+      const track = await source.resolve(keyword)
+      if (!track?.url) throw new Error('no track')
+      await this.playTrack(track, m.playing(track.title))
+    } catch {
+      await this.speakReply(m.notFound())
+    }
+  }
+
+  /**
+   * 处理用户对待选列表的语音选择。返回 true 表示这句已被当作选择消费。
+   * 必须在回声比对之前调用：用户说的「第二首」「稻香」正是刚口播过的词，
+   * 否则会被 resemblesSpoken 当回声丢掉。
+   */
+  private async handleCandidateSelection(text: string): Promise<boolean> {
+    const pending = this.pendingCandidates
+    if (!pending) return false
+    const idx = parseSelection(text, pending.items)
+    if (idx === null) {
+      // 不是选择（可能用户换了话题）：清掉待选，交回常规流程处理这句
+      this.pendingCandidates = null
+      return false
+    }
+    this.pendingCandidates = null
+    this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+    await this.playChosen(pending.items[idx], pending.query)
+    return true
+  }
+
   private async runMusicCommand(action: NonNullable<ReturnType<typeof detectMusicCommand>>, text: string): Promise<void> {
     const source = this.musicSource
     if (!source) return
@@ -183,27 +264,17 @@ export class VoiceSessionService {
     try {
       switch (action) {
         case 'play': {
+          // 只说「周杰伦」「稻香」「周杰伦的歌」：先给候选列表让用户选
+          if (await this.offerCandidates(text)) break
           const track = await source.resolve(genre)
           if (!track?.url) throw new Error('no track')
-          this.deps.send({
-            type: 'media.play',
-            url: track.url,
-            title: track.title,
-            channel: track.channel,
-          })
-          await this.speakReply(m.playing(track.title))
+          await this.playTrack(track, m.playing(track.title))
           break
         }
         case 'next': {
           const track = source.next ? await source.next(genre) : await source.resolve(genre)
           if (!track?.url) throw new Error('no track')
-          this.deps.send({
-            type: 'media.play',
-            url: track.url,
-            title: track.title,
-            channel: track.channel,
-          })
-          await this.speakReply(m.switched(track.title))
+          await this.playTrack(track, m.switched(track.title))
           break
         }
         case 'pause':
@@ -294,6 +365,12 @@ export class VoiceSessionService {
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
     // 不进模型也不进队列，避免凭空多出一轮回答和 TTS
     if (!text || isNoise(text)) return
+
+    // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。
+    // 必须在下面的回声比对之前：用户说的「第二首」「稻香」正是刚口播过的词，
+    // 否则会被 resemblesSpoken 当成播报回声丢掉，导致永远选不中。
+    if (this.pendingCandidates && await this.handleCandidateSelection(text)) return
+
     // 播报（TTS）进行中：不放行成新轮次，也不排队插话——其它声音一律忽略。
     // 但保留唤醒词识别：把识别结果回传客户端做「小熊小熊」比对，
     // 只有命中唤醒词才允许打断，否则播报完整播完。
@@ -321,12 +398,16 @@ export class VoiceSessionService {
     // 音乐控制指令（播放/换一首/暂停/继续/停止）直接处理，不进 LLM，
     // 避免模型幻觉「说播放却没播放」。仅在空闲（未在播报、未在应答）时拦截，
     // 否则让现有排队/打断逻辑处理。没有配置音乐源时不拦截，交给 LLM 自然应答。
+    // 没有明确播放动词、但像「只报了一个歌手/歌名」（如「周杰伦」「稻香」）时，
+    // 也按「播放」处理：先给候选列表让用户选，检索不到就直接解析播放，不劫持闲聊/指令。
     const action = detectMusicCommand(text)
-    if (action && !this.playbackPending && !this.processing && this.musicSource) {
+    const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
+      action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
+    if (effectiveAction && !this.playbackPending && !this.processing && this.musicSource) {
       // 音乐直连同样要先下发 asr.final：这是「我说」卡片的数据源，不能因为绕开
       // LLM 就把用户说的话吞掉，否则卡片一直是空的。
       this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-      await this.runMusicCommand(action, text)
+      await this.runMusicCommand(effectiveAction, text)
       return
     }
 
@@ -546,6 +627,7 @@ export class VoiceSessionService {
     this.playbackPending = false
     this.echoUntil = 0
     this.queue.length = 0
+    this.pendingCandidates = null
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     this.echo.release()
@@ -577,6 +659,7 @@ export class VoiceSessionService {
     this.playbackPending = false
     this.echoUntil = 0
     this.queue.length = 0
+    this.pendingCandidates = null
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (wasSpeaking) this.deps.send({ type: 'tts.stop' })
@@ -596,6 +679,7 @@ export class VoiceSessionService {
     this.playbackPending = false
     this.echoUntil = 0
     this.queue.length = 0
+    this.pendingCandidates = null
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)

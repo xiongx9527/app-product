@@ -40,13 +40,17 @@ function createHarness(
     ttsFrames?: Uint8Array[]
     delayDelta?: boolean
     finalizeText?: string
+    /** 多轮定稿文本队列：每次 finalize 依次取一个，用尽后重复最后一个 */
+    finalizeTexts?: string[]
     musicSourceFactory?: () => MusicSource
+    candidateFetcher?: (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
   } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
   const events: ServerEvent[] = []
   let calls = 0
   let frames = 0
+  let textIdx = 0
   let finish: (() => void) | null = null
   const agent: AgentService = {
     reply(_text, onDelta) {
@@ -76,6 +80,11 @@ function createHarness(
       return null
     },
     async finalize() {
+      if (opts.finalizeTexts?.length) {
+        const t = opts.finalizeTexts[Math.min(textIdx, opts.finalizeTexts.length - 1)]
+        textIdx += 1
+        return t
+      }
       return opts.finalizeText ?? '今天天气怎么样'
     },
     reset() {},
@@ -101,6 +110,7 @@ function createHarness(
     sendAudio: () => {},
     asrEndpointMs: 10,
     musicSourceFactory: opts.musicSourceFactory,
+    candidateFetcher: opts.candidateFetcher,
   }
   service = new VoiceSessionService(deps)
   return {
@@ -286,6 +296,8 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
   it('解析失败：仍下发 asr.final，口播「没找到」，绝不出现「操作失败」', async () => {
     const h = createHarness({
       finalizeText: '播放一首不存在的歌',
+      // 注入空检索：模拟 MusicBrainz 没结果，验证回退到直接解析并口播「没找到」
+      candidateFetcher: async () => ({ ok: true, json: async () => ({ recordings: [] }) }),
       musicSourceFactory: () =>
         playSource(async () => {
           throw new Error('no track')
@@ -300,5 +312,131 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
     expect(texts(h)).toContain('没找到')
     expect(texts(h)).not.toContain('操作失败')
+  })
+})
+
+describe('点歌信息不足：候选列表 + 语音选择', () => {
+  const playSource = (resolve: MusicSource['resolve']): MusicSource => ({ resolve })
+
+  const mb = (items: Array<{ title: string; artist: string }>) => async () => ({
+    ok: true,
+    json: async () => ({ recordings: items.map((c) => ({ title: c.title, 'artist-credit': [{ name: c.artist }] })) }),
+  })
+
+  const three = [
+    { title: '稻香', artist: '周杰伦' },
+    { title: '晴天', artist: '周杰伦' },
+    { title: '七里香', artist: '周杰伦' },
+  ]
+
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('只说「周杰伦的歌」：口播编号列表，不直接播、不进 LLM', async () => {
+    const resolved: string[] = []
+    const h = createHarness({
+      finalizeText: '周杰伦的歌',
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).toContain('第一首')
+    expect(texts(h)).toContain('第二首')
+    expect(texts(h)).toContain('你想听第几首')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+    expect(resolved).toHaveLength(0) // 还没播，没调 source
+    expect(h.events.some((e) => e.type === 'asr.final')).toBe(true)
+  })
+
+  it('两轮：给列表后说「第二首」→ 播第 2 首，且「我说」卡片显示选择句', async () => {
+    const resolved: string[] = []
+    const h = createHarness({
+      // 带一帧 TTS 让 echoUntil 生效：验证选择判断在回声 guard 之前，
+      // 否则「第二首」会被当成刚口播列表的回声丢掉
+      ttsFrames: [loudFrame()],
+      finalizeTexts: ['周杰伦的歌', '第二首'],
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '晴天', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone() // 释放第一轮列表口播的播完等待
+    await sleep(30)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ title: string }>
+    expect(plays.some((p) => p.title === '晴天')).toBe(true)
+    // 用「用户核心词 + 选中歌名」去解析，接上严格匹配
+    expect(resolved).toContain('周杰伦 晴天')
+    const finals = h.events.filter((e) => e.type === 'asr.final') as Array<{ text: string }>
+    expect(finals.some((e) => e.text === '第二首')).toBe(true)
+  })
+
+  it('只有 1 个候选：直接播放，不口播列表', async () => {
+    const resolved: string[] = []
+    const h = createHarness({
+      finalizeText: '周杰伦',
+      candidateFetcher: mb([{ title: '稻香', artist: '周杰伦' }]),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).not.toContain('你想听第几首')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
+    expect(resolved).toEqual(['周杰伦 稻香'])
+  })
+
+  it('候选检索为空：回退到直接解析（不卡住、不报错）', async () => {
+    const h = createHarness({
+      finalizeText: '周杰伦',
+      candidateFetcher: mb([]),
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
+    expect(texts(h)).toContain('正在为你播放')
+  })
+
+  it('歌手+歌名齐全：不走列表，直接播', async () => {
+    const h = createHarness({
+      finalizeText: '播放周杰伦的稻香',
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).not.toContain('你想听第几首')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
   })
 })

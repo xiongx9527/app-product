@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "dev:bg": "node scripts/dev-server.mjs",
+    "dev:stop": "node scripts/dev-server.mjs stop",
     "type-check": "tsc --noEmit",
     "test": "vitest run"
   },

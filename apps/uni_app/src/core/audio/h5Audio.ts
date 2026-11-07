@@ -25,6 +25,66 @@ function emitIfIdle(): void {
 }
 
 /**
+ * H5 自动播放解锁（仅 H5）。
+ * 服务器事件（media.play）触发的 <audio>.play() 不在用户手势调用栈里，
+ * 浏览器自动播放策略可能拦截它，表现为「说播放了但没声音」。
+ * 在「开启」这类真实手势内播放一段极短静音，解锁页面音频策略，
+ * 之后由服务器事件触发的音乐播放才不会被拦。原生端无此限制。
+ * 仅在手势同步调用栈内（startCapture 链路）调用一次才有效。
+ */
+let audioPrimed = false
+function silentWavDataUri(): string {
+  // 程序生成 0.05s 静音 WAV（16bit/8k/mono），避免内联大段 base64 常量
+  const sampleRate = 8000
+  const n = Math.floor(sampleRate * 0.05)
+  const buf = new ArrayBuffer(44 + n * 2)
+  const dv = new DataView(buf)
+  const writeStr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i += 1) dv.setUint8(off + i, s.charCodeAt(i))
+  }
+  writeStr(0, 'RIFF')
+  dv.setUint32(4, 36 + n * 2, true)
+  writeStr(8, 'WAVE')
+  writeStr(12, 'fmt ')
+  dv.setUint32(16, 16, true)
+  dv.setUint16(20, 1, true)
+  dv.setUint16(22, 1, true)
+  dv.setUint32(24, sampleRate, true)
+  dv.setUint32(28, sampleRate * 2, true)
+  dv.setUint16(32, 2, true)
+  dv.setUint16(34, 16, true)
+  writeStr(36, 'data')
+  dv.setUint32(40, n * 2, true)
+  let binary = ''
+  const bytes = new Uint8Array(buf)
+  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i])
+  return 'data:audio/wav;base64,' + btoa(binary)
+}
+
+export function primeAudioAutoplay(): void {
+  if (audioPrimed || typeof window === 'undefined' || typeof window.Audio === 'undefined') return
+  audioPrimed = true
+  // WebAudio 播放上下文：在手势内创建并 resume，确保后续 TTS 下行不被 suspended 卡住
+  if (!playCtx) {
+    try {
+      playCtx = createContext()
+    } catch {
+      // 当前环境无 WebAudio，忽略（原生端不走这里）
+    }
+  }
+  if (playCtx && playCtx.state === 'suspended') void playCtx.resume()
+  // HTML5 <audio>：用极短静音播放一次并立即暂停，解锁 document 自动播放策略
+  try {
+    const a = new window.Audio()
+    a.src = silentWavDataUri()
+    a.volume = 0
+    void a.play().then(() => a.pause()).catch(() => undefined)
+  } catch {
+    // 个别浏览器对静音解锁不支持，忽略：音乐仍可能正常（手势已解锁）
+  }
+}
+
+/**
  * 注册播放队列清空时的一次性回调，返回取消函数。
  * 队列本来就空时立即执行；tts.start / 新一轮说话时应主动取消上一轮的等待。
  */
@@ -65,6 +125,8 @@ function createContext(sampleRate?: number): AudioContext {
  */
 export async function startCapture(onChunk: ChunkHandler): Promise<void> {
   if (captureCtx) return
+  // 真实用户手势同步调用栈内：提前解锁 H5 自动播放，避免后续媒体/语音播放被浏览器拦截
+  primeAudioAutoplay()
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   })

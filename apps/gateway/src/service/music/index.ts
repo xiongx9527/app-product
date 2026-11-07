@@ -1,5 +1,5 @@
 import type { MusicFetcher, MusicSource } from './types'
-import { isGenreRequest } from './types'
+import { genreToKeyword, isGenreRequest } from './types'
 import { createSomaSource } from './somaSource'
 import { createBaiduSource } from './baiduSource'
 
@@ -19,15 +19,20 @@ const nativeFetch: MusicFetcher = (url, init) =>
 export function createMusicSource(fetcher: MusicFetcher = nativeFetch): MusicSource {
   const soma = createSomaSource()
   const baidu = createBaiduSource({}, fetcher)
-  const pick = (genre?: string): MusicSource => (isGenreRequest(genre) ? soma : baidu)
+  // 先用 genreToKeyword 把口语/指令词收敛成搜索词或风格词，再据此分流：
+  // 风格词（轻音乐/电子/爵士…）→ SomaFM 电台；具体歌名/歌手 → 百度搜索兜底抽 B 站音轨。
+  // 直接对原始输入用 isGenreRequest 会漏掉「随便放点/播放个音乐」这类泛化请求，
+  // 把它们误送进百度视频搜索而播到不相关视频（乱播放）。
   return {
     async resolve(genre?: string) {
-      const source = pick(genre)
-      return source.resolve(genre)
+      const keyword = genreToKeyword(genre)
+      const source = isGenreRequest(keyword) ? soma : baidu
+      return source.resolve(keyword)
     },
     async next(genre?: string) {
-      const source = pick(genre)
-      return source.next ? source.next(genre) : source.resolve(genre)
+      const keyword = genreToKeyword(genre)
+      const source = isGenreRequest(keyword) ? soma : baidu
+      return source.next ? source.next(keyword) : source.resolve(keyword)
     },
   }
 }

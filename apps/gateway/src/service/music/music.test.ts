@@ -197,4 +197,14 @@ describe('音乐聚合源（无配置）', () => {
     // isGenreRequest 已单测；这里仅确认分流方向：具体歌名不命中风格分支
     expect(isGenreRequest('周杰伦 稻香')).toBe(false)
   })
+
+  it('泛化点歌（随便放点/播放个音乐）走 SomaFM 而非百度视频搜索', async () => {
+    // 这类口语在 genreToKeyword 里已回落轻音乐，必须被识别为风格请求进电台，
+    // 否则会误送百度搜「轻音乐 视频 在线听」而播到不相关视频（乱播放）。
+    const source = createMusicSource()
+    for (const q of ['随便放点', '播放个音乐', '给我放首歌', '来首歌']) {
+      const track = await source.resolve(q)
+      expect(track.url).toContain('somafm.com')
+    }
+  })
 })

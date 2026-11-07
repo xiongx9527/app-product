@@ -20,6 +20,12 @@ export interface Messages {
     resumed: () => string
     stopped: () => string
     notFound: () => string
+    /** 多候选时口播编号列表，让用户用语音选「第几首」或直接说歌名 */
+    candidates: (items: readonly string[]) => string
+    /** 让用户选择的引导语 */
+    chooseHint: () => string
+    /** 没识别出用户选了哪首时的重问 */
+    chooseAgain: () => string
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
@@ -49,6 +55,10 @@ const zhCN: Messages = {
     resumed: () => '继续播放。',
     stopped: () => '已停止播放。',
     notFound: () => '没找到这首歌，换个名字或歌手试试？',
+    candidates: (items) =>
+      `找到几首：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}首，${it}`).join('；')}。`,
+    chooseHint: () => '你想听第几首，或者说出歌名？',
+    chooseAgain: () => '没听清选哪首，请说第几首或歌名。',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
 }
