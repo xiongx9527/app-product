@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createSomaSource } from './somaSource'
-import { createBaiduSource } from './baiduSource'
+import { createBaiduSource, titleMatchesKeyword } from './baiduSource'
 import { extractBvidsFromHtml } from './bilibiliAudio'
 import { createMusicSource } from './index'
 import { SOMA_CHANNELS } from '../tools/musicChannels'
@@ -48,15 +48,33 @@ describe('genre 分流', () => {
   it('genreToKeyword：风格词映射，歌名剔指令词', () => {
     expect(genreToKeyword('放点电子')).toBe('电子')
     expect(genreToKeyword('我想听周杰伦的稻香')).toBe('周杰伦 稻香')
+    expect(genreToKeyword('播放个周杰伦的稻香')).toBe('周杰伦 稻香')
+  })
+
+  it('genreToKeyword：泛化点歌回落轻音乐（避免拿「歌」去百度白搜报操作失败）', () => {
+    for (const t of ['播放个', '播放个音乐', '给我放首歌', '放首歌', '来首歌', '放点音乐', '随便放点']) {
+      expect(genreToKeyword(t)).toBe('轻音乐')
+    }
+    // 泛化词收敛后应判为风格请求 → 走 SomaFM 电台
+    expect(isGenreRequest(genreToKeyword('播放个音乐'))).toBe(true)
   })
 })
 
 describe('百度搜索引擎兜底源', () => {
-  /** 构造一个 fetcher：SERP 返回指定 html，/link 落地到指定 url，B 站 wbi 三步返回固定音轨。 */
-  function biliFetcher(serpHtml: string, linkLanding = 'https://haokan.baidu.com/v?vid=1'): MusicFetcher {
+  /**
+   * 构造 fetcher：按百度 pn 分页返回不同 SERP html（内含不同 BVID），
+   * /link 落地到指定 url，B 站 wbi 三步按 BVID 返回不同音轨直链。
+   * viewTitle 控制视频标题，便于验证「歌手、歌名要一样」的相关性校验。
+   */
+  function biliFetcher(
+    byPage: (page: number) => string,
+    linkLanding = 'https://haokan.baidu.com/v?vid=1',
+    viewTitle: (bvid: string) => string = () => '周杰伦《稻香》完整版无损音质'
+  ): MusicFetcher {
     return async (url) => {
       if (url.includes('baidu.com/s')) {
-        return { ok: true, status: 200, json: async () => ({}), text: async () => serpHtml, url }
+        const page = Number(/[?&]pn=(\d+)/.exec(url)?.[1] ?? '0') / 10
+        return { ok: true, status: 200, json: async () => ({}), text: async () => byPage(page), url }
       }
       if (url.includes('/link?url=')) {
         return { ok: true, status: 200, json: async () => ({}), text: async () => '', url: linkLanding }
@@ -69,40 +87,83 @@ describe('百度搜索引擎兜底源', () => {
         }
       }
       if (url.includes('wbi/view')) {
-        return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 123, title: '稻香' } }), text: async () => '' }
+        const bvid = /bvid=(BV[0-9A-Za-z]+)/.exec(url)?.[1] ?? ''
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 123, title: viewTitle(bvid) } }), text: async () => '' }
       }
       expect(url).toContain('wbi/playurl')
+      const bvid = /bvid=(BV[0-9A-Za-z]+)/.exec(url)?.[1] ?? 'unknown'
       return {
         ok: true, status: 200,
-        json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: 'https://bili/audio.m4s' }] } } }),
+        json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: `https://bili/${bvid}.m4s` }] } } }),
         text: async () => '',
       }
     }
   }
 
+  const page0Html = (bvid: string) => `<div mu="https://www.bilibili.com/video/${bvid}/">稻香</div>`
+
   it('优先取 SERP 里 mu= 内嵌的 B 站直链抽音轨（真实百度结构）', async () => {
-    const html =
-      '<div mu="https://www.bilibili.com/video/BV1jk3z6TEgo/">稻香</div>' +
-      '<a href="/link?url=abc">好看视频</a>'
-    const track = await createBaiduSource({}, biliFetcher(html)).resolve('稻香')
-    expect(track.url).toBe('https://bili/audio.m4s')
+    const html = page0Html('BV1jk3z6TEgo') + '<a href="/link?url=abc">好看视频</a>'
+    const track = await createBaiduSource({}, biliFetcher(() => html)).resolve('稻香')
+    expect(track.url).toBe('https://bili/BV1jk3z6TEgo.m4s')
     expect(track.channel).toBe('bilibili')
-    expect(track.title).toBe('稻香')
+    expect(track.title).toContain('稻香')
+  })
+
+  it('视频标题与歌手/歌名对不上时跳过，绝不乱播（报没找到）', async () => {
+    // 百度对编造的歌名会返回低相关度视频，标题不含「周杰伦/稻香」→ 全部候选被跳过
+    const html = page0Html('BV1jk3z6TEgo')
+    const fetcher = biliFetcher(() => html, undefined, () => '谁说网红只会抄袭翻唱，原创歌曲出圈')
+    const source = createBaiduSource({}, fetcher)
+    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow()
   })
 
   it('无内嵌 BVID 时，跟随 /link 跳转到 B 站视频页兜底', async () => {
     const html = '<a href="/link?url=abc">x</a><a href="/link?url=def">y</a>'
-    const fetcher = biliFetcher(html, 'https://www.bilibili.com/video/BV1xx411c7mD')
+    const fetcher = biliFetcher(() => html, 'https://www.bilibili.com/video/BV1xx411c7mD')
     const track = await createBaiduSource({}, fetcher).resolve('稻香')
-    expect(track.url).toBe('https://bili/audio.m4s')
+    expect(track.url).toBe('https://bili/BV1xx411c7mD.m4s')
     expect(track.channel).toBe('bilibili')
+  })
+
+  it('next() 翻到下一页拿到不同曲目（换一首不再必失败）', async () => {
+    // 每页给不同 BVID：pn=0 → A，pn=10 → B
+    const fetcher = biliFetcher((page) => page0Html(page === 0 ? 'BVaaaaaaaaaa' : 'BVbbbbbbbbbb'))
+    const source = createBaiduSource({}, fetcher)
+    const first = await source.resolve('稻香')
+    const second = await source.next!('稻香')
+    expect(first.url).toBe('https://bili/BVaaaaaaaaaa.m4s')
+    expect(second.url).toBe('https://bili/BVbbbbbbbbbb.m4s')
+    expect(first.url).not.toBe(second.url)
   })
 
   it('mu= 与 /link 都取不到音轨时抛错', async () => {
     // /link 落到好看视频（无 BVID），也没有内嵌 B站直链
     const html = '<a href="/link?url=abc">x</a>'
-    const source = createBaiduSource({}, biliFetcher(html))
+    const source = createBaiduSource({}, biliFetcher(() => html))
     await expect(source.resolve('不存在的歌')).rejects.toThrow()
+  })
+})
+
+describe('titleMatchesKeyword（歌手、歌名要一样，杜绝乱播放）', () => {
+  it('歌手与歌名都出现在标题里才命中', () => {
+    expect(titleMatchesKeyword('周杰伦《稻香》完整版无损音质', '周杰伦 稻香')).toBe(true)
+    expect(titleMatchesKeyword('【稻香】周杰伦，高清MV，治愈了整个童年', '周杰伦 稻香')).toBe(true)
+  })
+
+  it('只沾一个词、或完全不相干的视频不算命中', () => {
+    expect(titleMatchesKeyword('周杰伦演唱会精选', '周杰伦 稻香')).toBe(false)
+    expect(titleMatchesKeyword('谁说网红只会抄袭翻唱，原创歌曲出圈', '周杰伦 稻香')).toBe(false)
+    expect(titleMatchesKeyword('随便一个音乐视频', '一首谁都没听过 稀奇古怪 歌')).toBe(false)
+  })
+
+  it('标点/书名号归一化后仍能匹配；无实词关键词不拦截（泛化已回落电台）', () => {
+    expect(titleMatchesKeyword('周杰伦 - 「稻香」 Official MV', '周杰伦 稻香')).toBe(true)
+    expect(titleMatchesKeyword('任意视频', '歌')).toBe(true)
+  })
+
+  it('空标题不命中', () => {
+    expect(titleMatchesKeyword('', '稻香')).toBe(false)
   })
 })
 

@@ -45,6 +45,14 @@ const GENRE_KEYWORDS: Array<{ match: RegExp; keyword: string }> = [
   { match: /(睡眠|助眠|白噪音)/, keyword: '睡眠' },
 ]
 
+/**
+ * 泛化点歌词：用户只说「放首歌/播放个/随便放点」，没有点名歌名/歌手/风格。
+ * 这类词拿去百度搜「歌 视频 在线听」几乎抽不到音轨，会白报「操作失败」，
+ * 应回落到轻音乐电台（SomaFM），由 isGenreRequest 判为风格请求。
+ */
+const GENERIC_PLAY_WORDS =
+  /^(歌|歌曲|音乐|乐曲|曲子|曲|个|首|点|些|一点的?|一些|随便|随便来|随便放|随便听|都行|什么都行|任意|来点|放点|听点|来首歌|放首歌|点首歌|听首歌|放个歌|播个|播放个|点点|呗|吧|啊|呢)*$/
+
 /** 把风格描述/歌名收敛成搜索词；无匹配给兜底词。 */
 export function genreToKeyword(genre?: string): string {
   if (!genre) return '轻音乐'
@@ -59,7 +67,11 @@ export function genreToKeyword(genre?: string): string {
     kw = kw.split(word).join('')
   }
   kw = kw.replace(/的/g, ' ').replace(/\s+/g, ' ').trim()
-  return kw || '轻音乐'
+  // 剔除后只剩泛化词/语气词（或为空）→ 回落轻音乐电台，别拿去百度白搜
+  const compact = kw.replace(/\s+/g, '')
+  if (!compact || GENERIC_PLAY_WORDS.test(compact)) return '轻音乐'
+  // 「播放个周杰伦的稻香」这类：指令词删掉后残留开头的量词「个/首/点」，去掉再搜
+  return kw.replace(/^[个首点些]+\s*/, '').trim() || '轻音乐'
 }
 
 /**

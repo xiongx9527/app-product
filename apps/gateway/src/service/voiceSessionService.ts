@@ -35,6 +35,8 @@ export interface VoiceSessionDeps {
   asrEndpointMs: number
   /** 网关兜底的天地图 tk（TIANDITU_TK）：客户端未上报 geocode 时仍可用天地图，缺省空 */
   tiandituTk?: string
+  /** 构造音乐播放源；测试可注入桩避免联网，缺省用网关内置的无配置源 */
+  musicSourceFactory?: () => MusicSource
 }
 
 export class VoiceSessionService {
@@ -119,7 +121,9 @@ export class VoiceSessionService {
         // 逆地理编码：优先用客户端上报的 geocode 配置；没上报则退回网关兜底天地图 tk
         this.reverseGeocoder = this.buildGeocode(msg.geocode)
         // 音乐播放源：无配置、始终可用（SomaFM 电台 + 百度搜索兜底），音乐工具始终注册
-        this.musicSource = createMusicSource()
+        this.musicSource = this.deps.musicSourceFactory
+          ? this.deps.musicSourceFactory()
+          : createMusicSource()
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, this.reverseGeocoder)
         break
       case 'session.location':
@@ -167,58 +171,56 @@ export class VoiceSessionService {
   }
 
   /**
-   * 音乐控制指令直接处理（绕开 LLM），返回 true 表示已处理、调用方不要再走 LLM。
-   * 命中播放/换一首时直接解析并下发 media.play，并口播一句确认，
-   * 避免模型幻觉「说播放却没播放」。无音乐源时返回 false，交给 LLM 自然应答。
+   * 执行已识别的音乐控制指令（绕开 LLM）：解析并下发 media.play，口播一句确认。
+   * 只负责动作本身；asr.final 由 finalizeUtterance 统一下发，保证「我说」卡片显示这句。
+   * 解析失败也只友好告知「没找到」，不报「操作失败」这类像系统故障的措辞。
    */
-  private async tryMusicCommand(text: string): Promise<boolean> {
-    const action = detectMusicCommand(text)
+  private async runMusicCommand(action: NonNullable<ReturnType<typeof detectMusicCommand>>, text: string): Promise<void> {
     const source = this.musicSource
-    if (!action || !source) return false
+    if (!source) return
     const genre = genreToKeyword(text)
+    const m = messages(this.lang).music
     try {
       switch (action) {
         case 'play': {
           const track = await source.resolve(genre)
-          if (!track?.url) return false
+          if (!track?.url) throw new Error('no track')
           this.deps.send({
             type: 'media.play',
             url: track.url,
             title: track.title,
             channel: track.channel,
           })
-          await this.speakReply(`正在为你播放：${track.title}。`)
+          await this.speakReply(m.playing(track.title))
           break
         }
         case 'next': {
           const track = source.next ? await source.next(genre) : await source.resolve(genre)
-          if (!track?.url) return false
+          if (!track?.url) throw new Error('no track')
           this.deps.send({
             type: 'media.play',
             url: track.url,
             title: track.title,
             channel: track.channel,
           })
-          await this.speakReply(`已为你切换到：${track.title}。`)
+          await this.speakReply(m.switched(track.title))
           break
         }
         case 'pause':
           this.deps.send({ type: 'media.pause' })
-          await this.speakReply('已暂停。')
+          await this.speakReply(m.paused())
           break
         case 'resume':
           this.deps.send({ type: 'media.resume' })
-          await this.speakReply('继续播放。')
+          await this.speakReply(m.resumed())
           break
         case 'stop':
           this.deps.send({ type: 'media.stop' })
-          await this.speakReply('已停止播放。')
+          await this.speakReply(m.stopped())
           break
       }
-      return true
     } catch {
-      await this.speakReply('操作失败，换首别的试试。')
-      return true
+      await this.speakReply(m.notFound())
     }
   }
 
@@ -319,12 +321,17 @@ export class VoiceSessionService {
     // 音乐控制指令（播放/换一首/暂停/继续/停止）直接处理，不进 LLM，
     // 避免模型幻觉「说播放却没播放」。仅在空闲（未在播报、未在应答）时拦截，
     // 否则让现有排队/打断逻辑处理。没有配置音乐源时不拦截，交给 LLM 自然应答。
-    if (!this.playbackPending && !this.processing && this.musicSource) {
-      const handled = await this.tryMusicCommand(text)
-      if (handled) return
+    const action = detectMusicCommand(text)
+    if (action && !this.playbackPending && !this.processing && this.musicSource) {
+      // 音乐直连同样要先下发 asr.final：这是「我说」卡片的数据源，不能因为绕开
+      // LLM 就把用户说的话吞掉，否则卡片一直是空的。
+      this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+      await this.runMusicCommand(action, text)
+      return
     }
 
-    // 当前轮还没跑完：不打断、不作废，只把这句排进队列
+    // 当前轮还没跑完：不打断、不作废，只把这句排进队列（不下发 asr.final，
+    // 客户端「我说」卡片保持显示当前项，排队句由 asr.queued 只标数量）
     if (this.processing) {
       if (this.queue.length >= MAX_QUEUE) {
         this.deps.send({

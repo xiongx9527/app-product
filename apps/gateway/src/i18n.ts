@@ -12,6 +12,15 @@ export interface Messages {
     accepted: (position: number, size: number) => string
     full: () => string
   }
+  /** 音乐控制直连命令的口播确认/找不到文案（llm.delta 直接下发客户端，必须本地化） */
+  music: {
+    playing: (title: string) => string
+    switched: (title: string) => string
+    paused: () => string
+    resumed: () => string
+    stopped: () => string
+    notFound: () => string
+  }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
 }
@@ -32,6 +41,14 @@ const zhCN: Messages = {
   queue: {
     accepted: (position, size) => `已排到第 ${position} 句（共 ${size} 句），当前回答播完就处理`,
     full: () => '你说的太多了，我记不住。',
+  },
+  music: {
+    playing: (title) => `正在为你播放：${title}。`,
+    switched: (title) => `已为你切换到：${title}。`,
+    paused: () => '已暂停。',
+    resumed: () => '继续播放。',
+    stopped: () => '已停止播放。',
+    notFound: () => '没找到这首歌，换个名字或歌手试试？',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
 }

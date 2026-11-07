@@ -6,6 +6,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { DataService } from './dataService'
 import type { ServerEvent } from '../protocol'
+import type { MusicSource } from './music/types'
 
 /** 100ms 的方波人声帧（16k/16bit/mono），能量远高于自适应门限。 */
 function loudFrame(samples = 1600): Uint8Array {
@@ -35,7 +36,12 @@ interface Harness {
 }
 
 function createHarness(
-  opts: { ttsFrames?: Uint8Array[]; delayDelta?: boolean; finalizeText?: string } = {}
+  opts: {
+    ttsFrames?: Uint8Array[]
+    delayDelta?: boolean
+    finalizeText?: string
+    musicSourceFactory?: () => MusicSource
+  } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
   const events: ServerEvent[] = []
@@ -94,6 +100,7 @@ function createHarness(
     send: (event) => events.push(event),
     sendAudio: () => {},
     asrEndpointMs: 10,
+    musicSourceFactory: opts.musicSourceFactory,
   }
   service = new VoiceSessionService(deps)
   return {
@@ -245,5 +252,53 @@ describe('语音会话：句末判定、排队与去噪', () => {
     await sleep(40)
     const added = h.events.slice(afterCancel).filter((e) => e.type === 'asr.final' || e.type === 'asr.queued')
     expect(added).toHaveLength(0)
+  })
+})
+
+describe('音乐控制直连命令：我说卡片与口播文案', () => {
+  const playSource = (resolve: MusicSource['resolve']): MusicSource => ({ resolve })
+
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('播放命中：下发 asr.final（我说卡片显示这句）+ media.play，不进 LLM', async () => {
+    const h = createHarness({
+      finalizeText: '播放周杰伦的稻香',
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const finals = h.events.filter((e) => e.type === 'asr.final') as Array<{ type: 'asr.final'; text: string }>
+    expect(finals.some((e) => e.text === '播放周杰伦的稻香')).toBe(true)
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
+    // 直连绕开 LLM：不应调用 agent
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('正在为你播放')
+  })
+
+  it('解析失败：仍下发 asr.final，口播「没找到」，绝不出现「操作失败」', async () => {
+    const h = createHarness({
+      finalizeText: '播放一首不存在的歌',
+      musicSourceFactory: () =>
+        playSource(async () => {
+          throw new Error('no track')
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const finals = h.events.filter((e) => e.type === 'asr.final') as Array<{ type: 'asr.final'; text: string }>
+    expect(finals.some((e) => e.text === '播放一首不存在的歌')).toBe(true)
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(texts(h)).toContain('没找到')
+    expect(texts(h)).not.toContain('操作失败')
   })
 })
