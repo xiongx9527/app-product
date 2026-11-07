@@ -53,6 +53,8 @@ export type ClientMessage =
   | { type: 'session.location'; latitude: number; longitude: number; address?: string }
   /** 客户端本地播放队列清空后回执：网关据此才消费排队的下一句 */
   | { type: 'session.playback_done' }
+  /** 客户端点「换一首 / 换个风格」：网关用当前音乐源解析下一首并下发 media.play */
+  | { type: 'music.next'; genre?: string }
 
 /** 服务端 → 客户端（文本控制帧），与契约一致 */
 export type ServerEvent =
@@ -76,6 +78,10 @@ export type ServerEvent =
   | { type: 'media.play'; url: string; title: string; channel?: string }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
+  /** 让客户端暂停当前播放（再响一声「暂停」用 media.resume 恢复） */
+  | { type: 'media.pause' }
+  /** 让客户端恢复（继续）被暂停的播放 */
+  | { type: 'media.resume' }
   /** 让客户端展示某首歌的歌词 */
   | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
   | { type: 'error'; code: ServerErrorCode; message: string }

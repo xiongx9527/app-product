@@ -3,6 +3,7 @@ import {
   paramString,
   type MusicFetcher,
   type MusicSource,
+  type ResolvedTrack,
 } from './types'
 
 const SPOTIFY_TOKEN = 'https://accounts.spotify.com/api/token'
@@ -30,6 +31,7 @@ const nativeFetch: MusicFetcher = (url, init) =>
  * Spotify：用 client credentials 取 token，再搜歌取 30 秒试听直链。
  * 需要用户在设置页填 clientId/clientSecret；试听仅 30 秒（Spotify 开放接口限制）。
  * 解析逻辑用注入的 fetcher 单测覆盖；线上可用性属尽力而为。
+ * next() 用递增 offset 取下一条候选，实现「换一首 / 换个风格」。
  */
 export function createSpotifySource(
   params: Record<string, string | number | boolean> = {},
@@ -39,6 +41,7 @@ export function createSpotifySource(
   const clientSecret = paramString(params, 'clientSecret')
   let token: string | null = null
   let tokenExpiry = 0
+  let offset = 0
 
   async function ensureToken(): Promise<string> {
     if (token && Date.now() < tokenExpiry) return token
@@ -58,28 +61,38 @@ export function createSpotifySource(
     return token
   }
 
+  async function at(genre: string | undefined, off: number): Promise<ResolvedTrack> {
+    const keyword = genreToKeyword(genre)
+    const access = await ensureToken()
+    const searchUrl = `${SPOTIFY_SEARCH}?${new URLSearchParams({
+      q: keyword,
+      type: 'track',
+      limit: '1',
+      offset: String(off),
+    }).toString()}`
+    const resp = await fetcher(searchUrl, {
+      headers: { Authorization: `Bearer ${access}` },
+    })
+    const data = (await resp.json()) as SpotifySearchResp
+    const track = data.tracks?.items?.[0]
+    if (!track) throw new Error(`Spotify 未搜到「${keyword}」相关曲目`)
+    if (!track.preview_url) throw new Error(`Spotify 曲目「${track.name}」无试听直链`)
+    const artist = track.artists?.[0]?.name
+    return {
+      url: track.preview_url,
+      title: artist ? `${track.name} - ${artist}` : track.name,
+      channel: 'spotify',
+    }
+  }
+
   return {
     async resolve(genre?: string) {
-      const keyword = genreToKeyword(genre)
-      const access = await ensureToken()
-      const searchUrl = `${SPOTIFY_SEARCH}?${new URLSearchParams({
-        q: keyword,
-        type: 'track',
-        limit: '1',
-      }).toString()}`
-      const resp = await fetcher(searchUrl, {
-        headers: { Authorization: `Bearer ${access}` },
-      })
-      const data = (await resp.json()) as SpotifySearchResp
-      const track = data.tracks?.items?.[0]
-      if (!track) throw new Error(`Spotify 未搜到「${keyword}」相关曲目`)
-      if (!track.preview_url) throw new Error(`Spotify 曲目「${track.name}」无试听直链`)
-      const artist = track.artists?.[0]?.name
-      return {
-        url: track.preview_url,
-        title: artist ? `${track.name} - ${artist}` : track.name,
-        channel: 'spotify',
-      }
+      offset = 0
+      return at(genre, offset)
+    },
+    async next(genre?: string) {
+      offset += 1
+      return at(genre, offset)
     },
   }
 }

@@ -4,9 +4,9 @@ import { createCustomSource } from './customSource'
 import { createNeteaseSource } from './neteaseSource'
 import { createQqSource } from './qqSource'
 import { createSpotifySource } from './spotifySource'
-import { createMusicSource } from './index'
+import { createMusicSource, withSomaFallback } from './index'
 import { SOMA_CHANNELS } from '../tools/musicChannels'
-import type { MusicFetcher } from './types'
+import type { MusicFetcher, MusicSource } from './types'
 
 describe('music sources', () => {
   it('soma：无风格时用配置的默认频道', async () => {
@@ -149,5 +149,114 @@ describe('music sources', () => {
     expect(createMusicSource({ provider: 'custom', params: {} })).toBeTruthy()
     expect(createMusicSource({ provider: 'unknown', params: {} })).toBeUndefined()
     expect(createMusicSource(undefined)).toBeUndefined()
+  })
+
+  describe('音乐换一首 / 换个风格（next）', () => {
+    it('soma：next 切换到一个不同的频道', async () => {
+      const source = createSomaSource({ station: 'groovesalad' })
+      const first = await source.resolve()
+      const second = await source.next!()
+      expect(second.channel).not.toBe(first.channel)
+      expect(second.url).toContain(second.channel)
+    })
+
+    it('soma：next 带风格时优先切到该风格下的其它频道', async () => {
+      const source = createSomaSource({ station: 'groovesalad' })
+      const first = await source.resolve() // groovesalad
+      const jazz = await source.next!('爵士') // groovesalad 不是爵士，应切到 sonicuniverse
+      expect(jazz.channel).toBe('sonicuniverse')
+      expect(first.channel).not.toBe('sonicuniverse')
+    })
+
+    it('netease：next 取下一条候选（offset 递增，曲目不同）', async () => {
+      const fetcher: MusicFetcher = async (url, init) => {
+        const body = (init?.body as string) ?? ''
+        if (url.includes('api/search/get')) {
+          const off = Number(/offset=(\d+)/.exec(body)?.[1] ?? '0')
+          const song =
+            off === 0
+              ? { id: 1, name: 'A', artists: [{ name: 'x' }] }
+              : { id: 2, name: 'B', artists: [{ name: 'y' }] }
+          return { ok: true, status: 200, json: async () => ({ result: { songs: [song] } }), text: async () => '' }
+        }
+        const id = /id=(\d+)/.exec(body)?.[1] ?? '0'
+        return { ok: true, status: 200, json: async () => ({ data: [{ id: Number(id), url: `https://m/${id}.mp3` }] }), text: async () => '' }
+      }
+      const source = createNeteaseSource({}, fetcher)
+      const first = await source.resolve('流行')
+      const second = await source.next!('流行')
+      expect(first.title).toBe('A - x')
+      expect(second.title).toBe('B - y')
+      expect(first.url).not.toBe(second.url)
+    })
+
+    it('qq：next 取下一条候选（页码递增，曲目不同）', async () => {
+      const fetcher: MusicFetcher = async (url) => {
+        if (url.includes('client_search_cp')) {
+          const p = Number(/p=(\d+)/.exec(url)?.[1] ?? '1')
+          const song =
+            p === 1
+              ? { songid: 1, songmid: 'M1', songname: 'A', singer: [{ name: 'x' }] }
+              : { songid: 2, songmid: 'M2', songname: 'B', singer: [{ name: 'y' }] }
+          return { ok: true, status: 200, json: async () => ({ data: { song: { list: [song] } } }), text: async () => '' }
+        }
+        const mid = /songmid=(\w+)/.exec(url)?.[1] ?? 'M0'
+        return { ok: true, status: 200, json: async () => ({ data: [{ url: `https://q/${mid}.mp3` }] }), text: async () => '' }
+      }
+      const source = createQqSource({}, fetcher)
+      const first = await source.resolve('流行')
+      const second = await source.next!('流行')
+      expect(first.title).toBe('A - x')
+      expect(second.title).toBe('B - y')
+      expect(first.url).not.toBe(second.url)
+    })
+
+    it('spotify：next 取下一条候选（offset 递增，曲目不同）', async () => {
+      const fetcher: MusicFetcher = async (url) => {
+        if (url.includes('accounts.spotify.com/api/token')) {
+          return { ok: true, status: 200, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '' }
+        }
+        const off = Number(/offset=(\d+)/.exec(url)?.[1] ?? '0')
+        const track =
+          off === 0
+            ? { name: 'A', preview_url: 'https://sp/1.mp3', artists: [{ name: 'x' }] }
+            : { name: 'B', preview_url: 'https://sp/2.mp3', artists: [{ name: 'y' }] }
+        return { ok: true, status: 200, json: async () => ({ tracks: { items: [track] } }), text: async () => '' }
+      }
+      const source = createSpotifySource({ clientId: 'id', clientSecret: 'secret' }, fetcher)
+      const first = await source.resolve('流行')
+      const second = await source.next!('流行')
+      expect(first.title).toBe('A - x')
+      expect(second.title).toBe('B - y')
+      expect(first.url).not.toBe(second.url)
+    })
+
+    it('custom：next 与 resolve 返回同一固定地址', async () => {
+      const source = createCustomSource({ streamUrl: 'https://x/y.mp3', title: '我的电台' })
+      const second = await source.next!()
+      expect(second.url).toBe('https://x/y.mp3')
+      expect(second.title).toBe('我的电台')
+    })
+
+    it('withSomaFallback：next 透传到原源；原源失败才回退 SomaFM', async () => {
+      const primary: MusicSource = {
+        resolve: async () => ({ url: 'https://p/1.mp3', title: 'P1', channel: 'primary' }),
+        next: async () => ({ url: 'https://p/2.mp3', title: 'P2', channel: 'primary' }),
+      }
+      const wrapped = withSomaFallback(primary)
+      const next = await wrapped.next!()
+      expect(next.url).toBe('https://p/2.mp3')
+
+      const failing: MusicSource = {
+        resolve: async () => ({ url: 'https://p/1.mp3', title: 'P1', channel: 'primary' }),
+        next: async () => {
+          throw new Error('boom')
+        },
+      }
+      const wrappedFail = withSomaFallback(failing)
+      const fallback = await wrappedFail.next!()
+      expect(fallback.channel).toBeTruthy()
+      expect(SOMA_CHANNELS.some((c) => c.id === fallback.channel)).toBe(true)
+    })
   })
 })

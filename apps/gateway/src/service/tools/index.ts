@@ -11,6 +11,9 @@ import type { ReverseGeocoder } from '../geocode/types'
 import {
   createMusicTool,
   createStopMusicTool,
+  createPauseMusicTool,
+  createResumeMusicTool,
+  createNextMusicTool,
   type MediaDirective,
 } from './musicTool'
 import { createMusicSearchTool } from './musicSearchTool'
@@ -45,8 +48,14 @@ export {
 export {
   createMusicTool,
   createStopMusicTool,
+  createPauseMusicTool,
+  createResumeMusicTool,
+  createNextMusicTool,
   MUSIC_TOOL_NAME,
   STOP_MUSIC_TOOL_NAME,
+  PAUSE_MUSIC_TOOL_NAME,
+  RESUME_MUSIC_TOOL_NAME,
+  NEXT_MUSIC_TOOL_NAME,
   type MediaDirective,
 } from './musicTool'
 export { createMusicSearchTool, MUSIC_SEARCH_TOOL_NAME } from './musicSearchTool'
@@ -84,6 +93,9 @@ export function createToolkit(
     ? [
         createMusicTool(lang, musicSource, emit),
         createStopMusicTool(lang, emit),
+        createPauseMusicTool(lang, emit),
+        createResumeMusicTool(lang, emit),
+        createNextMusicTool(lang, musicSource, emit),
         createMusicSearchTool(lang),
         createLyricsTool(lang, emit),
       ]

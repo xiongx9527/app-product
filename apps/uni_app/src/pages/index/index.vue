@@ -36,12 +36,17 @@ const {
   disable,
   interrupt,
   musicPlaying,
+  musicPaused,
+  musicError,
   musicTitle,
   musicCurrent,
   musicDuration,
   musicLive,
   lyrics,
   stopMusic,
+  pauseMusic,
+  resumeMusic,
+  nextMusic,
   seekMusic,
   closeLyrics,
 } = useAssistant()
@@ -89,6 +94,17 @@ function onSeekCommit(event: unknown): void {
 function onStopMusic(): void {
   seekPreview.value = null
   stopMusic()
+}
+
+function onTogglePause(): void {
+  seekPreview.value = null
+  if (musicPaused.value) resumeMusic()
+  else pauseMusic()
+}
+
+function onNextMusic(): void {
+  seekPreview.value = null
+  nextMusic()
 }
 
 const hint = computed(() => {
@@ -205,8 +221,13 @@ function onOrbTap(): void {
           <text class="music-label">{{ t('music.nowPlaying') }}</text>
           <text class="music-title">{{ musicTitle }}</text>
         </view>
-        <button class="mini-action" @tap="onStopMusic">{{ t('music.stop') }}</button>
+        <view class="music-actions">
+          <view class="music-ctrl primary" @tap="onNextMusic">{{ t('music.next') }}</view>
+          <view class="music-ctrl" @tap="onTogglePause">{{ musicPaused ? t('music.resume') : t('music.pause') }}</view>
+          <view class="music-ctrl" @tap="onStopMusic">{{ t('music.stop') }}</view>
+        </view>
       </view>
+      <text v-if="musicError" class="music-error">{{ t('music.error') }}</text>
       <view class="music-progress">
         <text class="music-time">{{ musicElapsed }}</text>
         <slider
@@ -610,6 +631,42 @@ function onOrbTap(): void {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.music-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.music-ctrl {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  color: #e8eaf6;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.music-ctrl.primary {
+  background: rgba(92, 214, 178, 0.18);
+  border-color: rgba(92, 214, 178, 0.42);
+  color: #8ee0bd;
+}
+
+.music-ctrl:active {
+  transform: scale(0.9);
+}
+
+.music-error {
+  font-size: 11px;
+  color: #ffb38a;
 }
 
 .music-progress {

@@ -174,7 +174,11 @@ const zhCN: Messages = {
   'talk.listening': '正在听，直接说话即可（说完停顿一下）',
 
   'music.nowPlaying': '正在播放',
-  'music.stop': '停止播放',
+  'music.stop': '停',
+  'music.pause': '暂',
+  'music.resume': '续',
+  'music.next': '换',
+  'music.error': '播放失败，可换个风格或检查网络',
   'music.lyrics': '歌词',
   'music.close': '关闭',
   'music.noLyrics': '暂无歌词',
@@ -362,6 +366,10 @@ const enUS: Messages = {
 
   'music.nowPlaying': 'Now playing',
   'music.stop': 'Stop',
+  'music.pause': 'Pause',
+  'music.resume': 'Resume',
+  'music.next': 'Next',
+  'music.error': 'Playback failed. Try a different style or check the network',
   'music.lyrics': 'Lyrics',
   'music.close': 'Close',
   'music.noLyrics': 'No lyrics',

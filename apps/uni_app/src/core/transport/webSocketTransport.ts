@@ -108,6 +108,10 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendJson({ type: 'session.cancel' })
   }
 
+  requestMusicNext(genre?: string): void {
+    this.sendJson({ type: 'music.next', genre })
+  }
+
   notifyPlaybackDone(): void {
     this.sendJson({ type: 'session.playback_done' })
   }

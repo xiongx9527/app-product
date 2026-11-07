@@ -6,6 +6,8 @@ import type { ClientMessage, GeocodeInfo, Lang, LocationInfo, ServerEvent, Serve
 import type { ReverseGeocoder } from './geocode/types'
 import { createGeocodeAdapter } from './geocode'
 import { createMusicSource, type MusicSource } from './music'
+import { genreToKeyword } from './music/types'
+import { detectMusicCommand } from './musicControl'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -137,7 +139,108 @@ export class VoiceSessionService {
       case 'session.playback_done':
         this.resolvePlayback()
         break
+      case 'music.next':
+        // 客户端点「换一首 / 换个风格」：直接用当前音乐源解析下一首并下发 media.play，
+        // 不必走一轮 ASR→LLM（按钮已经是明确的指令）。
+        void this.nextMusic(msg.genre)
+        break
     }
+  }
+
+  /** 用当前音乐源解析下一首并下发 media.play；无音乐源或解析失败则静默忽略。 */
+  private async nextMusic(genre?: string): Promise<void> {
+    const source = this.musicSource
+    if (!source) return
+    try {
+      const track = source.next ? await source.next(genre) : await source.resolve(genre)
+      if (!track?.url) return
+      this.deps.send({
+        type: 'media.play',
+        url: track.url,
+        title: track.title,
+        channel: track.channel,
+      })
+    } catch {
+      // 解析失败（网络/无直链等）：交由 withSomaFallback 时已尽量兜底；这里静默，
+      // 客户端会保留上一首而不打断。
+    }
+  }
+
+  /**
+   * 音乐控制指令直接处理（绕开 LLM），返回 true 表示已处理、调用方不要再走 LLM。
+   * 命中播放/换一首时直接解析并下发 media.play，并口播一句确认，
+   * 避免模型幻觉「说播放却没播放」。无音乐源时返回 false，交给 LLM 自然应答。
+   */
+  private async tryMusicCommand(text: string): Promise<boolean> {
+    const action = detectMusicCommand(text)
+    const source = this.musicSource
+    if (!action || !source) return false
+    const genre = genreToKeyword(text)
+    try {
+      switch (action) {
+        case 'play': {
+          const track = await source.resolve(genre)
+          if (!track?.url) return false
+          this.deps.send({
+            type: 'media.play',
+            url: track.url,
+            title: track.title,
+            channel: track.channel,
+          })
+          await this.speakReply(`正在为你播放：${track.title}。`)
+          break
+        }
+        case 'next': {
+          const track = source.next ? await source.next(genre) : await source.resolve(genre)
+          if (!track?.url) return false
+          this.deps.send({
+            type: 'media.play',
+            url: track.url,
+            title: track.title,
+            channel: track.channel,
+          })
+          await this.speakReply(`已为你切换到：${track.title}。`)
+          break
+        }
+        case 'pause':
+          this.deps.send({ type: 'media.pause' })
+          await this.speakReply('已暂停。')
+          break
+        case 'resume':
+          this.deps.send({ type: 'media.resume' })
+          await this.speakReply('继续播放。')
+          break
+        case 'stop':
+          this.deps.send({ type: 'media.stop' })
+          await this.speakReply('已停止播放。')
+          break
+      }
+      return true
+    } catch {
+      await this.speakReply('操作失败，换首别的试试。')
+      return true
+    }
+  }
+
+  /** 口播一句短确认：复用 TTS 下发链路（tts.start → 流式 → tts.end），不进 LLM。 */
+  private async speakReply(text: string): Promise<void> {
+    const turn = ++this.turn
+    this.cancelled = false
+    this.spoken.length = 0
+    this.downlinkBytes = 0
+    const playback = this.armPlaybackWait()
+    this.speaking = true
+    this.playbackPending = true
+    this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
+    this.deps.send({ type: 'llm.delta', text })
+    this.deps.send({ type: 'llm.done' })
+    await this.speakSentence(text, turn)
+    if (this.turn === turn && !this.cancelled) {
+      this.speaking = false
+      this.deps.send({ type: 'tts.end' })
+    }
+    this.tightenPlaybackTimeout()
+    await playback
   }
 
   /** 供位置类工具实时读取会话最近一次上报的设备位置。 */
@@ -211,6 +314,14 @@ export class VoiceSessionService {
     if (this.mode === 'wake') {
       this.deps.send({ type: 'asr.final', text, queueRemaining: 0 })
       return
+    }
+
+    // 音乐控制指令（播放/换一首/暂停/继续/停止）直接处理，不进 LLM，
+    // 避免模型幻觉「说播放却没播放」。仅在空闲（未在播报、未在应答）时拦截，
+    // 否则让现有排队/打断逻辑处理。没有配置音乐源时不拦截，交给 LLM 自然应答。
+    if (!this.playbackPending && !this.processing && this.musicSource) {
+      const handled = await this.tryMusicCommand(text)
+      if (handled) return
     }
 
     // 当前轮还没跑完：不打断、不作废，只把这句排进队列

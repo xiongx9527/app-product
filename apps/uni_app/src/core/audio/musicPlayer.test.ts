@@ -29,6 +29,9 @@ class FakeAudioContext {
   onError(cb: () => void): void {
     this.on('error', cb)
   }
+  onPause(cb: () => void): void {
+    this.on('pause', cb)
+  }
   onTimeUpdate(cb: () => void): void {
     this.on('timeupdate', cb)
   }
@@ -40,6 +43,9 @@ class FakeAudioContext {
   }
   play(): void {
     this.emit('play')
+  }
+  pause(): void {
+    this.emit('pause')
   }
   stop(): void {
     this.emit('stop')
@@ -161,5 +167,40 @@ describe('musicPlayer 进度与时长', () => {
     expect(fake.volume).toBe(0.2)
     player.duckMusic(false)
     expect(fake.volume).toBe(1)
+  })
+
+  it('暂停：标记 paused，不再推进进度，但保持 playing', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    fake.tick(10, 200)
+    player.pauseMusic()
+    expect(player.musicState.paused.value).toBe(true)
+    expect(player.musicState.playing.value).toBe(true)
+    expect(fake.currentTime).toBe(10)
+    // 暂停后时间推进不再更新（播放器已 pause）
+    expect(player.musicState.currentTime.value).toBe(10)
+  })
+
+  it('恢复：清除 paused 状态', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    player.pauseMusic()
+    expect(player.musicState.paused.value).toBe(true)
+    player.resumeMusic()
+    expect(player.musicState.paused.value).toBe(false)
+  })
+
+  it('错误：播放失败时置 musicError 并停止', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    expect(player.musicState.musicError.value).toBe(false)
+    fake.emit('error')
+    expect(player.musicState.musicError.value).toBe(true)
+    expect(player.musicState.playing.value).toBe(false)
+  })
+
+  it('重新播放会清除上一次的错误标记', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    fake.emit('error')
+    player.playMusic('https://x/other.mp3', '另一首')
+    expect(player.musicState.musicError.value).toBe(false)
+    expect(player.musicState.playing.value).toBe(true)
   })
 })

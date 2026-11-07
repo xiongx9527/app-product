@@ -11,6 +11,12 @@ export interface ResolvedTrack {
 /** 音乐播放源抽象：给定风格返回可播放曲目（可异步，如需要联网搜歌的厂商）。 */
 export interface MusicSource {
   resolve(genre?: string): ResolvedTrack | Promise<ResolvedTrack>
+  /**
+   * 换一首 / 下一首 / 换个风格：返回与当前不同的曲目。
+   * 不传 genre 表示「同类型换一首」；传 genre 表示「换个风格」（电台按标签换台，正版服务换搜索词）。
+   * 可选——没有「下一首」概念的源（如固定自定义流）可不实现，调用方据此回退到 resolve。
+   */
+  next?(genre?: string): ResolvedTrack | Promise<ResolvedTrack>
 }
 
 /** 音乐播放源厂商：与客户端设置页的厂商 id 对齐。 */
@@ -46,14 +52,49 @@ const GENRE_KEYWORDS: Array<{ match: RegExp; keyword: string }> = [
   { match: /(睡眠|助眠|白噪音)/, keyword: '睡眠' },
 ]
 
-/** 把风格描述收敛成搜索词；无匹配给兜底词。 */
+/** 把风格描述/歌名收敛成搜索词；无匹配给兜底词。 */
 export function genreToKeyword(genre?: string): string {
   if (!genre) return '轻音乐'
+  const trimmed = genre.trim()
+  // 先按风格词映射（轻音乐/电子/爵士…），命中直接返回该风格词
   for (const entry of GENRE_KEYWORDS) {
-    if (entry.match.test(genre)) return entry.keyword
+    if (entry.match.test(trimmed)) return entry.keyword
   }
-  return genre.trim() || '轻音乐'
+  // 否则当具体歌名/歌手处理：去掉指令性填充词与“的”
+  let kw = trimmed
+  for (const word of COMMAND_WORDS) {
+    kw = kw.split(word).join('')
+  }
+  kw = kw.replace(/的/g, ' ').replace(/\s+/g, ' ').trim()
+  return kw || '轻音乐'
 }
+
+/** 用户口头指令里常见的填充词，从歌名里剔除（不会出现在歌名/歌手名中）。 */
+const COMMAND_WORDS: string[] = [
+  '我想听',
+  '我要听',
+  '来听',
+  '听一首',
+  '来一首',
+  '播放',
+  '放歌',
+  '放首',
+  '点一首',
+  '点首',
+  '唱一首',
+  '唱首',
+  '整首',
+  '放点',
+  '来点',
+  '给我',
+  '换一首',
+  '换首',
+  '下一首',
+  '换个风格',
+  '换风格',
+  '切歌',
+  '来点别的',
+]
 
 /** 取参数的字符串值，缺省给 fallback。 */
 export function paramString(

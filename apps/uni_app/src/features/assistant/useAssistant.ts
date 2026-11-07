@@ -1,6 +1,14 @@
 import { computed, onUnmounted, ref } from 'vue'
 import { playPromptCue, isPromptCuePlaying } from '@/core/audio/promptPlayer'
-import { playMusic, stopMusic, duckMusic, seekMusic, musicState } from '@/core/audio/musicPlayer'
+import {
+  playMusic,
+  stopMusic,
+  pauseMusic,
+  resumeMusic,
+  duckMusic,
+  seekMusic,
+  musicState,
+} from '@/core/audio/musicPlayer'
 import {
   isH5AudioSupported,
   onPlaybackIdle,
@@ -200,6 +208,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       case 'media.play':
         playMusic(event.url, event.title)
+        break
+      case 'media.pause':
+        pauseMusic()
+        break
+      case 'media.resume':
+        resumeMusic()
         break
       case 'media.stop':
         stopMusic()
@@ -408,6 +422,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     dispatch({ type: 'CANCEL' })
   }
 
+  /** 客户端点「换一首 / 换个风格」：直接让网关解析下一首，绕开 LLM。 */
+  function nextMusic(): void {
+    transport.requestMusicNext()
+  }
+
   /** 重新唤醒：对话进行中再次叫「小熊小熊」时，停掉当前轮次并重新招呼。 */
   function reWake(): void {
     dispatch({ type: 'REWAKE' })
@@ -451,12 +470,17 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     interrupt,
     // 音乐播放 / 歌词
     musicPlaying: musicState.playing,
+    musicPaused: musicState.paused,
+    musicError: musicState.musicError,
     musicTitle: musicState.title,
     musicCurrent: musicState.currentTime,
     musicDuration: musicState.duration,
     musicLive: musicState.live,
     lyrics,
     stopMusic,
+    pauseMusic,
+    resumeMusic,
+    nextMusic,
     seekMusic,
     closeLyrics,
   }

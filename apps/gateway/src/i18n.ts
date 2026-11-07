@@ -17,7 +17,11 @@ export interface Messages {
 }
 
 const zhCN: Messages = {
-  systemPrompt: '你是「小熊」语音助手，住在用户的设备里。用简体中文、简短自然地回答，避免长篇大论。',
+  systemPrompt:
+    '你是「小熊」语音助手，住在用户的设备里。用简体中文、简短自然地回答，避免长篇大论。' +
+    '音乐控制请用工具：play_music 开始播放、stop_music 停止、pause_music 暂停、resume_music 继续、' +
+    'next_music 换一首/换个风格。用户说“放点音乐/来首歌/想听歌”用 play_music；说“换一首/下一首/换个风格/来点别的”' +
+    '用 next_music（可带 genre）；说“暂停/先停一下”用 pause_music，说“继续/接着放”用 resume_music，说“关掉/别放了”用 stop_music。',
   errors: {
     AUTH_FAILED: '鉴权失败，请重新登录',
     ASR_TIMEOUT: '识别超时',

@@ -18,6 +18,10 @@ export type ServerEvent =
   | { type: 'media.play'; url: string; title: string; channel?: string }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
+  /** 让客户端暂停当前播放 */
+  | { type: 'media.pause' }
+  /** 让客户端恢复（继续）播放 */
+  | { type: 'media.resume' }
   /** 让客户端展示某首歌的歌词 */
   | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
   | { type: 'error'; code: string; message: string }
@@ -34,8 +38,12 @@ export interface AssistantTransport {
   isConnected(): boolean
   sendAudioChunk(chunk: ArrayBuffer): void
   sendCancel(): void
+  /** 客户端点「换一首 / 换个风格」：下发 music.next 让网关解析下一首 */
+  requestMusicNext(genre?: string): void
   /** 本地播放队列真正清空后回执，网关据此才消费排队的下一句 */
   notifyPlaybackDone(): void
+  /** 客户端点「换一首 / 换个风格」：请网关用当前音乐源解析下一首 */
+  requestMusicNext(genre?: string): void
   close(): void
   onEvent(listener: (event: ServerEvent) => void): () => void
   /** 下行二进制音频帧（TTS PCM）；不支持时返回空订阅函数 */

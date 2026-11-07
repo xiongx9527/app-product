@@ -13,5 +13,9 @@ export function createCustomSource(
     resolve() {
       return { url, title, channel: 'custom' }
     },
+    // 固定单一地址，没有「下一首」概念，沿用 resolve
+    next() {
+      return { url, title, channel: 'custom' }
+    },
   }
 }
