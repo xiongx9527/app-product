@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { dirname, extname, join, normalize } from 'node:path'
+import { basename, dirname, extname, join, normalize } from 'node:path'
 
 const require = createRequire(import.meta.url)
 const distDir = dirname(require.resolve('swagger-ui-dist/package.json'))
@@ -23,10 +23,13 @@ export async function serveSwagger(pathname: string): Promise<{ status: number; 
   try {
     const buf = await readFile(filePath)
     const ext = extname(filePath)
+    const name = basename(filePath)
     let body: Buffer | string = buf
-    // index.html 与 swagger-initializer.js 里都写死了 petstore 的 demo 地址，统一改成我们的
+    // swagger-ui-dist 自带的 swagger-initializer.js 写死了 petstore 的 demo 地址，必须改成我们的
     // /api/openapi.json，否则 Swagger UI 拉不到契约、页面空白。
-    if (ext === '.html' || ext === '.js') {
+    // 注意：只能针对这「一个」文件改写——swagger-ui-bundle.js 等库文件内部也含 `url:` 样式的
+    // 代码，盲目替换会破坏 bundle（之前就是这么把包改坏导致页面空白的）。
+    if (name === 'swagger-initializer.js') {
       body = buf.toString().replace(/url:\s*["'][^"']+["']/, "url: '/api/openapi.json'")
     }
     return { status: 200, contentType: MIME[ext] ?? 'application/octet-stream', body }

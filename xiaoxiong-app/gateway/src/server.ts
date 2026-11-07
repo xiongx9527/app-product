@@ -56,7 +56,12 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
           res.end('not found')
           return
         }
-        res.writeHead(out.status, { 'content-type': out.contentType })
+        // no-store：Swagger 资源不允许缓存，避免浏览器长期留存旧/损坏的 bundle
+        // （曾因一次过度替换把 bundle 改坏，浏览器缓存了坏版本导致页面一直空白）。
+        res.writeHead(out.status, {
+          'content-type': out.contentType,
+          'cache-control': 'no-store',
+        })
         res.end(out.body)
         return
       }
