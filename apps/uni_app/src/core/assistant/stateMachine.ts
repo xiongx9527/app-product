@@ -35,6 +35,17 @@ export function transition(
         effects: ['startSession', 'playGreeting', 'scheduleT1'],
       }
 
+    case 'REWAKE':
+      // 对话进行中再次叫「小熊小熊」：视作重新唤醒。停掉当前轮次、重新招呼，
+      // 回到干净的对听状态，不退回待唤醒（不必再说一次唤醒词）。
+      if (state === 'listening' || state === 'confirming' || state === 'closing') {
+        return {
+          state: 'listening',
+          effects: ['cancelT1', 'cancelT2', 'cancelSession', 'playGreeting', 'scheduleT1'],
+        }
+      }
+      return NOOP(state)
+
     case 'USER_SPEECH':
       if (state === 'confirming') {
         // 用户回应了提示：取消退出，继续本轮

@@ -10,6 +10,7 @@ export type AssistantEvent =
   | { type: 'ENABLE' }
   | { type: 'DISABLE' }
   | { type: 'WAKE' }
+  | { type: 'REWAKE' }
   | { type: 'USER_SPEECH' }
   | { type: 'ASSISTANT_BUSY' }
   | { type: 'ASSISTANT_IDLE' }

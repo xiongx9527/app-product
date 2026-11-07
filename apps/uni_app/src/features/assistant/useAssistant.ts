@@ -91,8 +91,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     switch (event.type) {
       case 'asr.partial':
         // 监听阶段把实时识别文字作为「草稿」展示在页面下方，不进「你说」卡片；
-        // 本轮（思考/回答/播报）或排队未消费时不更新，避免顶掉定稿
-        if (mode === 'dialog' && !assistantBusy && !queuePending.value) {
+        // 本轮（思考/回答/播报）或排队未消费时不更新，避免顶掉定稿。
+        // 播报（TTS）进行中也不更新：其它声音不该被当成实时识别刷出来。
+        if (mode === 'dialog' && !assistantBusy && !queuePending.value && !isSpeaking.value) {
           liveText.value = event.text
           if (phase.value !== 'listening') phase.value = 'listening'
         }
@@ -115,6 +116,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
           break
         }
+        // 对话进行中再次叫「小熊小熊」：重新唤醒——停掉当前轮次、重新招呼，
+        // 回到干净的对听状态。播报（TTS）进行中同样适用；音乐播放不受影响
+        // （它不设置 isSpeaking，且此分支只认唤醒词，不会被普通插话触发）。
+        if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) {
+          reWake()
+          break
+        }
+        // 播报（TTS）还没结束：其它声音一律忽略，不显示、不发起新轮次
+        if (isSpeaking.value) break
         // 定稿后这一句进入队列成为「当前项」，你说始终显示队列当前项（不显示监听草稿）。
         // 直接采信服务端的权威剩余数，避免拒收/超时等路径下本地计数漂移。
         queuePending.value = event.queueRemaining
@@ -396,6 +406,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   function interrupt(): void {
     dispatch({ type: 'CANCEL' })
+  }
+
+  /** 重新唤醒：对话进行中再次叫「小熊小熊」时，停掉当前轮次并重新招呼。 */
+  function reWake(): void {
+    dispatch({ type: 'REWAKE' })
+    phase.value = 'listening'
   }
 
   /** 关闭歌词面板 */

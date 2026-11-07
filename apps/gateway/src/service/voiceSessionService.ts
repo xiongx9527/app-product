@@ -149,13 +149,13 @@ export class VoiceSessionService {
     if (!this.active) return
     // 帧一直会来，顺手把到期的回声抑制恢复掉
     if (this.halfDuplex && !this.echo.muted()) this.syncDuplex()
-    // 播报期间不接收任何上行：既不识别（回声、播报内容都不会被识别），也不插话打断，
-    // 播报完整播完。用户想打断用「打断」按钮，或等播完后再开口。
-    if (this.playbackPending) return
     const vad = this.vad.push(chunk, { strict: false })
     for (const frame of vad.frames) {
       void this.deps.asr.push(frame).then((partial) => {
-        if (partial) this.deps.send({ type: 'asr.partial', text: partial })
+        // 播报期间只做唤醒词识别（用定稿），实时草稿不上发给客户端，避免回声刷屏
+        if (partial && !this.playbackPending) {
+          this.deps.send({ type: 'asr.partial', text: partial })
+        }
       })
     }
     // 只有真正的人声帧才重置句末计时：静音帧持续到达也会让计时器自然到期
@@ -189,9 +189,16 @@ export class VoiceSessionService {
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
     // 不进模型也不进队列，避免凭空多出一轮回答和 TTS
     if (!text || isNoise(text)) return
-    // 播放过程中禁止识别：播报还没结束就定稿，基本是扬声器收回来的回声，
-    // 或用户中途插话（已通过 barge-in 先停了播放）。等播放真正结束后再采信识别结果。
-    if (this.playbackPending) return
+    // 播报（TTS）进行中：不放行成新轮次，也不排队插话——其它声音一律忽略。
+    // 但保留唤醒词识别：把识别结果回传客户端做「小熊小熊」比对，
+    // 只有命中唤醒词才允许打断，否则播报完整播完。
+    // 助手自己刚念过的原话（回声）直接丢弃，且此分支不触发回声兜底静音，
+    // 否则会连用户想用来打断的唤醒词一起掐掉。
+    if (this.playbackPending) {
+      if (Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)) return
+      this.deps.send({ type: 'asr.final', text, queueRemaining: 0 })
+      return
+    }
     // 文本级回声兜底：刚播完的尾巴里仍可能混进助手说过的原话（含复述用户），
     // 播放结束后的保护窗口内按回声丢弃，避免被当成用户新的一句。
     if (Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)) {

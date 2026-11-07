@@ -179,7 +179,7 @@ function onOrbTap(): void {
         </view>
         <text class="card-text">{{ transcript || t('card.placeholder') }}</text>
       </view>
-      <view v-if="thinking && !thinkingDone" class="card thinking">
+      <view v-if="thinking && !thinkingDone && !reply" class="card thinking">
         <view class="card-head">
           <text class="card-label">{{ t('card.thinking') }}</text>
           <text class="card-badge" :class="{ done: thinkingDone }">
@@ -188,15 +188,14 @@ function onOrbTap(): void {
         </view>
         <text class="card-text thinking-text">{{ thinkingTail }}</text>
       </view>
-      <view class="card reply">
+      <view v-if="reply" class="card reply">
         <view class="card-head">
           <text class="card-label">{{ t('card.assistant') }}</text>
-          <text v-if="reply" class="card-badge" :class="{ done: replyDone }">
+          <text class="card-badge" :class="{ done: replyDone }">
             {{ replyDone ? t('card.done') : t('card.generating') }}
           </text>
         </view>
-        <rich-text v-if="reply" class="card-text reply-rich" :nodes="replyHtml" />
-        <text v-else class="card-text">{{ t('card.placeholder') }}</text>
+        <rich-text class="card-text reply-rich" :nodes="replyHtml" />
       </view>
     </view>
 

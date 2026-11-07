@@ -24,6 +24,29 @@ describe('assistant state machine', () => {
     expect(next('listening', 'WAKE')).toEqual({ state: 'listening', effects: [] })
   })
 
+  it('对话中再次叫唤醒词：停掉当前轮次并重新招呼，回到对听状态', () => {
+    expect(next('listening', 'REWAKE')).toEqual({
+      state: 'listening',
+      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'playGreeting', 'scheduleT1'],
+    })
+  })
+
+  it('提示中 / 结束中再次叫唤醒词同样重新唤醒', () => {
+    expect(next('confirming', 'REWAKE')).toEqual({
+      state: 'listening',
+      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'playGreeting', 'scheduleT1'],
+    })
+    expect(next('closing', 'REWAKE')).toEqual({
+      state: 'listening',
+      effects: ['cancelT1', 'cancelT2', 'cancelSession', 'playGreeting', 'scheduleT1'],
+    })
+  })
+
+  it('待唤醒 / 未开启状态收到 REWAKE 不生效', () => {
+    expect(next('standby', 'REWAKE')).toEqual({ state: 'standby', effects: [] })
+    expect(next('idle', 'REWAKE')).toEqual({ state: 'idle', effects: [] })
+  })
+
   it('静默超时后先提示，再等待回应', () => {
     expect(next('listening', 'T1_TIMEOUT')).toEqual({
       state: 'confirming',

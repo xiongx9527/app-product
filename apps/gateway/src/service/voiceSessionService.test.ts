@@ -14,13 +14,6 @@ function loudFrame(samples = 1600): Uint8Array {
   return new Uint8Array(pcm.buffer)
 }
 
-/** 低能量帧，用来模拟「扬声器收回来的回声」。 */
-function echoFrame(samples = 1600): Uint8Array {
-  const pcm = new Int16Array(samples)
-  for (let i = 0; i < samples; i += 1) pcm[i] = i % 2 === 0 ? 3000 : -3000
-  return new Uint8Array(pcm.buffer)
-}
-
 function silentFrame(samples = 1600): Uint8Array {
   return new Uint8Array(samples * 2)
 }
@@ -42,7 +35,7 @@ interface Harness {
 }
 
 function createHarness(
-  opts: { ttsFrames?: Uint8Array[]; delayDelta?: boolean } = {}
+  opts: { ttsFrames?: Uint8Array[]; delayDelta?: boolean; finalizeText?: string } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
   const events: ServerEvent[] = []
@@ -77,7 +70,7 @@ function createHarness(
       return null
     },
     async finalize() {
-      return '今天天气怎么样'
+      return opts.finalizeText ?? '今天天气怎么样'
     },
     reset() {},
   }
@@ -155,12 +148,12 @@ describe('语音会话：句末判定、排队与去噪', () => {
     expect(h.agentCalls()).toBe(1)
     expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
 
-    // 播放过程中（未回执播完）再说的话，一律不识别、不排队、不触发新回答
+    // 播放过程中（未回执播完）再说的话：网关仍把识别结果回传（供客户端做
+    // 唤醒词比对），但绝不识别成新轮次——不进队列、不触发新回答、不中途打断。
     await speakUtterance(h)
     await speakUtterance(h)
     await speakUtterance(h)
     expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(0)
-    expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(1)
     expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
     expect(h.agentCalls()).toBe(1)
 
@@ -171,7 +164,6 @@ describe('语音会话：句末判定、排队与去噪', () => {
     await sleep(20)
     await speakUtterance(h)
     expect(h.agentCalls()).toBe(2)
-    expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(2)
   })
 
   it('思考阶段（未播放）用户插话：正常进队列，播完后依次处理', async () => {
@@ -201,9 +193,9 @@ describe('语音会话：句末判定、排队与去噪', () => {
     expect(finals[1]).toMatchObject({ queueRemaining: 0 })
   })
 
-  it('tts.end 之后、playback_done 之前，尾音回声仍被挡在 ASR 之前', async () => {
-    // 下发一帧高能量 TTS 音频，让门控拿到参考值
-    const h = createHarness({ ttsFrames: [loudFrame()] })
+  it('tts.end 之后、playback_done 之前：回声（助手原话）被丢弃，不回传也不发起轮次', async () => {
+    // 下发一帧高能量 TTS 音频，让门控拿到参考值；finalize 固定返回助手刚念过的原话，模拟回声
+    const h = createHarness({ ttsFrames: [loudFrame()], finalizeText: '好的，我来说一句。' })
     await startDialog(h.service)
     await speakUtterance(h)
     h.finishReply()
@@ -211,18 +203,31 @@ describe('语音会话：句末判定、排队与去噪', () => {
     expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
 
     // 此刻音频已下发完（speaking=false），但客户端还没回执播完。
-    // 低能量的回声帧必须被丢弃，不能喂进 ASR。
-    const before = h.asrFrames()
-    for (let i = 0; i < 8; i += 1) h.service.handleBinary(echoFrame())
-    await sleep(20)
-    expect(h.asrFrames()).toBe(before)
+    // 回声（与助手原话雷同）必须被丢弃，既不回传 asr.final，也不发起新轮次。
+    const before = h.events.filter((e) => e.type === 'asr.final').length
+    for (let i = 0; i < 8; i += 1) h.service.handleBinary(loudFrame())
+    await sleep(40)
+    expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(before)
+    expect(h.agentCalls()).toBe(1)
+  })
 
-    // 客户端回执播完后，门控窗口关闭，同样的帧才会被当作真人说话
-    h.playbackDone()
-    await sleep(10)
-    for (let i = 0; i < 8; i += 1) h.service.handleBinary(echoFrame())
-    await sleep(20)
-    expect(h.asrFrames()).toBeGreaterThan(before)
+  it('tts.end 之后、playback_done 之前：其它声音回传为 asr.final 但不发起新轮次', async () => {
+    // 播报期间保留唤醒词识别：非回声的识别结果会回传给客户端做「小熊小熊」比对，
+    // 但绝不发起新轮次、不进队列、不打断当前播报。
+    const h = createHarness({ ttsFrames: [loudFrame()] })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
+
+    const before = h.events.filter((e) => e.type === 'asr.final').length
+    for (let i = 0; i < 8; i += 1) h.service.handleBinary(loudFrame())
+    await sleep(40)
+    expect(h.events.filter((e) => e.type === 'asr.final').length).toBeGreaterThan(before)
+    expect(h.agentCalls()).toBe(1)
+    expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(0)
+    expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
   })
 
   it('打断后串行链里残留的定稿不会再发 asr.final 或排队', async () => {
