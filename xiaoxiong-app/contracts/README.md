@@ -127,7 +127,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 - Base：网关地址，如 `http://<host>:<port>`。
 - 数据格式：`application/json`。
-- 参数加密：由网关开关 `PARAM_ENCRYPT` 控制。开启时，`/api/*` 的请求体/响应体为密文（见下文），关闭时为明文 JSON。
+- 参数加密：由网关开关 `PARAM_ENCRYPT` 控制。开启时，`/api/*` 的请求体/响应体为密文（见下文），关闭时为明文 JSON。例外：`/api/openapi.json`（Swagger 契约文档）始终明文返回——它是公开文档，且浏览器里的 Swagger UI 没有解密能力，加密后页面无法渲染。
 - 数据库只在网关落地（SQLite），客户端经这些接口读写，不直接写业务数据。
 
 ### 端点

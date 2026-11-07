@@ -37,7 +37,9 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
         const raw = req.method === 'POST' || req.method === 'PUT' ? await readBody(req) : undefined
         const body = parseBody(raw, config)
         const result = await api({ method: req.method ?? 'GET', pathname: url.pathname, query: url.searchParams, body })
-        if (config.paramEncrypt) {
+        // 公开契约文档（Swagger 的 spec 源）不能加密：浏览器里的 Swagger UI 没有解密能力，
+        // 加密后会拿到 {"encrypted":true,...} 而无法解析，页面空白。其余 /api/* 仍按开关加密。
+        if (config.paramEncrypt && url.pathname !== '/api/openapi.json') {
           // 响应方向：用前端公钥加密，前端用前端私钥解密。
           const data = encryptWithPublicKey(config.rsaFrontendPublicKey, JSON.stringify(result.body ?? null))
           res.writeHead(result.status, { 'content-type': 'application/json; charset=utf-8' })

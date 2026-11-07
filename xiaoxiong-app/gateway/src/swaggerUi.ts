@@ -24,7 +24,9 @@ export async function serveSwagger(pathname: string): Promise<{ status: number; 
     const buf = await readFile(filePath)
     const ext = extname(filePath)
     let body: Buffer | string = buf
-    if (ext === '.html') {
+    // index.html 与 swagger-initializer.js 里都写死了 petstore 的 demo 地址，统一改成我们的
+    // /api/openapi.json，否则 Swagger UI 拉不到契约、页面空白。
+    if (ext === '.html' || ext === '.js') {
       body = buf.toString().replace(/url:\s*["'][^"']+["']/, "url: '/api/openapi.json'")
     }
     return { status: 200, contentType: MIME[ext] ?? 'application/octet-stream', body }
