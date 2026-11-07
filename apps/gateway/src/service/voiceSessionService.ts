@@ -63,7 +63,7 @@ export class VoiceSessionService {
   private location: LocationInfo | null = null
   /** 天地图逆地理编码（配置了 tk 才有），把经纬度翻成中文地址 */
   private reverseGeocoder: ReverseGeocoder | undefined = undefined
-  /** 音乐播放源：无配置、始终可用（SomaFM 电台 + 百度搜索兜底），随会话构建 */
+  /** 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），随会话构建 */
   private musicSource: MusicSource | undefined = undefined
   /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
   private pendingCandidates: { items: MusicCandidate[]; query: string } | null = null
@@ -133,7 +133,7 @@ export class VoiceSessionService {
         this.location = msg.location ?? null
         // 逆地理编码：优先用客户端上报的 geocode 配置；没上报则退回网关兜底天地图 tk
         this.reverseGeocoder = this.buildGeocode(msg.geocode)
-        // 音乐播放源：无配置、始终可用（SomaFM 电台 + 百度搜索兜底），音乐工具始终注册
+        // 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），音乐工具始终注册
         this.musicSource = this.deps.musicSourceFactory
           ? this.deps.musicSourceFactory()
           : createMusicSource()
@@ -178,7 +178,7 @@ export class VoiceSessionService {
         channel: track.channel,
       })
     } catch {
-      // 解析失败（SomaFM/百度都搜不到）：静默忽略，客户端保留上一首而不打断，
+      // 解析失败（SomaFM/B 站都搜不到）：静默忽略，客户端保留上一首而不打断，
       // 由上层（工具/口播）统一告知用户「没找到这首歌」。
     }
   }

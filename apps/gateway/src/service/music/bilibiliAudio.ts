@@ -25,7 +25,7 @@ function mixinKey(raw: string): string {
   return key.slice(0, 32)
 }
 
-function wbiSign(params: Record<string, string>, key: string): string {
+export function wbiSign(params: Record<string, string>, key: string): string {
   const sorted = Object.entries(params).sort((a, b) => a[0].localeCompare(b[0]))
   const qs = sorted.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
   return createHash('md5').update(qs + key).digest('hex')
@@ -41,7 +41,13 @@ export interface BilibiliAudio {
 const nativeFetch: MusicFetcher = (url, init) =>
   fetch(url, { method: init?.method, headers: init?.headers, body: init?.body }) as unknown as ReturnType<MusicFetcher>
 
-async function getWbiKey(fetcher: MusicFetcher): Promise<string> {
+/** WBI 密钥有效期约 1 天；模块级缓存避免每次抽音轨/搜索都多打一次 nav。 */
+let cachedWbiKey: { key: string; at: number } | null = null
+
+export async function getWbiKey(fetcher: MusicFetcher): Promise<string> {
+  if (cachedWbiKey && Date.now() - cachedWbiKey.at < 12 * 60 * 60 * 1000) {
+    return cachedWbiKey.key
+  }
   const resp = await fetcher('https://api.bilibili.com/x/web-interface/nav', { headers: BILI_HEADERS })
   const json = (await resp.json()) as {
     data?: { wbi_img?: { img_url?: string; sub_url?: string } }
@@ -50,7 +56,9 @@ async function getWbiKey(fetcher: MusicFetcher): Promise<string> {
   const sub = json.data?.wbi_img?.sub_url ?? ''
   const raw =
     (img.split('/').pop()?.split('.')[0] ?? '') + (sub.split('/').pop()?.split('.')[0] ?? '')
-  return mixinKey(raw)
+  const key = mixinKey(raw)
+  cachedWbiKey = { key, at: Date.now() }
+  return key
 }
 
 /** 由 BVID 抽取音频直链。fetcher 缺省走全局 fetch。 */

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { createSomaSource } from './somaSource'
-import { createBaiduSource, titleMatchesKeyword } from './baiduSource'
+import { createBilibiliSearchSource, titleMatchesKeyword } from './bilibiliSearchSource'
 import { extractBvidsFromHtml } from './bilibiliAudio'
 import { createMusicSource } from './index'
 import { SOMA_CHANNELS } from '../tools/musicChannels'
@@ -60,88 +60,113 @@ describe('genre 分流', () => {
   })
 })
 
-describe('百度搜索引擎兜底源', () => {
+describe('B 站搜索兜底源', () => {
   /**
-   * 构造 fetcher：按百度 pn 分页返回不同 SERP html（内含不同 BVID），
-   * /link 落地到指定 url，B 站 wbi 三步按 BVID 返回不同音轨直链。
-   * viewTitle 控制视频标题，便于验证「歌手、歌名要一样」的相关性校验。
+   * 构造 fetcher：模拟 B 站搜索接口（data.result[].result[] 里的视频条目，带 bvid+title），
+   * 以及 wbi 抽音轨三步（nav → view → playurl）。
+   * titlesOf(keyword) 控制搜索返回的标题列表，便于验证「歌手、歌名要一样」
+   * 「相关性排序」「换一首」「换歌名重新搜索」。
+   * bvid 用「BV + 10 位序号 + a」编码序号，view 时按序号回贴搜索标题，playurl 按 bvid 给直链。
    */
   function biliFetcher(
-    byPage: (page: number) => string,
-    linkLanding = 'https://haokan.baidu.com/v?vid=1',
-    viewTitle: (bvid: string) => string = () => '周杰伦《稻香》完整版无损音质'
+    titlesOf: (keyword: string) => string[],
+    audioUrl: (bvid: string) => string = (b) => `https://bili/${b}.m4s`
   ): MusicFetcher {
+    let currentTitles: string[] = []
+    const titleOf = (bvid: string): string => {
+      const i = Number(bvid.slice(2, 12))
+      return currentTitles[i] ?? bvid
+    }
     return async (url) => {
-      if (url.includes('baidu.com/s')) {
-        const page = Number(/[?&]pn=(\d+)/.exec(url)?.[1] ?? '0') / 10
-        return { ok: true, status: 200, json: async () => ({}), text: async () => byPage(page), url }
-      }
-      if (url.includes('/link?url=')) {
-        return { ok: true, status: 200, json: async () => ({}), text: async () => '', url: linkLanding }
+      if (url.includes('search/all')) {
+        const keyword = new URL(url).searchParams.get('keyword') ?? ''
+        const titles = titlesOf(keyword)
+        currentTitles = titles
+        const result = titles.map((title, i) => ({
+          bvid: `BV${String(i).padStart(10, '0')}a`,
+          title,
+          author: 'x',
+        }))
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { result: [{ type: 'video', result }] } }),
+          text: async () => '',
+        }
       }
       if (url.includes('x/web-interface/nav')) {
         return {
-          ok: true, status: 200,
+          ok: true,
+          status: 200,
           json: async () => ({ data: { wbi_img: { img_url: 'https://i0.hdslb.com/wbi/xxx.png', sub_url: 'https://i0.hdslb.com/wbi/yyy.png' } } }),
           text: async () => '',
         }
       }
       if (url.includes('wbi/view')) {
         const bvid = /bvid=(BV[0-9A-Za-z]+)/.exec(url)?.[1] ?? ''
-        return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 123, title: viewTitle(bvid) } }), text: async () => '' }
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 123, title: titleOf(bvid) } }), text: async () => '' }
       }
       expect(url).toContain('wbi/playurl')
       const bvid = /bvid=(BV[0-9A-Za-z]+)/.exec(url)?.[1] ?? 'unknown'
       return {
-        ok: true, status: 200,
-        json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: `https://bili/${bvid}.m4s` }] } } }),
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: audioUrl(bvid) }] } } }),
         text: async () => '',
       }
     }
   }
 
-  const page0Html = (bvid: string) => `<div mu="https://www.bilibili.com/video/${bvid}/">稻香</div>`
-
-  it('优先取 SERP 里 mu= 内嵌的 B 站直链抽音轨（真实百度结构）', async () => {
-    const html = page0Html('BV1jk3z6TEgo') + '<a href="/link?url=abc">好看视频</a>'
-    const track = await createBaiduSource({}, biliFetcher(() => html)).resolve('稻香')
-    expect(track.url).toBe('https://bili/BV1jk3z6TEgo.m4s')
+  it('搜索结果按相关性排序：完整版/原唱优先于鼓谱/翻唱', async () => {
+    const titles = [
+      '十年【陈奕迅】动态鼓谱',
+      '在百万豪装录音棚听陈奕迅《十年》Hi-res',
+      '《十年》陈奕迅 完整版',
+    ]
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
+    const track = await source.resolve('陈奕迅 十年')
+    // 最相关（完整版、无减分词）的那条应排在最前
+    expect(track.title).toBe('《十年》陈奕迅 完整版')
     expect(track.channel).toBe('bilibili')
-    expect(track.title).toContain('稻香')
+    expect(track.url).toContain('BV0000000002')
   })
 
   it('视频标题与歌手/歌名对不上时跳过，绝不乱播（报没找到）', async () => {
-    // 百度对编造的歌名会返回低相关度视频，标题不含「周杰伦/稻香」→ 全部候选被跳过
-    const html = page0Html('BV1jk3z6TEgo')
-    const fetcher = biliFetcher(() => html, undefined, () => '谁说网红只会抄袭翻唱，原创歌曲出圈')
-    const source = createBaiduSource({}, fetcher)
+    const titles = ['周杰伦演唱会精选', '谁说网红只会抄袭翻唱，原创歌曲出圈']
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
     await expect(source.resolve('周杰伦 稻香')).rejects.toThrow()
   })
 
-  it('无内嵌 BVID 时，跟随 /link 跳转到 B 站视频页兜底', async () => {
-    const html = '<a href="/link?url=abc">x</a><a href="/link?url=def">y</a>'
-    const fetcher = biliFetcher(() => html, 'https://www.bilibili.com/video/BV1xx411c7mD')
-    const track = await createBaiduSource({}, fetcher).resolve('稻香')
-    expect(track.url).toBe('https://bili/BV1xx411c7mD.m4s')
-    expect(track.channel).toBe('bilibili')
-  })
-
-  it('next() 翻到下一页拿到不同曲目（换一首不再必失败）', async () => {
-    // 每页给不同 BVID：pn=0 → A，pn=10 → B
-    const fetcher = biliFetcher((page) => page0Html(page === 0 ? 'BVaaaaaaaaaa' : 'BVbbbbbbbbbb'))
-    const source = createBaiduSource({}, fetcher)
-    const first = await source.resolve('稻香')
-    const second = await source.next!('稻香')
-    expect(first.url).toBe('https://bili/BVaaaaaaaaaa.m4s')
-    expect(second.url).toBe('https://bili/BVbbbbbbbbbb.m4s')
+  it('next() 依次换到下一首不同的曲目（换一首不再必失败）', async () => {
+    const titles = ['《稻香》周杰伦 完整版', '周杰伦《稻香》Live', '稻香-周杰伦 伴奏']
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
+    const first = await source.resolve('周杰伦 稻香')
+    const second = await source.next!('周杰伦 稻香')
     expect(first.url).not.toBe(second.url)
+    expect(second.channel).toBe('bilibili')
   })
 
-  it('mu= 与 /link 都取不到音轨时抛错', async () => {
-    // /link 落到好看视频（无 BVID），也没有内嵌 B站直链
-    const html = '<a href="/link?url=abc">x</a>'
-    const source = createBaiduSource({}, biliFetcher(() => html))
-    await expect(source.resolve('不存在的歌')).rejects.toThrow()
+  it('换了歌名时重新搜索（不再沿用上一批候选）', async () => {
+    const titlesOf = (k: string) =>
+      k.includes('稻香') ? ['《稻香》周杰伦 完整版'] : ['《十年》陈奕迅 完整版']
+    const source = createBilibiliSearchSource({}, biliFetcher(titlesOf))
+    await source.resolve('周杰伦 稻香')
+    const b2 = await source.next!('陈奕迅 十年')
+    expect(b2.url).toContain('BV0000000000')
+  })
+
+  it('抽不到音轨的视频自动跳过，全失败才抛错', async () => {
+    const base = biliFetcher(() => ['《稻香》周杰伦 完整版', '周杰伦《稻香》Live'])
+    // 让第一个 BVID 的 playurl 返回无音频流，应自动换到第二个
+    const wrapped: MusicFetcher = async (url, init) => {
+      if (url.includes('wbi/playurl') && url.includes('BV0000000000')) {
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { dash: { audio: [] } } }), text: async () => '' }
+      }
+      return base(url, init)
+    }
+    const source = createBilibiliSearchSource({}, wrapped)
+    const track = await source.resolve('周杰伦 稻香')
+    expect(track.url).toContain('BV0000000001')
   })
 })
 
@@ -193,14 +218,14 @@ describe('音乐聚合源（无配置）', () => {
     expect(track.url).toContain('somafm.com')
   })
 
-  it('具体歌名请求走百度兜底分支（非风格）', () => {
+  it('具体歌名请求走 B 站搜索兜底分支（非风格）', () => {
     // isGenreRequest 已单测；这里仅确认分流方向：具体歌名不命中风格分支
     expect(isGenreRequest('周杰伦 稻香')).toBe(false)
   })
 
-  it('泛化点歌（随便放点/播放个音乐）走 SomaFM 而非百度视频搜索', async () => {
+  it('泛化点歌（随便放点/播放个音乐）走 SomaFM 而非 B 站视频搜索', async () => {
     // 这类口语在 genreToKeyword 里已回落轻音乐，必须被识别为风格请求进电台，
-    // 否则会误送百度搜「轻音乐 视频 在线听」而播到不相关视频（乱播放）。
+    // 否则会误送视频搜索而播到不相关视频（乱播放）。
     const source = createMusicSource()
     for (const q of ['随便放点', '播放个音乐', '给我放首歌', '来首歌']) {
       const track = await source.resolve(q)

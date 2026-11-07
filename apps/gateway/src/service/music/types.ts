@@ -47,7 +47,7 @@ const GENRE_KEYWORDS: Array<{ match: RegExp; keyword: string }> = [
 
 /**
  * 泛化点歌词：用户只说「放首歌/播放个/随便放点」，没有点名歌名/歌手/风格。
- * 这类词拿去百度搜「歌 视频 在线听」几乎抽不到音轨，会白报「操作失败」，
+ * 这类词拿去视频搜索「歌 视频 在线听」几乎抽不到音轨，会白报「操作失败」，
  * 应回落到轻音乐电台（SomaFM），由 isGenreRequest 判为风格请求。
  */
 const GENERIC_PLAY_WORDS =
@@ -67,7 +67,7 @@ export function genreToKeyword(genre?: string): string {
     kw = kw.split(word).join('')
   }
   kw = kw.replace(/的/g, ' ').replace(/\s+/g, ' ').trim()
-  // 剔除后只剩泛化词/语气词（或为空）→ 回落轻音乐电台，别拿去百度白搜
+  // 剔除后只剩泛化词/语气词（或为空）→ 回落轻音乐电台，别拿去白搜
   const compact = kw.replace(/\s+/g, '')
   if (!compact || GENERIC_PLAY_WORDS.test(compact)) return '轻音乐'
   // 「播放个周杰伦的稻香」这类：指令词删掉后残留开头的量词「个/首/点」，去掉再搜
@@ -76,7 +76,7 @@ export function genreToKeyword(genre?: string): string {
 
 /**
  * 判断用户的描述是否“风格/氛围”请求（轻音乐/电子/爵士…），而非具体歌名/歌手。
- * 聚合音乐源据此分流：风格走 SomaFM 电台，点歌走百度搜索兜底。
+ * 聚合音乐源据此分流：风格走 SomaFM 电台，点歌走 B 站搜索兜底。
  */
 export function isGenreRequest(genre?: string): boolean {
   if (!genre) return true
