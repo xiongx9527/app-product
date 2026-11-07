@@ -1,4 +1,10 @@
-import { DEFAULT_LANGUAGE, DEFAULT_TIMEZONE, normalizeTimezone } from './constants'
+import {
+  DEFAULT_GEOCODE,
+  DEFAULT_LANGUAGE,
+  DEFAULT_TIMEZONE,
+  normalizeGeocodeProvider,
+  normalizeTimezone,
+} from './constants'
 import { PROVIDERS, findProvider } from './providers'
 import type {
   AppConfig,
@@ -31,6 +37,7 @@ export function createDefaultConfig(): AppConfig {
     mode: 'byok',
     language: DEFAULT_LANGUAGE,
     timezone: DEFAULT_TIMEZONE,
+    geocode: { ...DEFAULT_GEOCODE },
     asr: createDefaultCapability('asr'),
     llm: createDefaultCapability('llm'),
     tts: createDefaultCapability('tts'),
@@ -121,11 +128,18 @@ export function normalizeConfig(
 
   const timezone = normalizeTimezone(source.timezone ?? base.timezone)
 
+  const geocodeSource = isRecord(source.geocode) ? source.geocode : {}
+  const geocode = {
+    provider: normalizeGeocodeProvider(geocodeSource.provider),
+    key: geocodeSource.key != null ? String(geocodeSource.key) : DEFAULT_GEOCODE.key,
+  }
+
   return {
     version: 1,
     mode,
     language,
     timezone,
+    geocode,
     asr: normalizeCapability('asr', source.asr, base.asr),
     llm: normalizeCapability('llm', source.llm, base.llm),
     tts: normalizeCapability('tts', source.tts, base.tts),

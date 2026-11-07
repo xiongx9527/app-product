@@ -7,7 +7,7 @@ import {
   type LocationProvider,
 } from './currentLocationTool'
 import { createWeatherTool } from './weatherTool'
-import type { ReverseGeocoder } from '../geocode/tiandituReverse'
+import type { ReverseGeocoder } from '../geocode/types'
 
 export {
   createCurrentTimeTool,
@@ -28,9 +28,12 @@ export {
 export {
   createTiandituReverseGeocoder,
   gcj02ToWgs84,
+  createGeocodeAdapter,
   type ReverseGeocoder,
   type ReverseGeocodeResult,
-} from '../geocode/tiandituReverse'
+  type GeocodeConfig,
+  type GeocodeProviderKind,
+} from '../geocode'
 
 
 /**

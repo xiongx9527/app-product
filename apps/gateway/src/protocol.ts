@@ -14,6 +14,14 @@ export interface LocationInfo {
   address?: string
 }
 
+/** 客户端上报的地图服务商配置：选中的逆地理编码服务商 + 该服务商的 Key（byok，存本机）。 */
+export interface GeocodeInfo {
+  /** tianditu=天地图；tencent=腾讯；amap=高德。三者均免费提供逆地理编码。 */
+  provider: 'tianditu' | 'tencent' | 'amap'
+  /** 该服务商的 API Key；为空时网关退回客户端自带地址或网关兜底 Key。 */
+  key: string
+}
+
 /** 客户端 → 服务端（文本控制帧） */
 export type ClientMessage =
   | {
@@ -24,6 +32,8 @@ export type ClientMessage =
       timezone?: string
       /** 设备当前位置（经纬度 + 可选地址），用于位置类工具返回，缺省由 session.location 补齐 */
       location?: LocationInfo
+      /** 地图服务商配置（逆地理编码用）：客户端设置页选择并填 Key，随会话上报 */
+      geocode?: GeocodeInfo
       /** wake=只做 ASR（用于本地唤醒词检测，不跑 LLM/TTS）；dialog=完整对话，默认 */
       mode?: 'wake' | 'dialog'
     }

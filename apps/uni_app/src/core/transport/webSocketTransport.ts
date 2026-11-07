@@ -131,6 +131,8 @@ export class WebSocketTransport implements AssistantTransport {
       sessionId: this.sessionId,
       lang: this.lang,
       timezone: appConfig.timezone,
+      // 地图服务商配置（逆地理编码）：客户端设置页选择并填 Key，随会话上报
+      geocode: { provider: appConfig.geocode.provider, key: appConfig.geocode.key },
       location: this.lastLocation ?? undefined,
       mode,
     })

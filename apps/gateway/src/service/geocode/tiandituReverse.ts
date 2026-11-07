@@ -1,30 +1,18 @@
 /**
- * 天地图逆地理编码客户端。
+ * 天地图逆地理编码适配器。
  * 客户端用 uni.getLocation({type:'gcj02'}) 上报的是国测局偏移坐标（GCJ-02），
  * 而天地图 geocoder 接口按 WGS-84 / CGCS2000 解析，所以送之前先 gcj02→wgs84。
- * 依赖服务端 tk（TIANDITU_TK），且必须用「服务端」类型应用申请的 key，浏览器端 tk 会被 Referer/UA 校验拦掉。
+ * 依赖 tk（客户端上报或网关环境变量 TIANDITU_TK），且必须用「服务端」类型应用申请的 key，
+ * 浏览器端 tk 会被 Referer/UA 校验拦掉。
  */
 
-/** 逆地理编码结果（天地图返回的结构化地址）。 */
-export interface ReverseGeocodeResult {
-  /** 完整可读地址，如「北京市西城区西什库大街31号院」 */
-  formattedAddress: string
-  /** 城市/区县，如「北京市西城区」 */
-  city?: string
-  /** 所在道路 */
-  road?: string
-  /** 最近的 POI 名称 */
-  poi?: string
-}
+import type {
+  Fetcher,
+  ReverseGeocoder,
+  ReverseGeocodeResult,
+} from './types'
 
-/** 逆地理编码函数：经纬度 → 地址；失败/未配置时返回 null。 */
-export type ReverseGeocoder = (
-  latitude: number,
-  longitude: number
-) => Promise<ReverseGeocodeResult | null>
-
-/** 可注入的网络请求，便于测试；默认全局 fetch。 */
-export type Fetcher = (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
+export type { Fetcher, ReverseGeocoder, ReverseGeocodeResult }
 
 const PI = Math.PI
 const A = 6378245.0

@@ -1,3 +1,5 @@
+import type { GeocodeConfig, GeocodeProvider } from './types'
+
 /** 语言可配置，默认中文 */
 export const DEFAULT_LANGUAGE = 'zh-CN'
 
@@ -25,6 +27,25 @@ export function normalizeTimezone(value: unknown): string {
     return raw
   }
   return DEFAULT_TIMEZONE
+}
+
+/** 地图服务商选项；值用 GeocodeProvider，标签随界面语言翻译 */
+export const GEOCODE_PROVIDERS: Array<{ label: string; value: GeocodeProvider }> = [
+  { label: '天地图', value: 'tianditu' },
+  { label: '腾讯地图', value: 'tencent' },
+  { label: '高德地图', value: 'amap' },
+]
+
+/** 默认位置服务：天地图，未填 Key 时回退到网关兜底配置 */
+export const DEFAULT_GEOCODE: GeocodeConfig = { provider: 'tianditu', key: '' }
+
+/** 把任意输入收敛到合法的地图服务商；非法或缺省回退天地图 */
+export function normalizeGeocodeProvider(value: unknown): GeocodeProvider {
+  const raw = String(value ?? '').trim()
+  if ((GEOCODE_PROVIDERS as Array<{ value: string }>).some((o) => o.value === raw)) {
+    return raw as GeocodeProvider
+  }
+  return DEFAULT_GEOCODE.provider
 }
 
 export const SUPPORTED_LANGUAGES = ['zh-CN', 'en-US', 'ja-JP'] as const

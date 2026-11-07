@@ -2,8 +2,9 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
-import type { ReverseGeocoder } from './geocode/tiandituReverse'
+import type { ClientMessage, GeocodeInfo, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
+import type { ReverseGeocoder } from './geocode/types'
+import { createGeocodeAdapter } from './geocode'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -27,8 +28,8 @@ export interface VoiceSessionDeps {
   send: (event: ServerEvent) => void
   sendAudio: (bytes: Uint8Array) => void
   asrEndpointMs: number
-  /** 天地图逆地理编码（配置了 tk 才有）；缺省不启用，位置工具退回客户端地址 */
-  reverseGeocoder?: ReverseGeocoder
+  /** 网关兜底的天地图 tk（TIANDITU_TK）：客户端未上报 geocode 时仍可用天地图，缺省空 */
+  tiandituTk?: string
 }
 
 export class VoiceSessionService {
@@ -85,7 +86,16 @@ export class VoiceSessionService {
   private finalizeChain: Promise<void> = Promise.resolve()
 
   constructor(private readonly deps: VoiceSessionDeps) {
-    this.reverseGeocoder = deps.reverseGeocoder
+    this.reverseGeocoder = undefined
+  }
+
+  /** 按客户端上报（或网关兜底）的配置构造逆地理编码函数；都没配则返回 null。 */
+  private buildGeocode(geocode?: GeocodeInfo): ReverseGeocoder | undefined {
+    if (geocode?.key) return createGeocodeAdapter(geocode) ?? undefined
+    if (this.deps.tiandituTk) {
+      return createGeocodeAdapter({ provider: 'tianditu', key: this.deps.tiandituTk }) ?? undefined
+    }
+    return undefined
   }
 
   handleText(raw: string): void {
@@ -99,6 +109,8 @@ export class VoiceSessionService {
     switch (msg.type) {
       case 'session.start':
         this.location = msg.location ?? null
+        // 逆地理编码：优先用客户端上报的 geocode 配置；没上报则退回网关兜底天地图 tk
+        this.reverseGeocoder = this.buildGeocode(msg.geocode)
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, this.reverseGeocoder)
         break
       case 'session.location':
