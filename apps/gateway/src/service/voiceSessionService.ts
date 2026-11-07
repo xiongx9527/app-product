@@ -3,6 +3,7 @@ import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
 import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
+import type { ReverseGeocoder } from './geocode/tiandituReverse'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -17,7 +18,8 @@ export interface VoiceSessionDeps {
   agentFactory: (
     lang: Lang,
     timezone?: string,
-    locationProvider?: () => LocationInfo | null
+    locationProvider?: () => LocationInfo | null,
+    reverseGeocoder?: ReverseGeocoder
   ) => AgentService
   asr: AsrProvider
   tts: TtsProvider
@@ -25,6 +27,8 @@ export interface VoiceSessionDeps {
   send: (event: ServerEvent) => void
   sendAudio: (bytes: Uint8Array) => void
   asrEndpointMs: number
+  /** 天地图逆地理编码（配置了 tk 才有）；缺省不启用，位置工具退回客户端地址 */
+  reverseGeocoder?: ReverseGeocoder
 }
 
 export class VoiceSessionService {
@@ -38,6 +42,8 @@ export class VoiceSessionService {
   private timezone = 'Asia/Shanghai'
   /** 设备最近一次上报的位置；位置类工具实时读取它 */
   private location: LocationInfo | null = null
+  /** 天地图逆地理编码（配置了 tk 才有），把经纬度翻成中文地址 */
+  private reverseGeocoder: ReverseGeocoder | undefined = undefined
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
@@ -78,7 +84,9 @@ export class VoiceSessionService {
   /** 定稿串行链：多个 endpoint 定时器重叠时逐句处理，不丢句也不抢同一段缓冲。 */
   private finalizeChain: Promise<void> = Promise.resolve()
 
-  constructor(private readonly deps: VoiceSessionDeps) {}
+  constructor(private readonly deps: VoiceSessionDeps) {
+    this.reverseGeocoder = deps.reverseGeocoder
+  }
 
   handleText(raw: string): void {
     let msg: ClientMessage
@@ -91,7 +99,7 @@ export class VoiceSessionService {
     switch (msg.type) {
       case 'session.start':
         this.location = msg.location ?? null
-        void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode)
+        void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, this.reverseGeocoder)
         break
       case 'session.location':
         // 连接后或位置变化时刷新最新位置，不影响其它会话状态
@@ -377,11 +385,13 @@ export class VoiceSessionService {
     _sessionId: string,
     lang: Lang,
     timezone?: string,
-    mode: 'wake' | 'dialog' = 'dialog'
+    mode: 'wake' | 'dialog' = 'dialog',
+    reverseGeocoder?: ReverseGeocoder
   ): Promise<void> {
     this.lang = lang
     // 用户没带时区或带的是非法值就退回东 8 区
     this.timezone = timezone?.trim() || 'Asia/Shanghai'
+    this.reverseGeocoder = reverseGeocoder
     this.mode = mode
     this.active = true
     // 新会话作废旧会话的在途回调与排队
@@ -400,7 +410,9 @@ export class VoiceSessionService {
     this.vad.reset()
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
     this.agent =
-      mode === 'wake' ? null : this.deps.agentFactory(lang, this.timezone, () => this.getLocation())
+      mode === 'wake'
+        ? null
+        : this.deps.agentFactory(lang, this.timezone, () => this.getLocation(), this.reverseGeocoder)
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }
 

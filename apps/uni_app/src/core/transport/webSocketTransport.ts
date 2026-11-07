@@ -1,6 +1,13 @@
 import { appConfig } from '@/core/config'
 import type { AssistantTransport, ServerEvent, SessionMode } from './types'
 
+/** 客户端上报给网关的位置快照（经纬度必填，address 为反向地理编码结果）。 */
+interface LocationSnapshot {
+  latitude: number
+  longitude: number
+  address?: string
+}
+
 /** 网关默认 WebSocket 地址：H5 桌面调试直连本机；可用 VITE_GATEWAY_WS_URL 覆盖（如模拟器用 10.0.2.2）。 */
 function resolveGatewayUrl(): string {
   const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
@@ -17,6 +24,8 @@ export class WebSocketTransport implements AssistantTransport {
   private readonly audioListeners = new Set<(chunk: ArrayBuffer) => void>()
   private readonly url: string
   private readonly lang: 'zh-CN'
+  /** 最近一次获取到的设备位置，连接时随 session.start 上报，之后由 session.location 刷新 */
+  private lastLocation: LocationSnapshot | null = null
   private sessionId = ''
   private pendingMode: SessionMode = 'dialog'
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -49,6 +58,8 @@ export class WebSocketTransport implements AssistantTransport {
 
       ws.onopen = () => {
         this.sendStart(this.pendingMode)
+        // 连接建立后异步取设备位置并上报（不阻塞会话开始）
+        void this.fetchAndSendLocation()
         resolve()
       }
       ws.onerror = () => {
@@ -120,7 +131,41 @@ export class WebSocketTransport implements AssistantTransport {
       sessionId: this.sessionId,
       lang: this.lang,
       timezone: appConfig.timezone,
+      location: this.lastLocation ?? undefined,
       mode,
+    })
+  }
+
+  /** 取设备位置并上报；取不到（未授权/无 GPS/非 App 端）时静默跳过，不阻断会话。 */
+  private async fetchAndSendLocation(): Promise<void> {
+    const loc = await this.getDeviceLocation()
+    if (!loc) return
+    this.lastLocation = loc
+    this.sendJson({
+      type: 'session.location',
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      address: loc.address,
+    })
+  }
+
+  private getDeviceLocation(): Promise<LocationSnapshot | null> {
+    return new Promise((resolve) => {
+      if (typeof uni === 'undefined' || typeof uni.getLocation !== 'function') {
+        resolve(null)
+        return
+      }
+      uni.getLocation({
+        type: 'gcj02',
+        geocode: true,
+        success: (res) =>
+          resolve({
+            latitude: res.latitude,
+            longitude: res.longitude,
+            address: typeof res.address === 'string' ? res.address : undefined,
+          }),
+        fail: () => resolve(null),
+      })
     })
   }
 

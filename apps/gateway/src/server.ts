@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { WebSocketServer } from 'ws'
 import { loadConfig } from './config'

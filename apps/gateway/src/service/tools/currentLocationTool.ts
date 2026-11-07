@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { Lang, LocationInfo } from '../../protocol'
+import type { ReverseGeocoder } from '../geocode/tiandituReverse'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const LOCATION_TOOL_NAME = 'get_current_location'
@@ -42,14 +43,37 @@ const DESCRIPTIONS: Record<string, string> = {
 
 /**
  * 创建「获取当前位置」工具；无需入参，位置来自客户端上报、由 locationProvider 实时读取。
+ * 若提供 reverseGeocoder（已配置天地图 tk），则用它把经纬度翻成更准的中文地址，
+ * 失败时退回客户端自带地址；未配置时直接用客户端地址。
  * 返回 AgentScope 的 Tool 描述（name / description / inputSchema / call）。
  */
-export function createCurrentLocationTool(lang: Lang | string, locationProvider: LocationProvider) {
+export function createCurrentLocationTool(
+  lang: Lang | string,
+  locationProvider: LocationProvider,
+  reverseGeocoder?: ReverseGeocoder
+) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   return {
     name: LOCATION_TOOL_NAME,
     description: DESCRIPTIONS[prefix] ?? DESCRIPTIONS.zh,
     inputSchema: z.object({}),
-    call: () => formatLocation(lang, locationProvider()),
+    call: async (): Promise<string> => {
+      const loc = locationProvider()
+      if (!loc || typeof loc.latitude !== 'number' || typeof loc.longitude !== 'number') {
+        return formatLocation(lang, null)
+      }
+      // 有天地图 tk 时优先用服务端逆地理编码补全地址，更准且跨端一致
+      if (reverseGeocoder) {
+        try {
+          const rev = await reverseGeocoder(loc.latitude, loc.longitude)
+          if (rev?.formattedAddress) {
+            return formatLocation(lang, { ...loc, address: rev.formattedAddress })
+          }
+        } catch {
+          /* 退回客户端地址 */
+        }
+      }
+      return formatLocation(lang, loc)
+    },
   }
 }

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@agentscope-ai/agentscope": "^0.0.15",
+    "dotenv": "^18.0.9",
     "drizzle-orm": "1.0.0-rc.5",
     "swagger-ui-dist": "^5.34.1",
     "ws": "^8.18.0"

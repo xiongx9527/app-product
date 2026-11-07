@@ -3,6 +3,7 @@ import { createAgentService } from '../service/agentService'
 import { createAsr } from '../asr'
 import { createTts } from '../tts'
 import { VoiceSessionService } from '../service/voiceSessionService'
+import { createTiandituReverseGeocoder } from '../service/geocode/tiandituReverse'
 import type { GatewayConfig } from '../config'
 import type { DataService } from '../service/dataService'
 import type { ServerEvent } from '../protocol'
@@ -18,9 +19,15 @@ export interface VoiceControllerDeps {
  */
 export function createVoiceConnection(ws: WebSocket, deps: VoiceControllerDeps): () => void {
   const { config, data } = deps
-  const session = new VoiceSessionService({
+  const reverseGeocoder = createTiandituReverseGeocoder(config.tiandituTk)
+  const session: VoiceSessionService = new VoiceSessionService({
     agentFactory: (lang, timezone) =>
-      createAgentService({ ...config, timeZone: timezone }, lang, () => session.getLocation()),
+      createAgentService(
+        { ...config, timeZone: timezone },
+        lang,
+        () => session.getLocation(),
+        reverseGeocoder
+      ),
     asr: createAsr(config),
     tts: createTts(config),
     data,
@@ -31,6 +38,7 @@ export function createVoiceConnection(ws: WebSocket, deps: VoiceControllerDeps):
       if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from(bytes))
     },
     asrEndpointMs: config.asr.endpointMs,
+    reverseGeocoder,
   })
 
   let alive = true
