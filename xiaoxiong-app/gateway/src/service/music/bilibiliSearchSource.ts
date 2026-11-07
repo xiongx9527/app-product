@@ -4,13 +4,34 @@ import {
   type MusicSource,
   type ResolvedTrack,
 } from './types'
-import { extractBilibiliAudio, getWbiKey, wbiSign } from './bilibiliAudio'
+import { extractBilibiliAudio, extractBvidsFromHtml, getWbiKey, wbiSign } from './bilibiliAudio'
+
+/**
+ * 百度搜索兜底：B 站原生搜索对部分歌曲（生僻歌名/特殊字符/新歌）召回不足，
+ * 用百度 web 搜索扩大覆盖面。注意百度对服务端请求会频繁弹反爬验证页、且时好时坏，
+ * 所以这里百度**只负责找 B 站视频页的 BVID**，真正的音轨仍从 B 站抽（稳定、带防盗链由网关代理），
+ * 且抽到的标题一律再过一遍 titleMatchesKeyword 严格校验——绝不因为走了百度就放松匹配，
+ * 否则又会回到「播放的不是我要的歌曲」。百度搜不到（验证页/无 B 站链接）就安静回退，
+ * 由上层统一告知「没找到」，绝不退回随机电台。
+ */
+const BAIDU_SEARCH = 'https://www.baidu.com/s'
+const BAIDU_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'zh-CN,zh;q=0.9',
+}
+/** 百度很可能弹验证页或限流，别让它卡住整轮播放。 */
+const BAIDU_TIMEOUT_MS = 6000
 
 /**
  * B 站点歌兜底源（免费、无需登录）：
  * 用 B 站自带的搜索接口（WBI 签名）按「歌手 歌名」检索视频，再抽取音轨直链。
- * 之所以不抓百度：百度对服务端请求会频繁弹反爬验证页（1438 字节的「验证」页），
+ * 之所以不抓百度直接放歌：百度对服务端请求会频繁弹反爬验证页（1438 字节的「验证」页），
  * 时好时坏，作为点歌兜底不可靠；B 站搜索返回结构化 bvid+标题，稳定可用。
+ * 但 B 站原生搜索对部分歌曲召回不足，故新增「百度搜索兜底」：B 站搜不到时改用百度 web 搜索
+ * 找回 B 站视频页的 BVID（只找 B 站链接、不做播放），再走 B 站抽音轨，且标题仍过严格匹配，
+ * 既扩大覆盖又不放松「歌手、歌名要一样」的约束，杜绝乱播放。
  * 直链带防盗链，由网关 /music/stream 代理转发给客户端。
  * 解析逻辑用注入的 fetcher 单测覆盖；线上可用性属尽力而为。
  */
@@ -22,7 +43,7 @@ const BILI_HEADERS = {
 }
 
 const nativeFetch: MusicFetcher = (url, init) =>
-  fetch(url, { method: init?.method, headers: init?.headers, body: init?.body }) as unknown as ReturnType<MusicFetcher>
+  fetch(url, init as RequestInit) as unknown as ReturnType<MusicFetcher>
 
 /** 相关性加分词：更像「原唱/官方正片」的视频优先。 */
 const PREFER = ['官方', 'official', 'mv', 'hd', '无损', '原唱', '完整版', '音频', 'opus', '现场版']
@@ -147,17 +168,64 @@ export function createBilibiliSearchSource(
     throw new Error(`B 站未找到「${keyword}」可播放的音轨`)
   }
 
+  /** 百度 web 搜索拿到 B 站视频页的 BVID 列表；失败（验证页/限流/无链接）返回空。 */
+  async function searchBaiduBvids(keyword: string): Promise<string[]> {
+    try {
+      const q = encodeURIComponent(`${keyword} bilibili`)
+      const resp = await fetcher(`${BAIDU_SEARCH}?wd=${q}`, {
+        headers: BAIDU_HEADERS,
+        // AbortSignal.timeout 在较旧 Node 可能未实现，用 try 包住避免报错
+        ...(typeof AbortSignal !== 'undefined' && 'timeout' in AbortSignal
+          ? { signal: AbortSignal.timeout(BAIDU_TIMEOUT_MS) }
+          : {}),
+      })
+      if (!resp.ok) return []
+      const html = await resp.text()
+      // 验证页/无结果页里没有 bilibili 直链，extractBvidsFromHtml 自然返回空
+      return extractBvidsFromHtml(html)
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * 百度兜底：拿 BVID 后逐个抽 B 站音轨，标题必须再过严格匹配，
+   * 命中才返回；全失败/百度无果抛错，交上层统一告知「没找到」。
+   */
+  async function baiduResolve(keyword: string): Promise<ResolvedTrack> {
+    const bvids = await searchBaiduBvids(keyword)
+    for (const bvid of bvids) {
+      try {
+        const audio = await extractBilibiliAudio(bvid, fetcher)
+        // 关键：百度找回来的视频也得通过「歌手、歌名要一样」校验，杜绝乱播
+        if (audio.url && audio.title && titleMatchesKeyword(audio.title, keyword)) {
+          return { url: audio.url, title: audio.title, channel: 'bilibili' }
+        }
+      } catch {
+        // 该视频抽不到音轨，试下一个
+      }
+    }
+    throw new Error(`B 站/百度均未找到「${keyword}」可播放的音轨`)
+  }
+
   async function doResolve(genre?: string): Promise<ResolvedTrack> {
     const keyword = genreToKeyword(genre)
     lastKeyword = keyword
-    ranked = await searchOrdered(keyword, fetcher)
+    // 先清空上一批候选：一旦本轮回填失败，ranked 保持空，保证 next 同关键词会重新检索而非误用旧候选
+    ranked = []
     cursor = -1
-    return pickNext(keyword)
+    try {
+      ranked = await searchOrdered(keyword, fetcher)
+      return await pickNext(keyword)
+    } catch {
+      // B 站原生搜索无可用音轨（召回不足/抽不到/网络抖动）→ 再用百度兜底
+      return baiduResolve(keyword)
+    }
   }
 
   async function doNext(genre?: string): Promise<ResolvedTrack> {
     const keyword = genre ? genreToKeyword(genre) : lastKeyword
-    // 换了歌、或没有候选：重新搜索；当前这批全抽不到也回退重新搜索
+    // 换了歌、或没有候选：重新搜索（含百度兜底）；当前这批全抽不到也回退重新搜索
     if (keyword !== lastKeyword || ranked.length === 0) return doResolve(genre)
     try {
       return await pickNext(keyword)

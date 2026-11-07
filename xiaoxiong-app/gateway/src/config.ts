@@ -120,7 +120,7 @@ export function loadConfig(): GatewayConfig {
     llm: {
       provider: oneOf(process.env.LLM_PROVIDER, 'stub'),
       baseUrl: process.env.LLM_BASE_URL ?? 'http://192.168.1.100:11434',
-      model: process.env.LLM_MODEL ?? 'qwen2.5',
+      model: process.env.LLM_MODEL ?? 'gpt-oss:120b-cloud',
       apiKey: process.env.LLM_API_KEY ?? '',
       params: paramsFromEnv('LLM_PARAMS'),
     },

@@ -168,6 +168,80 @@ describe('B 站搜索兜底源', () => {
     const track = await source.resolve('周杰伦 稻香')
     expect(track.url).toContain('BV0000000001')
   })
+
+  /**
+   * 百度兜底：B 站原生搜索召回不足（标题对不上/无结果）时，用百度 web 搜索找回 B 站视频页，
+   * 抽音轨并**再过严格匹配**，命中才返回。这里 fake 让 search/all 返回不相干标题（B 站搜不到），
+   * baidu.com 返回含 B 站直链的 HTML，view/playurl 按 bvid 回贴正确标题与直链。
+   */
+  it('B 站搜不到时百度兜底找到（且仍过严格匹配）', async () => {
+    const BaiduBV = 'BV9999999999'
+    const fake: MusicFetcher = async (url) => {
+      if (url.includes('search/all')) {
+        // B 站只召回不相干视频 → pickNext 必抛错，触发百度兜底
+        const result = [{ bvid: 'BV0000000000', title: '周杰伦演唱会精选', author: 'x' }]
+        return { ok: true, status: 200, json: async () => ({ data: { result: [{ type: 'video', result }] } }), text: async () => '' }
+      }
+      if (url.includes('www.baidu.com')) {
+        const html = `mu="https://www.bilibili.com/video/${BaiduBV}/" <a href="https://www.bilibili.com/video/${BaiduBV}">x</a>`
+        return { ok: true, status: 200, json: async () => ({}), text: async () => html }
+      }
+      if (url.includes('x/web-interface/nav')) {
+        return { ok: true, status: 200, json: async () => ({ data: { wbi_img: { img_url: 'i', sub_url: 's' } } }), text: async () => '' }
+      }
+      if (url.includes('wbi/view')) {
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 1, title: '《稻香》周杰伦 完整版' } }), text: async () => '' }
+      }
+      // wbi/playurl
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: `https://bili/${BaiduBV}.m4s` }] } } }), text: async () => '' }
+    }
+    const source = createBilibiliSearchSource({}, fake)
+    const track = await source.resolve('周杰伦 稻香')
+    expect(track.url).toContain(BaiduBV)
+    expect(track.title).toContain('稻香')
+  })
+
+  it('百度找回来的视频标题对不上时仍不算命中，最终报没找到', async () => {
+    const BaiduBV = 'BV8888888888'
+    const fake: MusicFetcher = async (url) => {
+      if (url.includes('search/all')) {
+        // B 站无命中
+        return { ok: true, status: 200, json: async () => ({ data: { result: [] } }), text: async () => '' }
+      }
+      if (url.includes('www.baidu.com')) {
+        const html = `mu="https://www.bilibili.com/video/${BaiduBV}/"`
+        return { ok: true, status: 200, json: async () => ({}), text: async () => html }
+      }
+      if (url.includes('x/web-interface/nav')) {
+        return { ok: true, status: 200, json: async () => ({ data: { wbi_img: { img_url: 'i', sub_url: 's' } } }), text: async () => '' }
+      }
+      if (url.includes('wbi/view')) {
+        // 百度找回的却是无关视频，严格匹配应拒绝
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 1, title: ' unrelated video about cats' } }), text: async () => '' }
+      }
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: 'x' }] } } }), text: async () => '' }
+    }
+    const source = createBilibiliSearchSource({}, fake)
+    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow()
+  })
+
+  it('百度也搜不到（验证页/无 B 站链接）时安静回退报没找到', async () => {
+    const fake: MusicFetcher = async (url) => {
+      if (url.includes('search/all')) {
+        return { ok: true, status: 200, json: async () => ({ data: { result: [] } }), text: async () => '' }
+      }
+      if (url.includes('www.baidu.com')) {
+        // 验证页，不含任何 bilibili 直链
+        return { ok: true, status: 200, json: async () => ({}), text: async () => '<html>验证页面 请完成验证</html>' }
+      }
+      if (url.includes('x/web-interface/nav')) {
+        return { ok: true, status: 200, json: async () => ({ data: { wbi_img: { img_url: 'i', sub_url: 's' } } }), text: async () => '' }
+      }
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { dash: { audio: [] } } }), text: async () => '' }
+    }
+    const source = createBilibiliSearchSource({}, fake)
+    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow()
+  })
 })
 
 describe('titleMatchesKeyword（歌手、歌名要一样，杜绝乱播放）', () => {
