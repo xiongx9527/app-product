@@ -1,5 +1,8 @@
 import 'dotenv/config'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { loadConfig } from './config'
 import { createDb } from './db/client'
@@ -8,6 +11,7 @@ import { createApiController } from './controller/apiController'
 import { createDocsController } from './controller/docsController'
 import { handleMusicStream } from './controller/musicStreamController'
 import { createVoiceConnection } from './controller/voiceController'
+import { buildHealth } from './service/health'
 import { encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
 import type { GatewayConfig } from './config'
 
@@ -33,6 +37,18 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
     try {
+      // 健康检查：汇总 LLM / ASR / TTS 就绪状态（是否真接入引擎 + 地址是否可达）。
+      // 允许跨域，便于 H5（与网关不同端口）直接拉取展示；不做鉴权——仅暴露能力状态，不含密钥。
+      if (url.pathname === '/api/health' || url.pathname === '/health') {
+        const report = await buildHealth(config)
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'access-control-allow-origin': '*',
+          'cache-control': 'no-store',
+        })
+        res.end(JSON.stringify({ ok: true, providers: report }))
+        return
+      }
       if (url.pathname.startsWith(config.apiBase)) {
         const raw =
           req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE'
@@ -94,6 +110,13 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
         await handleMusicStream(req, res, url.searchParams)
         return
       }
+      // 提示音：网关把「能力不可用」提示（网络 / ASR / TTS / LLM 未就绪）的本地录音
+      // 经 HTTP 下发给客户端，客户端从网关拉取播放（打包内文件作兜底）。仅放行白名单里的四个文件，
+      // 用 basename 校验 + 禁止 `..` 防目录穿越；允许跨域，便于 H5（与网关不同端口）直接加载。
+      if (url.pathname.startsWith('/static/cues/')) {
+        await serveCue(res, url.pathname)
+        return
+      }
       res.writeHead(404)
       res.end('not found')
     } catch (err) {
@@ -133,6 +156,42 @@ function parseBody(raw: string | undefined, config: GatewayConfig): unknown {
 function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(body))
+}
+
+const CUE_DIR = fileURLToPath(new URL('../static/cues', import.meta.url))
+const ALLOWED_CUES = new Set(['network-down', 'asr-down', 'tts-down', 'llm-down'])
+
+/** 仅放行白名单内的提示音文件；校验扩展名 + 禁止 `..`，杜绝目录穿越。 */
+async function serveCue(res: ServerResponse, pathname: string): Promise<void> {
+  const raw = pathname.slice('/static/cues/'.length).split('?')[0]
+  // 只允许 <name>.mp3 且 name 在白名单内；禁止路径分隔与 `..`，杜绝目录穿越。
+  if (
+    !raw.endsWith('.mp3') ||
+    raw.includes('/') ||
+    raw.includes('..')
+  ) {
+    res.writeHead(404)
+    res.end('not found')
+    return
+  }
+  const name = raw.slice(0, -4)
+  if (!ALLOWED_CUES.has(name)) {
+    res.writeHead(404)
+    res.end('not found')
+    return
+  }
+  try {
+    const data = await readFile(path.join(CUE_DIR, raw))
+    res.writeHead(200, {
+      'content-type': 'audio/mpeg',
+      'access-control-allow-origin': '*',
+      'cache-control': 'public, max-age=3600',
+    })
+    res.end(data)
+  } catch {
+    res.writeHead(404)
+    res.end('not found')
+  }
 }
 
 function readBody(req: IncomingMessage): Promise<string> {

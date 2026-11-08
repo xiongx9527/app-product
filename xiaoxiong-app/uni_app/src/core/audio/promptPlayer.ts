@@ -1,17 +1,64 @@
-export type PromptCue = 'greeting' | 'stillThere' | 'farewell'
+import { resolveGatewayHttpBase } from '@/core/transport'
+
+export type PromptCue =
+  | 'greeting'
+  | 'stillThere'
+  | 'farewell'
+  | 'gatewayDown'
+  | 'networkDown'
+  | 'asrDown'
+  | 'ttsDown'
+  | 'llmDown'
 
 const CUE_FILE: Record<PromptCue, string> = {
   greeting: 'greeting',
   stillThere: 'still-there',
   farewell: 'farewell',
+  gatewayDown: 'gateway-down',
+  networkDown: 'network-down',
+  asrDown: 'asr-down',
+  ttsDown: 'tts-down',
+  llmDown: 'llm-down',
+}
+
+/** 「能力不可用」提示由网关经 HTTP 下发（/static/cues/<file>.mp3），其余提示音走打包内的本地文件。
+ * 注意：gatewayDown 故意不在此列表——网关本身连不上时不可能从网关拉取，必须直接播打包内的本地文件。 */
+const GATEWAY_CUES: ReadonlyArray<PromptCue> = [
+  'networkDown',
+  'asrDown',
+  'ttsDown',
+  'llmDown',
+]
+
+function isGatewayCue(cue: PromptCue): boolean {
+  return GATEWAY_CUES.includes(cue)
+}
+
+/** 打包内的本地文件地址（App / H5 同路径），作为网关拉取失败时的兜底。 */
+function bundledCueUrl(cue: PromptCue): string {
+  return `/static/audio/${CUE_FILE[cue]}.mp3`
+}
+
+/** 提示音实际地址：网关类提示走网关 HTTP（与助手说话同链路、同音色），其余走本地打包。 */
+function cueUrl(cue: PromptCue): string {
+  if (isGatewayCue(cue)) {
+    return `${resolveGatewayHttpBase()}/static/cues/${CUE_FILE[cue]}.mp3`
+  }
+  return bundledCueUrl(cue)
 }
 
 /** 本地提示音经扬声器外放会被麦克风收回，这段时间内上行必须静音，否则会自激。
- *  数值按 static/audio 下 mp3 实测时长（1.22s / 1.42s / 3.14s）留一点尾音余量。 */
+ *  数值按 static/audio 下 mp3 实测时长（greeting 1.22s / still-there 1.42s / farewell 3.14s /
+ *  network-down 3.84s / asr-down 4.01s / tts-down 3.34s / llm-down 3.46s / gateway-down 3.84s）留一点尾音余量。 */
 const CUE_MUTE_MS: Record<PromptCue, number> = {
   greeting: 1400,
   stillThere: 1700,
   farewell: 3400,
+  gatewayDown: 4100,
+  networkDown: 4100,
+  asrDown: 4200,
+  ttsDown: 3600,
+  llmDown: 3700,
 }
 
 let cueMuteUntil = 0
@@ -38,17 +85,50 @@ export function playPromptCue(cue: PromptCue): void {
   // 不弹任何文字浮层：状态由页面 hint / 阶段胶囊表达，提示音只负责出声
 }
 
+/**
+ * 顺序播多条本地提示音（如唤醒后发现多个能力不可用，逐条告知）。
+ * 每条按各自时长留足静音窗口再播下一条，避免首尾叠音、自激或互相覆盖。
+ */
+export function playPromptCueSequence(cues: PromptCue[]): void {
+  let delay = 0
+  cues.forEach((cue) => {
+    setTimeout(() => playPromptCue(cue), delay)
+    // 累加前一条的静音窗口，下一条在前一条播完（含尾音余量）后才起播
+    delay += CUE_MUTE_MS[cue]
+  })
+}
+
 // #ifdef H5
-/** H5 优先播放本地 mp3（与 App 同音色），被浏览器拦截或缺失时回退到合成音。 */
+/** H5 优先播放提示音；网关类提示从网关拉取，失败回退打包内文件，再不行才用合成音兜底。 */
 function playHtmlAudioCue(cue: PromptCue): void {
   try {
-    const audio = new Audio(`/static/audio/${CUE_FILE[cue]}.mp3`)
+    const audio = new Audio(cueUrl(cue))
     const result = audio.play()
     if (result && typeof result.catch === 'function') {
-      result.catch(() => playWebAudioCue(cue))
+      result.catch(() => {
+        if (isGatewayCue(cue) && cueUrl(cue) !== bundledCueUrl(cue)) {
+          // 网关拉取失败：回退到打包内本地文件
+          try {
+            const fallback = new Audio(bundledCueUrl(cue))
+            void fallback.play()
+          } catch {
+            playWebAudioCue(cue)
+          }
+        } else {
+          playWebAudioCue(cue)
+        }
+      })
     }
   } catch {
-    playWebAudioCue(cue)
+    if (isGatewayCue(cue)) {
+      try {
+        void new Audio(bundledCueUrl(cue)).play()
+      } catch {
+        /* 忽略 */
+      }
+    } else {
+      playWebAudioCue(cue)
+    }
   }
 }
 
@@ -90,10 +170,33 @@ function playWebAudioCue(cue: PromptCue): void {
 // #endif
 
 // #ifndef H5
+/** App 端播放提示音：网关类提示从网关 HTTP 拉取，失败（网关挂了 / 拉取异常）回退打包内文件。 */
 function playAppCue(cue: PromptCue): void {
+  const play = (src: string): void => {
+    try {
+      const audio = uni.createInnerAudioContext()
+      audio.src = src
+      audio.onError(() => {
+        audio.destroy()
+        // 网关拉取失败：状态类提示回退到打包内本地文件，仍不阻断状态机
+        if (isGatewayCue(cue) && src !== bundledCueUrl(cue)) {
+          playBundledCue(cue)
+        }
+      })
+      audio.onEnded(() => audio.destroy())
+      audio.play()
+    } catch {
+      if (isGatewayCue(cue)) playBundledCue(cue)
+    }
+  }
+  play(cueUrl(cue))
+}
+
+/** 兜底：直接播打包内的本地提示文件。 */
+function playBundledCue(cue: PromptCue): void {
   try {
     const audio = uni.createInnerAudioContext()
-    audio.src = `/static/audio/${CUE_FILE[cue]}.mp3`
+    audio.src = bundledCueUrl(cue)
     audio.onEnded(() => audio.destroy())
     audio.onError(() => audio.destroy())
     audio.play()

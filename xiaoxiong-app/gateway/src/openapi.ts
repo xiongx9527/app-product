@@ -13,7 +13,34 @@ export const openApiSpec = {
   servers: [{ url: '/' }],
   paths: {
     '/api/health': {
-      get: { summary: '健康检查', responses: { '200': { description: 'ok' } } },
+      get: {
+        summary: '能力健康检查：汇总 LLM / ASR / TTS 就绪状态',
+        responses: {
+          '200': {
+            description:
+              '返回三类能力是否真接入真实引擎（configured）及地址是否可达（reachable）；stub 表示仍是占位桩、功能不可用',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    ok: { type: 'boolean' },
+                    providers: {
+                      type: 'object',
+                      properties: {
+                        asr: { $ref: '#/components/schemas/ProviderStatus' },
+                        llm: { $ref: '#/components/schemas/ProviderStatus' },
+                        tts: { $ref: '#/components/schemas/ProviderStatus' },
+                        network: { $ref: '#/components/schemas/NetworkStatus' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
     },
     '/api/sessions': {
       get: {
@@ -100,6 +127,28 @@ export const openApiSpec = {
           '206': { description: '按 Range 返回的分段内容' },
           '400': { description: 'url 缺失或域名不在白名单' },
           '502': { description: '上游拉取失败' },
+        },
+      },
+    },
+  },
+  components: {
+    schemas: {
+      ProviderStatus: {
+        type: 'object',
+        properties: {
+          provider: { type: 'string', description: '提供商名（whisper/edge/ollama/stub…）' },
+          configured: { type: 'boolean', description: '是否真接入真实引擎（stub 为 false）' },
+          reachable: { type: 'boolean', description: '真实引擎地址是否可达' },
+          message: { type: 'string', description: '人类可读状态' },
+          endpoint: { type: 'string', description: '真实引擎地址 host:port（stub 时无）' },
+        },
+      },
+      NetworkStatus: {
+        type: 'object',
+        properties: {
+          reachable: { type: 'boolean', description: '能否访问外网（百度 / B 站任一可达即视为可达）' },
+          message: { type: 'string', description: '人类可读状态' },
+          host: { type: 'string', description: '成功连通的外网主机 host:port（不可达时无）' },
         },
       },
     },

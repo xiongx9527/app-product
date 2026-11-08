@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import type { Lang, ServerEvent } from '../../protocol'
+import { messages } from '../../i18n'
 import type { MusicSource } from '../music/types'
+import { isSpokenContentRequest } from '../music/types'
 
 /** 媒体指令：直接透传给客户端；客户端据此播放/停止/暂停/恢复/展示。 */
 export type MediaDirective = Extract<
@@ -16,8 +18,8 @@ export const RESUME_MUSIC_TOOL_NAME = 'resume_music'
 export const NEXT_MUSIC_TOOL_NAME = 'next_music'
 
 const DESCRIPTIONS: Record<string, string> = {
-  zh: '开始播放音乐。当用户想听歌、放点背景音乐、放点轻音乐/电子/爵士等，或刚唤醒后要放歌时调用。可传 genre 指定风格（如“轻音乐”“电子”“爵士”“流行”）。注意：仅用于「开始/重新播放」；已在播放时想换一首或换个风格，用 next_music。',
-  en: 'Start playing music. Call when the user wants to listen to music or some background music, optionally with a genre like "chill", "electronic", "jazz", "pop". Only use it to START playback; to switch tracks while already playing, use next_music.',
+  zh: '开始播放音乐或音频内容。当用户想听歌、放点背景音乐、放点轻音乐/电子/爵士等，或想听/看 评书、相声、有声书、戏曲、电视剧、电影、动画片、漫剧、话剧、纪录片、综艺、讲座、故事、比赛，或说「看电影/我想看西游记动画片/看电视」时调用。视频类内容（电视/电影/动画/综艺/比赛…）会从 B 站提取音频播放，不是只能放音乐——所以这类请求也要用本工具，不要回复「无法播放视频」。可传 genre 指定内容（如“轻音乐”“电子”“爵士”，或“刘兰芳 岳飞传 评书”“郭德纲 相声”“三国演义 电视剧”“流浪地球 电影”“西游记 动画片”）。注意：仅用于「开始/重新播放」；已在播放时想换一个或换风格，用 next_music。',
+  en: 'Start playing music or audio content. Call when the user wants to listen to music, background music, a genre like "chill"/"electronic"/"jazz"/"pop", or spoken content such as Chinese storytelling (pingshu), crosstalk (xiangsheng), audiobooks, opera, TV series, movies, cartoons, comic dramas, stage plays, documentaries, variety shows, lectures, stories or sports matches, or says "watch a movie / I want to watch the cartoon". Video content (TV/movie/animation/variety/sports…) is played by extracting its AUDIO track from Bilibili — it is NOT limited to music, so never reply "I cannot play video". Pass genre with the specific name (e.g. "Liu Lanfang Yue Fei Zhuan pingshu"). Only use it to START playback; to switch while already playing, use next_music.',
 }
 
 /**
@@ -34,7 +36,7 @@ export function createMusicTool(
     name: MUSIC_TOOL_NAME,
     description: DESCRIPTIONS[prefix] ?? DESCRIPTIONS.zh,
     inputSchema: z.object({
-      genre: z.string().optional().describe('风格，如 轻音乐/电子/爵士/流行'),
+      genre: z.string().optional().describe('内容，如 轻音乐/电子/爵士/流行，或 评书/相声/有声书/电视剧/电影/动画片/漫剧/话剧/纪录片/综艺/讲座/故事/比赛；视频类内容传作品名即可（如 流浪地球 电影、西游记 动画片）'),
     }),
     async call(args: { genre?: string }) {
       try {
@@ -46,8 +48,8 @@ export function createMusicTool(
       } catch {
         // 平台与百度都搜不到：明确告知，不播随机电台（避免乱播放）
         return prefix === 'en'
-          ? `Sorry, I couldn't find that song. Try another name or artist?`
-          : `没找到这首歌，换个名字或歌手试试？`
+          ? `Sorry, I couldn't find that. Try another name?`
+          : messages(lang).music.notFound(isSpokenContentRequest(args?.genre))
       }
     },
   }
@@ -111,8 +113,8 @@ export function createResumeMusicTool(lang: Lang | string, emit?: (m: MediaDirec
 }
 
 const NEXT_DESCRIPTIONS: Record<string, string> = {
-  zh: '已经在播放时换一首 / 换个风格。不传 genre 表示同类型换一首（电台换台、歌曲取下一条）；传 genre（如“爵士”“电子”“流行”）表示换成该风格。当用户说“换一首”“下一首”“换个风格”“来点别的”时调用。',
-  en: 'Switch to another track or style while music is already playing. Omit genre to switch within the same type; pass a genre like "jazz", "electronic", "pop" to change style. Call on "next song", "change style", etc.',
+  zh: '已经在播放时换一个 / 换个风格。不传 genre 表示同类型换一个（电台换台、歌曲取下一条）；传 genre（如“爵士”“电子”“流行”，或“郭德纲 相声”“流浪地球 电影”“西游记 动画片”）表示换成该内容。当用户说“换一首”“下一首”“换一段”“换个风格”“来点别的”“再看一个”时调用。视频类内容同样支持（提取音频播放）。',
+  en: 'Switch to another track or style while audio is already playing. Omit genre to switch within the same type; pass a genre like "jazz", "electronic", "pop" to change style. Call on "next", "change style", etc. Video content is supported too (audio extracted).',
 }
 
 /**
@@ -129,7 +131,7 @@ export function createNextMusicTool(
     name: NEXT_MUSIC_TOOL_NAME,
     description: NEXT_DESCRIPTIONS[prefix] ?? NEXT_DESCRIPTIONS.zh,
     inputSchema: z.object({
-      genre: z.string().optional().describe('新风格，如 爵士/电子/流行；不传则同类型换一首'),
+      genre: z.string().optional().describe('新内容，如 爵士/电子/流行，或 评书/相声/电视剧/电影/动画片/漫剧/话剧/比赛；不传则同类型换一个'),
     }),
     async call(args: { genre?: string }) {
       try {
@@ -141,8 +143,8 @@ export function createNextMusicTool(
       } catch {
         // 平台与百度都搜不到：明确告知，不播随机电台（避免乱播放）
         return prefix === 'en'
-          ? `Sorry, I couldn't find that song. Try another name or artist?`
-          : `没找到这首歌，换个名字或歌手试试？`
+          ? `Sorry, I couldn't find that. Try another name?`
+          : messages(lang).music.notFound(isSpokenContentRequest(args?.genre))
       }
     },
   }

@@ -1,5 +1,10 @@
-import { computed, onUnmounted, ref } from 'vue'
-import { playPromptCue, isPromptCuePlaying } from '@/core/audio/promptPlayer'
+import { computed, onUnmounted, ref, watch } from 'vue'
+import {
+  playPromptCue,
+  playPromptCueSequence,
+  isPromptCuePlaying,
+  type PromptCue,
+} from '@/core/audio/promptPlayer'
 import {
   playMusic,
   stopMusic,
@@ -27,6 +32,12 @@ import {
   type AssistantEffect,
 } from '@/core/assistant/types'
 import { createTransport, resolveGatewayHttpBase } from '@/core/transport'
+import {
+  useHealth,
+  toHealthItems,
+  type HealthItem,
+  type HealthStatus,
+} from '@/features/assistant/useHealth'
 import { toProxiedMusicUrl } from '@/core/audio/resolveMediaUrl'
 import type { ServerEvent, SessionMode } from '@/core/transport/types'
 import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
@@ -44,6 +55,16 @@ const PHASE_LABEL: Record<Phase, string> = {
   speaking: '正在播报…',
   done: '本轮完成',
 }
+
+/** 健康项 → 不可用提示音：连上时未就绪、以及定时检测到 ok→down 都用它选音 */
+const HEALTH_CUE: Record<HealthItem['key'], PromptCue> = {
+  llm: 'llmDown',
+  asr: 'asrDown',
+  tts: 'ttsDown',
+  network: 'networkDown',
+}
+/** 按对语音交互的影响排序：先说「听不见」，再说「念不出 / 答不了 / 上不了网」 */
+const HEALTH_PRIORITY: HealthItem['key'][] = ['asr', 'tts', 'llm', 'network']
 
 export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG) {
   const state = ref<AssistantState>('idle')
@@ -64,7 +85,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 歌词面板：网关下发 media.lyrics 后展示 */
   const lyrics = ref<{ title: string; artist?: string; lyrics: string } | null>(null)
 
-  const transport = createTransport()
+  /** 同一轮掉线自动重连（及手动重试）的次数上限；耗尽后停自动重连，改由页面「重试连接」按钮处理 */
+  const MAX_RETRY = 5
+
+  const transport = createTransport(MAX_RETRY)
 
   let t1Timer: ReturnType<typeof setTimeout> | null = null
   let t2Timer: ReturnType<typeof setTimeout> | null = null
@@ -97,8 +121,55 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   transport.onAudio((chunk) => playPcm(chunk, 24000))
   // 网关 WS 连接状态：让页面直接显示「已连/未连」，免去开 DevTools 看 101。
   const wsConnected = ref(transport.isConnected())
+  // 网关掉线播报：只念一次，避免重连抖动期间反复打扰；前提是开启了唤醒（助手处于启用状态）。
+  // 播的是打包内的 gateway-down.mp3（网关本身连不上，不可能从网关拉取；gatewayDown 不在 GATEWAY_CUES 列表，
+  // 直接走本地文件），断网也能出声、且不弹文字浮层。外网不通另走 networkDown 提示，二者区分开。
+  let gatewayDownAnnounced = false
+  function resetGatewayDownAnnounce(): void {
+    gatewayDownAnnounced = false
+  }
+  function announceGatewayDown(): void {
+    if (!enabled.value || gatewayDownAnnounced) return
+    gatewayDownAnnounced = true
+    playPromptCue('gatewayDown')
+  }
   transport.onStatusChange((connected) => {
     wsConnected.value = connected
+    if (connected) resetGatewayDownAnnounce()
+    else announceGatewayDown()
+  })
+  // 自动重连次数耗尽：不再静默，用本地语音提示「网关连不上」（断网也能出声），
+  // 并提示用户可手动点页面「重试连接」；重置播报标记以便这次能再念一次。
+  transport.onReconnectExhausted(() => {
+    if (!enabled.value) return
+    resetGatewayDownAnnounce()
+    announceGatewayDown()
+  })
+  /** 正在建连状态（含自动重连每次尝试）：用于连接状态胶囊显示「连接中…」，且不弹独立标签 */
+  const connecting = ref(false)
+  transport.onConnecting((value) => {
+    connecting.value = value
+  })
+  // 网关能力健康度（LLM / ASR / TTS / 外网）：连上后定时轮询
+  const { health, refreshHealth } = useHealth(wsConnected)
+  // 定时检测结果：只在某能力「ok → down」时念一次；down→down / down→ok / ok→ok 都静默。
+  // 前提是网关连通（断开时 useHealth 清空 health，不触发）。首次拿到报告 prev 为空、不念，
+  // 连上那一刻的未就绪能力由 speakCapabilityProblems() 负责播报，避免重复。
+  let prevHealthStatus: Partial<Record<HealthItem['key'], HealthStatus>> = {}
+  watch(health, (report) => {
+    if (!report) {
+      prevHealthStatus = {}
+      return
+    }
+    if (!wsConnected.value) return
+    const downKeys: HealthItem['key'][] = []
+    for (const item of toHealthItems(report)) {
+      if (prevHealthStatus[item.key] === 'ok' && item.status === 'down') downKeys.push(item.key)
+      prevHealthStatus[item.key] = item.status
+    }
+    if (!downKeys.length) return
+    const cues = HEALTH_PRIORITY.filter((k) => downKeys.includes(k)).map((k) => HEALTH_CUE[k])
+    if (cues.length) playPromptCueSequence(cues)
   })
 
   function handleServerEvent(event: ServerEvent): void {
@@ -348,6 +419,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 待唤醒：连网关（wake 模式，只做 ASR）并开启麦克风上行。 */
   async function enterWake(): Promise<void> {
     mode = 'wake'
+    // 每次开启唤醒重新武装掉线播报，让一次新的「开启」能重新提示一次
+    resetGatewayDownAnnounce()
     phase.value = 'idle'
     assistantBusy = false
     answerHasTts = false
@@ -355,12 +428,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 网关可能刚重启过，本地标志会过期；一律以传输层的真实连接状态为准
     if (transport.isConnected()) {
       transport.startSession('wake')
+      void speakCapabilityProblems()
       return
     }
     try {
       await transport.connect('wake')
+      void speakCapabilityProblems()
     } catch (err) {
       errorMessage.value = (err as Error).message
+      // 开启唤醒但首次就建连失败（网关一直不可达）：主动念一次「网络不通」
+      announceGatewayDown()
     }
   }
 
@@ -375,11 +452,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       await transport.connect('dialog')
     } catch (err) {
       errorMessage.value = (err as Error).message
+      // 唤醒后切到对话时建连失败，同样提示一次网络不通
+      announceGatewayDown()
     }
   }
 
   /** 关闭助手：停采集、关连接，并停掉音乐。 */
   function leaveWake(): void {
+    resetGatewayDownAnnounce()
     if (capturing) {
       stopCapture()
       capturing = false
@@ -420,6 +500,23 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     closingTimer = null
   }
 
+  /** 能力可用性播报：开启并连上网关后，检查 LLM / ASR / TTS / 外网，对未就绪的逐条念出来。
+   * 这样「唤醒不了」这类静默失效（ASR 仍是占位桩）会变成听得见的提示，而不是毫无反应。 */
+  async function speakCapabilityProblems(): Promise<void> {
+    let report = health.value
+    if (!report) {
+      await refreshHealth()
+      report = health.value
+    }
+    if (!report) return
+    const problems = toHealthItems(report).filter((i) => i.status !== 'ok')
+    if (!problems.length) return
+    const cues = HEALTH_PRIORITY.filter((k) => problems.some((p) => p.key === k)).map(
+      (k) => HEALTH_CUE[k]
+    )
+    if (cues.length) playPromptCueSequence(cues)
+  }
+
   function enable(): void {
     dispatch({ type: 'ENABLE' })
   }
@@ -430,6 +527,26 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   function interrupt(): void {
     dispatch({ type: 'CANCEL' })
+  }
+
+  /** 点中间圆球手动开始一轮：等同说「小熊小熊」唤醒，仅待唤醒(standby)态有效。 */
+  function wake(): void {
+    if (state.value !== 'standby') return
+    dispatch({ type: 'WAKE' })
+  }
+
+  /** 网关掉线后手动重连：沿用当前会话模式，立即清掉待执行的自动重连再建连。
+   * 前提是开启了唤醒（助手处于启用状态），否则无需重连。 */
+  async function retry(): Promise<void> {
+    if (!enabled.value || transport.isConnected() || connecting.value) return
+    // 重新武装掉线播报，连不上能再提示一次
+    resetGatewayDownAnnounce()
+    try {
+      await transport.connect(mode)
+    } catch (err) {
+      errorMessage.value = (err as Error).message
+      announceGatewayDown()
+    }
   }
 
   /** 客户端点「换一首 / 换个风格」：直接让网关解析下一首，绕开 LLM。 */
@@ -476,6 +593,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     wakeSupported,
     wakeProviderName,
     wsConnected,
+    connecting,
+    retry,
+    wake,
     enable,
     disable,
     interrupt,

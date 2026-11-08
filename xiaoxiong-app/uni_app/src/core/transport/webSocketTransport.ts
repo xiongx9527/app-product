@@ -50,6 +50,9 @@ export class WebSocketTransport implements AssistantTransport {
   /** 连接状态订阅：界面据此显示「网关已连 / 未连」，免去开 DevTools 看 WS。 */
   private readonly statusListeners = new Set<(connected: boolean) => void>()
   private connected = false
+  /** 是否正在建连（含自动重连的每次尝试）；界面据此在状态胶囊显示「连接中…」 */
+  private connecting = false
+  private readonly connectingListeners = new Set<(value: boolean) => void>()
   private readonly url: string
   private readonly lang: 'zh-CN'
   /** 构造时显式传入地址则固定使用；否则每次连接按 resolveGatewayUrl() 动态解析 */
@@ -68,18 +71,38 @@ export class WebSocketTransport implements AssistantTransport {
   private pendingMode: SessionMode = 'dialog'
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private intentionalClose = false
+  /** 自动重连已用次数；每次外部 connect / 成功建连清零，避免无限重试 */
+  private reconnectAttempts = 0
+  /** 自动重连上限：耗尽后停止自动重试，改由用户手动「重试连接」 */
+  private readonly maxReconnectAttempts: number
+  /** 自动重连是否已耗尽（连不上且不再自动重试）；外部 connect 成功会清零 */
+  private reconnectExhausted = false
+  /** 自动重连次数耗尽的订阅者 */
+  private readonly exhaustedListeners = new Set<() => void>()
 
-  constructor(url?: string, lang: 'zh-CN' = 'zh-CN') {
+  constructor(url?: string, lang: 'zh-CN' = 'zh-CN', maxReconnectAttempts = 5) {
     this.url = url ?? ''
     this.lang = lang
+    this.maxReconnectAttempts = maxReconnectAttempts
   }
 
   connect(mode: SessionMode = 'dialog'): Promise<void> {
+    // 外部主动连接（含用户手动重试）：重置重连预算与耗尽标记，从头开始算
+    this.reconnectAttempts = 0
+    this.reconnectExhausted = false
+    return this.connectInternal(mode)
+  }
+
+  /** 真正的建连逻辑；外部 connect 与内部自动重连共用，外部调用前已清零重连预算。 */
+  private connectInternal(mode: SessionMode): Promise<void> {
     if (typeof WebSocket === 'undefined') {
       return Promise.reject(new Error('当前环境不支持 WebSocket'))
     }
     this.pendingMode = mode
     this.intentionalClose = false
+    this.reconnectExhausted = false
+    // 建连开始：通知界面显示「连接中…」
+    this.setConnecting(true)
     // 外部主动连接时取消待执行的重连，避免同时建两条 socket
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -95,6 +118,9 @@ export class WebSocketTransport implements AssistantTransport {
       this.ws = ws
 
       ws.onopen = () => {
+        this.reconnectAttempts = 0
+        this.reconnectExhausted = false
+        this.setConnecting(false)
         this.setConnected(true)
         this.sendStart(this.pendingMode)
         // 不再建连即主动取位置：改为懒加载——只有用户问到位置/天气时，网关才会下发
@@ -102,14 +128,17 @@ export class WebSocketTransport implements AssistantTransport {
         resolve()
       }
       ws.onerror = () => {
+        // 不在此清 connecting：通常随后会触发 onclose，由 onclose 决定是否继续显示「连接中…」
         this.setConnected(false)
         reject(new Error(`无法连接网关：${this.activeUrl}`))
       }
       ws.onclose = () => {
         this.ws = null
         this.setConnected(false)
-        // 网关重启/网络抖动会让页面停留在旧状态，按当前模式自动重连并重新开会话
+        // 网关重启/网络抖动：继续自动重连，保持「连接中…」直到成功或耗尽，
+        // 避免每次重试间隙闪回「未连接」；耗尽后停止并交由状态胶囊提示手动重连。
         if (!this.intentionalClose) this.scheduleReconnect()
+        else this.setConnecting(false)
       }
       ws.onmessage = (ev: MessageEvent) => this.handleMessage(ev.data)
     })
@@ -117,12 +146,32 @@ export class WebSocketTransport implements AssistantTransport {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    // 已达自动重连上限：停止自动重试，结束「连接中…」，通知上层（由上层念「网关连不上」）
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.setConnecting(false)
+      this.markExhausted()
+      return
+    }
+    // 进入重连周期：立即显示「连接中…」，并在整个周期内保持，直到成功或耗尽
+    this.setConnecting(true)
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      void this.connect(this.pendingMode).catch(() => {
+      this.reconnectAttempts += 1
+      if (this.reconnectAttempts > this.maxReconnectAttempts) {
+        this.setConnecting(false)
+        this.markExhausted()
+        return
+      }
+      void this.connectInternal(this.pendingMode).catch(() => {
         // 连不上时 onclose 会继续安排下一次重试
       })
     }, 1000)
+  }
+
+  private markExhausted(): void {
+    if (this.reconnectExhausted) return
+    this.reconnectExhausted = true
+    this.exhaustedListeners.forEach((listener) => listener())
   }
 
   sendAudioChunk(chunk: ArrayBuffer): void {
@@ -150,6 +199,26 @@ export class WebSocketTransport implements AssistantTransport {
     this.statusListeners.forEach((listener) => listener(value))
   }
 
+  private setConnecting(value: boolean): void {
+    if (this.connecting === value) return
+    this.connecting = value
+    this.connectingListeners.forEach((listener) => listener(value))
+  }
+
+  /** 订阅「正在建连」状态变化（含自动重连每次尝试）；订阅时立即回灌一次当前值。 */
+  onConnecting(listener: (value: boolean) => void): () => void {
+    this.connectingListeners.add(listener)
+    listener(this.connecting)
+    return () => this.connectingListeners.delete(listener)
+  }
+
+  /** 订阅自动重连耗尽（连不上且不再自动重试）；订阅时若已耗尽立即回灌一次。 */
+  onReconnectExhausted(listener: () => void): () => void {
+    this.exhaustedListeners.add(listener)
+    if (this.reconnectExhausted) listener()
+    return () => this.exhaustedListeners.delete(listener)
+  }
+
   sendCancel(): void {
     this.sendJson({ type: 'session.cancel' })
   }
@@ -170,6 +239,7 @@ export class WebSocketTransport implements AssistantTransport {
     this.ws?.close()
     this.ws = null
     this.setConnected(false)
+    this.setConnecting(false)
   }
 
   onEvent(listener: (event: ServerEvent) => void): () => void {

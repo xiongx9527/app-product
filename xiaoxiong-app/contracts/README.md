@@ -145,6 +145,14 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 - 响应 `200`：`{ "ok": true }`
 
+#### GET /static/cues/<name>.mp3
+「能力不可用」提示音文件（网络 / ASR / TTS / LLM 未就绪时客户端从网关拉取播放）。
+
+- 允许的名字（白名单，其余 404）：`network-down` / `asr-down` / `tts-down` / `llm-down`。
+- 响应 `200`：`audio/mpeg`；带 `access-control-allow-origin: *`（供 H5 跨端口加载）与 `cache-control: public, max-age=3600`。
+- 路径含 `..` 或非白名单名字一律 `404`。
+- 客户端优先从网关拉取，拉取失败时回退到打包内的 `static/audio/<name>.mp3`。
+
 #### 会话记录 sessions
 
 - `POST /api/sessions`：新建一条会话记录。

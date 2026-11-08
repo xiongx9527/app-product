@@ -19,7 +19,11 @@ export interface Messages {
     paused: () => string
     resumed: () => string
     stopped: () => string
-    notFound: () => string
+    /**
+     * 没找到时的口播。spoken=true 表示用户要的是评书/相声这类内容而不是歌曲，
+     * 措辞不能叫「这首歌」——否则用户会以为系统把他的话当成了点歌。
+     */
+    notFound: (spoken?: boolean) => string
     /** 多候选时口播编号列表，让用户用语音选「第几首」或直接说歌名 */
     candidates: (items: readonly string[]) => string
     /** 让用户选择的引导语 */
@@ -73,7 +77,10 @@ const zhCN: Messages = {
     paused: () => '已暂停。',
     resumed: () => '继续播放。',
     stopped: () => '已停止播放。',
-    notFound: () => '没找到这首歌，换个名字或歌手试试？',
+    notFound: (spoken) =>
+      spoken
+        ? '没找到这段内容，换个名字试试？'
+        : '没找到这首歌，换个名字或歌手试试？',
     candidates: (items) =>
       `找到几首：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}首，${it}`).join('；')}。`,
     chooseHint: () => '你想听第几首，或者说出歌名？',

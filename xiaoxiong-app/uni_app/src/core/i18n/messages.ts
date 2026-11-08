@@ -9,6 +9,16 @@ const zhCN: Messages = {
 
   'conn.connected': '网关已连接',
   'conn.disconnected': '网关未连接',
+  'conn.connecting': '连接中…',
+
+  'health.checking': '能力检测中…',
+  'health.llm': 'LLM',
+  'health.asr': 'ASR',
+  'health.tts': 'TTS',
+  'health.network': '网络',
+  'health.ok': '正常',
+  'health.unconfigured': '未接入',
+  'health.unreachable': '不可达',
 
   'state.idle': '未开启',
   'state.standby': '待唤醒',
@@ -195,6 +205,16 @@ const enUS: Messages = {
 
   'conn.connected': 'Gateway connected',
   'conn.disconnected': 'Gateway disconnected',
+  'conn.connecting': 'Connecting…',
+
+  'health.checking': 'Checking capabilities…',
+  'health.llm': 'LLM',
+  'health.asr': 'ASR',
+  'health.tts': 'TTS',
+  'health.network': 'Network',
+  'health.ok': 'OK',
+  'health.unconfigured': 'Not set',
+  'health.unreachable': 'Unreachable',
 
   'state.idle': 'Off',
   'state.standby': 'Standby',

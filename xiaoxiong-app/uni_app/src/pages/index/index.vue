@@ -12,6 +12,7 @@ import {
   totalLabel,
 } from '@/core/audio/musicProgress'
 import { t } from '@/core/i18n'
+import { useHealth, toHealthItems } from '@/features/assistant/useHealth'
 
 const {
   state,
@@ -33,6 +34,9 @@ const {
   wakeSupported,
   wakeProviderName,
   wsConnected,
+  connecting,
+  retry,
+  wake,
   enable,
   disable,
   interrupt,
@@ -52,6 +56,11 @@ const {
   seekMusic,
   closeLyrics,
 } = useAssistant()
+
+// 网关能力健康度：连上 WS 后轮询 /api/health，把 LLM / ASR / TTS / 外网状态展示出来，
+// 静默失效（如 ASR 仍是占位桩）能直接被看到，而不是「唤醒没反应」却毫无提示。
+const { health, healthError } = useHealth(wsConnected)
+const healthItems = computed(() => (health.value ? toHealthItems(health.value) : []))
 
 const screen = ref<ScreenInfo>(readScreenInfo())
 
@@ -153,8 +162,14 @@ function onToggle(event: Event): void {
 }
 
 function onOrbTap(): void {
-  // 只负责开启/关闭；唤醒靠语音「小熊小熊」，不做手动唤醒
+  // 未开启时点圆球先开启；已在待唤醒时点圆球手动开始一轮（等同说「小熊小熊」）
   if (state.value === 'idle') enable()
+  else if (state.value === 'standby') wake()
+}
+
+// 网关未连上时，点状态胶囊即可手动重连（沿用开启唤醒时的会话模式），不另出独立标签
+function onConnTap(): void {
+  if (!wsConnected.value && enabled.value) retry()
 }
 </script>
 
@@ -171,9 +186,31 @@ function onOrbTap(): void {
       </view>
     </view>
 
-    <view class="conn" :class="wsConnected ? 'ok' : 'down'">
-      <view class="conn-dot" />
-      <text class="conn-text">{{ wsConnected ? t('conn.connected') : t('conn.disconnected') }}</text>
+    <view class="status-row">
+      <view
+        class="conn"
+        :class="wsConnected ? 'ok' : (connecting ? 'connecting' : 'down')"
+        @tap="onConnTap"
+      >
+        <view class="conn-dot" />
+        <text class="conn-text">{{ connecting ? t('conn.connecting') : (wsConnected ? t('conn.connected') : t('conn.disconnected')) }}</text>
+      </view>
+
+      <view v-if="wsConnected" class="health">
+        <view v-if="!health && !healthError" class="health-checking">{{ t('health.checking') }}</view>
+        <template v-else-if="health">
+          <view
+            v-for="item in healthItems"
+            :key="item.key"
+            class="health-item"
+            :class="item.status"
+          >
+            <view class="health-dot" />
+            <text class="health-label">{{ t(`health.${item.key}`) }}</text>
+          </view>
+        </template>
+        <view v-else class="health-checking">{{ t('health.checking') }}</view>
+      </view>
     </view>
 
     <view v-if="queueFullMsg" class="queue-full-banner">{{ queueFullMsg }}</view>
@@ -369,11 +406,18 @@ function onOrbTap(): void {
   background: rgba(108, 140, 255, 0.16);
 }
 
+.status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .conn {
   display: flex;
   align-items: center;
   gap: 8px;
-  align-self: flex-start;
   padding: 5px 12px;
   border-radius: 999px;
   font-size: 12px;
@@ -406,6 +450,84 @@ function onOrbTap(): void {
 .conn.down .conn-dot {
   background: #ff6b6b;
   box-shadow: 0 0 8px rgba(255, 100, 100, 0.6);
+}
+
+.conn.connecting {
+  color: #ffcf8a;
+  border-color: rgba(255, 207, 138, 0.4);
+  cursor: pointer;
+}
+
+.conn.connecting .conn-dot {
+  background: #ffcf8a;
+  box-shadow: 0 0 8px rgba(255, 207, 138, 0.6);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.health {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.health-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.health-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: #5cd6b2;
+}
+
+.health-item.ok {
+  color: #8ee0bd;
+  border-color: rgba(92, 214, 178, 0.35);
+}
+
+.health-item.warn {
+  color: #ffcf8a;
+  border-color: rgba(255, 207, 138, 0.4);
+}
+
+.health-item.warn .health-dot {
+  background: #ffcf8a;
+  box-shadow: 0 0 6px rgba(255, 207, 138, 0.6);
+}
+
+.health-item.down {
+  color: #ff9a9a;
+  border-color: rgba(255, 100, 100, 0.4);
+}
+
+.health-item.down .health-dot {
+  background: #ff6b6b;
+  box-shadow: 0 0 6px rgba(255, 100, 100, 0.6);
+}
+
+.health-checking {
+  font-size: 11px;
+  color: #8b91ab;
 }
 
 .stage {

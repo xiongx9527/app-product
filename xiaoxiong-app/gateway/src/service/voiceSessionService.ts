@@ -4,7 +4,7 @@ import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
 import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
 import { createMusicSource, type MusicSource } from './music'
-import { genreToKeyword, isGenericPlayPhrase } from './music/types'
+import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest } from './music/types'
 import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
 import {
   searchCandidates,
@@ -230,22 +230,42 @@ export class VoiceSessionService {
    * 多于 1 首 → 口播编号列表并挂起待选；正好 1 首 → 直接播；0 首 → 交回调用方按原逻辑处理。
    * 返回 true 表示本次已处理（列表已给或已播），调用方不必再 resolve。
    */
-  private async offerCandidates(text: string): Promise<boolean> {
+  /**
+   * 点歌信息不足时给候选列表让用户选；forceList（推荐意图）时即使只有 1 首也只列不给播，
+   * 且没具体歌手/风格时不擅自乱播、改口播引导，保证「推荐」永远只出选项不直接播放。
+   * 多于 1 首 → 口播编号列表并挂起待选；正好 1 首且非强制列表 → 直接播；0 首 → 交回调用方。
+   * 返回 true 表示本次已处理（列表已给或已播），调用方不必再 resolve。
+   */
+  private async offerCandidates(text: string, forceList = false): Promise<boolean> {
     const genre = genreToKeyword(text)
-    if (!needsCandidateList(genre)) return false
+    if (!needsCandidateList(genre) && !forceList) return false
     const query = candidateQuery(genre)
-    if (!query) return false
-    const items = await searchCandidates(query, this.deps.candidateFetcher)
-    if (items.length === 0) return false
     const m = messages(this.lang).music
-
-    if (items.length === 1) {
+    if (!query) {
+      // 推荐但没具体歌手/风格：引导用户补充，绝不自动播放
+      if (forceList) {
+        await this.speakReply(m.recommendPrompt())
+        return true
+      }
+      return false
+    }
+    const items = await searchCandidates(query, this.deps.candidateFetcher)
+    if (items.length === 0) {
+      if (forceList) {
+        await this.speakReply(m.notFound(isSpokenContentRequest(text)))
+        return true
+      }
+      return false
+    }
+    if (items.length === 1 && !forceList) {
       await this.playChosen(items[0], query)
       return true
     }
     this.pendingCandidates = { items, query }
     const labels = items.map((c) => (c.artist ? `${c.title}，${c.artist}` : c.title))
-    await this.speakReply(m.candidates(labels) + m.chooseHint())
+    await this.speakReply(
+      (forceList ? m.recommend(labels) : m.candidates(labels)) + m.chooseHint()
+    )
     return true
   }
 
@@ -254,7 +274,7 @@ export class VoiceSessionService {
     const source = this.musicSource
     const m = messages(this.lang).music
     if (!source) {
-      await this.speakReply(m.notFound())
+      await this.speakReply(m.notFound(isSpokenContentRequest(query)))
       return
     }
     const keyword = query && query !== chosen.title ? `${query} ${chosen.title}` : chosen.title
@@ -263,7 +283,7 @@ export class VoiceSessionService {
       if (!track?.url) throw new Error('no track')
       await this.playTrack(track, m.playing(track.title))
     } catch {
-      await this.speakReply(m.notFound())
+      await this.speakReply(m.notFound(isSpokenContentRequest(keyword)))
     }
   }
 
@@ -294,6 +314,11 @@ export class VoiceSessionService {
     const m = messages(this.lang).music
     try {
       switch (action) {
+        case 'recommend': {
+          // 推荐：只给候选列表绝不自动播放，即使检索到 1 首也只列出来让用户选
+          await this.offerCandidates(text, true)
+          break
+        }
         case 'play': {
           // 只说「周杰伦」「稻香」「周杰伦的歌」：先给候选列表让用户选
           if (await this.offerCandidates(text)) break
@@ -325,7 +350,7 @@ export class VoiceSessionService {
           break
       }
     } catch {
-      await this.speakReply(m.notFound())
+      await this.speakReply(m.notFound(isSpokenContentRequest(text)))
     }
   }
 

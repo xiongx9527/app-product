@@ -24,6 +24,22 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
     expect(detectMusicCommand('你唱歌真好听')).toBeNull()
   })
 
+  it('「看 / 我想看」作为播放动词，识别为 play（电视/电影/动画/相声等都能播）', () => {
+    // 用户反馈：说「看电视/看电影/我想看动画片」被当成“不能播放的影片”拒绝；
+    // 这些其实能走 B 站音轨抽取播放，必须识别成 play。
+    expect(detectMusicCommand('看电视')).toBe('play')
+    expect(detectMusicCommand('看电影')).toBe('play')
+    expect(detectMusicCommand('看西游记动画片')).toBe('play')
+    expect(detectMusicCommand('我想看流浪地球电影')).toBe('play')
+    expect(detectMusicCommand('我想看郭德纲相声')).toBe('play')
+    expect(detectMusicCommand('看个相声')).toBe('play')
+    expect(detectMusicCommand('看一集电视剧')).toBe('play')
+    // 「看见 / 看着 / 看情况」不是看片请求，不触发播放
+    expect(detectMusicCommand('我看见了一只猫')).toBeNull()
+    expect(detectMusicCommand('你看着办吧')).toBeNull()
+    expect(detectMusicCommand('看情况再说')).toBeNull()
+  })
+
   it('暂停类优先于停止类：避免「暂停播放」被「停播」子串误判成停止', () => {
     // 用户反馈：说「暂停播放」结果被关掉了（误判 stop）。
     expect(detectMusicCommand('暂停播放')).toBe('pause')

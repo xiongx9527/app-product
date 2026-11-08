@@ -364,7 +364,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
 
   it('换一首：没指定新偏好时沿用当前上下文（同歌手），不跳到无关电台', async () => {
     // 用户反馈：播放周杰伦时说“换一首”，结果换了一首和当前无关的歌。
-    // 根因：原逻辑把“换一首”收敛成 genre=轻音乐，被路由到 SomaFM 电台（与周杰伦无关）。
+    // 根因：原逻辑把“换一首”收敛成 genre=轻音乐（空泛风格），被路由到 SomaFM 电台（与周杰伦无关）。
     // 修复：bare 换一首传 undefined，让音乐源沿用当前 B 站上下文 → 同歌手下一首。
     const h = createHarness({
       finalizeTexts: ['播放周杰伦的稻香', '换一首'],
@@ -581,6 +581,61 @@ describe('点歌信息不足：候选列表 + 语音选择', () => {
 
     expect(texts(h)).not.toContain('你想听第几首')
     expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
+  })
+})
+
+describe('推荐意图：只列候选绝不自动播放', () => {
+  const playSource = (resolve: MusicSource['resolve']): MusicSource => ({ resolve })
+  const mb = (items: Array<{ title: string; artist: string }>) => async () => ({
+    ok: true,
+    json: async () => ({ recordings: items.map((c) => ({ title: c.title, 'artist-credit': [{ name: c.artist }] })) }),
+  })
+  const three = [
+    { title: '稻香', artist: '周杰伦' },
+    { title: '晴天', artist: '周杰伦' },
+    { title: '七里香', artist: '周杰伦' },
+  ]
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('「推荐周杰伦的歌」：口播编号列表，绝不自动播放、不进 LLM', async () => {
+    const resolved: string[] = []
+    const h = createHarness({
+      finalizeText: '推荐周杰伦的歌',
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).toContain('第一首')
+    expect(texts(h)).toContain('你想听第几首')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+    expect(resolved).toHaveLength(0)
+  })
+
+  it('推荐但没具体歌手/风格：引导补充，不擅自乱播', async () => {
+    const h = createHarness({
+      finalizeText: '推荐几首歌',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).toContain('想听点什么风格')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
   })
 })
 

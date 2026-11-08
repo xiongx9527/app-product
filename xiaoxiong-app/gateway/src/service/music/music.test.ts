@@ -1,11 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { createSomaSource } from './somaSource'
-import { createBilibiliSearchSource, titleMatchesKeyword, looksLikeCompilation } from './bilibiliSearchSource'
+import {
+  createBilibiliSearchSource,
+  titleMatchesKeyword,
+  titleMatchesKeywordLoose,
+  looksLikeCompilation,
+} from './bilibiliSearchSource'
 import { extractBvidsFromHtml } from './bilibiliAudio'
 import { createMusicSource } from './index'
 import { SOMA_CHANNELS } from '../tools/musicChannels'
 import type { MusicFetcher } from './types'
-import { isGenreRequest, genreToKeyword } from './types'
+import { isGenreRequest, genreToKeyword, isSpokenContentRequest } from './types'
 
 describe('music sources', () => {
   it('soma：无风格时用默认频道', async () => {
@@ -88,6 +93,139 @@ describe('genre 分流', () => {
     // 空串在 isGenreRequest 里判为风格请求 → 走 SomaFM 电台
     expect(isGenreRequest(genreToKeyword('播放个音乐'))).toBe(true)
   })
+
+  it('genreToKeyword：「背景音乐」是风格请求（走轻音乐电台），不能当影视内容', () => {
+    expect(genreToKeyword('播放背景音乐')).toBe('轻音乐')
+    expect(isGenreRequest(genreToKeyword('播放背景音乐'))).toBe(true)
+    // 反过来：它不该被判定成「非歌曲内容」，失败时仍应说「没找到这首歌」
+    expect(isSpokenContentRequest('播放背景音乐')).toBe(false)
+  })
+
+  it('genreToKeyword：评书/相声这类内容保留类型词，量词「段」要剔掉', () => {
+    // 用户反馈「播放刘兰芳的岳飞专评书」被当成点歌报「没找到这首歌」——类型词必须留在检索词里，
+    // 否则会变成「刘兰芳 岳飞专」这种只认歌名的词，B 站命中率骤降。
+    expect(genreToKeyword('播放刘兰芳的岳飞专评书')).toBe('刘兰芳 岳飞专评书')
+    expect(genreToKeyword('播放刘兰芳的评书')).toBe('刘兰芳 评书')
+    expect(genreToKeyword('播放郭德纲的相声')).toBe('郭德纲 相声')
+    // 「放段相声」开头的「段」是量词，不清掉会拿「段相声」白搜
+    expect(genreToKeyword('放段相声')).toBe('相声')
+    expect(genreToKeyword('来一段郭德纲的相声')).toBe('郭德纲 相声')
+  })
+
+  it('genreToKeyword：电视/电影/动画片/漫剧也保留类型词，「看 / 演」当播放动词剥掉', () => {
+    expect(genreToKeyword('播放三国演义的电视剧')).toBe('三国演义 电视剧')
+    expect(genreToKeyword('播放流浪地球的电影')).toBe('流浪地球 电影')
+    expect(genreToKeyword('看动画片')).toBe('动画片')
+    expect(genreToKeyword('看漫剧')).toBe('漫剧')
+    expect(genreToKeyword('看电影')).toBe('电影')
+    // 「看 / 演」作开头动词要剥掉，否则检索词会变成「看电视」「演电影」这种搜不到的词
+    expect(genreToKeyword('看电视')).toBe('电视')
+    expect(genreToKeyword('演电影')).toBe('电影')
+    expect(genreToKeyword('演个电影')).toBe('电影')
+    expect(genreToKeyword('演个电视剧')).toBe('电视剧')
+    // 「我想看 / 我看」口语前缀也要剥掉，否则「我想看西游记」会变成带「想看」的垃圾检索词。
+    // 作品名与类型词粘连（无「的」）时保持原样，由模糊匹配兜底命中。
+    expect(genreToKeyword('我想看西游记动画片')).toBe('西游记动画片')
+    expect(genreToKeyword('我想看流浪地球电影')).toBe('流浪地球电影')
+    expect(genreToKeyword('我看电视剧')).toBe('电视剧')
+  })
+
+  it('genreToKeyword：「主演 / 参演 / 出演 / 导演 / 拍 / 唱」是谓语，不是作品名的一部分', () => {
+    // 用户反馈「演的电影」「主演、参演」「导演」「拍的电影」「唱的歌」这类说法——
+    // 留着会让检索词变成「主演 电影」「周星驰演 电影」「周杰伦唱 歌」，B 站标题里不会有这些组合，
+    // 严格匹配必然落空。
+    expect(genreToKeyword('演的电影')).toBe('电影')
+    expect(genreToKeyword('主演的电影')).toBe('电影')
+    expect(genreToKeyword('参演的电视剧')).toBe('电视剧')
+    expect(genreToKeyword('周星驰演的电影')).toBe('周星驰 电影')
+    expect(genreToKeyword('成龙主演的电影')).toBe('成龙 电影')
+    expect(genreToKeyword('周星驰导演的电影')).toBe('周星驰 电影')
+    expect(genreToKeyword('葛优出演的电视剧')).toBe('葛优 电视剧')
+    expect(genreToKeyword('张艺谋监制的电视剧')).toBe('张艺谋 电视剧')
+    expect(genreToKeyword('周星驰监制的电影')).toBe('周星驰 电影')
+    // 拍：拍电影 / 拍的电影 / 拍的电视剧 / 拍的电视
+    expect(genreToKeyword('拍电影')).toBe('电影')
+    expect(genreToKeyword('拍的电影')).toBe('电影')
+    expect(genreToKeyword('拍的电视剧')).toBe('电视剧')
+    expect(genreToKeyword('拍的电视')).toBe('电视')
+    expect(genreToKeyword('周星驰拍的电影')).toBe('周星驰 电影')
+    expect(genreToKeyword('张艺谋拍的电视剧')).toBe('张艺谋 电视剧')
+    // 唱：唱的 / 唱的歌
+    expect(genreToKeyword('周杰伦唱的歌')).toBe('周杰伦 歌')
+    expect(genreToKeyword('唱的歌')).toBe('') // 只剩泛化词 → 回落电台，不白搜
+    expect(genreToKeyword('唱的')).toBe('')
+    // MV 也当内容类型词保留
+    expect(genreToKeyword('播放周杰伦的mv')).toBe('周杰伦 mv')
+    expect(genreToKeyword('放个mv')).toBe('mv')
+    // 画质修饰词（4K / 高清 / 蓝光…）是偏好不是作品名，剔掉后仍能搜到
+    expect(genreToKeyword('播放4k的流浪地球')).toBe('流浪地球')
+    expect(genreToKeyword('流浪地球 4K 蓝光')).toBe('流浪地球')
+    expect(genreToKeyword('播放高清电影')).toBe('电影')
+    expect(genreToKeyword('1080p 周杰伦 稻香')).toBe('周杰伦 稻香')
+    // 「作品」是泛称，不是作品名，剔掉后按人名检索
+    expect(genreToKeyword('播放周杰伦的作品')).toBe('周杰伦')
+    expect(genreToKeyword('周星驰的作品')).toBe('周星驰')
+    // 「精彩」是评价词不是内容名
+    expect(genreToKeyword('精彩集锦')).toBe('集锦')
+    expect(genreToKeyword('精彩比赛')).toBe('比赛')
+    // 「听戏 / 放段戏」：戏是内容类型，动词剥掉后收敛到「戏曲」再检索（单搜「戏」太泛）
+    expect(genreToKeyword('听戏')).toBe('戏曲')
+    expect(genreToKeyword('放段戏')).toBe('戏曲')
+    // 「演员」是名词，不能把「演」当动词剥掉
+    expect(genreToKeyword('演员')).toBe('演员')
+  })
+})
+
+describe('isSpokenContentRequest（决定「没找到」的措辞，不能把评书说成「这首歌」）', () => {
+  it('评书/相声/有声书/电视剧/电影/动画片/漫剧等非歌曲内容返回 true', () => {
+    for (const t of [
+      '刘兰芳 岳飞传 评书',
+      '郭德纲 相声',
+      '三体 有声书',
+      '三国演义 评话',
+      '京剧 戏曲',
+      '听戏',
+      '单田芳 广播剧',
+      '三国演义 电视剧',
+      '放个电视节目',
+      '流浪地球 电影',
+      '流浪地球 微电影',
+      '西游记 动画片',
+      '斗罗大陆 漫剧',
+      '放个票房高的电影',
+      '放个mv',
+      '放个MV',
+      '百家讲坛',
+      '公开课 课堂',
+      '三只小猪 故事',
+      '格林 童话',
+      '开学典礼 讲话',
+      '讲座 录播',
+      '晚会 录影',
+      '雷雨 话剧',
+      '春节 晚会',
+      '舌尖上的中国 纪录片',
+      '综艺节目',
+      '世界杯 比赛',
+      'NBA 直播',
+      '精彩集锦',
+      '精彩比赛',
+      '易中天 评说三国',
+      '戏说乾隆',
+      '比赛 解说',
+      '解说员 评论员',
+      '世界杯 回放',
+      '西游记 主题曲',
+    ]) {
+      expect(isSpokenContentRequest(t)).toBe(true)
+    }
+  })
+
+  it('普通点歌/风格请求返回 false', () => {
+    for (const t of ['周杰伦 稻香', '放点轻音乐', '陈奕迅 十年', '', undefined]) {
+      expect(isSpokenContentRequest(t)).toBe(false)
+    }
+  })
 })
 
 describe('B 站搜索兜底源', () => {
@@ -165,6 +303,53 @@ describe('B 站搜索兜底源', () => {
     const titles = ['周杰伦演唱会精选', '谁说网红只会抄袭翻唱，原创歌曲出圈']
     const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
     await expect(source.resolve('周杰伦 稻香')).rejects.toThrow()
+  })
+
+  it('严格匹配一条都没有时才启用模糊兜底：评书带错字仍能播', async () => {
+    // 用户反馈：「播放刘兰芳的岳飞专评书」报「没找到这首歌」，但 B 站确实有《岳飞传》。
+    // 严格匹配因「岳飞专 ≠ 岳飞传」全部落空 → 落到模糊兜底，命中真实资源。
+    const titles = ['【117回全本】经典长篇评书《岳飞传》，刘兰芳播讲', '郭德纲相声精选']
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
+    const track = await source.resolve('刘兰芳 岳飞专评书')
+    expect(track.title).toContain('岳飞传')
+  })
+
+  it('严格匹配有命中时不走模糊兜底（保证「歌手、歌名要一样」优先）', async () => {
+    // 第二条严格命中；第一条只能靠模糊命中，但相关性更高（含「完整版」）。
+    // 若实现退化成「总是模糊匹配」，第一条就会被选中——这里断言必须选严格命中的那条。
+    const titles = ['刘兰芳 岳飞扬家将 评书 完整版', '《岳飞传》刘兰芳 评书 第001回']
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
+    const track = await source.resolve('刘兰芳 岳飞传 评书')
+    expect(track.title).toContain('岳飞传')
+  })
+
+  it('相声这类内容也能搜到（关键字不只评书）', async () => {
+    const titles = ['郭德纲 于谦 经典相声《报菜名》完整版', '周杰伦演唱会精选']
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
+    const track = await source.resolve('郭德纲 相声')
+    expect(track.title).toContain('相声')
+  })
+
+  it('电视剧这类内容也能搜到', async () => {
+    const titles = ['1994版《三国演义》第01集 桃园结义', '周杰伦演唱会精选']
+    const source = createBilibiliSearchSource({}, biliFetcher(() => titles))
+    const track = await source.resolve('三国演义 电视剧')
+    expect(track.title).toContain('三国演义')
+  })
+
+  it('电影 / 动画片 / 漫剧这类内容也能搜到', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['流浪地球 电影', '《流浪地球》高清完整版 国产科幻电影', '流浪地球'],
+      ['西游记 动画片', '西游记 动画片 第01集 大闹天宫', '西游记'],
+      ['斗罗大陆 漫剧', '斗罗大陆 漫剧 第01集', '斗罗大陆'],
+      // 「X 演的电影」清洗成「X 电影」后能正常检索
+      ['周星驰演的电影', '周星驰 电影《喜剧之王》完整版', '喜剧之王'],
+    ]
+    for (const [keyword, title, expectTitle] of cases) {
+      const source = createBilibiliSearchSource({}, biliFetcher(() => [title, '周杰伦演唱会精选']))
+      const track = await source.resolve(keyword)
+      expect(track.title).toContain(expectTitle)
+    }
   })
 
   it('多歌曲合集（串烧/歌单）被硬排除，绝不播成乱播放', async () => {
@@ -311,6 +496,47 @@ describe('titleMatchesKeyword（歌手、歌名要一样，杜绝乱播放）', 
   })
 })
 
+describe('titleMatchesKeywordLoose（容忍 ASR 错字，但仍不许乱播）', () => {
+  it('ASR 把「岳飞传」听成「岳飞专」时仍能命中真实的评书资源', () => {
+    // 用户反馈：「播放刘兰芳的岳飞专评书」→ 报「没找到这首歌」，但资源其实存在。
+    // 严格匹配要求 token 原样出现，「岳飞专」自然一条都过不了，必须靠模糊兜底。
+    const title = '【117回全本】经典长篇评书《岳飞传》，刘兰芳播讲'
+    expect(titleMatchesKeyword(title, '刘兰芳 岳飞专评书')).toBe(false)
+    expect(titleMatchesKeywordLoose(title, '刘兰芳 岳飞专评书')).toBe(true)
+  })
+
+  it('类型词（评书/相声/电视剧）不参与模糊比对，避免把不同作品撞到一起', () => {
+    // 「评书」是通用类型词，不能靠它把「郭德纲相声」判成「刘兰芳评书」的命中
+    expect(titleMatchesKeywordLoose('郭德纲相声精选', '刘兰芳 岳飞专评书')).toBe(false)
+    expect(titleMatchesKeywordLoose('郭德纲 相声 大合集', '郭德纲 相声')).toBe(true)
+    // 「电视剧」同理：标题里没有类型词，但作品名对得上就该命中
+    expect(titleMatchesKeywordLoose('《三国演义》第01集 桃园结义', '三国演义 电视剧')).toBe(true)
+    expect(titleMatchesKeywordLoose('《红楼梦》第01集', '三国演义 电视剧')).toBe(false)
+    // 话剧 / 纪录片 / 比赛 同理
+    expect(titleMatchesKeywordLoose('《雷雨》话剧 全场录像', '雷雨 话剧')).toBe(true)
+    expect(titleMatchesKeywordLoose('《雷雨》全场录像', '雷雨 话剧')).toBe(true)
+    expect(titleMatchesKeywordLoose('舌尖上的中国 第一集', '舌尖上的中国 纪录片')).toBe(true)
+    expect(titleMatchesKeywordLoose('世界杯 决赛 全场回放', '世界杯 比赛')).toBe(true)
+    // 评说 / 戏说：类型词剔掉后靠作品名匹配（「戏说乾隆」不能只剩「说乾隆」）
+    expect(titleMatchesKeywordLoose('易中天 评说三国 第01集', '易中天 评说三国')).toBe(true)
+    expect(titleMatchesKeywordLoose('《戏说乾隆》第01集', '戏说乾隆')).toBe(true)
+    expect(titleMatchesKeywordLoose('《康熙王朝》第01集', '戏说乾隆')).toBe(false)
+    // 解说 / 评论员：类型词剔掉后靠赛事名匹配（赛事名对不上就不算命中）
+    expect(titleMatchesKeywordLoose('世界杯 决赛 全场回放 詹俊解说', '世界杯 解说')).toBe(true)
+    expect(titleMatchesKeywordLoose('世界杯 决赛 全场回放 詹俊解说', '英超 评论员')).toBe(false)
+  })
+
+  it('至少要有 token 完整出现，纯靠零散两字不算命中', () => {
+    expect(titleMatchesKeywordLoose('随便一个音乐视频', '周杰伦 稻香')).toBe(false)
+    expect(titleMatchesKeywordLoose('周杰伦演唱会精选', '周杰伦 稻香')).toBe(false)
+  })
+
+  it('空标题不命中；无实词关键词不拦截', () => {
+    expect(titleMatchesKeywordLoose('', '评书')).toBe(false)
+    expect(titleMatchesKeywordLoose('任意视频', '歌')).toBe(true)
+  })
+})
+
 describe('looksLikeCompilation（合集/串烧硬排除，杜绝乱播放）', () => {
   it('串烧/合集/歌单/合辑/集锦类标题判为合集', () => {
     for (const t of ['陈奕迅经典串烧：十年', '周杰伦歌曲合集', '华语金曲歌单', '流行合辑 vol.2', '80后集锦']) {
@@ -330,6 +556,15 @@ describe('looksLikeCompilation（合集/串烧硬排除，杜绝乱播放）', (
     expect(looksLikeCompilation('华语最热门100首热歌 后台循环')).toBe(true)
     // 注意：单首的“高清MV”不带“全”前缀，不应误伤
     expect(looksLikeCompilation('稻香-周杰伦 高清MV')).toBe(false)
+  })
+
+  it('用户自己就要「集锦 / 精选」时，不能再当合集排除', () => {
+    // 用户反馈「集锦、精彩比赛、精彩集锦」——赛事集锦本身就是标题带「集锦」的正片，
+    // 按老的合集规则会被全部排除，反而报没找到。
+    expect(looksLikeCompilation('世界杯 精彩集锦 决赛全场高光', '集锦')).toBe(false)
+    expect(looksLikeCompilation('世界杯 精彩集锦 决赛全场高光', '精彩集锦')).toBe(false)
+    // 但没点名集锦时，合集仍要排除
+    expect(looksLikeCompilation('世界杯 精彩集锦 决赛全场高光', '世界杯 决赛')).toBe(true)
   })
 })
 

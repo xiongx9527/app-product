@@ -1,4 +1,5 @@
 import {
+  CONTENT_TYPE_WORDS,
   genreToKeyword,
   type MusicFetcher,
   type MusicSource,
@@ -45,8 +46,11 @@ const BILI_HEADERS = {
 const nativeFetch: MusicFetcher = (url, init) =>
   fetch(url, init as RequestInit) as unknown as ReturnType<MusicFetcher>
 
-/** 相关性加分词：更像「原唱/官方正片」的视频优先。 */
-const PREFER = ['官方', 'official', 'mv', 'hd', '无损', '原唱', '完整版', '音频', 'opus']
+/** 相关性加分词：更像「原唱/官方正片」的视频优先；画质高的也优先。 */
+const PREFER = [
+  '官方', 'official', 'mv', 'hd', '无损', '原唱', '完整版', '音频', 'opus',
+  '4k', '1080p', '高清', '超清', '蓝光', 'hdr',
+]
 /**
  * 相关性减分词：教学/翻唱/Reaction/纯音乐/现场等不是用户要的那一版，尽量靠后。
  * 注意「现场版」不放这里——它含「现场」子串，会和下面的「现场」一同命中，
@@ -64,11 +68,18 @@ const AVOID = [
  */
 const COMPILATION_WORDS = ['串烧', '合集', '歌单', '合辑', '集锦', '盘点', '歌曲大全', '音乐大全', '串烧版', '精选', '全mv']
 
-/** 标题是否明显是多歌曲合集（不是单一曲目），应被排除，杜绝乱播放。 */
-export function looksLikeCompilation(title: string): boolean {
+/**
+ * 标题是否明显是多歌曲合集（不是单一曲目），应被排除，杜绝乱播放。
+ * keyword 非空时做例外：用户自己就要「集锦 / 精选」这类内容（精彩集锦、赛事集锦）时，
+ * 这个字眼是他要的东西，不是「把一堆歌塞在一起」的合集标记，不能再当排除理由。
+ */
+export function looksLikeCompilation(title: string, keyword = ''): boolean {
   if (!title) return false
   const t = normalize(title)
-  if (COMPILATION_WORDS.some((w) => t.includes(normalize(w)))) return true
+  const k = normalize(keyword)
+  if (COMPILATION_WORDS.some((w) => t.includes(normalize(w)) && !k.includes(normalize(w)))) {
+    return true
+  }
   // “X首”形式（100首 / 50首 …）是歌单/合集计数，不是单曲——用户要的是某一首，
   // 搜“周杰伦”返回顶部那些「歌曲精选100首 / 最热门100首」本质都是合集。
   if (/\d+首/.test(t)) return true
@@ -111,12 +122,71 @@ export function titleMatchesKeyword(title: string, keyword: string): boolean {
   return tokens.every((t) => normalizedTitle.includes(t))
 }
 
-/** 视频标题的相关性打分：更像正片加分，教学/翻唱等减分，用于「换一首」挑更对的那版。 */
-function relevanceScore(title: string): number {
+/** 内容类型词（不是作品名/歌手名）：模糊比对前先剔掉，避免「评书」这类通用词把不同作品撞到一起。 */
+function stripContentType(token: string): string {
+  let t = token
+  for (const w of CONTENT_TYPE_WORDS) t = t.split(w).join('')
+  return t
+}
+
+/** 最长公共连续子串长度：用于容忍 ASR/口误的个别错字（如「岳飞传」被听成「岳飞专」）。 */
+function longestCommonSubstring(a: string, b: string): number {
+  if (!a || !b) return 0
+  let best = 0
+  let prev = new Array<number>(b.length + 1).fill(0)
+  for (let i = 1; i <= a.length; i += 1) {
+    const cur = new Array<number>(b.length + 1).fill(0)
+    for (let j = 1; j <= b.length; j += 1) {
+      if (a[i - 1] === b[j - 1]) {
+        cur[j] = prev[j - 1] + 1
+        if (cur[j] > best) best = cur[j]
+      }
+    }
+    prev = cur
+  }
+  return best
+}
+
+/** 模糊匹配时每个 token 至少要在标题里有这么长的连续公共子串（容忍个别错字）。 */
+const LOOSE_MIN_COMMON = 2
+
+/**
+ * 宽松匹配（仅在严格匹配一条都没命中时作为兜底）：
+ *  - 每个关键词 token 都要在标题里有 ≥2 的连续公共子串（容忍 ASR/口误的个别错字）；
+ *  - 内容类型词（评书/相声…）先剔掉，避免通用词把不同作品撞到一起；
+ *  - 至少有一个 token 完整出现（防止只靠零散两字撞出无关内容）；
+ *  - 合集仍在 searchOrdered 里单独排除。
+ * 目的：明明有资源（如「刘兰芳 岳飞传 评书」），只因把「岳飞传」听成「岳飞专」就报「没找到」。
+ */
+export function titleMatchesKeywordLoose(title: string, keyword: string): boolean {
+  if (!title) return false
+  const tokens = keywordTokens(keyword)
+  if (tokens.length === 0) return true
   const t = normalize(title)
+  let anyFull = false
+  for (const token of tokens) {
+    if (t.includes(token)) {
+      anyFull = true
+      continue
+    }
+    const core = stripContentType(token)
+    if (core.length < LOOSE_MIN_COMMON) continue // 纯内容类型词不作为模糊依据
+    if (longestCommonSubstring(core, t) < LOOSE_MIN_COMMON) return false
+  }
+  return anyFull
+}
+
+/**
+ * 视频标题的相关性打分：更像正片加分，教学/翻唱等减分，用于「换一首」挑更对的那版。
+ * keyword 非空时做例外：用户自己就要「解说 / 赏析」这类内容时，这个字眼不是减分项
+ * （否则搜「比赛解说」会把解说视频全排到最后，甚至选到没有解说的版本）。
+ */
+function relevanceScore(title: string, keyword = ''): number {
+  const t = normalize(title)
+  const k = normalize(keyword)
   let s = 0
   for (const w of PREFER) if (t.includes(normalize(w))) s += 1
-  for (const w of AVOID) if (t.includes(normalize(w))) s -= 2
+  for (const w of AVOID) if (t.includes(normalize(w)) && !k.includes(normalize(w))) s -= 2
   return s
 }
 
@@ -156,13 +226,25 @@ async function searchOrdered(keyword: string, fetcher: MusicFetcher): Promise<Bi
   const resp = await fetcher(`${BILI_SEARCH}?${qs}`, { headers: BILI_HEADERS })
   const json = (await resp.json()) as unknown
   const results = collectResults(json)
-  // 先按「歌手歌名全命中」过滤（杜绝乱播放），再排除多歌曲合集（串烧/歌单…），
-  // 最后按相关性打分降序、同分保留 B 站原序
-  return results
-    .filter((r) => titleMatchesKeyword(r.title, keyword) && !looksLikeCompilation(r.title))
-    .map((r, i) => ({ r, i }))
-    .sort((a, b) => relevanceScore(b.r.title) - relevanceScore(a.r.title) || a.i - b.i)
-    .map((x) => x.r)
+  const rank = (list: BiliResult[]): BiliResult[] =>
+    list
+      .map((r, i) => ({ r, i }))
+      .sort(
+        (a, b) =>
+          relevanceScore(b.r.title, keyword) - relevanceScore(a.r.title, keyword) || a.i - b.i
+      )
+      .map((x) => x.r)
+  // 先严格匹配（歌手、歌名全命中），再排除多歌曲合集（串烧/歌单…），最后按相关性降序、同分保留原序
+  const strict = results.filter(
+    (r) => titleMatchesKeyword(r.title, keyword) && !looksLikeCompilation(r.title, keyword)
+  )
+  if (strict.length) return rank(strict)
+  // 严格一条都没命中：放宽到「容忍个别错字」的模糊匹配（仍排除合集）。
+  // 避免 ASR 把「岳飞传」听成「岳飞专」、或带「评书/相声」等类型词时，明明有资源却报没找到。
+  const loose = results.filter(
+    (r) => titleMatchesKeywordLoose(r.title, keyword) && !looksLikeCompilation(r.title, keyword)
+  )
+  return rank(loose)
 }
 
 export function createBilibiliSearchSource(
@@ -211,7 +293,7 @@ export function createBilibiliSearchSource(
   }
 
   /**
-   * 百度兜底：拿 BVID 后逐个抽 B 站音轨，标题必须再过严格匹配，
+   * 百度兜底：拿 BVID 后逐个抽 B 站音轨，标题必须再过匹配（先严格、再容忍错字的模糊），
    * 命中才返回；全失败/百度无果抛错，交上层统一告知「没找到」。
    */
   async function baiduResolve(keyword: string): Promise<ResolvedTrack> {
@@ -223,8 +305,8 @@ export function createBilibiliSearchSource(
         if (
           audio.url &&
           audio.title &&
-          titleMatchesKeyword(audio.title, keyword) &&
-          !looksLikeCompilation(audio.title)
+          (titleMatchesKeyword(audio.title, keyword) || titleMatchesKeywordLoose(audio.title, keyword)) &&
+          !looksLikeCompilation(audio.title, keyword)
         ) {
           return { url: audio.url, title: audio.title, channel: 'bilibili' }
         }
