@@ -7,7 +7,7 @@ export function createUnsupportedProvider(
     name,
     isSupported: () => false,
     start() {
-      // H5 / 小程序无持续监听能力，界面用按住或点击说话
+      // 无原生插件的端（如 H5 开发阶段）无常听能力，界面用按住或点击说话
     },
     stop() {
       // 无实现

@@ -1,9 +1,9 @@
 /** 网关运行配置，全部可由环境变量覆盖。 */
 
 /**
- * LLM 能力提供方：stub 为离线测试实现；openai 兼容端点（本地 Ollama 的 /v1 也在内）、
- * dashscope、deepseek 等为真实厂商。
- * ollama 走原生 /api/chat：只有这条路径能拿到模型思考过程（OpenAI 兼容层会丢掉 reasoning）。
+ * LLM 能力提供方：stub 为离线测试实现；openai 兼容端点（本地 AI 服务的 /llm/v1
+ * 纯转发代理、本地 Ollama 的 /v1 也在内）、dashscope、deepseek 等为真实厂商。
+ * ollama 走原生 /api/chat，需把 baseUrl 直接指向 Ollama；只有它能保留 thinking。
  */
 export type LlmProviderKind = 'stub' | 'openai' | 'ollama' | 'dashscope' | 'deepseek'
 /** ASR 提供方：whisper/azure/aliyun/xunfei 等真实厂商（统一走本地 HTTP baseUrl）；stub 为离线测试实现。 */
@@ -24,7 +24,7 @@ export interface WsConfig {
 /** LLM 能力配置 */
 export interface LlmConfig {
   provider: LlmProviderKind
-  /** 服务地址（OpenAI 兼容端点；本地 Ollama 通常为 http://host:11434/v1） */
+  /** 服务地址；默认指向本地 AI 服务的 /llm（由它再转发 Ollama 或远程代理） */
   baseUrl: string
   /** 模型名 */
   model: string
@@ -116,14 +116,14 @@ export function loadConfig(): GatewayConfig {
     ws: { path: process.env.WS_PATH ?? '/ws' },
     llm: {
       provider: oneOf(process.env.LLM_PROVIDER, 'stub'),
-      baseUrl: process.env.LLM_BASE_URL ?? 'http://192.168.1.100:11434',
+      baseUrl: process.env.LLM_BASE_URL ?? 'http://127.0.0.1:9529/llm/v1',
       model: process.env.LLM_MODEL ?? 'gpt-oss:120b-cloud',
       apiKey: process.env.LLM_API_KEY ?? '',
       params: paramsFromEnv('LLM_PARAMS'),
     },
     asr: {
       provider: oneOf(process.env.ASR_PROVIDER, 'stub'),
-      baseUrl: process.env.ASR_BASE_URL ?? 'http://192.168.1.100:9529',
+      baseUrl: process.env.ASR_BASE_URL ?? 'http://127.0.0.1:9529/voide',
       apiKey: process.env.ASR_API_KEY ?? '',
       // 句末静音判定：停顿超过该值才定稿为一轮。默认 2500ms——给自然思考的停顿留足余地，
       // 避免说话中途一停顿（>endpointMs）就被切断、识别成多段（用户反馈"只识别前一段"）。
@@ -134,7 +134,7 @@ export function loadConfig(): GatewayConfig {
     },
     tts: {
       provider: oneOf(process.env.TTS_PROVIDER, 'stub'),
-      baseUrl: process.env.TTS_BASE_URL ?? 'http://192.168.1.100:9529',
+      baseUrl: process.env.TTS_BASE_URL ?? 'http://127.0.0.1:9529/voide',
       apiKey: process.env.TTS_API_KEY ?? '',
       params: paramsFromEnv('TTS_PARAMS'),
     },

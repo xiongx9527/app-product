@@ -220,3 +220,88 @@ describe('musicPlayer 进度与时长', () => {
     expect(player.musicState.visible.value).toBe(false)
   })
 })
+
+describe('musicPlayer 单曲循环与播完态', () => {
+  it('不循环（缺省 loop）：播完进入「已播完」态，playing/paused 复位', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    expect(player.musicState.ended.value).toBe(false)
+    fake.emit('ended')
+    expect(player.musicState.playing.value).toBe(false)
+    expect(player.musicState.paused.value).toBe(false)
+    expect(player.musicState.ended.value).toBe(true)
+    // 播完态下「暂停」按钮应表现为可「继续播放」（UI 据此切图标）
+    expect(player.musicState.ended.value).toBe(true)
+  })
+
+  it('loop=N：会重播 N-1 次，第 N 次播完才进入「已播完」', () => {
+    player.playMusic('https://x/song.mp3', '歌曲', { loop: 3 })
+    expect(player.musicState.loopRemaining.value).toBe(2)
+    // 第 1 遍播完 → 重播，loopRemaining 递减
+    fake.emit('ended')
+    expect(player.musicState.playing.value).toBe(true)
+    expect(player.musicState.ended.value).toBe(false)
+    expect(player.musicState.loopRemaining.value).toBe(1)
+    // 第 2 遍播完 → 再重播
+    fake.emit('ended')
+    expect(player.musicState.playing.value).toBe(true)
+    expect(player.musicState.loopRemaining.value).toBe(0)
+    // 第 3 遍播完 → 进入「已播完」
+    fake.emit('ended')
+    expect(player.musicState.playing.value).toBe(false)
+    expect(player.musicState.ended.value).toBe(true)
+  })
+
+  it('loop=1 与不合法值按「不循环」处理：播完即「已播完」', () => {
+    player.playMusic('https://x/song.mp3', '歌曲', { loop: 1 })
+    expect(player.musicState.loopRemaining.value).toBe(0)
+    fake.emit('ended')
+    expect(player.musicState.ended.value).toBe(true)
+    expect(player.musicState.playing.value).toBe(false)
+  })
+
+  it('replayMusic：已播完后从头重播一遍（loop 归零，ended 复位）', () => {
+    player.playMusic('https://x/first.mp3', '第一首')
+    fake.emit('ended')
+    expect(player.musicState.ended.value).toBe(true)
+    player.replayMusic()
+    expect(player.musicState.ended.value).toBe(false)
+    expect(player.musicState.playing.value).toBe(true)
+    expect(player.musicState.loopRemaining.value).toBe(0)
+    expect(fake.src).toContain('first.mp3')
+  })
+
+  it('循环按钮 toggleLoop：开启后无限重播，再点关闭后播完进入「已播完」', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    player.toggleLoop()
+    expect(player.musicState.loopRemaining.value).toBe(Number.POSITIVE_INFINITY)
+    fake.emit('ended')
+    expect(player.musicState.playing.value).toBe(true)
+    expect(player.musicState.ended.value).toBe(false)
+    fake.emit('ended')
+    expect(player.musicState.ended.value).toBe(false) // Infinity-1 仍是 Infinity
+    // 再点关闭
+    player.toggleLoop()
+    expect(player.musicState.loopRemaining.value).toBe(0)
+    fake.emit('ended')
+    expect(player.musicState.ended.value).toBe(true)
+  })
+
+  it('循环按钮：已播完态开启会立即从头重播', () => {
+    player.playMusic('https://x/song.mp3', '歌曲')
+    fake.emit('ended')
+    expect(player.musicState.ended.value).toBe(true)
+    player.toggleLoop()
+    expect(player.musicState.ended.value).toBe(false)
+    expect(player.musicState.playing.value).toBe(true)
+    expect(player.musicState.loopRemaining.value).toBe(Number.POSITIVE_INFINITY)
+    expect(fake.seeked).toBe(0)
+  })
+
+  it('新下发 media.play（playMusic）会重置循环开关', () => {
+    player.playMusic('https://x/a.mp3', 'A')
+    player.toggleLoop()
+    expect(player.musicState.loopRemaining.value).toBe(Number.POSITIVE_INFINITY)
+    player.playMusic('https://x/b.mp3', 'B')
+    expect(player.musicState.loopRemaining.value).toBe(0)
+  })
+})

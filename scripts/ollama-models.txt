@@ -1,0 +1,12 @@
+# Ollama 模型清单：一行一个，空行和 # 注释会被忽略。
+# 下载：./scripts/pull-ollama-models.sh（Windows 用 pull-ollama-models.ps1）
+#
+# 默认与网关的 LLM 默认模型 gpt-oss:120b-cloud 同族，20b 可以在本机跑；
+# 显存 / 内存不足时换更小参数，或改用下面的中文备选。
+gpt-oss:20b
+
+# 中文对话备选：内存 16GB 以下优先用它。需要时取消注释。
+# qwen3:8b
+
+# 云端模型：不占本地磁盘，需要先执行 ollama login。
+# gpt-oss:120b-cloud

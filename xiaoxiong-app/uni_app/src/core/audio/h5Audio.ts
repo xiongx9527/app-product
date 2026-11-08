@@ -1,7 +1,10 @@
 /**
  * H5 端音频：麦克风采集为 16k/16bit/单声道 PCM 上行，TTS 24k PCM 下行顺序播放。
- * 仅 H5 使用；App 端走 uni.getRecorderManager / innerAudioContext（后续实现）。
+ * 仅 H5 使用；App 端实时 PCM 走 app-product-wake 原生插件（见 appCapture.ts）——
+ * uni.getRecorderManager 只能录成文件、App 不支持 onFrameRecorded，拿不到实时流，
+ * 无法满足网关「20-40ms 分片持续上行」的契约，故不用它做对话采集。
  */
+import { markMicGranted } from './micEvidence'
 
 type ChunkHandler = (pcm: ArrayBuffer) => void
 
@@ -129,6 +132,7 @@ export async function startCapture(onChunk: ChunkHandler): Promise<void> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   })
+  markMicGranted()
   const ctx = createContext(16000)
   if (ctx.state === 'suspended') await ctx.resume()
 

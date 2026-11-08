@@ -14,11 +14,13 @@
 - `asr-down.mp3`：开启助手时若语音识别未就绪，提示“语音识别没连好，我暂时听不见你说话”
 - `tts-down.mp3`：开启助手时若语音合成未就绪，提示“语音播报没接好，我没法念出来”
 - `llm-down.mp3`：开启助手时若大模型未就绪，提示“大模型没接好，我暂时没法回答”
+- `mic-denied.mp3`：麦克风未授权（或尚未申请）时，提示“麦克风没授权，语音唤醒和对话都用不了，请到设置里开启”。
+  只有麦克风这种核心能力才播提示音；定位是非必须能力，只显示状态、绝不播报。
 
-后四个在 `useAssistant` 连上网关后由 `speakCapabilityProblems()` 检查 `/api/health`，
-对未就绪的能力按顺序（ASR → TTS → LLM → 网络）逐条播报，给出听得见的失效反馈。
+后五个在 `useAssistant` 连上网关后由 `speakCapabilityProblems()` 检查 `/api/health` 与设备权限，
+先播麦克风权限，再对未就绪的能力按顺序（ASR → TTS → LLM → 网络）逐条播报，给出听得见的失效反馈。
 
-后四个文件同时也复制到了网关侧 `gateway/static/cues/`，由网关经 HTTP（`/static/cues/<name>.mp3`）
+后五个文件同时也复制到了网关侧 `gateway/static/cues/`，由网关经 HTTP（`/static/cues/<name>.mp3`）
 下发给客户端播放（见 `contracts/README.md`）。客户端优先从网关拉取，拉取失败才回退到本目录的打包文件。
 
 H5 端使用 WebAudio 生成提示音 + Toast 兜底，不依赖这些文件；

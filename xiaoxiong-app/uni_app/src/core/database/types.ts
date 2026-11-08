@@ -5,7 +5,7 @@
  * 设备数据、会话记录、命令日志这类会持续增长的数据走 SQLite。
  *
  * App（Android / iOS）：plus.sqlite。
- * HarmonyOS / H5 / 小程序：plus.sqlite 不可用，isSupported() 为 false，
+ * H5 开发阶段 / 其它非 App 端：plus.sqlite 不可用，isSupported() 为 false，
  *   调用方应降级（内存或 uni storage），不要让业务崩掉。
  */
 export interface SqlDatabase {

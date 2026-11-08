@@ -159,7 +159,7 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 const CUE_DIR = fileURLToPath(new URL('../static/cues', import.meta.url))
-const ALLOWED_CUES = new Set(['network-down', 'asr-down', 'tts-down', 'llm-down'])
+const ALLOWED_CUES = new Set(['network-down', 'asr-down', 'tts-down', 'llm-down', 'mic-denied'])
 
 /** 仅放行白名单内的提示音文件；校验扩展名 + 禁止 `..`，杜绝目录穿越。 */
 async function serveCue(res: ServerResponse, pathname: string): Promise<void> {

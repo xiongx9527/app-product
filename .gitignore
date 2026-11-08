@@ -50,3 +50,7 @@ apps/gateway/data/app.db
 
 # 网关依赖锁文件
 apps/gateway/package-lock.json
+
+# Python 缓存（语音服务脚本）
+__pycache__/
+*.pyc

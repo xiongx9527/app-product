@@ -1,0 +1,156 @@
+# ════════════════════════════════════════════════════════════════
+# 本地 AI 服务配置（scripts/voice/openai_voice_server.py）
+#
+# 使用方式：
+#   1. 安装脚本首次运行时会把这个模板复制到 $VOICE_HOME/voice.conf；
+#   2. 直接修改 $VOICE_HOME/voice.conf，重启服务即可生效；
+#   3. 也可以用 VOICE_CONFIG 环境变量或 --config 参数指定其它文件。
+#
+# 启动前会检查依赖环境；缺失时只把安装方法写进终端和 voice.log，
+# 不会自动安装或下载任何东西。
+#
+# 语法：
+#   - 一行一个 KEY=VALUE；
+#   - 空行和 # 开头的行会被忽略；
+#   - 值可以不加引号，也可以写成 KEY="value"；
+#   - 不加引号时，` #` 之后视为行尾注释；
+#   - 路径支持 ~ 和 $VOICE_HOME 展开。
+#
+# 优先级（从高到低）：
+#   命令行参数 > 环境变量 > 本文件 > 内置默认值
+#
+# 默认运行目录（可用 VOICE_HOME 覆盖）：
+#   macOS / Linux：~/.app-product/voice
+#   Windows：%LOCALAPPDATA%\app-product\voice
+# ════════════════════════════════════════════════════════════════
+
+# ── 监听地址 ─────────────────────────────────────────────────────
+# 0.0.0.0 表示监听所有网卡，手机或另一台机器也能访问；
+# 只允许本机访问时改成 127.0.0.1。
+# 默认：0.0.0.0
+VOICE_HOST=0.0.0.0
+
+# ── 监听端口 ─────────────────────────────────────────────────────
+# 网关 .env 里的 LLM_BASE_URL / ASR_BASE_URL / TTS_BASE_URL 都指向这个端口。
+# 默认：9529
+VOICE_PORT=9529
+
+# 接口前缀（固定，不需要改）：
+#   LLM   /llm/v1（OpenAI 兼容，纯转发）
+#   Voice /voide
+# 网关配置示例：
+#   LLM_BASE_URL=http://127.0.0.1:9529/llm/v1
+#   ASR_BASE_URL=http://127.0.0.1:9529/voide
+#   TTS_BASE_URL=http://127.0.0.1:9529/voide
+
+# ── 本地 STT（SenseVoice）────────────────────────────────────────
+# SenseVoice 模型目录。留空或注释掉时使用默认目录：
+#   $VOICE_HOME/models/sensevoice
+# 只有本地 STT 模式才会读取这个配置；代理模式不需要模型。
+# SENSEVOICE_DIR=$VOICE_HOME/models/sensevoice
+
+# ── 本地 TTS（edge-tts）──────────────────────────────────────────
+# 默认音色，支持 edge-tts 音色名（如 zh-CN-XiaoxiaoNeural）
+# 或 OpenAI 音色别名（alloy / echo / fable / onyx / nova 等）。
+# 默认：zh-CN-XiaoxiaoNeural
+TTS_VOICE=zh-CN-XiaoxiaoNeural
+
+# edge-tts 单个音频块的超时秒数（不是整段文本的总超时）。
+# 默认：20
+TTS_TIMEOUT=20
+
+# ffmpeg 可执行文件路径。默认从 PATH 查找；Windows 可填绝对路径，
+# 例如 C:\ffmpeg\bin\ffmpeg.exe。
+# 只有本地 TTS 需要它：edge-tts 输出 MP3，网关要求 WAV / PCM。
+# 默认：ffmpeg
+# FFMPEG_BIN=ffmpeg
+
+# ── LLM（纯 OpenAI 兼容反向代理）────────────────────────────────
+# /llm/v1/chat/completions 与 /llm/v1/models 原样转发到下面的上游地址，
+# 不加载本地模型，也不提供 Ollama 风格 /api/chat 接口。
+# 上游可以是任意 OpenAI 兼容服务：云端 API、或本机 Ollama 的 /v1 均可。
+#
+# 是否启用 /llm：
+#   auto  配置了 LLM_UPSTREAM_BASE_URL 时启用（默认）
+#   on    强制启用；没配上启动检查会报错
+#   off   不启用，只跑 STT / TTS
+# 默认：auto
+LLM_ENABLED=auto
+
+# OpenAI 兼容上游地址。设置后 LLM 代理才会启用；地址可以带 /v1，
+# 也可以不带。指向本机 Ollama 时填 http://127.0.0.1:11434/v1。
+# LLM_UPSTREAM_BASE_URL=https://api.openai.com/v1
+
+# 上游 API Key。留空表示上游不需要鉴权。
+# LLM_UPSTREAM_API_KEY=sk-...
+
+# 覆盖客户端传来的模型名（如 gpt-4o-mini）。留空则沿用请求里的 model。
+# LLM_UPSTREAM_MODEL=gpt-4o-mini
+
+# ── 访问鉴权 ─────────────────────────────────────────────────────
+# 控制推理接口是否需要 API Key：/voide/v1/audio/* 和 /llm 下的对话接口。
+# 根路径、/health、/voide/v1/models、/llm/v1/models 始终开放，供网关做
+# 健康探测。
+#
+#   off / none / false / 0   不校验（默认）
+#   auto                     读取 VOICE_API_KEY_FILE；不存在或为空时
+#                            随机生成一个 Key 并写入该文件
+#   其它任意字符串           直接作为 Key 使用
+#
+# 开启后，网关 .env 的 LLM_API_KEY / ASR_API_KEY / TTS_API_KEY 要填同一个值。
+# 默认：off
+VOICE_API_KEY=off
+
+# API Key 文件路径。auto 模式会读取 / 写入这里。
+# 默认：$VOICE_HOME/api-key（权限尽量设为仅当前用户可读）
+# VOICE_API_KEY_FILE=$VOICE_HOME/api-key
+
+# ── 远程代理（可选，不想在本机装模型 / ffmpeg 时使用）────────────
+# 设置下面任一上游地址后，对应的能力就不再使用本地后端，而是把请求
+# 原样转发到 OpenAI 兼容服务。LLM 的代理配置在上面 LLM 段，与语音上游
+# 互不影响，可以只代理其中一部分能力。
+#
+# 只填 VOICE_UPSTREAM_BASE_URL 时，STT 和 TTS 都会走这个地址；
+# 如果两类能力分别由不同服务提供，用 STT_/TTS_UPSTREAM_BASE_URL 覆盖。
+#
+# 地址可以带 /v1，也可以不带：
+#   https://api.openai.com/v1
+#   https://api.openai.com
+#   https://your-provider.example.com/openai/v1
+#
+# 代理模式只需要基础 Python 依赖，不需要下载 SenseVoice、不需要 ffmpeg。
+# 安装时可用 --proxy-only / -ProxyOnly 跳过模型和本地 TTS 依赖。
+
+# 通用上游地址（同时作用于 STT 和 TTS）。留空表示不使用代理。
+# VOICE_UPSTREAM_BASE_URL=https://api.openai.com/v1
+
+# 通用上游 API Key。STT / TTS 可以分别用下面的专属 Key 覆盖。
+# VOICE_UPSTREAM_API_KEY=sk-...
+
+# STT 上游地址；设置后覆盖通用地址，只让 STT 走代理。
+# STT_UPSTREAM_BASE_URL=https://api.openai.com/v1
+
+# STT 上游 API Key；留空则使用 VOICE_UPSTREAM_API_KEY。
+# STT_UPSTREAM_API_KEY=sk-...
+
+# 转发给上游的 STT 模型名。默认沿用客户端请求里的 model
+# （网关默认传 whisper，OpenAI 官方服务通常填 whisper-1）。
+# STT_UPSTREAM_MODEL=whisper-1
+
+# TTS 上游地址；设置后覆盖通用地址，只让 TTS 走代理。
+# TTS_UPSTREAM_BASE_URL=https://api.openai.com/v1
+
+# TTS 上游 API Key；留空则使用 VOICE_UPSTREAM_API_KEY。
+# TTS_UPSTREAM_API_KEY=sk-...
+
+# 转发给上游的 TTS 模型名。留空则沿用客户端请求里的 model；
+# 客户端没传时由上游使用自己的默认模型（OpenAI 官方通常是 tts-1）。
+# TTS_UPSTREAM_MODEL=tts-1
+
+# 转发给上游的 TTS 音色。网关默认传 zh-CN-XiaoxiaoNeural，OpenAI 官方
+# 服务不认识这个名称，所以代理到官方服务时建议保留下面的 alloy。
+# 使用中文音色的上游服务可以改成 zh-CN-XiaoxiaoNeural 等。
+TTS_UPSTREAM_VOICE=alloy
+
+# 上游请求超时秒数，STT / TTS / LLM 共用。默认：120
+# UPSTREAM_TIMEOUT=120

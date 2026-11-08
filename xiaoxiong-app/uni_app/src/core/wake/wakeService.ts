@@ -9,11 +9,11 @@ import { getLanguage } from '@/core/config'
  * 唤醒服务。
  *
  * 按端选择实现：
- * - H5：浏览器 Web Speech API（先跑通链路，非离线）
- * - App：原生插件 app-product-wake（sherpa-onnx KWS）
- * - 小程序：不支持常听，降级为按住/点击说话
+ * - App（目标端）：原生插件 app-product-wake（sherpa-onnx KWS）
+ * - H5（仅开发阶段）：浏览器 Web Speech API（先跑通链路，非离线）
+ * - 小程序与鸿蒙确定不支持，不提供实现。
  *
- * 注意条件编译：APP-PLUS 只命中 Android/iOS，鸿蒙要用 APP 或 APP-HARMONY。
+ * 注意条件编译：APP-PLUS 命中目标端 Android/iOS；不依赖预处理消除 import。
  */
 export interface WakeService {
   start(): void

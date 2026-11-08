@@ -1,0 +1,2 @@
+-r requirements-base.txt
+edge-tts>=6.1,<8

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectMusicCommand } from './musicControl'
+import { detectMusicCommand, parseLoopCount } from './musicControl'
 
 describe('detectMusicCommand 音乐控制指令识别', () => {
   it('播放类：含「播放 / 的歌」等触发词', () => {
@@ -78,5 +78,33 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
     expect(detectMusicCommand('有什么好听的广播')).toBe('recommend')
     // 仍要带推荐动词 + 媒体关键字；纯闲聊（无关键字）不误触发
     expect(detectMusicCommand('推荐一家餐厅')).toBeNull()
+  })
+
+  it('循环播放类：识别为 loop（单曲循环 / 重复播放 / 再放 N 遍）', () => {
+    expect(detectMusicCommand('循环播放')).toBe('loop')
+    expect(detectMusicCommand('单曲循环')).toBe('loop')
+    expect(detectMusicCommand('列表循环')).toBe('loop')
+    expect(detectMusicCommand('重复播放')).toBe('loop')
+    expect(detectMusicCommand('循环播放3遍')).toBe('loop')
+    expect(detectMusicCommand('再放一遍')).toBe('loop')
+    expect(detectMusicCommand('回放一遍')).toBe('loop')
+  })
+
+  it('「再放一遍」不会被「继续/再放(resume)」抢先识别成 resume', () => {
+    // loop 模式含「遍」字，必须排在 resume 之前命中；否则会被 resume 的「再放」先截走
+    expect(detectMusicCommand('再放一遍')).toBe('loop')
+    // 但「再放」（不带遍）仍是继续播放
+    expect(detectMusicCommand('再放')).toBe('resume')
+  })
+
+  it('parseLoopCount：解析「N 遍」遍数，缺省默认 2（再播一遍），超界收敛', () => {
+    expect(parseLoopCount('循环播放3遍')).toBe(3)
+    expect(parseLoopCount('循环播放2遍')).toBe(2)
+    expect(parseLoopCount('循环播放')).toBe(2) // 没写遍数 → 默认再播一遍（共 2 遍）
+    // 只认阿拉伯数字，「一遍」这类中文数词无数字则回落默认 2（= 再播一遍，共 2 遍）
+    expect(parseLoopCount('再放一遍')).toBe(2)
+    expect(parseLoopCount('循环播放999遍')).toBe(99) // 超上限收敛
+    expect(parseLoopCount('放首歌')).toBe(1) // 非循环语境 → 1（不循环）
+    expect(parseLoopCount('')).toBe(1)
   })
 })

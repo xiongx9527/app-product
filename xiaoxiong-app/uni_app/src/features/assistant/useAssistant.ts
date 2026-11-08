@@ -10,6 +10,8 @@ import {
   stopMusic,
   pauseMusic,
   resumeMusic,
+  replayMusic,
+  toggleLoop,
   duckMusic,
   seekMusic,
   musicState,
@@ -22,6 +24,8 @@ import {
   stopCapture,
   stopPlayback,
 } from '@/core/audio/h5Audio'
+import { isAppCaptureSupported, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
+import { t } from '@/core/i18n'
 import { transition } from '@/core/assistant/stateMachine'
 import {
   DEFAULT_ASSISTANT_CONFIG,
@@ -38,6 +42,8 @@ import {
   type HealthItem,
   type HealthStatus,
 } from '@/features/assistant/useHealth'
+import { usePermissions } from '@/features/assistant/usePermissions'
+import type { PermissionState } from '@/core/permission/permissionStatus'
 import { toProxiedMusicUrl } from '@/core/audio/resolveMediaUrl'
 import type { ServerEvent, SessionMode } from '@/core/transport/types'
 import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
@@ -152,6 +158,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   })
   // 网关能力健康度（LLM / ASR / TTS / 外网）：连上后定时轮询
   const { health, refreshHealth } = useHealth(wsConnected)
+  // 设备权限只读检测（不弹授权框）：麦克风未授权要出声提示，定位只显示状态。
+  const { permissions, refreshPermissions } = usePermissions(wsConnected)
   // 定时检测结果：只在某能力「ok → down」时念一次；down→down / down→ok / ok→ok 都静默。
   // 前提是网关连通（断开时 useHealth 清空 health，不触发）。首次拿到报告 prev 为空、不念，
   // 连上那一刻的未就绪能力由 speakCapabilityProblems() 负责播报，避免重复。
@@ -170,6 +178,19 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     if (!downKeys.length) return
     const cues = HEALTH_PRIORITY.filter((k) => downKeys.includes(k)).map((k) => HEALTH_CUE[k])
     if (cues.length) playPromptCueSequence(cues)
+  })
+
+  // 麦克风是核心能力：仅当「已授权 → 未授权/未知」变化时补播一次提示；
+  // 首次连上时的未授权由 speakCapabilityProblems() 负责播报，避免重复。
+  // 定位是非必须能力，全程只显示状态、绝不播提示音。
+  let prevMicState: PermissionState | null = null
+  watch(permissions, (p) => {
+    if (!wsConnected.value) {
+      prevMicState = null
+      return
+    }
+    if (prevMicState === 'granted' && p.mic !== 'granted') playPromptCue('micDenied')
+    prevMicState = p.mic
   })
 
   function handleServerEvent(event: ServerEvent): void {
@@ -287,7 +308,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // B 站音轨走网关代理补 Referer；SomaFM 等公共流直连。
         playMusic(
           toProxiedMusicUrl(event.url, event.channel, resolveGatewayHttpBase()),
-          event.title
+          event.title,
+          event.loop != null ? { loop: event.loop } : undefined
         )
         break
       case 'media.pause':
@@ -457,11 +479,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
   }
 
-  /** 关闭助手：停采集、关连接，并停掉音乐。 */
+  /** 关闭助手：停采集、关连接，并停掉音乐。两个采集后端互斥，都尝试停止（未启动的是 no-op）。 */
   function leaveWake(): void {
     resetGatewayDownAnnounce()
     if (capturing) {
       stopCapture()
+      stopAppCapture()
       capturing = false
     }
     stopPlayback()
@@ -471,18 +494,35 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   }
 
   async function ensureCapture(): Promise<void> {
-    if (capturing || !isH5AudioSupported()) return
-    try {
-      // 播报期间继续保持上行：用户插话要能识别并排队，不能掐掉麦克风。
-      // 回声由浏览器 AEC + 网关 strict VAD / 文本比对 / 半双工兜底处理。
-      // 只有本地提示音（扬声器外放的固定短音）期间把上行帧清零。
-      await startCapture((pcm) => {
-        transport.sendAudioChunk(isPromptCuePlaying() ? new ArrayBuffer(pcm.byteLength) : pcm)
-      })
-      capturing = true
-    } catch (err) {
-      errorMessage.value = `麦克风不可用：${(err as Error).message}`
+    if (capturing) return
+    // 播报期间继续保持上行：用户插话要能识别并排队，不能掐掉麦克风。
+    // 回声由浏览器 AEC + 网关 strict VAD / 文本比对 / 半双工兜底处理。
+    // 只有本地提示音（扬声器外放的固定短音）期间把上行帧清零。
+    const onPcm = (pcm: ArrayBuffer): void => {
+      transport.sendAudioChunk(isPromptCuePlaying() ? new ArrayBuffer(pcm.byteLength) : pcm)
     }
+
+    // H5 走 WebAudio；App 走 app-product-wake 原生插件的实时 PCM 接口；
+    // 两者都不可用（如未打自定义基座的旧客户端）时明确提示，不静默假装能唤醒。
+    if (isH5AudioSupported()) {
+      try {
+        await startCapture(onPcm)
+        capturing = true
+      } catch (err) {
+        errorMessage.value = t('error.micUnavailable', { reason: (err as Error).message })
+      }
+      return
+    }
+
+    if (isAppCaptureSupported()) {
+      const ok = startAppCapture(onPcm, (message) => {
+        errorMessage.value = t('error.micUnavailable', { reason: message })
+      })
+      if (ok) capturing = true
+      return
+    }
+
+    errorMessage.value = t('error.captureUnsupported')
   }
 
   function clearT1(): void {
@@ -500,19 +540,23 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     closingTimer = null
   }
 
-  /** 能力可用性播报：开启并连上网关后，检查 LLM / ASR / TTS / 外网，对未就绪的逐条念出来。
-   * 这样「唤醒不了」这类静默失效（ASR 仍是占位桩）会变成听得见的提示，而不是毫无反应。 */
+  /** 可用性播报：开启并连上网关后，先看麦克风权限（核心能力，排最前），
+   * 再对未就绪的 LLM / ASR / TTS / 外网逐条念出来，把静默失效变成听得见的提示。
+   * 定位是非必须能力，只显示状态、不参与播报。 */
   async function speakCapabilityProblems(): Promise<void> {
     let report = health.value
     if (!report) {
       await refreshHealth()
       report = health.value
     }
-    if (!report) return
-    const problems = toHealthItems(report).filter((i) => i.status !== 'ok')
-    if (!problems.length) return
-    const cues = HEALTH_PRIORITY.filter((k) => problems.some((p) => p.key === k)).map(
-      (k) => HEALTH_CUE[k]
+    await refreshPermissions()
+    const cues: PromptCue[] = []
+    if (permissions.value.mic !== 'granted') cues.push('micDenied')
+    const problems = report ? toHealthItems(report).filter((i) => i.status !== 'ok') : []
+    cues.push(
+      ...HEALTH_PRIORITY.filter((k) => problems.some((p) => p.key === k)).map(
+        (k) => HEALTH_CUE[k]
+      )
     )
     if (cues.length) playPromptCueSequence(cues)
   }
@@ -573,6 +617,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     leaveWake()
   })
 
+  // 单曲循环是否进行中（按钮高亮/aria）：语音「循环 N 遍」的有限 loopRemaining
+  // 和按钮开启的 Infinity 都算「循环播放中」。
+  const musicLoopActive = computed(() => musicState.loopRemaining.value > 0)
+
   return {
     state,
     stateLabel,
@@ -602,6 +650,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 音乐播放 / 歌词
     musicPlaying: musicState.playing,
     musicPaused: musicState.paused,
+    musicEnded: musicState.ended,
+    musicLoopActive,
     musicError: musicState.musicError,
     musicVisible: musicState.visible,
     musicTitle: musicState.title,
@@ -612,6 +662,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     stopMusic,
     pauseMusic,
     resumeMusic,
+    replayMusic,
+    toggleLoop,
     nextMusic,
     seekMusic,
     closeLyrics,

@@ -61,8 +61,9 @@ export type ServerEvent =
   | { type: 'tts.end' }
   /** half=回声兜底中，播报期间不拾音，用户需点「打断」；full=正常全双工 */
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
-  /** 让客户端播放一段音频流（如 SomaFM 网络电台）；客户端用独立播放器，不与 TTS 冲突 */
-  | { type: 'media.play'; url: string; title: string; channel?: string }
+  /** 让客户端播放一段音频流（如 SomaFM 网络电台）；客户端用独立播放器，不与 TTS 冲突。
+   *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。 */
+  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
   /** 让客户端暂停当前播放（再响一声「暂停」用 media.resume 恢复） */

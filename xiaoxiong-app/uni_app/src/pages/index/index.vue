@@ -12,7 +12,10 @@ import {
   totalLabel,
 } from '@/core/audio/musicProgress'
 import { t } from '@/core/i18n'
-import { useHealth, toHealthItems } from '@/features/assistant/useHealth'
+import { playPromptCue, type PromptCue } from '@/core/audio/promptPlayer'
+import { useHealth, toHealthItems, type HealthItem } from '@/features/assistant/useHealth'
+import { usePermissions, type PermissionItem } from '@/features/assistant/usePermissions'
+import type { PermissionState } from '@/core/permission/permissionStatus'
 
 const {
   state,
@@ -42,6 +45,8 @@ const {
   interrupt,
   musicPlaying,
   musicPaused,
+  musicEnded,
+  musicLoopActive,
   musicError,
   musicVisible,
   musicTitle,
@@ -52,6 +57,8 @@ const {
   stopMusic,
   pauseMusic,
   resumeMusic,
+  replayMusic,
+  toggleLoop,
   nextMusic,
   seekMusic,
   closeLyrics,
@@ -59,8 +66,56 @@ const {
 
 // 网关能力健康度：连上 WS 后轮询 /api/health，把 LLM / ASR / TTS / 外网状态展示出来，
 // 静默失效（如 ASR 仍是占位桩）能直接被看到，而不是「唤醒没反应」却毫无提示。
-const { health, healthError } = useHealth(wsConnected)
+const { health } = useHealth(wsConnected)
 const healthItems = computed(() => (health.value ? toHealthItems(health.value) : []))
+// 权限只读检测：麦克风/定位排在能力项前，用 | 隔离（见健康面板模板）
+const { permissionItems } = usePermissions(wsConnected)
+
+// 点击状态胶囊后的「状态播报」：固定在健康栏下方的行内文字（绝不弹浮层），
+// 异常项再补一声本地 mp3 提示音。定位是非必须能力，只显示状态、不播报。
+type StatusCapsule = PermissionItem | HealthItem
+const activeCapsule = ref<string | null>(null)
+const HEALTH_CUE: Record<HealthItem['key'], PromptCue> = {
+  llm: 'llmDown',
+  asr: 'asrDown',
+  tts: 'ttsDown',
+  network: 'networkDown',
+}
+
+function statusWord(status: string): string {
+  if (status === 'ok') return t('health.ok')
+  if (status === 'warn') return t('health.unconfigured')
+  return t('health.unreachable')
+}
+
+function capsuleDetail(item: StatusCapsule): string {
+  if ('state' in item) return t(`health.perm.${item.state}`)
+  return item.detail || statusWord(item.status)
+}
+
+const narrationText = computed(() => {
+  const key = activeCapsule.value
+  if (!key) return ''
+  const items: StatusCapsule[] = [...permissionItems.value, ...healthItems.value]
+  const item = items.find((i) => i.key === key)
+  if (!item) return ''
+  return t('health.narration', { name: t(`health.${key}`), status: capsuleDetail(item) })
+})
+
+function onStatusTap(item: StatusCapsule): void {
+  // 再点同一颗收起说明
+  if (activeCapsule.value === item.key) {
+    activeCapsule.value = null
+    return
+  }
+  activeCapsule.value = item.key
+  // 正常态没有对应提示音，只显示文字；定位按既有约定一律不播报。
+  if ('state' in item) {
+    if (item.key === 'mic' && item.state === 'denied') playPromptCue('micDenied')
+    return
+  }
+  if (item.status !== 'ok') playPromptCue(HEALTH_CUE[item.key])
+}
 
 const screen = ref<ScreenInfo>(readScreenInfo())
 
@@ -109,8 +164,18 @@ function onStopMusic(): void {
 
 function onTogglePause(): void {
   seekPreview.value = null
+  // 已自然播完：按钮即「继续播放」，点一下从头重播一遍
+  if (musicEnded.value) {
+    replayMusic()
+    return
+  }
   if (musicPaused.value) resumeMusic()
   else pauseMusic()
+}
+
+function onToggleLoop(): void {
+  seekPreview.value = null
+  toggleLoop()
 }
 
 function onNextMusic(): void {
@@ -197,19 +262,38 @@ function onConnTap(): void {
       </view>
 
       <view v-if="wsConnected" class="health">
-        <view v-if="!health && !healthError" class="health-checking">{{ t('health.checking') }}</view>
-        <template v-else-if="health">
+        <!-- 权限组放最前：本地只读检测，连上 WS 即显示，不依赖网关 health 是否成功 -->
+        <view
+          v-for="item in permissionItems"
+          :key="item.key"
+          class="health-item is-tappable"
+          :class="[item.status, { active: activeCapsule === item.key }]"
+          :aria-label="t('health.narration', { name: t(`health.${item.key}`), status: capsuleDetail(item) })"
+          @tap="onStatusTap(item)"
+        >
+          <view class="health-dot" />
+          <text class="health-label">{{ t(`health.${item.key}`) }}</text>
+        </view>
+        <text v-if="health" class="health-divider">|</text>
+        <template v-if="health">
           <view
             v-for="item in healthItems"
             :key="item.key"
-            class="health-item"
-            :class="item.status"
+            class="health-item is-tappable"
+            :class="[item.status, { active: activeCapsule === item.key }]"
+            :aria-label="t('health.narration', { name: t(`health.${item.key}`), status: capsuleDetail(item) })"
+            @tap="onStatusTap(item)"
           >
             <view class="health-dot" />
             <text class="health-label">{{ t(`health.${item.key}`) }}</text>
           </view>
         </template>
         <view v-else class="health-checking">{{ t('health.checking') }}</view>
+      </view>
+
+      <!-- 状态播报：固定行内文字，不用 toast / 浮层 -->
+      <view v-if="narrationText" class="health-narration">
+        <text class="health-narration-text">{{ narrationText }}</text>
       </view>
     </view>
 
@@ -262,15 +346,18 @@ function onConnTap(): void {
     <view v-if="musicVisible" class="music-bar">
       <view class="music-row">
         <view class="music-info">
-          <text class="music-label" :class="{ paused: musicPaused }">{{ musicPaused ? t('music.pausedLabel') : t('music.nowPlaying') }}</text>
+          <text class="music-label" :class="{ paused: musicPaused, ended: musicEnded }">{{ musicEnded ? t('music.ended') : musicPaused ? t('music.pausedLabel') : t('music.nowPlaying') }}</text>
           <text class="music-title">{{ musicTitle }}</text>
         </view>
         <view class="music-actions">
-          <view class="music-ctrl" :class="{ primary: !musicPaused }" :aria-label="t('music.next')" @tap="onNextMusic">
+          <view class="music-ctrl" :class="{ primary: !musicPaused && !musicEnded }" :aria-label="t('music.next')" @tap="onNextMusic">
             <image class="music-icon" src="/static/icons/next.svg" mode="aspectFit" />
           </view>
-          <view class="music-ctrl" :aria-label="musicPaused ? t('music.resume') : t('music.pause')" @tap="onTogglePause">
-            <image class="music-icon" :src="musicPaused ? '/static/icons/play.svg' : '/static/icons/pause.svg'" mode="aspectFit" />
+          <view class="music-ctrl" :aria-label="musicEnded ? t('music.resume') : musicPaused ? t('music.resume') : t('music.pause')" @tap="onTogglePause">
+            <image class="music-icon" :src="musicEnded || musicPaused ? '/static/icons/play.svg' : '/static/icons/pause.svg'" mode="aspectFit" />
+          </view>
+          <view class="music-ctrl" :class="{ primary: musicLoopActive }" :aria-label="musicLoopActive ? t('music.loopOff') : t('music.loopOn')" @tap="onToggleLoop">
+            <image class="music-icon" src="/static/icons/loop.svg" mode="aspectFit" />
           </view>
           <view class="music-ctrl" :aria-label="t('music.stop')" @tap="onStopMusic">
             <image class="music-icon" src="/static/icons/stop.svg" mode="aspectFit" />
@@ -528,6 +615,35 @@ function onConnTap(): void {
 .health-checking {
   font-size: 11px;
   color: #8b91ab;
+}
+
+/* 权限组与能力组之间的视觉隔离 */
+.health-divider {
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 13px;
+  margin: 0 2px;
+}
+
+/* 点击可播报状态的胶囊：轻微反馈，选中态高亮边框 */
+.health-item.is-tappable:active {
+  transform: scale(0.94);
+}
+.health-item.active {
+  border-color: rgba(142, 224, 189, 0.6);
+  box-shadow: 0 0 0 1px rgba(142, 224, 189, 0.25);
+}
+
+/* 状态播报：健康栏下方固定行内文字，不弹浮层、不遮挡 */
+.health-narration {
+  margin-top: 8px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.health-narration-text {
+  font-size: 12px;
+  color: #c9cede;
 }
 
 .stage {

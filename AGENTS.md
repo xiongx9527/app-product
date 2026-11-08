@@ -4,11 +4,11 @@
 
 ## 项目是什么
 
-语音助手客户端。一套 uni-app（Vue3 + TypeScript + Vite）代码，目标是 Android / iOS / HarmonyOS App。
+语音助手客户端。一套 uni-app（Vue3 + TypeScript + Vite）代码，目标端**只有 Android / iOS App（自定义基座 + 原生插件）**。
 
 主链路：**本地唤醒「小熊小熊」→ 本地招呼「我在」→ 语音对话 → T1 静默提示 → T2 退出本轮 → 回到待唤醒**。
 
-H5 / 微信小程序不是当前目标，只保留可编译与降级能力，不要为它们增加复杂度。
+H5 **仅开发阶段调试用**（当前在 `:5173` 上验证 UI 与链路），保留可编译与最小降级即可。微信小程序与 HarmonyOS **确定不支持**，不要为它们增加分支或降级逻辑。
 
 ## 常用命令
 
@@ -47,7 +47,7 @@ xiaoxiong-app/uni_app/src/
 
 ### 条件编译
 
-- uni-app 的 `APP-PLUS` 只命中 Android / iOS；鸿蒙要用 `APP` 或 `APP-HARMONY`。
+- uni-app 的 `APP-PLUS` 命中 Android / iOS，即本项目的目标端；鸿蒙与小程序确定不支持，不写它们的条件编译分支。
 - 条件编译只影响构建产物，**不要依赖预处理来消除 import**。provider 的导入在函数内做能力保护。
 - 新增平台能力时，先判断 `isSupported()`，再决定是否降级，禁止直接抛到 UI。
 
@@ -74,7 +74,7 @@ xiaoxiong-app/uni_app/src/
 - 小、同步读的配置：`uni.setStorageSync` / `getStorageSync`。
 - **设备数据、会话记录、命令日志的权威存储移到 Node 网关（`xiaoxiong-app/gateway` 的 SQLite），客户端经 REST 接口读写**；`core/database` 仅作离线缓存或降级，不直接写业务数据。
 - SQL（网关侧 Node 端）必须用参数化查询，禁止把外部字符串直接拼进 SQL。
-- 鸿蒙 / H5 / 小程序没有 `plus.sqlite`，`isSupported()` 为 false，调用方需降级。
+- H5 开发阶段没有 `plus.sqlite`，`isSupported()` 为 false，调用方需降级。
 - 设备数据默认存本地；付费用户后续可同步云端，云端不是当前实现。
 
 ### 协议
@@ -95,7 +95,7 @@ xiaoxiong-app/uni_app/src/
 
 - 唤醒后立即播本地招呼，不等 WebSocket 建连；提示音、结束语都走本地文件（H5 用 WebAudio）。
 - 播报时不能自唤醒、不能把播报当成用户说话。
-- 原生唤醒插件名固定 `app-product-wake`，JS 接口只有 `start / stop / onWake / onError`。
+- 原生唤醒插件名固定 `app-product-wake`。JS 接口：`start / stop / onWake / onError`（唤醒），以及 `startPcm / stopPcm / onPcmFrame / onPcmError`（App 端实时 PCM 采集，见 `xiaoxiong-app/uni_app/src/core/audio/appCapture.ts`）。App 端**不用** `uni.getRecorderManager` 做对话采集：它只能录成文件、App 不支持 `onFrameRecorded`，拿不到网关要求的实时 PCM 分片。
 
 ### 代码风格
 
@@ -119,7 +119,7 @@ xiaoxiong-app/uni_app/src/
 - 不要把 AgentScope 装进客户端：它只能在 Node 网关运行。
 - 不要在前端直接调用第三方服务（ASR / LLM / TTS / 数据库等）；客户端只与 Node 网关通信。
 - 不要把数据库写逻辑放进客户端；SQLite 只在 Node 网关落地。
-- 不要为 H5 / 小程序补复杂降级逻辑，除非明确要求。
+- 不要为 H5（仅开发阶段）补复杂降级逻辑，更不要为已确定不支持的小程序 / 鸿蒙写任何分支，除非明确要求。
 - 不要引入第二套状态管理或第二个 UI 框架。
 - 不要提交密钥、真实用户数据、设备数据。
 - 不要在没有验证的情况下修改 `contracts/` 并声称兼容。

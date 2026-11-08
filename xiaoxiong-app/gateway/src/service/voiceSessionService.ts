@@ -15,7 +15,7 @@ import {
   type MusicCandidate,
   type CandidateFetcher,
 } from './music/musicCandidates'
-import { detectMusicCommand } from './musicControl'
+import { detectMusicCommand, parseLoopCount } from './musicControl'
 import { detectMemoryCommand } from './memoryControl'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
@@ -96,6 +96,8 @@ export class VoiceSessionService {
   private locationRequestTimer: ReturnType<typeof setTimeout> | null = null
   /** 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），随会话构建 */
   private musicSource: MusicSource | undefined = undefined
+  /** 最近一次下发的曲目（url/title/channel），供「循环播放」指令复用同一首重播 */
+  private lastTrack: { url: string; title: string; channel?: string } | null = null
   /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
   private pendingCandidates: { items: MusicCandidate[]; query: string } | null = null
   private mode: 'wake' | 'dialog' = 'dialog'
@@ -202,6 +204,7 @@ export class VoiceSessionService {
     try {
       const track = source.next ? await source.next(genre) : await source.resolve(genre)
       if (!track?.url) return
+      this.lastTrack = { url: track.url, title: track.title, channel: track.channel }
       this.deps.send({
         type: 'media.play',
         url: track.url,
@@ -220,8 +223,20 @@ export class VoiceSessionService {
    * 解析失败也只友好告知「没找到」，不报「操作失败」这类像系统故障的措辞。
    */
   /** 下发 media.play 并口播确认。 */
-  private async playTrack(track: { url: string; title: string; channel?: string }, confirm: string): Promise<void> {
-    this.deps.send({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
+  private async playTrack(
+    track: { url: string; title: string; channel?: string },
+    confirm: string,
+    loop?: number
+  ): Promise<void> {
+    // 记下当前曲目，供「循环播放」指令复用（不必重新检索就能把同一首再播 N 遍）。
+    this.lastTrack = { url: track.url, title: track.title, channel: track.channel }
+    this.deps.send({
+      type: 'media.play',
+      url: track.url,
+      title: track.title,
+      channel: track.channel,
+      ...(loop && loop > 1 ? { loop } : {}),
+    })
     await this.speakReply(confirm)
   }
 
@@ -324,7 +339,9 @@ export class VoiceSessionService {
           if (await this.offerCandidates(text)) break
           const track = await source.resolve(genre)
           if (!track?.url) throw new Error('no track')
-          await this.playTrack(track, m.playing(track.title))
+          // 「循环 N 遍」可作为点歌后缀（如「放稻香循环3遍」），一并下发给客户端循环
+          const loop = parseLoopCount(text)
+          await this.playTrack(track, m.playing(track.title), loop > 1 ? loop : undefined)
           break
         }
         case 'next': {
@@ -334,6 +351,17 @@ export class VoiceSessionService {
           const track = source.next ? await source.next(req) : await source.resolve(req)
           if (!track?.url) throw new Error('no track')
           await this.playTrack(track, m.switched(track.title))
+          break
+        }
+        case 'loop': {
+          // 循环播放：把最近一次下发的曲目按指定遍数重播（不重新检索）。
+          // 没指定遍数默认 2（再播一遍）；没在播的曲子则友好提示。
+          if (!this.lastTrack) {
+            await this.speakReply(m.loopNothing())
+            break
+          }
+          const loop = parseLoopCount(text)
+          await this.playTrack(this.lastTrack, m.looping(loop), loop > 1 ? loop : undefined)
           break
         }
         case 'pause':

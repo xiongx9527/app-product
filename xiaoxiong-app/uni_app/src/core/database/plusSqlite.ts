@@ -49,7 +49,7 @@ function describeError(error: unknown): string {
 
 /**
  * App 端实现：uni-app 的 plus.sqlite。
- * 不支持的端（鸿蒙 / H5 / 小程序）isSupported() 为 false，
+ * 不支持的端（H5 开发阶段 / 其它非 App 端）isSupported() 为 false，
  * open() 直接返回，execute/query 抛错，由调用方决定降级策略。
  */
 export function createPlusSqliteDatabase(

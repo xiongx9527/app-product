@@ -34,6 +34,10 @@ export interface Messages {
     recommend: (items: readonly string[]) => string
     /** 推荐但没具体歌手/风格：引导补充，不擅自乱播 */
     recommendPrompt: () => string
+    /** 循环播放：count 为总共播放的遍数（>1 才真循环，1 表示重播一遍） */
+    looping: (count: number) => string
+    /** 「循环播放」指令下发时没有正在播的曲子 */
+    loopNothing: () => string
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
@@ -90,6 +94,11 @@ const zhCN: Messages = {
       `为你推荐：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}首，${it}`).join('；')}。`,
     /** 推荐但没具体歌手/风格：引导补充，不擅自乱播 */
     recommendPrompt: () => '想听点什么风格，或者告诉我歌手，我帮你挑几首？',
+    /** 循环播放：count 为总共播放的遍数（>1 才真循环，1 表示重播一遍） */
+    looping: (count) =>
+      count > 1 ? `为你循环播放 ${count} 遍。` : '为你重播一遍。',
+    /** 「循环播放」指令下发时没有正在播的曲子 */
+    loopNothing: () => '现在还没在播放什么，先放一首再让我循环吧。',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
   memory: {

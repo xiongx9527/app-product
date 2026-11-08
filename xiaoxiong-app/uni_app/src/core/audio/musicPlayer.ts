@@ -16,6 +16,13 @@ const duration = ref(0)
 const live = ref(false)
 /** 是否处于暂停状态（暂停后进度不再推进） */
 const paused = ref(false)
+/** 当前曲目是否已自然播放完毕（非暂停、非出错）；用于让「暂停」按钮显出「重播」态 */
+const ended = ref(false)
+/**
+ * 还需自动重播的次数（单曲循环）：playMusic 带 loop=N 时记为 N-1（首遍已开始），
+ * 每次 onEnded 重播一次并递减，归零后进入 ended 态。0 表示不循环。
+ */
+const loopRemaining = ref(0)
 /** 播放是否出错（如地址失效/网络不通/被浏览器自动播放策略拦截）；用于界面提示，不弹浮层 */
 const musicError = ref(false)
 /**
@@ -50,8 +57,21 @@ function ensureContext(): UniApp.InnerAudioContext | null {
     paused.value = true
   })
   instance.onEnded(() => {
+    // 单曲循环：onPlay 会把 playing 重新置 true、paused 置 false，所以这里先重播再返回，
+    // 不进「播完」态。loopRemaining 是「还要重播几次」，首遍已算在内故从 N-1 开始递减。
+    if (loopRemaining.value > 0) {
+      loopRemaining.value -= 1
+      try {
+        instance.seek(0)
+      } catch {
+        // 直播流或不支持 seek 的平台忽略，直接 play 也会从头
+      }
+      instance.play()
+      return
+    }
     playing.value = false
     paused.value = false
+    ended.value = true
   })
   instance.onError(() => {
     playing.value = false
@@ -86,7 +106,11 @@ function ensureContext(): UniApp.InnerAudioContext | null {
 }
 
 /** 开始播放一段媒体流；会先停掉上一段，避免叠音。 */
-export function playMusic(nextUrl: string, nextTitle: string): void {
+export function playMusic(
+  nextUrl: string,
+  nextTitle: string,
+  opts?: { loop?: number }
+): void {
   if (!nextUrl) return
   const instance = ensureContext()
   if (!instance) return
@@ -96,15 +120,20 @@ export function playMusic(nextUrl: string, nextTitle: string): void {
   duration.value = 0
   live.value = false
   paused.value = false
+  ended.value = false
   musicError.value = false
   visible.value = true
+  // loop 是「总共播放几遍」：首遍已经要播，所以「还要重播几次」= N-1；
+  // 不合法（缺省/1/非正整数）一律当作不循环。
+  const total = Number(opts?.loop)
+  loopRemaining.value = Number.isFinite(total) && total > 1 ? Math.floor(total) - 1 : 0
   try {
     instance.stop()
   } catch {
     // 未在播放时 stop 可能抛错，忽略
   }
   instance.src = nextUrl
-  // 电台是无限流、歌曲是有限时长：统一不循环，播完即停
+  // 单曲循环由我们自己在 onEnded 里重播实现（可精确控制遍数），故原生 loop 始终关闭。
   instance.loop = false
   instance.volume = ducked ? 0.2 : 1
   const playPromise = instance.play() as unknown as Promise<void> | undefined
@@ -152,11 +181,45 @@ export function stopMusic(): void {
   }
   playing.value = false
   paused.value = false
+  ended.value = false
+  loopRemaining.value = 0
   currentTime.value = 0
   duration.value = 0
   live.value = false
   musicError.value = false
   visible.value = false
+}
+
+/** 当前曲目自然播完后再点「播放」：从开头重新播放一遍（不循环）。 */
+export function replayMusic(): void {
+  if (!url.value) return
+  playMusic(url.value, title.value)
+}
+
+/**
+ * 切换单曲循环（音乐条「循环」按钮）：
+ *  - 开：loopRemaining 置 Infinity，当前曲播完无限重播，直到再点/停止/换歌/新下发 media.play；
+ *  - 关：置 0，播完即停。
+ * onEnded 里 `loopRemaining -= 1` 对 Infinity 仍是 Infinity，故无限循环天然成立。
+ * 若当前已是「已播完」态，开启时立即从头再播，且不重置 loopRemaining（不走 playMusic）。
+ */
+export function toggleLoop(): void {
+  if (loopRemaining.value > 0) {
+    loopRemaining.value = 0
+    return
+  }
+  loopRemaining.value = Number.POSITIVE_INFINITY
+  if (ended.value) {
+    const instance = ensureContext()
+    if (!instance) return
+    try {
+      instance.seek(0)
+    } catch {
+      // 直播流或不支持 seek 的平台忽略
+    }
+    instance.play()
+    ended.value = false
+  }
 }
 
 /** 拖动进度条：只在有总时长的歌曲上有效，电台忽略。 */
@@ -186,6 +249,8 @@ export function duckMusic(shouldDuck: boolean): void {
 export const musicState = {
   playing,
   paused,
+  ended,
+  loopRemaining,
   musicError,
   visible,
   title,

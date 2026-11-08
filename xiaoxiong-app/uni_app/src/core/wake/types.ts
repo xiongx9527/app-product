@@ -1,4 +1,4 @@
-/** 唤醒实现抽象：H5 / App / 小程序各自提供实现，上层只认这个接口 */
+/** 唤醒实现抽象：App（目标端）/ H5（开发阶段）各自提供实现，上层只认这个接口 */
 export interface WakeProvider {
   /** 界面展示用的实现名，例如“浏览器语音”“原生 KWS” */
   readonly name: string

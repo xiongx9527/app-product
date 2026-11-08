@@ -9,6 +9,7 @@ export type PromptCue =
   | 'asrDown'
   | 'ttsDown'
   | 'llmDown'
+  | 'micDenied'
 
 const CUE_FILE: Record<PromptCue, string> = {
   greeting: 'greeting',
@@ -19,6 +20,7 @@ const CUE_FILE: Record<PromptCue, string> = {
   asrDown: 'asr-down',
   ttsDown: 'tts-down',
   llmDown: 'llm-down',
+  micDenied: 'mic-denied',
 }
 
 /** 「能力不可用」提示由网关经 HTTP 下发（/static/cues/<file>.mp3），其余提示音走打包内的本地文件。
@@ -28,6 +30,7 @@ const GATEWAY_CUES: ReadonlyArray<PromptCue> = [
   'asrDown',
   'ttsDown',
   'llmDown',
+  'micDenied',
 ]
 
 function isGatewayCue(cue: PromptCue): boolean {
@@ -49,7 +52,8 @@ function cueUrl(cue: PromptCue): string {
 
 /** 本地提示音经扬声器外放会被麦克风收回，这段时间内上行必须静音，否则会自激。
  *  数值按 static/audio 下 mp3 实测时长（greeting 1.22s / still-there 1.42s / farewell 3.14s /
- *  network-down 3.84s / asr-down 4.01s / tts-down 3.34s / llm-down 3.46s / gateway-down 3.84s）留一点尾音余量。 */
+ *  network-down 3.84s / asr-down 4.01s / tts-down 3.34s / llm-down 3.46s / gateway-down 3.84s /
+ *  mic-denied 5.90s）留一点尾音余量。 */
 const CUE_MUTE_MS: Record<PromptCue, number> = {
   greeting: 1400,
   stillThere: 1700,
@@ -59,6 +63,7 @@ const CUE_MUTE_MS: Record<PromptCue, number> = {
   asrDown: 4200,
   ttsDown: 3600,
   llmDown: 3700,
+  micDenied: 6200,
 }
 
 let cueMuteUntil = 0

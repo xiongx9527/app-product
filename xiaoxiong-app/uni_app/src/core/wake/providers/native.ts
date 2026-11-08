@@ -4,9 +4,10 @@ import type { WakeProvider } from '../types'
  * App 唤醒实现：uni-app 原生插件桥接。
  *
  * 插件名 app-product-wake，暴露：
- *   start({ words }) / stop() / onWake(cb) / onError(cb)
+ *   start({ words }) / stop() / onWake(cb) / onError(cb)（唤醒）
+ *   startPcm / stopPcm / onPcmFrame / onPcmError（实时 PCM 采集，见 core/audio/appCapture.ts）
  *
- * Android / iOS / HarmonyOS 各自实现，JS 侧只有这一套接口。
+ * Android / iOS 各自实现，JS 侧只有这一套接口；小程序与鸿蒙不是目标端。
  * 插件还没落地时 isSupported() 返回 false，界面会提示“原生唤醒未就绪”，
  * 不影响按住说话。
  */

@@ -3,7 +3,7 @@
  * 只识别高置信度的控制词，避免与普通对话冲突（如「我想听你说」不会误触发）。
  */
 
-export type MusicAction = 'play' | 'next' | 'pause' | 'resume' | 'stop' | 'recommend'
+export type MusicAction = 'play' | 'next' | 'pause' | 'resume' | 'stop' | 'recommend' | 'loop'
 
 const ACTION_PATTERNS: Array<{ action: MusicAction; re: RegExp }> = [
   // 暂停类：必须排最前——「暂停播放 / 暂停音乐」里的「暂停」先命中，避免被下面的
@@ -12,6 +12,9 @@ const ACTION_PATTERNS: Array<{ action: MusicAction; re: RegExp }> = [
   // 停止类：排在 play 之前——「停止播放 / 关掉播放」含「播放」会触发 play 词，
   // 必须先于 play 命中停止；且不含「暂停」，不会与上面的暂停冲突。
   { action: 'stop', re: /(停止播放|关掉(音乐|播放)|别放了|停(掉)?音乐|关闭音乐|不(要|放)了)/ },
+  // 循环播放类：排在 resume 之前——「再放一遍」里的「再放」会被 resume 抢中，
+  // 必须先用带「遍」的循环模式截住。「N 遍」记遍数，缺省则整个当前曲循环一次（再播一遍）。
+  { action: 'loop', re: /(循环播放|单曲循环|列表循环|重复播放|再放(一|这|那)?遍|循环(播|放)?|回放(一|这)?遍)/ },
   // 继续类
   { action: 'resume', re: /(继续(播放|放)?|接着(放|播|听)|恢复(播放)?|再放)/ },
   // 换一首 / 换个风格 / 下一首
@@ -30,6 +33,27 @@ const ACTION_PATTERNS: Array<{ action: MusicAction; re: RegExp }> = [
   // 「看」后跟的内容词（电视 / 电影 / 动画 / 相声 / 比赛 …）天然会进 B 站音轨抽取，本身没问题。
   { action: 'play', re: /(播(放|歌)|来一?首|放一?首|点一?首|唱一?首|唱首|唱(?!歌)|放歌|听歌|整首|放点|看个|看部|看一?集|看一?部|我想看|看(?!见|着|清|楚|情|样|我|你|他|她|它|这|那|什|怎|办|能|否|懂|明)|的歌|的歌曲)/ },
 ]
+
+/**
+ * 从口语里解析「循环 N 遍」的遍数。命中「循环 / 重复 / 再放 N 遍」等模式时返回正整数，
+ * 没带数字（纯「循环播放 / 再放一遍」）默认 2（把当前曲再播一遍）；完全不含循环语义的
+ * 普通点歌（如「放首歌」）返回 1（不循环）——否则会把每首歌都误加成 loop:2。
+ * 超出上限按上限收敛，避免极端值拖垮播放。
+ */
+export function parseLoopCount(text: string, max = 99): number {
+  const t = (text || '').trim()
+  if (!t) return 1
+  const m = t.match(/(\d+)\s*遍/)
+  if (m) {
+    const n = Number(m[1])
+    if (Number.isFinite(n) && n >= 1) return Math.min(Math.floor(n), max)
+    return 1
+  }
+  // 没写数字，但明确是循环语义（循环 / 重复 / 回放 / 再放…遍）→ 默认再播一遍（共 2 遍）
+  const hasLoopWord =
+    /(循环播放|单曲循环|列表循环|重复播放|回放)/.test(t) || /再放.*遍/.test(t)
+  return hasLoopWord ? 2 : 1
+}
 
 /** 返回匹配到的音乐动作；非音乐指令返回 null。 */
 export function detectMusicCommand(text: string): MusicAction | null {

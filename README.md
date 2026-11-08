@@ -28,6 +28,7 @@
 
 ```
 app-product/
+├── scripts/                # 开发辅助：安装 Ollama / 本地 AI 服务、统一启停各服务
 ├── xiaoxiong-app/
 │   ├── uni_app/            # 客户端
 │   │   └── src/
@@ -52,6 +53,84 @@ npm run type-check
 ```
 
 App 与鸿蒙需要 HBuilderX / DevEco Studio 自定义基座，原生唤醒插件落地后才能在真机验证。详见 `xiaoxiong-app/uni_app/README.md`。
+
+### 本地 Ollama（可选）
+
+本地 AI 服务的 LLM 是纯转发代理，Ollama 只是可选上游之一。若要用本机 Ollama 跑模型、
+或让网关直连它的原生接口，先安装并下载模型：
+
+macOS：
+
+```bash
+./scripts/install-ollama.sh
+./scripts/pull-ollama-models.sh
+```
+
+Windows（CMD / PowerShell）：
+
+```bat
+scripts\install-ollama.cmd
+scripts\pull-ollama-models.cmd
+```
+
+模型清单在 `scripts/ollama-models.txt`，也可直接把模型名传给下载脚本。用法与网关配置对应关系见 `scripts/README.md`。
+
+### 本地 AI 服务（可选）
+
+网关的 ASR / TTS / LLM 指向 9529 的 OpenAI 兼容服务。仓库提供原生安装脚本
+（macOS / Windows，不使用 Docker），一个进程同时提供：SenseVoice STT、
+edge-tts TTS，以及一个 **LLM 纯转发代理**（`/llm/v1`，把请求原样转发到任意
+OpenAI 兼容上游，不加载本地模型、不绑定 Ollama）。
+
+macOS：
+
+```bash
+./scripts/install-voice.sh
+./scripts/voice.sh start      # 后台启动
+./scripts/voice.sh status     # 运行状态
+./scripts/voice.sh log        # 查看日志
+./scripts/voice.sh stop       # 停止
+```
+
+Windows（CMD / PowerShell）：
+
+```bat
+scripts\install-voice.cmd
+scripts\voice.cmd start
+scripts\voice.cmd status
+scripts\voice.cmd log
+scripts\voice.cmd stop
+```
+
+`start` / `restart` / `check` 会先检查依赖环境：本地模式检查 Python 包、SenseVoice 模型和
+ffmpeg；代理模式检查基础包和上游地址。检查不通过时服务不会启动，终端和 `voice.log`
+里会给出具体安装命令；**启动脚本不会自动安装依赖**，需要用户手动执行安装脚本。
+
+只跑 TTS 时用 `--tts-only` / `-TtsOnly`，可跳过约 240MB 的 SenseVoice 模型。
+不想在本机装模型和 ffmpeg 时用 `--proxy-only` / `-ProxyOnly`，把 STT / TTS 代理到远程
+OpenAI 兼容服务（需先在 `voice.conf` 填上游地址，否则启动检查会失败）。
+监听地址、端口、API Key、上游地址等都在首次安装生成的 `voice.conf` 里配置；
+默认监听 `0.0.0.0:9529`，默认不启用 API Key。
+完整配置项、代理示例和网关 `.env` 对应关系见 `scripts/README.md`。
+
+### 一键启停所有服务（macOS / Linux）
+
+上面的 Ollama、本地 AI 服务，加上 Node 网关与前端，可以用 `scripts/services.sh`
+统一启停，不用逐个敲命令：
+
+```bash
+./scripts/services.sh start          # 启动 ollama / voice / gateway / uniapp
+./scripts/services.sh status         # 查看各服务状态
+./scripts/services.sh log voice -f   # 跟踪某个服务日志
+./scripts/services.sh stop all       # 全部停止
+```
+
+也可只操作部分服务（`start voice`、`restart gateway`、`stop backend` 等），
+或先 `check` 只做依赖检查。它是编排层，`voice` 仍由 `voice.sh` 管理、
+`gateway` / `uniapp` 仍由 `xiaoxiong-app/scripts/dev-server.mjs` 管理；
+启动前不会自动安装依赖。LLM 走远程代理时不需要本机 Ollama，可用
+`start voice gateway uniapp`。完整用法见 `scripts/README.md`。
+目前统一管理器只有 bash 版（macOS / Linux），Windows 仍用各服务各自的 `.cmd` 脚本。
 
 ## 配置模型
 
@@ -93,4 +172,5 @@ App 与鸿蒙需要 HBuilderX / DevEco Studio 自定义基座，原生唤醒插�
 - 设计文档：`docs/superpowers/specs/2026-11-06-app-product-design.md`
 - 协议契约：`contracts/README.md`
 - 客户端说明：`xiaoxiong-app/uni_app/README.md`
+- 开发脚本说明：`scripts/README.md`
 - 协作约定：`AGENTS.md`

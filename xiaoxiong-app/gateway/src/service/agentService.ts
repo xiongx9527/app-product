@@ -29,7 +29,7 @@ function createModel(cfg: LlmConfig): ChatModelBase {
   const { provider, baseUrl, model, apiKey, params } = cfg
   switch (provider) {
     case 'openai':
-      // OpenAI 兼容端点：本地 Ollama 的 /v1 也走这里（baseUrl 指向对应 endpoint）。
+      // OpenAI 兼容端点：可指向本地 AI 服务的 /llm/v1，由它纯转发到任意上游。
       return new OpenAIChatModel({
         modelName: model,
         apiKey,
@@ -39,9 +39,10 @@ function createModel(cfg: LlmConfig): ChatModelBase {
       })
     case 'ollama':
       // 原生 /api/chat：只有它能透出模型的思考过程，OpenAI 兼容层会丢弃 reasoning。
+      // 本地 AI 服务不再提供 /llm/api/chat，这里要把 baseUrl 直接指向 Ollama（11434）。
       return new OllamaChatModel({
         modelName: model,
-        // 配置里可能写成 http://host:11434/v1，原生接口不接受 /v1 后缀
+        // 原生接口不接受 /v1 后缀，自动去掉。
         host: baseUrl ? baseUrl.replace(/\/v1\/?$/, '') : undefined,
         stream: true,
         options: params,

@@ -5,6 +5,7 @@ import type { VendorParams } from '../config'
  * 对接本地语音服务（openai-voice，OpenAI 兼容）的 TTS。
  *
  * 实际接口：POST {baseUrl}/v1/audio/speech
+ * baseUrl 默认是本地 AI 服务的 /voide。
  *   body = { input, voice, response_format: 'wav', speed, ...params }
  *   返回 WAV（16bit / 24kHz / 单声道），与本网关 tts.start 声明的 pcm16@24000 一致，
  *   因此只需剥掉 WAV 头，把 data 段原始 PCM 直接下发，无需重采样。

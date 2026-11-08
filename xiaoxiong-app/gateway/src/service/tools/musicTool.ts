@@ -37,11 +37,19 @@ export function createMusicTool(
     description: DESCRIPTIONS[prefix] ?? DESCRIPTIONS.zh,
     inputSchema: z.object({
       genre: z.string().optional().describe('内容，如 轻音乐/电子/爵士/流行，或 评书/相声/有声书/电视剧/电影/动画片/漫剧/话剧/纪录片/综艺/讲座/故事/比赛；视频类内容传作品名即可（如 流浪地球 电影、西游记 动画片）'),
+      loop: z.number().int().min(1).max(99).optional().describe('循环播放遍数：总共播放几遍（含首遍）。缺省/1 表示不循环；>1 时客户端播完最后一遍自动重播直到达到遍数'),
     }),
-    async call(args: { genre?: string }) {
+    async call(args: { genre?: string; loop?: number }) {
       try {
         const track = await source.resolve(args?.genre)
-        emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
+        const loop = args?.loop
+        emit?.({
+          type: 'media.play',
+          url: track.url,
+          title: track.title,
+          channel: track.channel,
+          ...(loop && loop > 1 ? { loop } : {}),
+        })
         return prefix === 'en'
           ? `Now playing: ${track.title}. (${track.url})`
           : `正在为你播放：${track.title}。`

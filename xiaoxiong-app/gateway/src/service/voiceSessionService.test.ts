@@ -407,6 +407,76 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect((plays2[1] as { title: string }).title).not.toContain('周杰伦')
   })
 
+  it('循环播放N遍：复用当前曲下发带 loop 的 media.play，不重新检索、不进 LLM', async () => {
+    // 用户要求：播放完继续播放、循环播放（几遍）。验证「循环播放3遍」能复用最近一次曲目，
+    // 下发 media.play 且带 loop:3，且不重新检索、不进大模型。
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '循环播放3遍'],
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/daoxiang.m4s', title: '稻香', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(20)
+    const plays1 = h.events.filter((e) => e.type === 'media.play') as Array<{ url: string }>
+    expect(plays1).toHaveLength(1)
+    const firstUrl = plays1[0].url
+
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(20)
+
+    const plays2 = h.events.filter((e) => e.type === 'media.play') as Array<{
+      url: string
+      title: string
+      loop?: number
+    }>
+    expect(plays2).toHaveLength(2)
+    const loopPlay = plays2[1]
+    expect(loopPlay.loop).toBe(3) // 总共播放 3 遍
+    expect(loopPlay.url).toBe(firstUrl) // 复用同一首，不重新检索
+    expect(loopPlay.title).toBe('稻香')
+    expect(h.agentCalls()).toBe(0) // 直连绕开 LLM
+    expect(texts(h)).toContain('循环播放')
+  })
+
+  it('循环播放（不带遍数）：默认再播一遍，下发 loop:2', async () => {
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '循环播放'],
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/daoxiang.m4s', title: '稻香', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(20)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(20)
+
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ loop?: number }>
+    expect(plays).toHaveLength(2)
+    expect(plays[1].loop).toBe(2) // 没写遍数 → 默认再播一遍（共 2 遍）
+  })
+
+  it('循环播放但当前没在播：口播提示，不下发 media.play', async () => {
+    // 没放过任何曲子时，lastTrack 为空，应友好提示而非报错或乱播。
+    const h = createHarness({
+      finalizeText: '循环播放3遍',
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/x.m4s', title: 'x', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const plays = h.events.filter((e) => e.type === 'media.play')
+    expect(plays).toHaveLength(0)
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('还没在播放')
+  })
+
   it('解析失败：仍下发 asr.final，口播「没找到」，绝不出现「操作失败」', async () => {
     const h = createHarness({
       finalizeText: '播放一首不存在的歌',

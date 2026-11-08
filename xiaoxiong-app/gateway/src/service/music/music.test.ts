@@ -128,6 +128,8 @@ describe('genre 分流', () => {
     expect(genreToKeyword('我想看西游记动画片')).toBe('西游记动画片')
     expect(genreToKeyword('我想看流浪地球电影')).toBe('流浪地球电影')
     expect(genreToKeyword('我看电视剧')).toBe('电视剧')
+    // 片尾曲 / 主题曲是内容类型词，必须保留（用户要求「片尾曲」也识别为播放关键字）
+    expect(genreToKeyword('播放千与千寻的片尾曲')).toBe('千与千寻 片尾曲')
   })
 
   it('genreToKeyword：「主演 / 参演 / 出演 / 导演 / 拍 / 唱」是谓语，不是作品名的一部分', () => {
@@ -154,6 +156,10 @@ describe('genre 分流', () => {
     expect(genreToKeyword('周杰伦唱的歌')).toBe('周杰伦 歌')
     expect(genreToKeyword('唱的歌')).toBe('') // 只剩泛化词 → 回落电台，不白搜
     expect(genreToKeyword('唱的')).toBe('')
+    // 主唱 / 演唱也是谓语填充词，不能留在检索词里（用户要求「主唱」也识别）
+    expect(genreToKeyword('周杰伦主唱的歌')).toBe('周杰伦 歌')
+    expect(genreToKeyword('主唱的歌')).toBe('') // 只剩泛化词 → 回落电台，不白搜
+    expect(genreToKeyword('主唱的')).toBe('')
     // MV 也当内容类型词保留
     expect(genreToKeyword('播放周杰伦的mv')).toBe('周杰伦 mv')
     expect(genreToKeyword('放个mv')).toBe('mv')
@@ -216,6 +222,7 @@ describe('isSpokenContentRequest（决定「没找到」的措辞，不能把评
       '解说员 评论员',
       '世界杯 回放',
       '西游记 主题曲',
+      '千与千寻 片尾曲',
     ]) {
       expect(isSpokenContentRequest(t)).toBe(true)
     }

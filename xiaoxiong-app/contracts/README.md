@@ -21,6 +21,13 @@
 | 分片 | 20–40 ms |
 | 编码 | PCM（后续可切 Opus） |
 
+上行采集按端分流（都是只读启动、用户开启助手时才开始，不在建连时占用麦克风）：
+
+- **App（Android / iOS，目标端）**：`app-product-wake` 原生插件的 `startPcm({ sampleRate:16000, channels:1, bitsPerSample:16, frameMs:32 })` → `onPcmFrame` 回调 `ArrayBuffer` 帧直接上行；`stopPcm()` 停止。由原生层用 Android `AudioRecord` / iOS `AVAudioEngine` 直接吐 PCM。插件未落地时 `isAppCaptureSupported()` 为 false，客户端明确提示「不支持录音采集」，不静默假装能唤醒。
+- **H5（仅开发阶段调试用）**：`navigator.mediaDevices.getUserMedia` + WebAudio `ScriptProcessor`，每帧 4096 采样转 16bit PCM 上行。
+- 微信小程序与 HarmonyOS 确定不支持，不提供采集实现。
+- **不用 `uni.getRecorderManager`**：它只录成文件（`onStop` 才给路径），且 App 端不支持 `onFrameRecorded`，无法提供 20–40ms 的持续分片；其 `format` 虽支持 `aac/mp3/wav/PCM`，但那是文件封装，不是实时流。
+
 TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声明解码。
 
 ## 消息
@@ -78,6 +85,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "tts.end" }
 { "type": "audio.duplex", "mode": "half" }
 { "type": "media.play", "url": "https://ice6.somafm.com/groovesalad-128-mp3", "title": "Groove Salad（轻电子/氛围）", "channel": "groovesalad" }
+{ "type": "media.play", "url": "https://.../track.m4s", "title": "稻香", "channel": "bilibili", "loop": 3 }
 { "type": "media.stop" }
 { "type": "media.lyrics", "title": "七里香", "artist": "周杰伦", "lyrics": "窗外的麻雀…" }
 { "type": "client.location.request" }
@@ -85,6 +93,8 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 ```
 
 `media.play` 让客户端用**独立播放器**播放一段音频流（电台/歌曲），与 TTS 的音频播放互不冲突；`media.stop` 停止当前播放。客户端在 TTS 播报期间应压低（duck）音乐音量，播完恢复。`media.lyrics` 携带歌词文本供客户端在页面展示。音乐只在用户要求时播放，不做预约/定时播放。
+
+`media.play` 可带可选字段 `loop`（正整数，缺省/1 表示不循环）：客户端播完最后一遍后自动重播同一首直到达到总遍数；播完最后一遍进入「已播放完毕」态（暂停按钮变为「继续播放」按钮）。`loop>1` 时客户端在自己内部循环，不回服务端重新检索。
 
 `client.location.request`：服务端**仅在位置/天气类工具被调用但本会话尚无设备位置时才下发**，客户端据此请求定位授权（manifest 已声明权限）并通过 `session.location` 上报经纬度。不在建连时主动要位置，避免冷启动就弹定位授权框打扰用户；用户没问位置相关问题时完全不触发定位。客户端若已授权/取不到位置则静默跳过，不阻断会话。
 
@@ -146,9 +156,10 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 - 响应 `200`：`{ "ok": true }`
 
 #### GET /static/cues/<name>.mp3
-「能力不可用」提示音文件（网络 / ASR / TTS / LLM 未就绪时客户端从网关拉取播放）。
+「能力/权限不可用」提示音文件（网络 / ASR / TTS / LLM 未就绪、或麦克风未授权时客户端从网关拉取播放）。
+定位是非必须能力，只显示状态、不播提示音。
 
-- 允许的名字（白名单，其余 404）：`network-down` / `asr-down` / `tts-down` / `llm-down`。
+- 允许的名字（白名单，其余 404）：`network-down` / `asr-down` / `tts-down` / `llm-down` / `mic-denied`。
 - 响应 `200`：`audio/mpeg`；带 `access-control-allow-origin: *`（供 H5 跨端口加载）与 `cache-control: public, max-age=3600`。
 - 路径含 `..` 或非白名单名字一律 `404`。
 - 客户端优先从网关拉取，拉取失败时回退到打包内的 `static/audio/<name>.mp3`。
