@@ -50,6 +50,26 @@ describe('toReplyHtml', () => {
   })
 })
 
+describe('toReplyHtml 清理模型残留', () => {
+  it('去掉没配对的强调符，不误伤已转换的加粗', () => {
+    const html = toReplyHtml('**注意**：出现 ** 这种落单的')
+    expect(html).not.toContain('**')
+    expect(html).toContain('<strong>注意</strong>')
+  })
+
+  it('连续句点 / 省略号收敛成一个省略号', () => {
+    const html = toReplyHtml('稍等......播完')
+    expect(html).toContain('…')
+    expect(html).not.toContain('......')
+  })
+
+  it('连续破折号收敛成一个', () => {
+    const html = toReplyHtml('地点 — — 就在这')
+    expect(html).toContain('—')
+    expect(html).not.toMatch(/—\s*—/)
+  })
+})
+
 describe('sanitizeHtml', () => {
   it('移除 iframe 与 style 块', () => {
     const html = sanitizeHtml('<style>body{}</style><iframe src="x"></iframe><p>正文</p>')

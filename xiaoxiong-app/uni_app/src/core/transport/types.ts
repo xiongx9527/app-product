@@ -24,6 +24,8 @@ export type ServerEvent =
   | { type: 'media.resume' }
   /** 让客户端展示某首歌的歌词 */
   | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
+  /** 服务端需要设备位置时才下发，客户端据此请求定位授权并上报 session.location；不在建连时主动要 */
+  | { type: 'client.location.request' }
   | { type: 'error'; code: string; message: string }
 
 export type SessionMode = 'wake' | 'dialog'

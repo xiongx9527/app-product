@@ -45,16 +45,16 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
 
   const makeService = (): VoiceSessionService =>
     new VoiceSessionService({
-      agentFactory: (lang, timezone, locationProvider, reverseGeocoder, musicSource, emit, memoryStore, memoryContext) =>
+      agentFactory: (lang, timezone, locationProvider, musicSource, emit, memoryStore, memoryContext, requestLocation) =>
         createAgentService(
           { ...config, timeZone: timezone },
           lang,
           locationProvider,
-          reverseGeocoder,
           musicSource,
           emit,
           memoryStore,
-          memoryContext
+          memoryContext,
+          requestLocation
         ),
       asr: createAsr(config),
       tts: createTts(config),
@@ -62,7 +62,6 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       send,
       sendAudio,
       asrEndpointMs: config.asr.endpointMs,
-      tiandituTk: config.tiandituTk,
       deviceId,
       onEnded: deviceId ? () => removeSession(deviceId) : undefined,
     })

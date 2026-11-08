@@ -2,12 +2,10 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, GeocodeInfo, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
-import type { ReverseGeocoder } from './geocode/types'
-import { createGeocodeAdapter } from './geocode'
+import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
 import { createMusicSource, type MusicSource } from './music'
 import { genreToKeyword, isGenericPlayPhrase } from './music/types'
-import { formatMemories, type MemoryStore } from './tools'
+import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
 import {
   searchCandidates,
   needsCandidateList,
@@ -34,11 +32,11 @@ export interface VoiceSessionDeps {
     lang: Lang,
     timezone?: string,
     locationProvider?: () => LocationInfo | null,
-    reverseGeocoder?: ReverseGeocoder,
     musicSource?: MusicSource,
     emit?: (m: ServerEvent) => void,
     memoryStore?: MemoryStore,
-    memoryContext?: string
+    memoryContext?: string,
+    requestLocation?: RequestLocation
   ) => AgentService
   asr: AsrProvider
   tts: TtsProvider
@@ -46,8 +44,6 @@ export interface VoiceSessionDeps {
   send: (event: ServerEvent) => void
   sendAudio: (bytes: Uint8Array) => void
   asrEndpointMs: number
-  /** 网关兜底的天地图 tk（TIANDITU_TK）：客户端未上报 geocode 时仍可用天地图，缺省空 */
-  tiandituTk?: string
   /** 构造音乐播放源；测试可注入桩避免联网，缺省用网关内置的无配置源 */
   musicSourceFactory?: () => MusicSource
   /** 检索候选歌曲（MusicBrainz）；测试可注入桩避免联网 */
@@ -59,6 +55,8 @@ export interface VoiceSessionDeps {
   deviceId?: string | null
   /** 会话显式结束（session.end）时回调：控制器据此从注册表移除，下次 start 视为全新 */
   onEnded?: () => void
+  /** 懒加载定位的等待超时（毫秒）：客户端取不到/拒绝/离线时兑现为 null；测试可压短 */
+  locationRequestTimeoutMs?: number
 }
 
 /**
@@ -91,8 +89,11 @@ export class VoiceSessionService {
   private timezone = 'Asia/Shanghai'
   /** 设备最近一次上报的位置；位置类工具实时读取它 */
   private location: LocationInfo | null = null
-  /** 天地图逆地理编码（配置了 tk 才有），把经纬度翻成中文地址 */
-  private reverseGeocoder: ReverseGeocoder | undefined = undefined
+  /** 懒加载定位：位置/天气工具需要位置但会话尚无时，挂起的 resolver；到达后统一兑现 */
+  private pendingLocation: Array<(loc: LocationInfo | null) => void> = []
+  /** 是否已向客户端发过 client.location.request（避免并发工具重复下发） */
+  private locationRequestSent = false
+  private locationRequestTimer: ReturnType<typeof setTimeout> | null = null
   /** 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），随会话构建 */
   private musicSource: MusicSource | undefined = undefined
   /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
@@ -138,7 +139,6 @@ export class VoiceSessionService {
   private finalizeChain: Promise<void> = Promise.resolve()
 
   constructor(private readonly deps: VoiceSessionDeps) {
-    this.reverseGeocoder = undefined
     this.deviceId = deps.deviceId ?? null
   }
 
@@ -149,15 +149,6 @@ export class VoiceSessionService {
   bindTransport(send: (event: ServerEvent) => void, sendAudio: (bytes: Uint8Array) => void): void {
     this.deps.send = send
     this.deps.sendAudio = sendAudio
-  }
-
-  /** 按客户端上报（或网关兜底）的配置构造逆地理编码函数；都没配则返回 null。 */
-  private buildGeocode(geocode?: GeocodeInfo): ReverseGeocoder | undefined {
-    if (geocode?.key) return createGeocodeAdapter(geocode) ?? undefined
-    if (this.deps.tiandituTk) {
-      return createGeocodeAdapter({ provider: 'tianditu', key: this.deps.tiandituTk }) ?? undefined
-    }
-    return undefined
   }
 
   handleText(raw: string): void {
@@ -171,21 +162,21 @@ export class VoiceSessionService {
     switch (msg.type) {
       case 'session.start':
         this.location = msg.location ?? null
-        // 逆地理编码：优先用客户端上报的 geocode 配置；没上报则退回网关兜底天地图 tk
-        this.reverseGeocoder = this.buildGeocode(msg.geocode)
         // 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），音乐工具始终注册
         this.musicSource = this.deps.musicSourceFactory
           ? this.deps.musicSourceFactory()
           : createMusicSource()
-        void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, this.reverseGeocoder)
+        void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode)
         break
       case 'session.location':
-        // 连接后或位置变化时刷新最新位置，不影响其它会话状态
+        // 连接后或位置变化时刷新最新位置，不影响其它会话状态；
+        // 同时兑现所有挂起的位置请求（懒加载定位：工具等这次上报才继续）
         this.location = {
           latitude: msg.latitude,
           longitude: msg.longitude,
           address: msg.address,
         }
+        this.resolvePendingLocation()
         break
       case 'session.cancel':
         this.cancel()
@@ -375,6 +366,40 @@ export class VoiceSessionService {
   /** 供位置类工具实时读取会话最近一次上报的设备位置。 */
   getLocation(): LocationInfo | null {
     return this.location
+  }
+
+  /**
+   * 懒加载定位：位置/天气工具被调用但本会话尚无位置时由工具回调。
+   * 下发 client.location.request 让客户端请求授权并上报 session.location，
+   * 等到上报（或超时）后兑现 promise；已在途则不重复下发。
+   * 用户从不问位置相关问题时，会话全程不触碰定位，避免冷启动弹窗。
+   */
+  private requestClientLocation(): Promise<LocationInfo | null> {
+    if (this.location) return Promise.resolve(this.location)
+    return new Promise((resolve) => {
+      this.pendingLocation.push(resolve)
+      if (this.locationRequestSent) return
+      this.locationRequestSent = true
+      this.deps.send({ type: 'client.location.request' })
+      // 客户端取不到/拒绝授权/离线：超时兑现为 null，工具回退到「位置不可用」话术
+      const timeoutMs = this.deps.locationRequestTimeoutMs ?? 8000
+      this.locationRequestTimer = setTimeout(() => {
+        this.locationRequestTimer = null
+        this.resolvePendingLocation()
+      }, timeoutMs)
+    })
+  }
+
+  /** 位置上报到达后兑现所有挂起请求；超时也走这里（location 可能仍为空）。 */
+  private resolvePendingLocation(): void {
+    if (this.locationRequestTimer) {
+      clearTimeout(this.locationRequestTimer)
+      this.locationRequestTimer = null
+    }
+    this.locationRequestSent = false
+    const resolvers = this.pendingLocation
+    this.pendingLocation = []
+    for (const r of resolvers) r(this.location)
   }
 
   handleBinary(chunk: Uint8Array): void {
@@ -676,13 +701,11 @@ export class VoiceSessionService {
     _sessionId: string,
     lang: Lang,
     timezone?: string,
-    mode: 'wake' | 'dialog' = 'dialog',
-    reverseGeocoder?: ReverseGeocoder
+    mode: 'wake' | 'dialog' = 'dialog'
   ): Promise<void> {
     this.lang = lang
     // 用户没带时区或带的是非法值就退回东 8 区
     this.timezone = timezone?.trim() || 'Asia/Shanghai'
-    this.reverseGeocoder = reverseGeocoder
     this.mode = mode
     this.active = true
     // 新会话（或重武装）作废旧会话的在途回调与排队
@@ -723,15 +746,15 @@ export class VoiceSessionService {
     this.agent =
       mode === 'wake'
         ? null
-        : this.deps.agentFactory(
+        :                   this.deps.agentFactory(
             lang,
             this.timezone,
             () => this.getLocation(),
-            this.reverseGeocoder,
             this.musicSource,
             (m) => this.deps.send(m),
             memoryStore,
-            memoryContext
+            memoryContext,
+            () => this.requestClientLocation()
           )
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }

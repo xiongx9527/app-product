@@ -175,7 +175,21 @@ function renderMarkdown(src: string): string {
   }
 
   closeList()
-  return out.join('').replace(/(<br\/>)+$/, '')
+  return cleanArtifacts(out.join('').replace(/(<br\/>)+$/, ''))
+}
+
+/**
+ * 清理模型流式输出里常见的残留，避免卡片上出现一堆符号怪文：
+ * - 没配对的强调符（** / __ / ~~）：markdown 转换只吃掉成对的，落单的会原样显示；
+ * - 连续句点 / 省略号堆积（... / ………）：收敛成一个省略号；
+ * - 连续破折号（— — / --）：收敛成一个。
+ * 只在转换后的 HTML 文本上做，不会误伤我们自己生成的标签属性（用中文标点与空格分隔）。
+ */
+function cleanArtifacts(html: string): string {
+  return html
+    .replace(/\*\*+|__+|~~+/g, '')
+    .replace(/(?:\.{3,}|\u2026{2,})/g, '\u2026')
+    .replace(/[—–\-]\s*[—–\-]+/g, '—')
 }
 
 export function toReplyHtml(raw: string): string {

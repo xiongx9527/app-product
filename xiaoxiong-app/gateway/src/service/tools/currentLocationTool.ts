@@ -1,12 +1,15 @@
 import { z } from 'zod'
 import type { Lang, LocationInfo } from '../../protocol'
-import type { ReverseGeocoder } from '../geocode/tiandituReverse'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const LOCATION_TOOL_NAME = 'get_current_location'
 
 /** 位置提供方：返回会话最近一次上报的设备位置，未获取到时为 null。 */
 export type LocationProvider = () => LocationInfo | null
+
+/** 向客户端请求一次定位的回调：会话暂无位置时由工具调用，下发 client.location.request
+ * 并等待客户端上报 session.location，返回最新位置（或超时 null）。 */
+export type RequestLocation = () => Promise<LocationInfo | null>
 
 /** 把位置格式化成可读字符串交给大模型；loc 为 null 时说明设备未授权/不可用。 */
 export function formatLocation(lang: Lang | string, loc: LocationInfo | null): string {
@@ -36,14 +39,13 @@ const DESCRIPTIONS: Record<string, string> = {
 
 /**
  * 创建「获取当前位置」工具；无需入参，位置来自客户端上报、由 locationProvider 实时读取。
- * 若提供 reverseGeocoder（已配置天地图 tk），则用它把经纬度翻成更准的中文地址，
- * 失败时退回客户端自带地址；未配置时直接用客户端地址。
+ * address 优先用客户端系统定位回调附带的可读地址；没有则退回经纬度。
  * 返回 AgentScope 的 Tool 描述（name / description / inputSchema / call）。
  */
 export function createCurrentLocationTool(
   lang: Lang | string,
   locationProvider: LocationProvider,
-  reverseGeocoder?: ReverseGeocoder
+  requestLocation?: RequestLocation
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   return {
@@ -51,20 +53,10 @@ export function createCurrentLocationTool(
     description: DESCRIPTIONS[prefix] ?? DESCRIPTIONS.zh,
     inputSchema: z.object({}),
     call: async (): Promise<string> => {
-      const loc = locationProvider()
-      if (!loc || typeof loc.latitude !== 'number' || typeof loc.longitude !== 'number') {
-        return formatLocation(lang, null)
-      }
-      // 有天地图 tk 时优先用服务端逆地理编码补全地址，更准且跨端一致
-      if (reverseGeocoder) {
-        try {
-          const rev = await reverseGeocoder(loc.latitude, loc.longitude)
-          if (rev?.formattedAddress) {
-            return formatLocation(lang, { ...loc, address: rev.formattedAddress })
-          }
-        } catch {
-          /* 退回客户端地址 */
-        }
+      let loc = locationProvider()
+      // 会话尚无位置（用户此前没问过位置、未授权）：向客户端要一次，再读最新位置
+      if ((!loc || typeof loc.latitude !== 'number') && requestLocation) {
+        loc = await requestLocation()
       }
       return formatLocation(lang, loc)
     },

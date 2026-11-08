@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { Lang, LocationInfo } from '../../protocol'
-import type { LocationProvider } from './currentLocationTool'
+import type { LocationProvider, RequestLocation } from './currentLocationTool'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const WEATHER_TOOL_NAME = 'get_weather'
@@ -119,7 +119,8 @@ export type Fetcher = (url: string) => Promise<{ ok: boolean; json: () => Promis
 export function createWeatherTool(
   lang: Lang | string,
   locationProvider: LocationProvider,
-  fetcher: Fetcher = globalThis.fetch as unknown as Fetcher
+  fetcher: Fetcher = globalThis.fetch as unknown as Fetcher,
+  requestLocation?: RequestLocation
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   const descriptions: Record<string, string> = {
@@ -131,7 +132,11 @@ export function createWeatherTool(
     description: descriptions[prefix] ?? descriptions.zh,
     inputSchema: z.object({}),
     call: async (): Promise<string> => {
-      const loc = locationProvider()
+      let loc = locationProvider()
+      // 会话尚无位置：先向客户端要一次，再读最新位置
+      if ((!loc || typeof loc.latitude !== 'number') && requestLocation) {
+        loc = await requestLocation()
+      }
       if (!loc || typeof loc.latitude !== 'number') {
         return prefix === 'en'
           ? 'Current location is unavailable, so I cannot fetch the weather.'

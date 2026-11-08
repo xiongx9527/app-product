@@ -11,7 +11,7 @@ import { EventType } from '@agentscope-ai/agentscope/event'
 import { messages } from '../i18n'
 import type { Lang } from '../protocol'
 import type { LlmConfig } from '../config'
-import { createToolkit, type LocationProvider, type ReverseGeocoder, type MediaEmitter, type MemoryStore } from './tools'
+import { createToolkit, type LocationProvider, type MediaEmitter, type MemoryStore, type RequestLocation } from './tools'
 import type { MusicSource } from './music/types'
 import { ChannelSplitter } from './channelSplitter'
 
@@ -60,11 +60,11 @@ export function createAgentService(
   config: { llm: LlmConfig; timeZone?: string },
   lang: Lang,
   locationProvider: LocationProvider = () => null,
-  reverseGeocoder?: ReverseGeocoder,
   musicSource?: MusicSource,
   emit?: MediaEmitter,
   memoryStore?: MemoryStore,
-  memoryContext?: string
+  memoryContext?: string,
+  requestLocation?: RequestLocation
 ): AgentService {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
@@ -76,7 +76,7 @@ export function createAgentService(
     name: 'Xiong',
     sysPrompt,
     model,
-    toolkit: createToolkit(lang, config.timeZone, locationProvider, reverseGeocoder, musicSource, emit, memoryStore),
+    toolkit: createToolkit(lang, config.timeZone, locationProvider, musicSource, emit, memoryStore, requestLocation),
   })
   return {
     async reply(userText, onDelta, onThinking) {

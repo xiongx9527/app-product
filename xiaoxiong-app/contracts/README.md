@@ -28,7 +28,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "geocode": { "provider": "tianditu", "key": "客户端天地图 tk" } }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.end" }
@@ -48,9 +48,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `session.start` 的 `timezone` 为客户端本地 IANA 时区（如 `Asia/Shanghai`），时间类工具据此返回用户所在时区的时间；缺省或非法时网关退回东 8 区（`Asia/Shanghai`）。客户端默认东 8 区，可在设置页修改。
 
-`session.start` 的 `location` 为客户端设备位置（`latitude` / `longitude` 必填，`address` 为反向地理编码得到的城市/街道，由客户端提供）；缺省时由 `session.location` 消息在连接后或位置变化时补报/刷新。位置类工具（`get_current_location`）按此返回用户所处位置。
-
-`session.start` 的 `geocode` 为客户端选择的位置服务商配置（`provider`: `tianditu` / `tencent` / `amap` / `baidu` + `key`），逆地理编码（坐标→地址）在网关侧据此完成；`key` 留空时退回网关兜底天地图 tk（环境变量 `TIANDITU_TK`）。四家均免费，坐标均为 GCJ-02（天地图、百度除外：天地图网关内部将 GCJ-02 转 WGS-84 再请求；百度用 `coordtype=gcj02ll` 直接收 GCJ-02）。客户端可在设置页选择服务商并填入自有 Key（byok），不填则使用网关兜底。
+`session.start` 的 `location` 为客户端设备位置（`latitude` / `longitude` 必填，`address` 为系统定位回调附带的城市/街道，可选）；缺省时由 `session.location` 消息在连接后或位置变化时补报/刷新。位置类工具（`get_current_location`）直接基于客户端上报的经纬度与可选地址返回用户所处位置，网关**不做逆地理编码**、不依赖任何地图服务商。
 
 `session.start` 的 `deviceId` 为客户端持久化的稳定设备标识（首次生成、之后复用；同时随 WS 连接 URL query 上报为主路径）。网关据此**把会话与连接解耦**，按 `deviceId` 维护进程内会话注册表：
 
@@ -82,10 +80,13 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "media.play", "url": "https://ice6.somafm.com/groovesalad-128-mp3", "title": "Groove Salad（轻电子/氛围）", "channel": "groovesalad" }
 { "type": "media.stop" }
 { "type": "media.lyrics", "title": "七里香", "artist": "周杰伦", "lyrics": "窗外的麻雀…" }
+{ "type": "client.location.request" }
 { "type": "error", "code": "ASR_TIMEOUT", "message": "识别超时" }
 ```
 
 `media.play` 让客户端用**独立播放器**播放一段音频流（电台/歌曲），与 TTS 的音频播放互不冲突；`media.stop` 停止当前播放。客户端在 TTS 播报期间应压低（duck）音乐音量，播完恢复。`media.lyrics` 携带歌词文本供客户端在页面展示。音乐只在用户要求时播放，不做预约/定时播放。
+
+`client.location.request`：服务端**仅在位置/天气类工具被调用但本会话尚无设备位置时才下发**，客户端据此请求定位授权（manifest 已声明权限）并通过 `session.location` 上报经纬度。不在建连时主动要位置，避免冷启动就弹定位授权框打扰用户；用户没问位置相关问题时完全不触发定位。客户端若已授权/取不到位置则静默跳过，不阻断会话。
 
 `asr.partial` 是网关对已收音频的滚动重识别结果，可重复、可回退，客户端只用于展示；
 `asr.final` 才是定稿文本。**只有 `asr.final` 之后才会请求大模型**，中间结果不会触发回复。

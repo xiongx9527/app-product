@@ -57,4 +57,28 @@ describe('weatherTool', () => {
     const schemas = createToolkit('zh-CN', 'Asia/Shanghai', () => null).getJSONSchemas()
     expect(schemas.some((s: { function: { name: string } }) => s.function.name === WEATHER_TOOL_NAME)).toBe(true)
   })
+
+  it('懒加载：provider 暂无位置但有 requestLocation 时，等待上报后再联网取天气', async () => {
+    let loc: { latitude: number; longitude: number; address?: string } | null = null
+    const provider = () => loc
+    const requestLocation = async () => {
+      loc = { latitude: 31.23, longitude: 121.47, address: '上海市' }
+      return loc
+    }
+    const fetcher = async () => ({
+      ok: true,
+      json: async () => SAMPLE as unknown as Record<string, unknown>,
+    })
+    const t = createWeatherTool('zh-CN', provider, fetcher, requestLocation)
+    const out = await t.call?.()
+    expect(out).toContain('上海')
+    expect(out).toContain('21°')
+  })
+
+  it('懒加载：requestLocation 仍拿不到位置时给出提示而非联网', async () => {
+    const provider = () => null
+    const requestLocation = async () => null
+    const t = createWeatherTool('zh-CN', provider, async () => ({ ok: true, json: async () => ({}) }), requestLocation)
+    expect(await t.call?.()).toContain('未获取')
+  })
 })

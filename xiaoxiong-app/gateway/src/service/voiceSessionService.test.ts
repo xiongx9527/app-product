@@ -56,6 +56,8 @@ function createHarness(
     memories?: Array<{ key: string; value: string; updatedAt: number }>
     /** 设备标识；传 null 可验证「无 deviceId 不注入记忆」。默认 test-device */
     deviceId?: string | null
+    /** 懒加载定位超时（毫秒）；测试压短，默认 50ms */
+    locationRequestTimeoutMs?: number
   } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
@@ -123,7 +125,7 @@ function createHarness(
     },
   } as unknown as DataService
   const deps: VoiceSessionDeps = {
-    agentFactory: (_lang, _tz, _loc, _rev, _music, _emit, _store, memoryContext) => {
+    agentFactory: (_lang, _tz, _loc, _music, _emit, _store, memoryContext) => {
       factoryCalls += 1
       lastMemoryContext = memoryContext
       return agent
@@ -136,6 +138,7 @@ function createHarness(
     asrEndpointMs: opts.asrEndpointMs ?? 10,
     musicSourceFactory: opts.musicSourceFactory,
     candidateFetcher: opts.candidateFetcher,
+    locationRequestTimeoutMs: opts.locationRequestTimeoutMs ?? 50,
     deviceId: opts.deviceId === undefined ? 'test-device' : opts.deviceId,
   }
   service = new VoiceSessionService(deps)
@@ -790,6 +793,36 @@ describe('长期记忆：语音「忘了XX」直连 + 系统提示注入', () =>
     const h = createHarness({ asrEndpointMs: 800, deviceId: null })
     await startDialog(h.service)
     expect(h.lastMemoryContext()).toBeUndefined()
+  })
+})
+
+describe('懒加载定位：client.location.request 下发与 session.location 兑现', () => {
+  it('会话暂无位置时下发请求，客户端上报后兑现 promise', async () => {
+    const h = createHarness({ asrEndpointMs: 800 })
+    await startDialog(h.service) // session.start 不带 location
+    const p = (h.service as unknown as { requestClientLocation: () => Promise<unknown> }).requestClientLocation()
+    // 立即应下发 client.location.request，且只下发一次
+    expect(h.events.some((e) => e.type === 'client.location.request')).toBe(true)
+    const before = h.events.filter((e) => e.type === 'client.location.request').length
+    // 并发再要一次位置：不应重复下发请求
+    const p2 = (h.service as unknown as { requestClientLocation: () => Promise<unknown> }).requestClientLocation()
+    expect(h.events.filter((e) => e.type === 'client.location.request').length).toBe(before)
+    // 客户端上报位置
+    h.service.handleText(
+      JSON.stringify({ type: 'session.location', latitude: 22.54, longitude: 114.06, address: '深圳市南山区' })
+    )
+    const loc = (await p) as { latitude: number; longitude: number; address?: string }
+    await p2
+    expect(loc.latitude).toBe(22.54)
+    expect(loc.longitude).toBe(114.06)
+    expect(loc.address).toBe('深圳市南山区')
+  })
+
+  it('超时（8s）未上报时兑现为 null，工具回退到「位置不可用」', async () => {
+    const h = createHarness({ asrEndpointMs: 800 })
+    await startDialog(h.service)
+    const loc = await (h.service as unknown as { requestClientLocation: () => Promise<unknown> }).requestClientLocation()
+    expect(loc).toBeNull()
   })
 })
 

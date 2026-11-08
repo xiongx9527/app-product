@@ -7,19 +7,11 @@
 
 export type Lang = 'zh-CN'
 
-/** 设备上报的位置：经纬度必填，address 为客户端反向地理编码得到的可读地址（城市/街道） */
+/** 设备上报的位置：经纬度必填，address 为系统定位回调附带的可读地址（城市/街道），可选。 */
 export interface LocationInfo {
   latitude: number
   longitude: number
   address?: string
-}
-
-/** 客户端上报的地图服务商配置：选中的逆地理编码服务商 + 该服务商的 Key（byok，存本机）。 */
-export interface GeocodeInfo {
-  /** tianditu=天地图；tencent=腾讯；amap=高德；baidu=百度。均免费提供逆地理编码。 */
-  provider: 'tianditu' | 'tencent' | 'amap' | 'baidu'
-  /** 该服务商的 API Key；为空时网关退回客户端自带地址或网关兜底 Key。 */
-  key: string
 }
 
 /** 客户端 → 服务端（文本控制帧） */
@@ -32,8 +24,6 @@ export type ClientMessage =
       timezone?: string
       /** 设备当前位置（经纬度 + 可选地址），用于位置类工具返回，缺省由 session.location 补齐 */
       location?: LocationInfo
-      /** 地图服务商配置（逆地理编码用）：客户端设置页选择并填 Key，随会话上报 */
-      geocode?: GeocodeInfo
       /** wake=只做 ASR（用于本地唤醒词检测，不跑 LLM/TTS）；dialog=完整对话，默认 */
       mode?: 'wake' | 'dialog'
       /**
@@ -81,6 +71,9 @@ export type ServerEvent =
   | { type: 'media.resume' }
   /** 让客户端展示某首歌的歌词 */
   | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
+  /** 服务端需要设备位置（位置/天气类工具被调用但会话尚无位置）时才下发，
+   * 客户端据此请求定位授权并上报 session.location；不在建连时主动要位置，避免冷启动弹窗。 */
+  | { type: 'client.location.request' }
   | { type: 'error'; code: ServerErrorCode; message: string }
 
 /** 契约定义的错误码 */

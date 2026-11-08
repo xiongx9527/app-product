@@ -2,7 +2,6 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   CAPABILITIES,
-  GEOCODE_PROVIDERS,
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
   appConfig,
@@ -16,7 +15,6 @@ import {
   setProvider,
   type Capability,
   type ConfigValue,
-  type GeocodeProvider,
   type ProviderField,
 } from '@/core/config'
 import { t } from '@/core/i18n'
@@ -125,22 +123,6 @@ const timezoneIndex = computed(() =>
   )
 )
 const timezoneLabels = TIMEZONE_OPTIONS.map((item) => item.label)
-
-const geocodeLabels = GEOCODE_PROVIDERS.map((item) =>
-  t(`settings.geocode.provider.${item.value}`)
-)
-const geocodeIndex = computed(() =>
-  Math.max(
-    0,
-    GEOCODE_PROVIDERS.findIndex((item) => item.value === appConfig.geocode.provider)
-  )
-)
-
-function onGeocodeProviderChange(event: Event): void {
-  const index = Number(eventValue(event))
-  const option = GEOCODE_PROVIDERS[index]
-  if (option) appConfig.geocode.provider = option.value
-}
 
 function eventValue(event: Event): unknown {
   return (event as unknown as { detail?: { value?: unknown } }).detail?.value
@@ -288,10 +270,6 @@ function onTimezoneChange(event: Event): void {
   const index = Number(eventValue(event))
   const option = TIMEZONE_OPTIONS[index]
   if (option) appConfig.timezone = option.value
-}
-
-function onGeocodeKeyInput(event: Event): void {
-  appConfig.geocode.key = String(eventValue(event) ?? '')
 }
 
 function onFieldInput(
@@ -543,40 +521,6 @@ onMounted(() => {
       >
         {{ results[card.key]?.message }}
       </text>
-    </view>
-
-    <view class="card">
-      <view class="card-head">
-        <text class="card-title">{{ t('settings.geocode.title') }}</text>
-        <text class="card-sub">{{ t('settings.geocode.sub') }}</text>
-      </view>
-      <picker
-        :range="geocodeLabels"
-        :value="geocodeIndex"
-        @change="onGeocodeProviderChange"
-      >
-        <view class="picker-row">
-          <text class="picker-label">{{ t('settings.geocode.provider') }}</text>
-          <view class="picker-right">
-            <text class="picker-value">{{ geocodeLabels[geocodeIndex] }}</text>
-            <text class="picker-arrow">›</text>
-          </view>
-        </view>
-      </picker>
-      <input
-        class="input"
-        :type="reveal.geocodeKey ? 'text' : 'password'"
-        :value="appConfig.geocode.key"
-        :placeholder="t('settings.geocode.key')"
-        @input="onGeocodeKeyInput"
-      />
-      <text
-        class="field-toggle"
-        @tap="reveal.geocodeKey = !reveal.geocodeKey"
-      >
-        {{ reveal.geocodeKey ? '隐藏' : '显示' }}
-      </text>
-      <text class="hint">{{ t('settings.geocode.hint') }}</text>
     </view>
 
     <view class="card">

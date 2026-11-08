@@ -1,14 +1,11 @@
 import { reactive } from 'vue'
 import {
   DEFAULT_GATEWAY_WS_URL,
-  DEFAULT_GEOCODE,
   DEFAULT_LANGUAGE,
   DEFAULT_TIMEZONE,
-  GEOCODE_PROVIDERS,
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
   languageLabel,
-  normalizeGeocodeProvider,
   normalizeTimezone,
 } from './constants'
 import { PROVIDERS, findProvider } from './providers'
@@ -22,8 +19,6 @@ import type {
   AppConfig,
   Capability,
   ConfigValue,
-  GeocodeConfig,
-  GeocodeProvider,
   ProviderField,
   ProviderTemplate,
   ServiceMode,
@@ -31,14 +26,11 @@ import type {
 
 export {
   DEFAULT_GATEWAY_WS_URL,
-  DEFAULT_GEOCODE,
   DEFAULT_LANGUAGE,
   DEFAULT_TIMEZONE,
-  GEOCODE_PROVIDERS,
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
   languageLabel,
-  normalizeGeocodeProvider,
   normalizeTimezone,
 } from './constants'
 export {

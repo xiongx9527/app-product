@@ -81,8 +81,6 @@ export interface GatewayConfig {
   rsaFrontendPublicKey: string
   /** 时区：时间工具据此返回本地时间，默认东八区（Asia/Shanghai） */
   timeZone: string
-  /** 天地图服务端密钥（tk）：用于逆地理编码把经纬度翻成中文地址；缺省为空即不启用 */
-  tiandituTk: string
   /** 各能力对象 */
   ws: WsConfig
   llm: LlmConfig
@@ -115,7 +113,6 @@ export function loadConfig(): GatewayConfig {
     rsaBackendPrivateKey: process.env.RSA_BACKEND_PRIVATE_KEY ?? '',
     rsaFrontendPublicKey: process.env.RSA_FRONTEND_PUBLIC_KEY ?? '',
     timeZone: process.env.TIME_ZONE ?? 'Asia/Shanghai',
-    tiandituTk: process.env.TIANDITU_TK ?? '',
     ws: { path: process.env.WS_PATH ?? '/ws' },
     llm: {
       provider: oneOf(process.env.LLM_PROVIDER, 'stub'),

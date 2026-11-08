@@ -97,8 +97,8 @@ export class WebSocketTransport implements AssistantTransport {
       ws.onopen = () => {
         this.setConnected(true)
         this.sendStart(this.pendingMode)
-        // 连接建立后异步取设备位置并上报（不阻塞会话开始）
-        void this.fetchAndSendLocation()
+        // 不再建连即主动取位置：改为懒加载——只有用户问到位置/天气时，网关才会下发
+        // client.location.request，客户端此时才请求定位授权并上报，避免冷启动就弹定位框。
         resolve()
       }
       ws.onerror = () => {
@@ -190,8 +190,6 @@ export class WebSocketTransport implements AssistantTransport {
       sessionId: this.sessionId,
       lang: this.lang,
       timezone: appConfig.timezone,
-      // 地图服务商配置（逆地理编码）：客户端设置页选择并填 Key，随会话上报
-      geocode: { provider: appConfig.geocode.provider, key: appConfig.geocode.key },
       // 音乐为网关内置能力，无需客户端上报配置
       location: this.lastLocation ?? undefined,
       mode,
@@ -265,6 +263,10 @@ export class WebSocketTransport implements AssistantTransport {
     if (typeof data === 'string') {
       try {
         const event = JSON.parse(data) as ServerEvent
+        // 懒加载定位：网关要位置时再取并上报，不在建连时打扰用户
+        if (event.type === 'client.location.request') {
+          void this.fetchAndSendLocation()
+        }
         this.eventListeners.forEach((listener) => listener(event))
       } catch {
         // 非法 JSON 帧忽略
