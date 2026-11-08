@@ -48,7 +48,9 @@ const GENRE_KEYWORDS: Array<{ match: RegExp; keyword: string }> = [
 /**
  * 泛化点歌词：用户只说「放首歌/播放个/随便放点」，没有点名歌名/歌手/风格。
  * 这类词拿去视频搜索「歌 视频 在线听」几乎抽不到音轨，会白报「操作失败」，
- * 应回落到轻音乐电台（SomaFM），由 isGenreRequest 判为风格请求。
+ * 应回落到空串、由上层（isGenreRequest 把空串判为风格请求）路由到轻音乐电台（SomaFM）。
+ * 回落空串而非「轻音乐」字面值：空串语义更干净——「没给具体点歌信息」，
+ * 同时让推荐意图在没有任何歌手/风格时走「引导补充」分支，而非拿空泛词去搜索。
  */
 const GENERIC_PLAY_WORDS =
   /^(歌|歌曲|音乐|乐曲|曲子|曲|个|首|点|些|一点的?|一些|随便|随便来|随便放|随便听|都行|什么都行|任意|来点|放点|听点|来首歌|放首歌|点首歌|听首歌|放个歌|播个|播放个|点点|呗|吧|啊|呢)*$/
@@ -59,11 +61,11 @@ export function isGenericPlayPhrase(text: string): boolean {
   return c.length > 0 && GENERIC_PLAY_WORDS.test(c)
 }
 
-/** 把风格描述/歌名收敛成搜索词；无匹配给兜底词。 */
+/** 把风格描述/歌名/内容类型收敛成搜索词；无匹配给空串（上层回落电台）。 */
 export function genreToKeyword(genre?: string): string {
-  if (!genre) return '轻音乐'
+  if (!genre) return ''
   const trimmed = genre.trim()
-  // 先按风格词映射（轻音乐/电子/爵士…），命中直接返回该风格词
+  // 先按风格词映射（轻音乐/电子/爵士…），命中直接返回该风格词（明确的风格请求，非回落）
   for (const entry of GENRE_KEYWORDS) {
     if (entry.match.test(trimmed)) return entry.keyword
   }
@@ -88,11 +90,11 @@ export function genreToKeyword(genre?: string): string {
   // 候选/检索词变成「放刘德华 / 唱周杰伦」，B 站与 MusicBrainz 都搜不到
   // （「播放刘德华的歌」能放正是因为它被 COMMAND_WORDS 的「播放」整词剔掉了）。
   kw = kw.replace(/^[放播唱听]\s*/, '')
-  // 剔除后只剩泛化词/语气词（或为空）→ 回落轻音乐电台，别拿去白搜
+  // 剔除后只剩泛化词/语气词（或为空）→ 回落空串，由上层路由到轻音乐电台，别拿去白搜
   const compact = kw.replace(/\s+/g, '')
-  if (!compact || GENERIC_PLAY_WORDS.test(compact)) return '轻音乐'
+  if (!compact || GENERIC_PLAY_WORDS.test(compact)) return ''
   // 「播放个周杰伦的稻香」这类：指令词删掉后残留开头的量词「个/首/点」，去掉再搜
-  return kw.replace(/^[个首点些]+\s*/, '').trim() || '轻音乐'
+  return kw.replace(/^[个首点些]+\s*/, '').trim() || ''
 }
 
 /**
@@ -130,6 +132,17 @@ const COMMAND_WORDS: string[] = [
   '换风格',
   '切歌',
   '来点别的',
+  // 推荐/列出类动词与修饰词：推荐意图走候选列表分支，这些词不是歌名/歌手，必须剔掉，
+  // 否则「推荐周杰伦的歌」会收敛成「推荐周杰伦」拿去检索，「推荐几首歌」会拿「推荐歌」白搜。
+  '推荐',
+  '挑几首',
+  '选几首',
+  '找几首',
+  '有什么',
+  '有哪些',
+  '来点好听',
+  '好听',
+  '好听的',
 ]
 
 /** 取参数的字符串值，缺省给 fallback。 */

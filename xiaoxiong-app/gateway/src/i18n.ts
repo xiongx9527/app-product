@@ -26,6 +26,10 @@ export interface Messages {
     chooseHint: () => string
     /** 没识别出用户选了哪首时的重问 */
     chooseAgain: () => string
+    /** 推荐意图：列出候选让用户选，绝不自动播放 */
+    recommend: (items: readonly string[]) => string
+    /** 推荐但没具体歌手/风格：引导补充，不擅自乱播 */
+    recommendPrompt: () => string
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
@@ -74,6 +78,11 @@ const zhCN: Messages = {
       `找到几首：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}首，${it}`).join('；')}。`,
     chooseHint: () => '你想听第几首，或者说出歌名？',
     chooseAgain: () => '没听清选哪首，请说第几首或歌名。',
+    /** 推荐意图：列出候选让用户选，绝不自动播放 */
+    recommend: (items: readonly string[]) =>
+      `为你推荐：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}首，${it}`).join('；')}。`,
+    /** 推荐但没具体歌手/风格：引导补充，不擅自乱播 */
+    recommendPrompt: () => '想听点什么风格，或者告诉我歌手，我帮你挑几首？',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
   memory: {

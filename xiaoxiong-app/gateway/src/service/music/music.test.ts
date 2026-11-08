@@ -81,11 +81,11 @@ describe('genre 分流', () => {
     expect(genreToKeyword('放首陈奕迅另外的歌')).toBe('陈奕迅 歌')
   })
 
-  it('genreToKeyword：泛化点歌回落轻音乐（避免拿「歌」去百度白搜报操作失败）', () => {
+  it('genreToKeyword：泛化点歌回落空串（由路由判为风格请求走 SomaFM，避免拿「歌」去白搜）', () => {
     for (const t of ['播放个', '播放个音乐', '给我放首歌', '放首歌', '来首歌', '放点音乐', '随便放点']) {
-      expect(genreToKeyword(t)).toBe('轻音乐')
+      expect(genreToKeyword(t)).toBe('')
     }
-    // 泛化词收敛后应判为风格请求 → 走 SomaFM 电台
+    // 空串在 isGenreRequest 里判为风格请求 → 走 SomaFM 电台
     expect(isGenreRequest(genreToKeyword('播放个音乐'))).toBe(true)
   })
 })
