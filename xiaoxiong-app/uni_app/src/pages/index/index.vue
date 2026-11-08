@@ -225,11 +225,11 @@ function onOrbTap(): void {
     <view v-if="musicVisible" class="music-bar">
       <view class="music-row">
         <view class="music-info">
-          <text class="music-label">{{ t('music.nowPlaying') }}</text>
+          <text class="music-label" :class="{ paused: musicPaused }">{{ musicPaused ? t('music.pausedLabel') : t('music.nowPlaying') }}</text>
           <text class="music-title">{{ musicTitle }}</text>
         </view>
         <view class="music-actions">
-          <view class="music-ctrl primary" :aria-label="t('music.next')" @tap="onNextMusic">
+          <view class="music-ctrl" :class="{ primary: !musicPaused }" :aria-label="t('music.next')" @tap="onNextMusic">
             <image class="music-icon" src="/static/icons/next.svg" mode="aspectFit" />
           </view>
           <view class="music-ctrl" :aria-label="musicPaused ? t('music.resume') : t('music.pause')" @tap="onTogglePause">
@@ -774,6 +774,10 @@ function onOrbTap(): void {
   font-size: 10px;
   letter-spacing: 1px;
   color: #8ee0bd;
+}
+
+.music-label.paused {
+  color: #ffb38a;
 }
 
 .music-title {

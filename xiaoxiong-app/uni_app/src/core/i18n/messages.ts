@@ -186,6 +186,7 @@ const zhCN: Messages = {
   'talk.listening': '正在听，直接说话即可（说完停顿一下）',
 
   'music.nowPlaying': '正在播放',
+  'music.pausedLabel': '已暂停',
   'music.stop': '停',
   'music.pause': '暂',
   'music.resume': '续',
@@ -389,6 +390,7 @@ const enUS: Messages = {
   'talk.listening': 'Listening. Just talk (pause when done)',
 
   'music.nowPlaying': 'Now playing',
+  'music.pausedLabel': 'Paused',
   'music.stop': 'Stop',
   'music.pause': 'Pause',
   'music.resume': 'Resume',

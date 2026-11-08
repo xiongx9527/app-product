@@ -72,6 +72,15 @@ describe('genre 分流', () => {
     expect(genreToKeyword('报一下周杰伦的歌')).toBe('周杰伦 歌')
   })
 
+  it('genreToKeyword：剔除“其它/其他/别的/另外”填充词（用户反馈“放一首林俊杰其它的歌”报没找到）', () => {
+    // 「林俊杰其它的歌」里的「其它」只是“要一首不同的”的口语填充，不是歌名一部分；
+    // 留着会让候选检索与 B 站搜索都拿「林俊杰其它」搜不到，误报「没找到这首歌」。
+    expect(genreToKeyword('放一首林俊杰其它的歌')).toBe('林俊杰 歌')
+    expect(genreToKeyword('来一首周杰伦其他的歌')).toBe('周杰伦 歌')
+    expect(genreToKeyword('唱一首邓紫棋别的歌')).toBe('邓紫棋歌')
+    expect(genreToKeyword('放首陈奕迅另外的歌')).toBe('陈奕迅 歌')
+  })
+
   it('genreToKeyword：泛化点歌回落轻音乐（避免拿「歌」去百度白搜报操作失败）', () => {
     for (const t of ['播放个', '播放个音乐', '给我放首歌', '放首歌', '来首歌', '放点音乐', '随便放点']) {
       expect(genreToKeyword(t)).toBe('轻音乐')
