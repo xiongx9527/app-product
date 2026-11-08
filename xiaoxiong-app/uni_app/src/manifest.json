@@ -23,12 +23,15 @@
           "<uses-permission android:name=\"android.permission.MODIFY_AUDIO_SETTINGS\"/>",
           "<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE\"/>",
           "<uses-permission android:name=\"android.permission.FOREGROUND_SERVICE_MICROPHONE\"/>",
-          "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/>"
+          "<uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\"/>",
+          "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\"/>",
+          "<uses-permission android:name=\"android.permission.ACCESS_COARSE_LOCATION\"/>"
         ]
       },
       "ios": {
         "privacyDescription": {
-          "NSMicrophoneUsageDescription": "需要使用麦克风持续监听唤醒词并进行语音对话"
+          "NSMicrophoneUsageDescription": "需要使用麦克风持续监听唤醒词并进行语音对话",
+          "NSLocationWhenInUseUsageDescription": "需要获取位置以提供本地天气、附近信息与本地化服务"
         }
       }
     }

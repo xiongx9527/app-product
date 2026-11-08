@@ -219,17 +219,41 @@ export class WebSocketTransport implements AssistantTransport {
         resolve(null)
         return
       }
-      uni.getLocation({
-        type: 'gcj02',
-        geocode: true,
-        success: (res) =>
-          resolve({
-            latitude: res.latitude,
-            longitude: res.longitude,
-            address: typeof res.address === 'string' ? res.address : undefined,
-          }),
-        fail: () => resolve(null),
+      // 先显式申请定位授权：manifest 已声明权限，这里主动触发系统授权框，
+      // 避免冷启动时 getLocation 在某些机型上静默失败、用户既没看到提示、位置也永远拿不到。
+      // 已授权/平台不支持显式授权时直接放行；用户拒绝则静默跳过（定位只是增强项，不阻断会话）。
+      this.ensureLocationAuthorized()
+        .then(() => this.doGetLocation(resolve))
+        .catch(() => resolve(null))
+    })
+  }
+
+  /** 确保定位已授权：已授权或平台不支持显式授权时 resolve；用户拒绝 reject。 */
+  private ensureLocationAuthorized(): Promise<void> {
+    return new Promise((resolve) => {
+      if (typeof uni === 'undefined' || typeof uni.authorize !== 'function') {
+        resolve()
+        return
+      }
+      uni.authorize({
+        scope: 'scope.location',
+        success: () => resolve(),
+        fail: () => resolve(),
       })
+    })
+  }
+
+  private doGetLocation(resolve: (value: LocationSnapshot | null) => void): void {
+    uni.getLocation({
+      type: 'gcj02',
+      geocode: true,
+      success: (res) =>
+        resolve({
+          latitude: res.latitude,
+          longitude: res.longitude,
+          address: typeof res.address === 'string' ? res.address : undefined,
+        }),
+      fail: () => resolve(null),
     })
   }
 
