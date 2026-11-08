@@ -35,6 +35,10 @@ interface Harness {
   playbackDone: () => void
   /** 被真正喂进 ASR 的帧数，用来验证回声门控 */
   asrFrames: () => number
+  /** 记忆直连命令落地时，记录被 forget 的 topic（undefined 表示清空全部） */
+  forgetCalls: () => Array<{ deviceId: string | null; topic?: string }>
+  /** 最近一次 agentFactory 收到的 memoryContext（验证系统提示注入了记忆） */
+  lastMemoryContext: () => string | undefined
 }
 
 function createHarness(
@@ -48,6 +52,10 @@ function createHarness(
     candidateFetcher?: (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
     /** 句末静音定稿阈值（毫秒）；默认 10ms，贴近真实长停顿测试时调大 */
     asrEndpointMs?: number
+    /** 预置记忆：全新会话 start 时由 getMemories 返回，用于验证系统提示注入 */
+    memories?: Array<{ key: string; value: string; updatedAt: number }>
+    /** 设备标识；传 null 可验证「无 deviceId 不注入记忆」。默认 test-device */
+    deviceId?: string | null
   } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
@@ -99,16 +107,25 @@ function createHarness(
       for (const frame of ttsFrames) yield frame
     },
   }
+
+  let service!: VoiceSessionService
+  const forgetCalls: Array<{ deviceId: string | null; topic?: string }> = []
+  let lastMemoryContext: string | undefined
   const data = {
     createSession: async () => 1,
     endSession: async () => {},
     insertCommandLog: () => {},
+    saveMemory: async () => {},
+    getMemories: async () => opts.memories ?? [],
+    forgetMemory: async (deviceId: string | null, topic?: string) => {
+      forgetCalls.push({ deviceId, topic })
+      return 1
+    },
   } as unknown as DataService
-
-  let service!: VoiceSessionService
   const deps: VoiceSessionDeps = {
-    agentFactory: () => {
+    agentFactory: (_lang, _tz, _loc, _rev, _music, _emit, _store, memoryContext) => {
       factoryCalls += 1
+      lastMemoryContext = memoryContext
       return agent
     },
     asr,
@@ -119,6 +136,7 @@ function createHarness(
     asrEndpointMs: opts.asrEndpointMs ?? 10,
     musicSourceFactory: opts.musicSourceFactory,
     candidateFetcher: opts.candidateFetcher,
+    deviceId: opts.deviceId === undefined ? 'test-device' : opts.deviceId,
   }
   service = new VoiceSessionService(deps)
   return {
@@ -129,6 +147,8 @@ function createHarness(
     finishReply: () => finish?.(),
     playbackDone: () => service.handleText(JSON.stringify({ type: 'session.playback_done' })),
     asrFrames: () => frames,
+    forgetCalls: () => forgetCalls,
+    lastMemoryContext: () => lastMemoryContext,
   }
 }
 
@@ -690,3 +710,86 @@ describe('会话与连接解耦：重武装（deviceId 复用不丢记忆）', (
     expect(h.agentCalls()).toBe(2)
   })
 })
+
+describe('长期记忆：语音「忘了XX」直连 + 系统提示注入', () => {
+  /** 说完一句并等句末定稿、释放播完回执（本 describe 内复用）。 */
+  async function settle(h: Harness): Promise<void> {
+    await speakUtterance(h)
+    await sleep(900)
+    h.playbackDone()
+    await sleep(60)
+  }
+
+  it('「忘了我的作息」直接落地 forget 并口播确认，不进 LLM', async () => {
+    const h = createHarness({ asrEndpointMs: 800, finalizeText: '忘了我的作息' })
+    await startDialog(h.service)
+    await settle(h)
+    // 未经过 LLM（agent.reply 没被调用）
+    expect(h.agentCalls()).toBe(0)
+    // 记忆直连命令落地
+    const calls = h.forgetCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0].topic).toBe('我的作息')
+    // 下发了 asr.final（我说卡片）与 tts 确认
+    expect(h.events.some((e) => e.type === 'asr.final')).toBe(true)
+    expect(h.events.some((e) => e.type === 'tts.start')).toBe(true)
+  })
+
+  it('「清空记忆」清空全部（topic 为空）', async () => {
+    const h = createHarness({ asrEndpointMs: 800, finalizeText: '清空记忆' })
+    await startDialog(h.service)
+    await settle(h)
+    expect(h.agentCalls()).toBe(0)
+    const calls = h.forgetCalls()
+    expect(calls).toHaveLength(1)
+    expect(calls[0].topic).toBeUndefined()
+  })
+
+  it('「我忘了带钥匙」这种陈述不触发记忆删除（走正常 LLM 路径）', async () => {
+    const h = createHarness({
+      asrEndpointMs: 800,
+      // 走正常 LLM 路径，agent.reply 会被调用；用较长句避免被「裸点歌」误判
+      finalizeText: '我忘了带钥匙你能提醒我一下吗',
+    })
+    await startDialog(h.service)
+    await settle(h)
+    expect(h.agentCalls()).toBe(1)
+    expect(h.forgetCalls()).toHaveLength(0)
+  })
+
+  it('全新会话把该设备记忆注入系统提示（memoryContext 非空）', async () => {
+    const h = createHarness({
+      asrEndpointMs: 800,
+      memories: [
+        { key: '作息', value: '晚上 12 点睡', updatedAt: 1 },
+        { key: '喜欢的音乐', value: '周杰伦', updatedAt: 2 },
+      ],
+    })
+    await startDialog(h.service)
+    const ctx = h.lastMemoryContext()
+    expect(ctx).toBeDefined()
+    expect(ctx).toContain('作息')
+    expect(ctx).toContain('周杰伦')
+  })
+
+  it('re-arm（二次 start）保留原 agent，memoryContext 不再重建但仍可用', async () => {
+    const h = createHarness({
+      asrEndpointMs: 800,
+      memories: [{ key: '作息', value: '晚 12 点', updatedAt: 1 }],
+    })
+    await startDialog(h.service)
+    const firstCtx = h.lastMemoryContext()
+    expect(firstCtx).toContain('作息')
+    // 二次 start（重唤醒/重连）
+    await startDialog(h.service)
+    // 没有重建 agent（agentFactory 仍只调用一次），memoryContext 沿用首轮
+    expect(h.agentFactoryCalls()).toBe(1)
+  })
+
+  it('无 deviceId 时不为记忆注册工具/注入（memoryContext 为空）', async () => {
+    const h = createHarness({ asrEndpointMs: 800, deviceId: null })
+    await startDialog(h.service)
+    expect(h.lastMemoryContext()).toBeUndefined()
+  })
+})
+

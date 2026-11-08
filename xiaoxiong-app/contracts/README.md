@@ -166,6 +166,15 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
   - 响应 `201`：`{ "id": number }`
 - `GET /api/command-logs?deviceId=xxx`：列出（倒序，最多 200）。
 
+#### 长期记忆 memories
+
+设备维度的用户长期记忆（习惯 / 偏好 / 作息 / 日程等），只存本机 SQLite，按 `deviceId` 隔离，不上云、不跨设备同步。同设备下 `(device_id, key)` 唯一，重复写同一 `key` 覆盖更新。
+
+- `GET /api/memories?deviceId=xxx`：列出该设备全部记忆（按最近更新倒序），每项为 `{ "key": string, "value": string, "updatedAt": number }`。缺 `deviceId` 返回 `400`。
+- `DELETE /api/memories?deviceId=xxx`（body `{ "key"?: string }`）：删除记忆。`key` 缺省或空串表示清空该设备全部记忆；否则按「话题/内容」模糊匹配（命中 `key` 等于、包含，或 `value` 包含）删除。响应 `{ "deleted": number }`。
+
+> 语音侧的「记住 / 回忆 / 忘了XX」由对话智能体的 `remember` / `recall` / `forget` 工具与「忘了XX / 清空记忆」直接指令处理（见 `gateway/src/service/memoryControl.ts` 与 `tools/memoryTool.ts`），写入同样落到本接口背后的 `user_memory` 表。设置页（`uni_app` 的 `pages/settings`）可调 REST 查看与删除。
+
 #### 参数加密（PARAM_ENCRYPT=true）
 
 非对称 + 混合加密（**不是**单密钥对称方案）。前后端各持一对 RSA-2048 公私钥（共 2 对）：

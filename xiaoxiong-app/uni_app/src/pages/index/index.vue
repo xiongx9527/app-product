@@ -229,9 +229,15 @@ function onOrbTap(): void {
           <text class="music-title">{{ musicTitle }}</text>
         </view>
         <view class="music-actions">
-          <view class="music-ctrl primary" @tap="onNextMusic">{{ t('music.next') }}</view>
-          <view class="music-ctrl" @tap="onTogglePause">{{ musicPaused ? t('music.resume') : t('music.pause') }}</view>
-          <view class="music-ctrl" @tap="onStopMusic">{{ t('music.stop') }}</view>
+          <view class="music-ctrl primary" :aria-label="t('music.next')" @tap="onNextMusic">
+            <image class="music-icon" src="/static/icons/next.svg" mode="aspectFit" />
+          </view>
+          <view class="music-ctrl" :aria-label="musicPaused ? t('music.resume') : t('music.pause')" @tap="onTogglePause">
+            <image class="music-icon" :src="musicPaused ? '/static/icons/play.svg' : '/static/icons/pause.svg'" mode="aspectFit" />
+          </view>
+          <view class="music-ctrl" :aria-label="t('music.stop')" @tap="onStopMusic">
+            <image class="music-icon" src="/static/icons/stop.svg" mode="aspectFit" />
+          </view>
         </view>
       </view>
       <text v-if="musicError" class="music-error">{{ t('music.error') }}</text>
@@ -692,12 +698,15 @@ function onOrbTap(): void {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
-  line-height: 1;
   color: #e8eaf6;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.14);
   transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.music-icon {
+  width: 22px;
+  height: 22px;
 }
 
 .music-ctrl.primary {

@@ -2,6 +2,7 @@ import type { AppDb } from '../db/client'
 import { sessionMapper } from '../mapper/sessionMapper'
 import { deviceDataMapper } from '../mapper/deviceDataMapper'
 import { commandLogMapper } from '../mapper/commandLogMapper'
+import { memoryMapper, type MemoryEntry } from '../mapper/memoryMapper'
 
 /**
  * 数据业务层：把各 Mapper 组合成高层能力，供 controller 调用。
@@ -11,6 +12,7 @@ export function createDataService(db: AppDb, dbPublicKey: string, dbPrivateKey: 
   const session = sessionMapper(db)
   const device = deviceDataMapper(db, dbPublicKey, dbPrivateKey)
   const command = commandLogMapper(db)
+  const memory = memoryMapper(db)
   return {
     createSession: session.create,
     endSession: session.end,
@@ -19,7 +21,12 @@ export function createDataService(db: AppDb, dbPublicKey: string, dbPrivateKey: 
     listDeviceData: device.listByDevice,
     insertCommandLog: command.create,
     listCommandLogs: command.listByDevice,
+    saveMemory: memory.save,
+    getMemories: memory.list,
+    forgetMemory: memory.forget,
   }
 }
 
 export type DataService = ReturnType<typeof createDataService>
+export type { MemoryEntry }
+

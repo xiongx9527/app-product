@@ -55,6 +55,20 @@ export function createApiController(data: DataService) {
       return { status: 200, body: await data.listCommandLogs(deviceId) }
     }
 
+    // 长期记忆（按设备维度）：设置页查看 / 删除。deviceId 必填，否则无法归属设备。
+    if (pathname === '/api/memories' && method === 'GET') {
+      if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
+      return { status: 200, body: await data.getMemories(deviceId) }
+    }
+    if (pathname === '/api/memories' && method === 'DELETE') {
+      if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
+      const b = (body ?? {}) as { key?: string }
+      // key 优先取请求体，其次取 query（清空记忆时不传 key）；空串表示清空全部。
+      const key = b.key ?? query.get('key') ?? ''
+      const n = await data.forgetMemory(deviceId, key)
+      return { status: 200, body: { deleted: n } }
+    }
+
     return { status: 404, body: { error: 'not found' } }
   }
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import {
   CAPABILITIES,
   GEOCODE_PROVIDERS,
@@ -21,6 +21,9 @@ import {
 } from '@/core/config'
 import { t } from '@/core/i18n'
 import { fetchModelList, testConnection } from '@/core/config/tester'
+import { secureRequest } from '@/core/transport/secureRequest'
+import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
+import { getDeviceId } from '@/core/config/deviceId'
 
 const reveal = reactive<Record<string, boolean>>({})
 const drafts = reactive<Record<string, string>>({})
@@ -39,6 +42,65 @@ const modelOptions = reactive<Record<string, string[]>>({})
 const fetchingModel = reactive<Record<string, boolean>>({})
 /** 保存/恢复的结果用页面内文字展示，不用浮层 */
 const saveHint = ref('')
+
+/** 长期记忆：从网关按本机 deviceId 拉取，可单条删除或清空。 */
+interface MemoryItem {
+  key: string
+  value: string
+  updatedAt: number
+}
+const memories = ref<MemoryItem[]>([])
+const memLoading = ref(false)
+const memHint = ref('')
+
+function gatewayMemoriesUrl(): string {
+  return `${resolveGatewayHttpBase()}/api/memories?deviceId=${encodeURIComponent(getDeviceId())}`
+}
+
+async function loadMemories(): Promise<void> {
+  if (memLoading.value) return
+  memLoading.value = true
+  memHint.value = ''
+  try {
+    const res = await secureRequest({ url: gatewayMemoriesUrl(), method: 'GET' })
+    if (res.statusCode >= 200 && res.statusCode < 300 && Array.isArray(res.data)) {
+      memories.value = res.data as MemoryItem[]
+    } else {
+      memHint.value = t('settings.memory.loadFailed')
+    }
+  } catch {
+    memHint.value = t('settings.memory.loadFailed')
+  } finally {
+    memLoading.value = false
+  }
+}
+
+async function deleteMemory(item: MemoryItem): Promise<void> {
+  try {
+    const res = await secureRequest({
+      url: `${gatewayMemoriesUrl()}&key=${encodeURIComponent(item.key)}`,
+      method: 'DELETE',
+    })
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      memories.value = memories.value.filter((m) => m.key !== item.key)
+      memHint.value = t('settings.memory.deleted')
+    }
+  } catch {
+    memHint.value = t('settings.memory.loadFailed')
+  }
+}
+
+async function clearMemories(): Promise<void> {
+  try {
+    const res = await secureRequest({ url: gatewayMemoriesUrl(), method: 'DELETE' })
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      memories.value = []
+      memHint.value = t('settings.memory.cleared')
+    }
+  } catch {
+    memHint.value = t('settings.memory.loadFailed')
+  }
+}
 
 const cards = computed(() =>
   CAPABILITIES.map((item) => ({
@@ -295,6 +357,10 @@ function onSave(): void {
   persistConfig()
   saveHint.value = '已保存，重开语音助手生效'
 }
+
+onMounted(() => {
+  void loadMemories()
+})
 </script>
 
 <template>
@@ -511,6 +577,39 @@ function onSave(): void {
         {{ reveal.geocodeKey ? '隐藏' : '显示' }}
       </text>
       <text class="hint">{{ t('settings.geocode.hint') }}</text>
+    </view>
+
+    <view class="card">
+      <view class="card-head">
+        <text class="card-title">{{ t('settings.memory.title') }}</text>
+        <text class="card-sub">{{ t('settings.memory.sub') }}</text>
+      </view>
+      <view class="card-actions">
+        <button class="mini-btn ghost" :disabled="memLoading" @tap="loadMemories">
+          {{ memLoading ? '…' : t('settings.memory.refresh') }}
+        </button>
+        <button
+          v-if="memories.length"
+          class="mini-btn ghost"
+          :disabled="memLoading"
+          @tap="clearMemories"
+        >
+          {{ t('settings.memory.clearAll') }}
+        </button>
+      </view>
+      <text v-if="memHint" class="result">{{ memHint }}</text>
+      <text v-if="!memories.length && !memHint" class="hint">
+        {{ t('settings.memory.empty') }}
+      </text>
+      <view v-for="item in memories" :key="item.key" class="memory-row">
+        <view class="memory-text">
+          <text class="memory-key">{{ item.key }}</text>
+          <text class="memory-value">{{ item.value }}</text>
+        </view>
+        <text class="field-toggle" @tap="deleteMemory(item)">
+          {{ t('settings.memory.delete') }}
+        </text>
+      </view>
     </view>
 
     <button class="save" @tap="onSave">保存配置</button>
@@ -749,5 +848,37 @@ function onSave(): void {
   line-height: 1.6;
   color: #6f7691;
   text-align: center;
+}
+
+.memory-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.memory-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.memory-key {
+  font-size: 12px;
+  font-weight: 600;
+  color: #cfd8ff;
+}
+
+.memory-value {
+  font-size: 13px;
+  line-height: 1.5;
+  color: #e8eaf6;
+  word-break: break-all;
 }
 </style>

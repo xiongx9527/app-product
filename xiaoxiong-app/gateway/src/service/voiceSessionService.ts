@@ -7,6 +7,7 @@ import type { ReverseGeocoder } from './geocode/types'
 import { createGeocodeAdapter } from './geocode'
 import { createMusicSource, type MusicSource } from './music'
 import { genreToKeyword, isGenericPlayPhrase } from './music/types'
+import { formatMemories, type MemoryStore } from './tools'
 import {
   searchCandidates,
   needsCandidateList,
@@ -17,6 +18,7 @@ import {
   type CandidateFetcher,
 } from './music/musicCandidates'
 import { detectMusicCommand } from './musicControl'
+import { detectMemoryCommand } from './memoryControl'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -34,7 +36,9 @@ export interface VoiceSessionDeps {
     locationProvider?: () => LocationInfo | null,
     reverseGeocoder?: ReverseGeocoder,
     musicSource?: MusicSource,
-    emit?: (m: ServerEvent) => void
+    emit?: (m: ServerEvent) => void,
+    memoryStore?: MemoryStore,
+    memoryContext?: string
   ) => AgentService
   asr: AsrProvider
   tts: TtsProvider
@@ -334,6 +338,19 @@ export class VoiceSessionService {
     }
   }
 
+  /** 处理「忘了XX / 清空记忆」直接指令：落地删除并口播确认，不进 LLM。 */
+  private async runMemoryCommand(cmd: ReturnType<typeof detectMemoryCommand>): Promise<void> {
+    if (!cmd || !this.deviceId) return
+    const m = messages(this.lang).memory
+    if (cmd.action === 'clear') {
+      await this.deps.data.forgetMemory(this.deviceId)
+      await this.speakReply(m.cleared())
+      return
+    }
+    const n = await this.deps.data.forgetMemory(this.deviceId, cmd.topic)
+    await this.speakReply(n > 0 ? m.forgot(cmd.topic, n) : m.nothingToForget())
+  }
+
   /** 口播一句短确认：复用 TTS 下发链路（tts.start → 流式 → tts.end），不进 LLM。 */
   private async speakReply(text: string): Promise<void> {
     const turn = ++this.turn
@@ -431,6 +448,16 @@ export class VoiceSessionService {
     // 唤醒模式只回识别结果给客户端做唤醒词匹配，不进入 LLM/TTS
     if (this.mode === 'wake') {
       this.deps.send({ type: 'asr.final', text, queueRemaining: 0 })
+      return
+    }
+
+    // 记忆直连指令（忘了XX / 清空记忆）在空闲时优先拦截，确定性落地，不进 LLM。
+    // 与音乐直连同理：意图明确，直接forget/clear 并口播确认，避免模型幻觉「说忘了却没忘」。
+    // 必须在音乐/LLM 分支之前，且同样只在空闲（未播报、未应答）时拦截。
+    const memCmd = detectMemoryCommand(text)
+    if (memCmd && !this.playbackPending && !this.processing && this.deviceId) {
+      this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+      await this.runMemoryCommand(memCmd)
       return
     }
 
@@ -681,6 +708,18 @@ export class VoiceSessionService {
     // 全新会话：清空跨轮状态并重建 LLM
     this.pendingCandidates = null
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
+    // 加载该设备的长期记忆并注入系统提示（让助手「知道你的习惯」）；
+    // memoryStore 同时交给工具层，供 remember/recall/forget 读写。无 deviceId 则无记忆。
+    const memoryStore: MemoryStore | undefined = this.deviceId
+      ? {
+          save: (k, v) => this.deps.data.saveMemory(this.deviceId, k, v),
+          list: () => this.deps.data.getMemories(this.deviceId),
+          forget: (q) => this.deps.data.forgetMemory(this.deviceId, q),
+        }
+      : undefined
+    const memoryContext = memoryStore
+      ? messages(this.lang).memory.context(formatMemories(await this.deps.data.getMemories(this.deviceId)))
+      : undefined
     this.agent =
       mode === 'wake'
         ? null
@@ -690,7 +729,9 @@ export class VoiceSessionService {
             () => this.getLocation(),
             this.reverseGeocoder,
             this.musicSource,
-            (m) => this.deps.send(m)
+            (m) => this.deps.send(m),
+            memoryStore,
+            memoryContext
           )
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }

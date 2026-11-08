@@ -19,6 +19,12 @@ import {
 import { createMusicSearchTool } from './musicSearchTool'
 import { createLyricsTool } from './lyricsTool'
 import type { MusicSource } from '../music/types'
+import {
+  createRememberTool,
+  createRecallTool,
+  createForgetTool,
+  type MemoryStore,
+} from './memoryTool'
 
 export {
   createCurrentTimeTool,
@@ -60,6 +66,13 @@ export {
 } from './musicTool'
 export { createMusicSearchTool, MUSIC_SEARCH_TOOL_NAME } from './musicSearchTool'
 export { createLyricsTool, LYRICS_TOOL_NAME } from './lyricsTool'
+export {
+  createRememberTool,
+  createRecallTool,
+  createForgetTool,
+  formatMemories,
+  type MemoryStore,
+} from './memoryTool'
 
 
 /**
@@ -77,7 +90,8 @@ export function createToolkit(
   locationProvider: LocationProvider = () => null,
   reverseGeocoder?: ReverseGeocoder,
   musicSource?: MusicSource,
-  emit?: (media: MediaDirective) => void
+  emit?: (media: MediaDirective) => void,
+  memoryStore?: MemoryStore
 ): Toolkit {
   // 网关既有工具（时间/位置/天气）都用空 inputSchema + 0 参 call，与 AgentScope 的 Toolkit 类型一致；
   // 音乐类工具需要入参（genre/minutes 等），zod 泛型在此边界不兼容，故整体按 Tool[] 断言。
@@ -100,7 +114,16 @@ export function createToolkit(
         createLyricsTool(lang, emit),
       ]
     : []
-  return new ToolkitImpl({ tools: [...baseTools, ...musicTools] as unknown as Tool[] })
+  // 长期记忆工具：仅当本设备有记忆存储时注册（无 deviceId 的旧客户端不注册）。
+  // 这样助手能「记住你的习惯」「忘了XX」，且记忆只落本机、按设备隔离。
+  const memoryTools: Tool[] = memoryStore
+    ? [
+        createRememberTool(lang, memoryStore),
+        createRecallTool(lang, memoryStore),
+        createForgetTool(lang, memoryStore),
+      ]
+    : []
+  return new ToolkitImpl({ tools: [...baseTools, ...musicTools, ...memoryTools] as unknown as Tool[] })
 }
 
 /** 供 voiceSessionService 把媒体指令转成 ServerEvent 透传给客户端。 */

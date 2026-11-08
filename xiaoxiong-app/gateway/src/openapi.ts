@@ -69,6 +69,25 @@ export const openApiSpec = {
         responses: { '201': { description: '已写入' } },
       },
     },
+    '/api/memories': {
+      get: {
+        summary: '列出该设备的长期记忆',
+        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: '记忆列表（key/value/updatedAt）' }, '400': { description: '缺 deviceId' } },
+      },
+      delete: {
+        summary: '删除记忆：key 为空清空全部，否则按话题/内容模糊删除',
+        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: { type: 'object', properties: { key: { type: 'string', description: '要忘的话题/内容关键词；缺省或空串清空全部' } } },
+            },
+          },
+        },
+        responses: { '200': { description: '{ deleted: 删除条数 }' }, '400': { description: '缺 deviceId' } },
+      },
+    },
     '/music/stream': {
       get: {
         summary:

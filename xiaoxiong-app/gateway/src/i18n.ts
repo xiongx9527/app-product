@@ -29,6 +29,17 @@ export interface Messages {
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
+  /** 长期记忆：把该设备已记住的内容注入系统提示，让助手「知道你的习惯」 */
+  memory: {
+    /** items 是已格式化的「- 话题：内容」清单；空串表示还没记忆 */
+    context: (items: string) => string
+    /** 语音「忘了XX」命中后口播：topic 话题，n 删除条数 */
+    forgot: (topic: string, n: number) => string
+    /** 清空全部记忆后口播 */
+    cleared: () => string
+    /** 没匹配到任何记忆时口播 */
+    nothingToForget: () => string
+  }
 }
 
 const zhCN: Messages = {
@@ -61,6 +72,16 @@ const zhCN: Messages = {
     chooseAgain: () => '没听清选哪首，请说第几首或歌名。',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
+  memory: {
+    context: (items) =>
+      items
+        ? '\n\n以下是关于这位用户长期记住的信息（习惯 / 偏好 / 作息 / 日程等），回答时自然参考，不要逐条复述：\n' +
+          items
+        : '',
+    forgot: (topic, n) => `已忘掉关于「${topic}」的 ${n} 条记忆。`,
+    cleared: () => '已清空关于你的全部记忆。',
+    nothingToForget: () => '没找到匹配的，没什么可忘的。',
+  },
 }
 
 const catalogs: Record<string, Messages> = {

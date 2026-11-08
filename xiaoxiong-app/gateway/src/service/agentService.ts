@@ -11,7 +11,7 @@ import { EventType } from '@agentscope-ai/agentscope/event'
 import { messages } from '../i18n'
 import type { Lang } from '../protocol'
 import type { LlmConfig } from '../config'
-import { createToolkit, type LocationProvider, type ReverseGeocoder, type MediaEmitter } from './tools'
+import { createToolkit, type LocationProvider, type ReverseGeocoder, type MediaEmitter, type MemoryStore } from './tools'
 import type { MusicSource } from './music/types'
 import { ChannelSplitter } from './channelSplitter'
 
@@ -62,15 +62,21 @@ export function createAgentService(
   locationProvider: LocationProvider = () => null,
   reverseGeocoder?: ReverseGeocoder,
   musicSource?: MusicSource,
-  emit?: MediaEmitter
+  emit?: MediaEmitter,
+  memoryStore?: MemoryStore,
+  memoryContext?: string
 ): AgentService {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
+  const m = messages(lang)
+  // 把该设备已记住的内容拼进系统提示（memoryContext 由会话层按 deviceId 加载并格式化），
+  // 让助手在唤醒后自然参考用户习惯，而不是每次都从零开始问。无记忆时为空串，不影响原提示。
+  const sysPrompt = m.systemPrompt + (memoryContext ?? '')
   const agent = new Agent({
     name: 'Xiong',
-    sysPrompt: messages(lang).systemPrompt,
+    sysPrompt,
     model,
-    toolkit: createToolkit(lang, config.timeZone, locationProvider, reverseGeocoder, musicSource, emit),
+    toolkit: createToolkit(lang, config.timeZone, locationProvider, reverseGeocoder, musicSource, emit, memoryStore),
   })
   return {
     async reply(userText, onDelta, onThinking) {

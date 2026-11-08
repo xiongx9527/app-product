@@ -34,7 +34,10 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
     try {
       if (url.pathname.startsWith(config.apiBase)) {
-        const raw = req.method === 'POST' || req.method === 'PUT' ? await readBody(req) : undefined
+        const raw =
+          req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE'
+            ? await readBody(req)
+            : undefined
         const body = parseBody(raw, config)
         const result = await api({ method: req.method ?? 'GET', pathname: url.pathname, query: url.searchParams, body })
         // 公开契约文档（Swagger 的 spec 源）不能加密：浏览器里的 Swagger UI 没有解密能力，

@@ -41,6 +41,14 @@ const BOOTSTRAP_SQL = `
     result TEXT NOT NULL,
     created_at INTEGER DEFAULT (strftime('%s', 'now'))
   );
+  CREATE TABLE IF NOT EXISTS user_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+    UNIQUE(device_id, key)
+  );
 `
 
 /** 创建数据库连接（Node 内置 node:sqlite，无原生编译依赖）并引导建表。 */
