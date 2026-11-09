@@ -12,6 +12,7 @@
     "dev:restart": "node ../scripts/dev-server.mjs restart",
     "dev:status": "node ../scripts/dev-server.mjs status",
     "dev:log": "node ../scripts/dev-server.mjs log",
+    "build:bundle": "esbuild src/server.ts --bundle --platform=node --format=esm --target=node18 --outfile=dist/gateway.bundle.mjs --external:swagger-ui-dist \"--banner:js=import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
     "type-check": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -26,6 +27,7 @@
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.12",
     "drizzle-kit": "1.0.0-rc.5",
+    "esbuild": "0.28.2",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"

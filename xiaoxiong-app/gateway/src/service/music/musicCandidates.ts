@@ -101,7 +101,9 @@ export function isArtistBrowse(text: string): boolean {
   if (!kw) return false
   // 去掉泛歌曲词后只剩一个实词（歌手名），才可能是按歌手浏览
   if (contentWords(kw).length !== 1) return false
-  const raw = (text ?? '').replace(/\s/g, '')
+  // 去掉所有空白与标点后再判「X的歌」结尾：ASR 常带句末标点（周杰伦的歌。），
+  // 否则 $ 锚点匹配不上、误判成非浏览而直接播。
+  const raw = (text ?? '').replace(/\s/g, '').replace(/[\p{P}\p{S}]/gu, '')
   // 「X的歌 / X的歌曲 / X的音乐 / X的作品 / X的乐曲 / X的曲子 / X的曲」：
   // 被「的」修饰的是泛歌曲名词而非具体歌名 → 按歌手浏览。
   if (/的(歌|歌曲|音乐|作品|乐曲|曲子|曲)$/.test(raw)) return true

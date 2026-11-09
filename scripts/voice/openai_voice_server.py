@@ -86,6 +86,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import urllib.parse
 import urllib.request
 import wave
 from collections import OrderedDict
@@ -457,16 +458,17 @@ async def proxy_transcription(
     language: str,
     response_format: str,
     temperature: float,
+    extra_headers: dict[str, str] | None = None,
 ):
     """把转写请求原样转给远程 OpenAI 兼容服务，省掉本地模型和依赖。
 
     从上游地址池里挑一个（健康优先 + 轮询），这次请求的成功 / 失败都会回写池的健康
     状态，让后续请求自动绕开挂掉的上游。
     """
-    # 按请求模型路由到对应分组（同 LLM/TTS：模型名 -> 分组 -> 组内多账号轮询），
-    # 没带模型时退回全局健康优先 + 轮询。
+    # 按配置里选中的默认提供商挑入口（组内多账号轮询）；该提供商没匹配到时
+    # pick_by_vendor 退回全局轮询，兼容只配了单个 legacy 地址的情况。
     req_model = model.strip() or config_value("STT_UPSTREAM_MODEL", "").strip() or None
-    entry = upstream_pool.pick_by_model("STT", req_model)
+    entry = upstream_pool.pick_by_vendor("STT", upstream_pool.stt_default_vendor())
     if entry is None:
         return error_response(502, "未配置 STT 上游地址")
     url = upstream_pool.build_url(entry["base_url"], "/audio/transcriptions")
@@ -484,7 +486,7 @@ async def proxy_transcription(
         async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
             response = await client.post(
                 url,
-                headers=upstream_pool.auth_headers(entry["api_key"]),
+                headers={**upstream_pool.auth_headers(entry["api_key"]), **(extra_headers or {})},
                 data=data,
                 files={
                     "file": (
@@ -667,6 +669,40 @@ def transcribe_sensevoice(payload: bytes, language: str):
     return text, x.size / SAMPLE_RATE, lang
 
 
+def sensevoice_check() -> dict:
+    """按需真实检测内置（本地 SenseVoice）是否可用：模型文件 → 依赖 → 加载 → 跑一次推理。
+
+    只在管理面板 ASR「内置」行点「测试可用」时调用（见 register_admin_routes 注入），
+    启动阶段不执行：冷加载 240MB 模型会拖慢启动，且用户可能改用外部 ASR 提供商。
+    同步函数，调用方用 asyncio.to_thread 包一层，避免阻塞事件循环。
+    """
+    model_dir = sensevoice_dir()
+    if not sensevoice_ready():
+        return {
+            "ok": False,
+            "reason": "model_missing",
+            "model_dir": model_dir,
+            "detail": "缺少 model.int8.onnx / tokens.txt，请运行 install-voice 下载内置模型",
+        }
+    try:
+        import numpy  # noqa: F401  # decode_wav / 推理都要用
+        import sherpa_onnx  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": "dep_missing", "model_dir": model_dir, "detail": str(exc)}
+    # 走与真实转写完全相同的 decode_wav + 推理路径，光看文件存在不算「可用」。
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(b"\x00\x00" * int(SAMPLE_RATE * 0.3))
+    try:
+        transcribe_sensevoice(buf.getvalue(), "zh")
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "reason": "infer_failed", "model_dir": model_dir, "detail": str(exc)}
+    return {"ok": True, "reason": "ok", "model_dir": model_dir, "detail": ""}
+
+
 def tts_rate(speed: float) -> str:
     """edge-tts 的语速是 +10% / -10% 这种字符串，不是倍率。"""
     if speed > 1:
@@ -780,7 +816,7 @@ def transcode_mp3(mp3: bytes, fmt: str):
 
 def voice_health() -> dict:
     # 不主动加载模型：健康检查应该秒回，第一次真正转写时再加载 SenseVoice。
-    stt_upstream = upstream_pool.has_upstream("STT")
+    stt_upstream = upstream_pool.stt_proxy_enabled()
     tts_upstream = upstream_pool.has_upstream("TTS")
     tts_voice_name = (
         (config_value("TTS_UPSTREAM_VOICE", "").strip() or tts_voice())
@@ -832,7 +868,7 @@ def root():
     return {
         "service": "app-product-local-ai",
         "llm": "proxy" if llm_enabled() else "off",
-        "stt": "upstream" if upstream_pool.has_upstream("STT") else "sensevoice",
+        "stt": "upstream" if upstream_pool.stt_proxy_enabled() else "sensevoice",
         "tts": "upstream" if upstream_pool.has_upstream("TTS") else "edge",
     }
 
@@ -848,7 +884,7 @@ def health():
 def voice_root():
     return {
         "service": "app-product-voice",
-        "stt": "upstream" if upstream_pool.has_upstream("STT") else "sensevoice",
+        "stt": "upstream" if upstream_pool.stt_proxy_enabled() else "sensevoice",
         "tts": "upstream" if upstream_pool.has_upstream("TTS") else "edge",
     }
 
@@ -886,7 +922,7 @@ def voice_models():
         )
 
     # STT 端口
-    if upstream_pool.has_upstream("STT"):
+    if upstream_pool.stt_proxy_enabled():
         for e in upstream_pool.load_pool("STT"):
             if e.get("model"):
                 data.append(
@@ -917,7 +953,7 @@ class SpeechBody(BaseModel):
     instructions: str = ""  # OpenAI 新 TTS 字段，本地模式忽略
 
 
-async def proxy_speech(body: SpeechBody):
+async def proxy_speech(body: SpeechBody, extra_headers: dict[str, str] | None = None):
     """把合成请求转给远程 OpenAI 兼容服务，返回上游音频原样透传。
 
     从上游地址池里挑一个（健康优先 + 轮询），成功 / 失败回写池健康状态。
@@ -958,7 +994,7 @@ async def proxy_speech(body: SpeechBody):
         async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
             response = await client.post(
                 url,
-                headers=upstream_pool.auth_headers(entry["api_key"]),
+                headers={**upstream_pool.auth_headers(entry["api_key"]), **(extra_headers or {})},
                 json=payload,
             )
     except httpx.HTTPError as exc:
@@ -983,7 +1019,7 @@ async def proxy_speech(body: SpeechBody):
 
 
 @app.post("/voide/v1/audio/speech", dependencies=[Depends(require_api_key)])
-async def speech(body: SpeechBody):
+async def speech(body: SpeechBody, request: Request):
     """OpenAI 兼容的语音合成；网关固定请求 wav，按 24k PCM 下发。"""
     text = (body.input or "").strip()
     if not text:
@@ -995,7 +1031,7 @@ async def speech(body: SpeechBody):
 
     # 配了上游就完全不碰本地模型和 ffmpeg，代理模式只需要基础 Python 依赖。
     if upstream_pool.has_upstream("TTS"):
-        return await proxy_speech(body)
+        return await proxy_speech(body, extra_upstream_headers(request))
 
     voice = resolve_voice(body.voice)
     rate = tts_rate(body.speed)
@@ -1041,6 +1077,7 @@ async def list_voices():
     "/voide/v1/audio/transcriptions", dependencies=[Depends(require_api_key)]
 )
 async def transcriptions(
+    request: Request,
     file: UploadFile = File(...),
     model: str = Form("sensevoice-small"),
     language: str = Form(""),
@@ -1052,10 +1089,12 @@ async def transcriptions(
     if not payload:
         return error_response(400, "上传的音频为空")
 
+    # 默认提供商为「内置」时走本地 SenseVoice（忽略所有上游）；选了外部提供商才转发。
     # 代理模式允许上游接受 WAV 以外的格式，所以先转发，再做本地 WAV 校验。
-    if upstream_pool.has_upstream("STT"):
+    if upstream_pool.stt_proxy_enabled():
         return await proxy_transcription(
-            file, payload, model, language, response_format, temperature
+            file, payload, model, language, response_format, temperature,
+            extra_upstream_headers(request),
         )
 
     # 先挡掉非 WAV：SenseVoice 的接入口只认 RIFF/WAVE，直接交给它只会得到空文本。
@@ -1175,6 +1214,47 @@ async def llm_models():
     return data
 
 
+def _is_self_proxy_base(url: str) -> bool:
+    """base_url 是否指向本代理自身。测试界面默认填本机地址时，若原样转发会
+    把请求（连同 body 里的 base_url）不断发给自己造成递归、前端一直「请求中」。
+    这类地址等价于「测本代理内部链路」，应剥掉 base_url 走配置池而非 HTTP 自转发。
+    其它实例（不同 host 或不同端口）不受影响，仍按 URL 真转发。
+    """
+    try:
+        p = urllib.parse.urlparse(url if "://" in url else "http://" + url)
+    except ValueError:
+        return False
+    host = (p.hostname or "").lower()
+    if host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        return False
+    try:
+        own_port = int(config_value("VOICE_PORT", "9529").strip())
+    except (ValueError, TypeError):
+        own_port = 9529
+    return (p.port or 80) == own_port
+
+
+# 客户端自带的自定义请求头原样透传给上游（不落存储，每次请求各带各的）。
+# 不做打包/编码：客户端填什么头，入站请求里就是什么头。只排除会破坏上游请求的
+# 逐跳/浏览器保留头、代理鉴权头，以及代理自用的控制头 X-Proxy-Think
+# （它由代理消费后翻译成上游厂商的 body 参数，不能当普通头透传）。
+_PASSTHROUGH_EXCLUDE = {
+    "host", "content-length", "content-type", "connection", "accept-encoding",
+    "transfer-encoding", "cookie", "origin", "referer", "user-agent", "accept",
+    "accept-language", "authorization", "x-proxy-think",
+}
+
+
+def extra_upstream_headers(request: Request) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for k, v in request.headers.items():
+        lk = k.lower()
+        if lk in _PASSTHROUGH_EXCLUDE or lk.startswith("sec-"):
+            continue
+        out[k] = v
+    return out
+
+
 @app.post(
     "/llm/v1/chat/completions", dependencies=[Depends(require_api_key)]
 )
@@ -1193,6 +1273,13 @@ async def chat_completions(request: Request):
     if not isinstance(body, dict):
         return error_response(400, "请求体必须是 JSON 对象")
 
+    # 是否思考：对外固定用请求头 X-Proxy-Think（不落存储、客户端每次自带），
+    # 代理读入后转成内部统一字段，再由 apply_think 翻译成上游厂商原生的 body 参数。
+    # 这是「代理自用的控制头」，不会原样透传给上游（上游的 think 在 body 里）。
+    think_hdr = request.headers.get("x-proxy-think")
+    if think_hdr is not None:
+        body["think"] = think_hdr.strip().lower() in ("1", "true", "yes", "on")
+
     # 接口通过模型名路由到对应分组（提供商），再在组内多账号间轮询「内部消化」。
     # 命中分组时用该分组的模型（与请求模型一致，幂等）；未命中任何分组时退回
     # 全局健康优先 + 轮询，且不再用入口 model 覆盖，避免把请求模型偷偷改掉。
@@ -1200,28 +1287,77 @@ async def chat_completions(request: Request):
     req_model = body.get("model") if isinstance(body.get("model"), str) else None
     req_vendor = body.get("vendor") if isinstance(body.get("vendor"), str) else None
     req_protocol = body.get("protocol") if isinstance(body.get("protocol"), str) else None
+    req_base_url = body.get("base_url") if isinstance(body.get("base_url"), str) else None
+    # 测试界面「按 URL 测试本代理（或其它实例）」：base_url 只填代理地址即可，
+    # 自动补 /llm 前缀命中本代理的 OpenAI 兼容端点 /llm/v1/chat/completions；
+    # 已带 /llm（如用户手填完整路径）则不重复追加。
+    if req_base_url and "/llm" not in req_base_url:
+        req_base_url = req_base_url.rstrip("/") + "/llm"
+    # base_url 指向本代理自身时等价于「测本代理内部链路」：剥掉它走配置池路由，
+    # 不再 HTTP 自转发（否则请求体带着 base_url 无限递归，前端一直「请求中」）。
+    if req_base_url and _is_self_proxy_base(req_base_url):
+        req_base_url = None
+        body.pop("base_url", None)
+        body.pop("api_key", None)
 
     # 模型目录校验：目录非空（即已配置模型）且客户端显式带了模型时，若不在目录内
     # 直接拒绝，避免把请求发到一个根本不存在的模型上、再由上游返回一堆乱码错误。
     # 客户端没带模型、或目录为空（没法判定）时放行，由上游决定。
-    if req_model:
+    # 显式带 base_url 的「按 URL 测试」场景跳过此门禁（不受配置池目录约束）。
+    if req_model and not body.get("bypass_catalog") and not req_base_url:
         catalog = llm_catalog()
         if catalog:
             v = model_catalog.validate(model_catalog.ModelType.LLM, catalog, req_model)
             if not v.valid:
                 return error_response(400, f"模型校验失败：{v.reason}（请求模型 {req_model!r}）")
 
-    entry = upstream_pool.pick_by_vendor("LLM", req_vendor) if req_vendor else upstream_pool.pick_by_model("LLM", req_model)
+    # 测试界面可显式带 base_url，直接打到该上游地址（绕过池内路由），用于验证任意
+    # OpenAI 兼容端点；此时厂商/模型路由不再生效，完全按客户端给的 URL + 协议转发。
+    if req_base_url:
+        entry = {
+            "base_url": req_base_url,
+            "api_key": (body.get("api_key") or "") if isinstance(body.get("api_key"), str) else "",
+            "protocol": req_protocol or "openai_chat_completions",
+            "model": req_model or "",
+            "vendor": "",
+        }
+    else:
+        entry = upstream_pool.pick_by_vendor("LLM", req_vendor) if req_vendor else upstream_pool.pick_by_model("LLM", req_model)
     if entry is None:
         return llm_disabled_response()
+    # 模型存在性校验（对外接口侧，基于上游模型列表缓存，非每次实时探测）：
+    # 仅当上游能枚举模型且请求模型不在其中时才报「模型不存在」，避免把请求发给根本不存在的模型；
+    # 枚举失败 / 不支持枚举时放行，不误杀正常流量。
+    if req_model:
+        try:
+            upstream_models = await upstream_pool.list_provider_models(
+                entry["base_url"], entry["api_key"],
+                req_protocol or entry["protocol"] or "openai_chat_completions",
+                entry.get("vendor"),
+            )
+        except Exception:
+            upstream_models = None
+        if upstream_models is not None and not any(
+            m.lower() == req_model.lower() for m in upstream_models
+        ):
+            return error_response(
+                404,
+                f"模型不存在：{req_model}（该提供商未提供此模型，请检查名称或刷新模型列表）",
+            )
     routed_by_model = bool(req_model) and entry.get("model") == req_model
-    effective_model = (
-        entry["model"] if routed_by_model else ""
-    ) or llm_model_override()
+    if req_model and body.get("bypass_catalog"):
+        # 测试场景：显式带的模型就是要探的真模型，必须原样下发，不要再被全局默认模型替换（否则测的是别的模型）
+        effective_model = req_model
+    else:
+        effective_model = (
+            entry["model"] if routed_by_model else ""
+        ) or llm_model_override()
     req, stream_cls, resp_transform = llm_protocols.prepare(
         req_protocol or entry["protocol"] or "openai_chat_completions", entry["base_url"], entry["api_key"],
         effective_model, llm_api_version(), body, entry.get("vendor"),
     )
+    # 客户端自带的自定义请求头透传到上游（不落存储，每次请求各带各的）
+    req.headers.update(extra_upstream_headers(request))
 
     if not body.get("stream"):
         try:
@@ -1229,6 +1365,8 @@ async def chat_completions(request: Request):
                 response = await client.post(req.url, headers=req.headers, json=req.payload)
         except httpx.HTTPError as exc:
             upstream_pool.mark_failure("LLM", entry)
+            if req_base_url:
+                return error_response(502, f"无法连接 base_url 指定的上游（{entry['base_url']}）：{exc}；请检查地址是否正确、该代理/服务是否已启动。")
             return error_response(502, f"上游 LLM 请求失败: {exc}")
         if response.status_code >= 400:
             upstream_pool.mark_failure("LLM", entry, response.status_code)
@@ -1255,6 +1393,8 @@ async def chat_completions(request: Request):
         response = await client.send(upstream_req, stream=True)
     except httpx.HTTPError as exc:
         await client.aclose()
+        if req_base_url:
+            return error_response(502, f"无法连接 base_url 指定的上游（{entry['base_url']}）：{exc}；请检查地址是否正确、该代理/服务是否已启动。")
         return error_response(502, f"上游 LLM 请求失败: {exc}")
     if response.status_code >= 400:
         content = await response.aread()
@@ -1264,7 +1404,7 @@ async def chat_completions(request: Request):
             f"上游 LLM 失败（{response.status_code}）: {content.decode(errors='replace')[:500]}",
         )
 
-    model = llm_model_override() or body.get("model", "")
+    model = effective_model or body.get("model", "")
     translator = stream_cls(model)
 
     async def body_gen():
@@ -1442,19 +1582,19 @@ def main(argv=None) -> None:
             flush=True,
         )
 
+    # 用 stt_proxy_enabled() 而非池长度：池里即便有外部条目，默认选「内置」时仍走本地。
     stt_count = len(upstream_pool.load_pool("STT"))
-    if stt_count:
+    if upstream_pool.stt_proxy_enabled():
         print(
             f"[local-ai] STT  : 代理（地址池共 {stt_count} 个，首地址 {llm_base_url_of('STT')}）",
             flush=True,
         )
     else:
+        # 内置 STT 是否可用不在启动阶段判定：冷加载 240MB 模型会拖慢启动，用户也可能
+        # 改用外部 ASR 提供商。统一由管理面板 ASR「内置」行的「测试可用」按钮按需真实检测。
         print(
-            f"[local-ai] STT  : SenseVoice-small (sherpa-onnx) @ {sensevoice_dir()}",
-            flush=True,
-        )
-        print(
-            f"[local-ai] 模型 : {'已就绪' if sensevoice_ready() else '未下载（STT 不可用）'}",
+            f"[local-ai] STT  : 内置 SenseVoice-small @ {sensevoice_dir()}；"
+            "可用性在管理面板 ASR「内置」行点「测试可用」按需检测",
             flush=True,
         )
 
@@ -1484,7 +1624,7 @@ def main(argv=None) -> None:
     # 管理面板：把 Web 控制台挂到同一个 9529 端口，用 admin.conf 的独立账号密码保护。
     # 与语音 / LLM 接口同进程，但走 /admin 前缀且单独鉴权，不干扰推理接口。
     admin_panel.init_admin(_config_path, VOICE_HOME)
-    admin_panel.register_admin_routes(app)
+    admin_panel.register_admin_routes(app, stt_builtin_check=sensevoice_check)
     print(
         f"[local-ai] 管理 : http://{host}:{port}/admin "
         f"（账号密码见 {os.path.join(VOICE_HOME, 'admin.conf')}）",

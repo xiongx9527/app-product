@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { VoiceSessionService } from './voiceSessionService'
+import { ChannelSplitter } from './channelSplitter'
 import type { VoiceSessionDeps } from './voiceSessionService'
 import type { AgentService } from './agentService'
 import type { AsrProvider } from '../asr'
@@ -22,6 +23,13 @@ function silentFrame(samples = 1600): Uint8Array {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 把文本切成定长小块，模拟流式下发。 */
+function chunkText(text: string, size: number): string[] {
+  const out: string[] = []
+  for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size))
+  return out
 }
 
 interface Harness {
@@ -61,6 +69,8 @@ function createHarness(
     locationRequestTimeoutMs?: number
     /** 注入能力探测桩：返回各能力 reachable 与否；缺省「全部就绪」，不下发 client.cue */
     capabilityProbe?: () => Promise<HealthReport | null>
+    /** 智能体口播文本（经 ChannelSplitter 下发）；默认「好的，我来说一句。」。可注入泄漏标记验证兜底 */
+    replyText?: string
   } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
@@ -70,8 +80,9 @@ function createHarness(
   let factoryCalls = 0
   let textIdx = 0
   let finish: (() => void) | null = null
+  const replyText = opts.replyText ?? '好的，我来说一句。'
   const agent: AgentService = {
-    reply(_text, onDelta) {
+    reply(_text, onDelta, onThinking) {
       calls += 1
       if (opts.delayDelta) {
         // 思考阶段不下发 TTS：processing 已为 true、playbackPending 仍为 false，
@@ -81,14 +92,20 @@ function createHarness(
           resolveReply = resolve
         })
         finish = () => {
-          onDelta('好的，我来说一句。')
-          resolveReply('好的，我来说一句。')
+          onDelta(replyText)
+          resolveReply(replyText)
         }
         return pending
       }
-      onDelta('好的，我来说一句。')
+      // 走与真实 agentService 相同的 ChannelSplitter，保证泄漏标记被剥离后再下发
+      const sp = new ChannelSplitter(
+        (s) => onDelta(s),
+        (s) => onThinking?.(s)
+      )
+      for (const piece of chunkText(replyText, 5)) sp.push(piece)
+      sp.end()
       return new Promise<string>((resolve) => {
-        finish = () => resolve('好的，我来说一句。')
+        finish = () => resolve(replyText)
       })
     },
   }
@@ -714,6 +731,72 @@ describe('点歌信息不足：候选列表 + 语音选择', () => {
     expect(resolved).toHaveLength(0)
   })
 
+  it('ASR 句末带标点「周杰伦的歌。」：同样给候选列表，不直接播、不进 LLM', async () => {
+    // 真实 ASR 常在句末带标点，之前「歌。」被当成独立实词 → contentWords 长度变 2 → 误判信息充足直接播。
+    const resolved: string[] = []
+    const h = createHarness({
+      finalizeText: '周杰伦的歌。',
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).toContain('你想听第几首')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+    expect(resolved).toHaveLength(0)
+  })
+
+  it('「来首周杰伦的歌」：给候选列表，不直接播', async () => {
+    const resolved: string[] = []
+    const h = createHarness({
+      finalizeText: '来首周杰伦的歌',
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).toContain('你想听第几首')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+    expect(resolved).toHaveLength(0)
+  })
+
+  it('检索不到同类型（裸歌手名）时：给「没找到」，不退化成直接播一个裸歌手名', async () => {
+    // 候选检索返回 0 条（MusicBrainz 不可达等）：绝不能落到 source.resolve(歌手名) 直接播，
+    // 否则既没问用户、又可能播错。应口播「没找到」并中止。
+    const resolved: string[] = []
+    const h = createHarness({
+      finalizeText: '周杰伦的歌',
+      candidateFetcher: async () => ({ ok: true, json: async () => ({ recordings: [] }) }),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(texts(h)).toContain('没找到')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+    expect(resolved).toHaveLength(0)
+  })
+
   it('两轮：给列表后说「第二首」→ 播第 2 首，且「我说」卡片显示选择句', async () => {
     const resolved: string[] = []
     const h = createHarness({
@@ -764,9 +847,11 @@ describe('点歌信息不足：候选列表 + 语音选择', () => {
     expect(resolved).toEqual(['周杰伦 稻香'])
   })
 
-  it('候选检索为空：回退到直接解析（不卡住、不报错）', async () => {
+  it('候选检索为空：信息充足的歌（歌手+歌名）回退到直接解析（不卡住、不报错）', async () => {
+    // 注意：只说了歌手/歌名（信息不足）时检索为空应口播「没找到」、绝不退化成乱播，
+    // 见下方「候选检索为空（裸歌手名）」测试；此处只验证「信息充足却搜不到」仍回退直播。
     const h = createHarness({
-      finalizeText: '周杰伦',
+      finalizeText: '周杰伦的稻香',
       candidateFetcher: mb([]),
       musicSourceFactory: () =>
         playSource(async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' })),
@@ -1280,5 +1365,47 @@ describe('建连即不可用时下发提示音（client.cue）', () => {
     await sleep(10)
     const cues = h.events.filter((e) => e.type === 'client.cue') as Array<{ type: 'client.cue'; cue: string }>
     expect(cues.map((c) => c.cue)).toEqual(['asr-down'])
+  })
+})
+
+describe('大模型异常回复兜底：不念垃圾，给一句兜底口播', () => {
+  it('整句都是泄漏控制符（thought <channel|>）：不当作正文念，改口播兜底', async () => {
+    const h = createHarness({ replyText: 'thought\n<channel|>' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(10)
+    h.playbackDone()
+    await sleep(10)
+
+    const delta = h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+    // 泄漏标记绝不能下发给客户端/被念出来
+    expect(delta).not.toContain('thought')
+    expect(delta).not.toContain('channel')
+    // 而是给一句兜底，让用户能自然重说
+    expect(delta).toContain('抱歉，我刚才没反应过来')
+    // 兜底也走 TTS 链路（有 tts.start），不是静默丢弃
+    expect(h.events.some((e) => e.type === 'tts.start')).toBe(true)
+  })
+
+  it('泄漏标记后跟正常正文：只播放正常部分，不念垃圾', async () => {
+    const h = createHarness({ replyText: 'thought\n<channel|>\n好的，已为您播放。' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(10)
+    h.playbackDone()
+    await sleep(10)
+
+    const delta = h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+    expect(delta).not.toContain('thought')
+    expect(delta).not.toContain('channel')
+    expect(delta).toContain('好的，已为您播放。')
   })
 })

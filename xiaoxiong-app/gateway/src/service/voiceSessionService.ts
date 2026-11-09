@@ -381,7 +381,9 @@ export class VoiceSessionService {
     }
     const items = await searchCandidates(query, this.deps.candidateFetcher)
     if (items.length === 0) {
-      if (forceList) {
+      // 信息不足（只说了歌手/歌名）却搜不到：友好告知「没找到」，绝不退化成
+      // 「直接播一个裸歌手名」乱播（那样既没问用户、又可能播错版本）。
+      if (forceList || needsCandidateList(genre)) {
         await this.speakReply(m.notFound(isSpokenContentRequest(text)))
         return true
       }
@@ -937,6 +939,10 @@ export class VoiceSessionService {
       if (ttsStarted && !stale()) {
         this.speaking = false
         this.deps.send({ type: 'tts.end' })
+      } else if (!ttsStarted && !stale()) {
+        // 整句都不可念（大模型泄漏的控制符 / 空回复 / 只剩符号）：绝不当作正文念出来，
+        // 给一句兜底口播，让人能自然重说一遍。
+        await this.speakReply(messages(this.lang).llmFallthrough())
       }
       return ttsStarted
     } catch (err) {

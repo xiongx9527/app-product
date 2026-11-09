@@ -15,7 +15,8 @@ voice.ps1 后台启动时，这些内容会进入 voice.log。
     - 基础包：fastapi / uvicorn / python-multipart / httpx / pydantic；
     - LLM：纯转发代理；启用时 LLM_UPSTREAM_BASE_URL 必须是 http(s)；
       不检查本机 ollama，也不需要任何本地模型；
-    - 本地 STT：sherpa-onnx / numpy / SenseVoice 模型文件；
+    - 本地 STT：sherpa-onnx / numpy；SenseVoice 模型是否可用不在启动检测，
+      由管理面板 ASR「内置」行的「测试可用」按钮按需真实检测；
     - 本地 TTS：edge-tts / ffmpeg；
     - 代理模式：上游地址必须是 http(s)，并跳过对应能力的本地依赖检查。
 
@@ -173,17 +174,14 @@ def check_llm(server) -> None:
 
 
 def local_stt_issues(server) -> list[str]:
-    issues = [
+    # 只查运行所需的 Python 包。SenseVoice 模型文件是否就绪不在启动阶段检测：
+    # 模型可能稍后下载，也可能改用外部 ASR 提供商；启动就判定「STT 不可用」既
+    # 容易误报又会拖慢启动。内置可用性由管理面板「测试可用」按钮按需真实检测。
+    return [
         f"Python 包 {label}"
         for label, module in STT_MODULES
         if not has_module(module)
     ]
-    if not server.sensevoice_ready():
-        issues.append(
-            f"SenseVoice 模型未就绪：{server.sensevoice_dir()}"
-            "（需要 model.int8.onnx 和 tokens.txt）"
-        )
-    return issues
 
 
 def local_tts_issues(server) -> tuple[list[str], str | None]:
@@ -239,7 +237,7 @@ def check_capability(
         if name == "STT":
             hints.append(pip_install_hint("requirements-stt.txt"))
             hints.append(
-                "下载 SenseVoice 模型：重新运行安装脚本（脚本会下载约 240MB 模型）"
+                "内置模型是否可用：管理面板 ASR「内置」行点「测试可用」按需检测"
             )
         else:
             hints.append(pip_install_hint("requirements-tts.txt"))
@@ -285,7 +283,8 @@ def check_backends(server) -> None:
         mode,
         "tts-only",
         local_stt_issues(server),
-        f"STT : 本地 SenseVoice-small @ {server.sensevoice_dir()}",
+        f"STT : 内置 SenseVoice-small @ {server.sensevoice_dir()}（启动不检测模型，"
+        "可用性在管理面板「内置」行点「测试可用」按需验证）",
     )
     tts_issues, ffmpeg = local_tts_issues(server)
     check_capability(

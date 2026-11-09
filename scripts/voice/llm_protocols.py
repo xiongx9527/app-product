@@ -422,6 +422,7 @@ def _build_ollama(base: str, api_key: str, model_override: str, body: dict) -> U
         "stream": bool(body.get("stream", False)),
         "options": {k: body[k] for k in ("temperature", "top_p", "seed") if k in body},
     }
+    # 思考开关由 prepare 末尾的 apply_think() 统一翻译，这里不再重复处理。
     url = base.rstrip("/") + "/api/chat"
     headers = {"Content-Type": "application/json", **_bearer(api_key)}
     return UpstreamRequest(url, headers, payload)
@@ -573,6 +574,55 @@ def openai_responses_to_openai(obj: dict) -> dict:
     }
 
 
+# ── 思考开关：统一契约 -> 各厂商原生参数 ─────────────────────────────────
+# 代理对外的统一契约是布尔 think（true=要推理链 / false=不要）。各家原生参数
+# 名字、结构完全不同，必须在这里翻译，不能把 think 原样丢给上游（多数厂商不认，
+# 还可能当成非法参数报错）。同时把代理内部字段从最终 payload 里剔除，避免
+# _build_openai 的 dict(body) 把 base_url / api_key / vendor 等一起透传上去。
+_INTERNAL_KEYS = {"base_url", "api_key", "vendor", "protocol", "bypass_catalog", "think", "extra_body"}
+
+
+def apply_think(payload: dict, body: dict, wire: str, vendor: str) -> dict:
+    """把统一 think 契约翻译成目标厂商的『是否思考』参数（就地改 payload）。
+
+    未带 think 时不干预上游默认行为。通用 OpenAI 兼容端点没有统一标准，保守
+    不下发任何思考参数（宁可沿用上游默认，也不发对方不认的字段）。
+    """
+    for k in _INTERNAL_KEYS:
+        payload.pop(k, None)
+    think = body.get("think")
+    if think is None:
+        return payload
+    enable = bool(think)
+    if vendor == "ollama":
+        # ollama 原生 /api/chat：think=true/false（0.40.x+ 支持）
+        payload["think"] = enable
+    elif wire == "anthropic_messages":
+        # Claude：不带 thinking 字段即不思考；要思考才带 type+budget
+        if enable:
+            payload["thinking"] = {"type": "enabled", "budget_tokens": 4096}
+        else:
+            payload.pop("thinking", None)
+    elif wire == "gemini":
+        # Gemini：thinkingBudget 0=关闭，-1=动态（自动）
+        cfg = payload.setdefault("generationConfig", {})
+        cfg.setdefault("thinkingConfig", {})["thinkingBudget"] = -1 if enable else 0
+    elif wire == "openai_responses":
+        # OpenAI o-series 没有『关闭推理』语义，只能不带 reasoning 用默认
+        if enable:
+            payload["reasoning"] = {"effort": "medium"}
+        else:
+            payload.pop("reasoning", None)
+    elif vendor == "dashscope":
+        # 通义千问（OpenAI 兼容模式）
+        payload["enable_thinking"] = enable
+    elif vendor == "deepseek":
+        # DeepSeek V3.1+ 混合思考
+        payload["thinking"] = {"type": "enabled" if enable else "disabled"}
+    # 其余 openai_chat_completions / azure：无统一标准，保持不下发
+    return payload
+
+
 # ── 统一入口 ────────────────────────────────────────────────────────────
 def prepare(
     protocol: str,
@@ -600,30 +650,35 @@ def prepare(
         )
         if api_version:
             req.url += f"?api-version={api_version}"
-        return req, StreamTranslator, _identity
-
-    if wire == "anthropic_messages":
+        stream_cls, resp_transform = StreamTranslator, _identity
+    elif wire == "anthropic_messages":
         req = _build_anthropic(base, api_key, model_override, body)
-        return req, AnthropicStream, anthropic_to_openai
-
-    if wire == "gemini":
+        stream_cls, resp_transform = AnthropicStream, anthropic_to_openai
+    elif wire == "gemini":
         req = _build_gemini(base, api_key, model_override, body)
-        return req, GeminiStream, gemini_to_openai
-
-    if wire == "openai_responses":
+        stream_cls, resp_transform = GeminiStream, gemini_to_openai
+    elif wire == "openai_responses":
         req = _build_openai_responses(base, api_key, model_override, body)
-        return req, OpenAiResponsesStream, openai_responses_to_openai
-
-    # openai_chat_completions（默认，覆盖 openai / deepseek / dashscope / ollama 等）
-    if vendor == "ollama":
+        stream_cls, resp_transform = OpenAiResponsesStream, openai_responses_to_openai
+    elif vendor == "ollama":
+        # openai_chat_completions（默认，覆盖 openai / deepseek / dashscope / ollama 等）
         req = _build_ollama(base, api_key, model_override, body)
-        return req, OllamaStream, ollama_to_openai
-    if vendor == "dashscope":
-        path = "/compatible-mode/v1/chat/completions"
+        stream_cls, resp_transform = OllamaStream, ollama_to_openai
     else:
-        path = _openai_chat_path(base)
-    req = _build_openai(base, api_key, model_override, body, path)
-    return req, StreamTranslator, _identity
+        path = "/compatible-mode/v1/chat/completions" if vendor == "dashscope" else _openai_chat_path(base)
+        req = _build_openai(base, api_key, model_override, body, path)
+        stream_cls, resp_transform = StreamTranslator, _identity
+
+    # 统一收口：思考开关按厂商翻译 + 剔除代理内部字段（_build_openai 用了 dict(body)）
+    apply_think(req.payload, body, wire, vendor)
+    # 自定义 body 参数：合并到上游 payload（各线协议结构不同，这里统一补齐，
+    # setdefault 保证不覆盖协议自身已翻译好的字段）。
+    extra_body = body.get("extra_body")
+    if isinstance(extra_body, dict):
+        for k, v in extra_body.items():
+            if isinstance(k, str) and k.strip():
+                req.payload.setdefault(k.strip(), v)
+    return req, stream_cls, resp_transform
 
 
 def prepare_models(

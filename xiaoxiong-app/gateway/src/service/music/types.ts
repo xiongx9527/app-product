@@ -157,8 +157,13 @@ export function genreToKeyword(genre?: string): string {
   // 「段」用于评书/相声这类内容（「放段相声」→「相声」），否则会拿「段相声」白搜。
   const normalized = kw.replace(/^[个首点些段]+\s*/, '').trim()
   if (!normalized) return ''
+  // 去掉句末可能残留的标点/符号：ASR 常给「周杰伦的歌。」之类，若不剥掉，「歌。」会被当成
+  // 独立实词，导致「歌手 + 歌。」被误判成「信息充足（两个实词）」而直接播，而不是给候选列表；
+  // 同时检索词带标点 MusicBrainz / B 站也搜不到。
+  const cleaned = normalized.replace(/[\p{P}\p{S}]+$/u, '')
+  if (!cleaned) return ''
   // 只说「戏」太泛（B 站搜「戏」会命中任何标题带「戏」的视频），统一收敛到「戏曲」再检索。
-  return normalized === '戏' ? '戏曲' : normalized
+  return cleaned === '戏' ? '戏曲' : cleaned
 }
 
 /**

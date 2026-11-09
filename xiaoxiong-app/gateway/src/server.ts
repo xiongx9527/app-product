@@ -132,7 +132,11 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
   return {
     httpServer,
     config,
-    listen: () => httpServer.listen(config.port),
+    // 内嵌模式只绑回环，不把网关暴露到局域网；桌面/外部模式保持默认（监听所有网卡）。
+    listen: () =>
+      process.env.GATEWAY_MODE === 'embedded'
+        ? httpServer.listen(config.port, '127.0.0.1')
+        : httpServer.listen(config.port),
   }
 }
 
@@ -158,7 +162,11 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
-const CUE_DIR = fileURLToPath(new URL('../static/cues', import.meta.url))
+// 桌面版按源码相对位置找提示音；离线包里 bundle 位于 assets，import.meta.url 指向 bundle
+// 自身、相对路径会落到错误目录，故内嵌模式由原生层注入 GATEWAY_HOME（解包后的私有目录）。
+const CUE_DIR = process.env.GATEWAY_HOME
+  ? path.join(process.env.GATEWAY_HOME, 'static', 'cues')
+  : fileURLToPath(new URL('../static/cues', import.meta.url))
 const ALLOWED_CUES = new Set(['network-down', 'asr-down', 'tts-down', 'llm-down', 'mic-denied'])
 
 /** 仅放行白名单内的提示音文件；校验扩展名 + 禁止 `..`，杜绝目录穿越。 */

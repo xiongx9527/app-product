@@ -3,7 +3,20 @@ import { createRequire } from 'node:module'
 import { basename, dirname, extname, join, normalize } from 'node:path'
 
 const require = createRequire(import.meta.url)
-const distDir = dirname(require.resolve('swagger-ui-dist/package.json'))
+
+// 离线包里没有 node_modules，模块顶层 require.resolve 会直接抛错导致整个 bundle 起不来。
+// 延迟到真正请求 /docs 时才解析；解析失败（或 DOCS_ENABLED=false）就禁用文档，其余接口不受影响。
+let distDir: string | null | undefined
+function resolveDistDir(): string | null {
+  if (distDir !== undefined) return distDir
+  if (process.env.DOCS_ENABLED === 'false') return (distDir = null)
+  try {
+    distDir = dirname(require.resolve('swagger-ui-dist/package.json'))
+  } catch {
+    distDir = null
+  }
+  return distDir
+}
 
 const MIME: Record<string, string> = {
   '.js': 'application/javascript',
@@ -15,11 +28,13 @@ const MIME: Record<string, string> = {
 
 /** 从 swagger-ui-dist 提供 Swagger UI 静态资源，并把默认 spec 指向 /api/openapi.json。 */
 export async function serveSwagger(pathname: string): Promise<{ status: number; contentType: string; body: Buffer | string } | null> {
+  const root = resolveDistDir()
+  if (!root) return null
   let rel = pathname.replace(/^\/docs/, '') || '/'
   if (rel === '/') rel = '/index.html'
   const safe = normalize(rel).replace(/^(\.\.[/\\])+/, '')
-  const filePath = join(distDir, safe)
-  if (!filePath.startsWith(distDir)) return null
+  const filePath = join(root, safe)
+  if (!filePath.startsWith(root)) return null
   try {
     const buf = await readFile(filePath)
     const ext = extname(filePath)

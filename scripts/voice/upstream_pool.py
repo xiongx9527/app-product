@@ -51,6 +51,8 @@ import httpx
 import llm_protocols  # 协议归一化：厂商式协议名 -> 线协议
 
 CAPS = ("LLM", "STT", "TTS")
+# STT 默认提供商的固定值：内置 = 本地 SenseVoice，不进上游池、不受池内容影响。
+STT_BUILTIN_VENDOR = "内置"
 _FAIL_THRESHOLD = 3
 _COOLDOWN = 60.0
 _PROBE_INTERVAL = 15.0
@@ -226,6 +228,25 @@ def has_upstream(cap: str) -> bool:
     return bool(load_pool(cap))
 
 
+def stt_default_vendor() -> str:
+    """STT 默认提供商：显式 STT_UPSTREAM_VENDOR 优先，否则「内置」（本地 SenseVoice）。"""
+    try:
+        v = (config_store.instance().get("STT_UPSTREAM_VENDOR", "") or "").strip()
+    except Exception:
+        v = ""
+    return v or STT_BUILTIN_VENDOR
+
+
+def stt_use_builtin() -> bool:
+    """默认提供商为「内置」时，识别走本地 SenseVoice，忽略所有上游。"""
+    return stt_default_vendor() == STT_BUILTIN_VENDOR
+
+
+def stt_proxy_enabled() -> bool:
+    """是否走上游代理：默认不是内置，且确实配了上游。供 health / models / 路由共用。"""
+    return (not stt_use_builtin()) and has_upstream("STT")
+
+
 def invalidate() -> None:
     """配置变更后清掉池缓存，下次请求立即重新解析。"""
     with _lock:
@@ -247,6 +268,70 @@ def _ensure_health(cap: str, e: dict) -> dict:
         h = {"healthy": True, "fails": 0, "last_error": None, "last_probe": 0.0}
         _health[k] = h
     return h
+
+
+# 上游模型列表缓存：按 (base_url, protocol, vendor) 缓存探测结果，TTL 内不重复探测。
+# 用于对外接口「模型存在性」校验——只依赖缓存数据，不每次发实时探测。
+_MODEL_CACHE: dict[tuple, tuple[float, Optional[list[str]]]] = {}
+_MODEL_CACHE_TTL = 60.0
+
+
+async def list_provider_models(
+    base_url: str, api_key: str, protocol: str, vendor: str | None = None
+) -> Optional[list[str]]:
+    """缓存地列出上游模型的 id；探测失败 / 不支持枚举时返回 None（调用方应跳过校验，不误杀）。
+
+    命中缓存直接返回，避免每次请求都打上游；仅在 TTL 过期后才重新探测一次。
+    """
+    key = (base_url.rstrip("/"), protocol or "", vendor or "")
+    now = time.time()
+    cached = _MODEL_CACHE.get(key)
+    if cached and now - cached[0] < _MODEL_CACHE_TTL:
+        return cached[1]
+    models = await _probe_models(base_url, api_key, protocol, vendor)
+    _MODEL_CACHE[key] = (now, models)
+    return models
+
+
+async def _probe_models(
+    base_url: str, api_key: str, protocol: str, vendor: str | None
+) -> Optional[list[str]]:
+    """实际探测上游模型列表：优先 OpenAI 兼容 /v1/models，ollama 再试 /api/tags。"""
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return None
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            # OpenAI 兼容端点（ollama 也支持）
+            try:
+                r = await client.get(base + "/v1/models", headers=headers)
+                if r.status_code == 200:
+                    arr = (r.json().get("data") or []) if r.content else []
+                    ids = [m.get("id") for m in arr if isinstance(m, dict) and m.get("id")]
+                    if ids:
+                        return ids
+            except Exception:
+                pass
+            # ollama 原生端点（vendor 为 ollama 或协议走原生时兜底）
+            if (vendor or "").lower() == "ollama" or (protocol or "").startswith("ollama"):
+                try:
+                    r = await client.get(base + "/api/tags", headers=headers)
+                    if r.status_code == 200:
+                        ms = (r.json().get("models") or []) if r.content else []
+                        ids = [
+                            m.get("name") or m.get("model")
+                            for m in ms
+                            if isinstance(m, dict)
+                        ]
+                        ids = [i for i in ids if i]
+                        if ids:
+                            return ids
+                except Exception:
+                    pass
+    except Exception:
+        return None
+    return None
 
 
 def _pick_from(pool_list: list[dict], cap: str) -> Optional[dict]:

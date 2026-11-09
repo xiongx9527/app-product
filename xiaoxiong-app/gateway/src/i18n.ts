@@ -55,6 +55,8 @@ export interface Messages {
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
+  /** 大模型整句都不可念（泄漏控制符 / 空回复 / 只剩符号）时的兜底口播：不念垃圾，给一句让人能重说的 */
+  llmFallthrough: () => string
   /** 长期记忆：把该设备已记住的内容注入系统提示，让助手「知道你的习惯」 */
   memory: {
     /** items 是已格式化的「- 话题：内容」清单；空串表示还没记忆 */
@@ -130,6 +132,7 @@ const zhCN: Messages = {
     volumeMin: () => '音量已经最小了。',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
+  llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
   memory: {
     context: (items) =>
       items

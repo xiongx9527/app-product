@@ -83,4 +83,24 @@ describe('ChannelSplitter', () => {
     const r = run([`${F}抱歉，我没听清，能再说一遍吗？<|return|>`])
     expect(r.delta).toBe('抱歉，我没听清，能再说一遍吗？')
   })
+
+  it('截图复现：裸词 thought + 变形 channel 开启符被剥离，不进正文也不进思考', () => {
+    const r = run(['thought\n<channel|>'])
+    expect(r.delta).toBe('')
+    expect(r.thinking).toBe('')
+    expect(r.delta).not.toContain('thought')
+    expect(r.delta).not.toContain('channel')
+  })
+
+  it('泄漏标记后跟正常正文：只保留正文', () => {
+    const r = run(['thought\n<channel|>\n好的，已为您播放。'])
+    expect(r.delta).toBe('好的，已为您播放。')
+    expect(r.delta).not.toContain('thought')
+    expect(r.delta).not.toContain('channel')
+  })
+
+  it('末尾截断的 <channel| 残片（无闭合 >）也剥离', () => {
+    const r = run([`${F}完<channel|`])
+    expect(r.delta).toBe('完')
+  })
 })
