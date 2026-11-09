@@ -34,10 +34,24 @@ export interface Messages {
     recommend: (items: readonly string[]) => string
     /** 推荐但没具体歌手/风格：引导补充，不擅自乱播 */
     recommendPrompt: () => string
+    /** 语音「换一首」找不到同类型的其它歌时，把选择权交给用户：自动换其它风格，或自己点名 */
+    offerOtherType: () => string
+    /** 换一首（按钮/语音确认后）退回其它风格并口播一句（不静默、也不追问） */
+    switchedOther: () => string
     /** 循环播放：count 为总共播放的遍数（>1 才真循环，1 表示重播一遍） */
     looping: (count: number) => string
     /** 「循环播放」指令下发时没有正在播的曲子 */
     loopNothing: () => string
+    /** 音量设到绝对值（pct 为目标百分比） */
+    volumeSet: (pct: number) => string
+    /** 音量调大后口播（pct 为调整后百分比） */
+    volumeUp: (pct: number) => string
+    /** 音量调小后口播（pct 为调整后百分比） */
+    volumeDown: (pct: number) => string
+    /** 已到最大还让调大 */
+    volumeMax: () => string
+    /** 已到最小还让调小 */
+    volumeMin: () => string
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
@@ -94,11 +108,23 @@ const zhCN: Messages = {
       `为你推荐：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}首，${it}`).join('；')}。`,
     /** 推荐但没具体歌手/风格：引导补充，不擅自乱播 */
     recommendPrompt: () => '想听点什么风格，或者告诉我歌手，我帮你挑几首？',
+    /** 换一首找不到同类型的其它歌时，直接退回其它风格并口播一句（不静默、也不追问） */
+    switchedOther: () => '没找到同类型的其它歌，给你换首其它风格的。',
     /** 循环播放：count 为总共播放的遍数（>1 才真循环，1 表示重播一遍） */
     looping: (count) =>
       count > 1 ? `为你循环播放 ${count} 遍。` : '为你重播一遍。',
     /** 「循环播放」指令下发时没有正在播的曲子 */
     loopNothing: () => '现在还没在播放什么，先放一首再让我循环吧。',
+    /** 音量设到绝对值 */
+    volumeSet: (pct) => `已为您将音量调到 ${pct}%。`,
+    /** 音量调大 */
+    volumeUp: (pct) => `已调大，当前音量 ${pct}%。`,
+    /** 音量调小 */
+    volumeDown: (pct) => `已调小，当前音量 ${pct}%。`,
+    /** 已到最大还让调大 */
+    volumeMax: () => '音量已经最大了。',
+    /** 已到最小还让调小 */
+    volumeMin: () => '音量已经最小了。',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
   memory: {

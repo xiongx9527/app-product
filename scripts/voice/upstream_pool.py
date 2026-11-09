@@ -55,6 +55,12 @@ _FAIL_THRESHOLD = 3
 _COOLDOWN = 60.0
 _PROBE_INTERVAL = 15.0
 _PROBE_TIMEOUT = 3.0
+# 模型名前缀可识别的提供商；用于单地址写法（无显式 vendor 字段）时推导 vendor。
+_KNOWN_VENDORS = {
+    "openai", "azure", "deepseek", "dashscope", "aliyun", "qwen", "ollama", "anthropic",
+    "gemini", "google", "moonshot", "kimi", "glm", "zhipu", "minimax", "step", "baichuan",
+    "doubao", "volcengine", "yi", "01ai", "spark", "iflytek", "tencent", "hunyuan",
+}
 
 _lock = threading.Lock()
 # 已解析的池缓存（带 TTL，避免每次请求都解析 JSON）。
@@ -80,11 +86,20 @@ def _legacy_single(cap: str) -> Optional[dict]:
         base = (store.get("LLM_UPSTREAM_BASE_URL") or "").strip()
         if not base:
             return None
+        model = (store.get("LLM_UPSTREAM_MODEL") or "").strip()
+        # 单地址写法没有显式 vendor 字段，用模型名前缀推导（deepseek-chat -> deepseek），
+        # 让测试界面的「提供商」下拉能列出这一家；推导不出则留空。
+        vendor = (store.get("LLM_UPSTREAM_VENDOR") or "").strip()
+        if not vendor:
+            head = model.split("-", 1)[0].lower()
+            if head in _KNOWN_VENDORS:
+                vendor = head
         return {
             "base_url": base,
             "api_key": (store.get("LLM_UPSTREAM_API_KEY") or "").strip(),
             "protocol": (store.get("LLM_UPSTREAM_PROTOCOL") or "openai").strip() or "openai",
-            "model": (store.get("LLM_UPSTREAM_MODEL") or "").strip(),
+            "model": model,
+            "vendor": vendor,
         }
     # STT / TTS：能力专属 > 通用 VOICE_UPSTREAM_*
     base = (store.get(f"{cap}_UPSTREAM_BASE_URL") or "").strip() or (
@@ -263,6 +278,21 @@ def pick_by_model(cap: str, model: str | None) -> Optional[dict]:
         return None
     if model:
         matched = [e for e in entries if e.get("model") == model]
+        if matched:
+            return _pick_from(matched, cap)
+    return _pick_from(entries, cap)
+
+
+def pick_by_vendor(cap: str, vendor: str) -> Optional[dict]:
+    """按提供商（vendor）选出该提供商的入口再做健康优先 + 轮询。
+
+    测试界面 / 调用方可显式指定想打哪个提供商；vendor 为空或没匹配到时退回全局轮询。
+    """
+    entries = load_pool(cap)
+    if not entries:
+        return None
+    if vendor:
+        matched = [e for e in entries if (e.get("vendor") or "").strip().lower() == vendor.strip().lower()]
         if matched:
             return _pick_from(matched, cap)
     return _pick_from(entries, cap)

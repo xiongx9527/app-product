@@ -227,6 +227,10 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendJson({ type: 'music.next', genre })
   }
 
+  reportVolume(volume: number): void {
+    this.sendJson({ type: 'music.volume', volume })
+  }
+
   notifyPlaybackDone(): void {
     this.sendJson({ type: 'session.playback_done' })
   }

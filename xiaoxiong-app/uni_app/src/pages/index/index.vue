@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { readScreenInfo, type ScreenInfo } from '@/core/adaptation/screen'
 import { useAssistant } from '@/features/assistant/useAssistant'
 import { toDisplayText } from '@/core/text/displayText'
@@ -47,6 +47,10 @@ const {
   musicPaused,
   musicEnded,
   musicLoopActive,
+  musicLoopRemaining,
+  musicVolume,
+  setMusicVolume,
+  reportVolume,
   musicError,
   musicVisible,
   musicTitle,
@@ -58,7 +62,7 @@ const {
   pauseMusic,
   resumeMusic,
   replayMusic,
-  toggleLoop,
+  cycleLoop,
   nextMusic,
   seekMusic,
   closeLyrics,
@@ -140,6 +144,111 @@ const musicPercent = computed(() => progressPercent(musicProgress.value, seekPre
 const musicElapsed = computed(() => elapsedLabel(musicProgress.value, seekPreview.value))
 const musicTotal = computed(() => totalLabel(musicProgress.value))
 
+// 循环按钮角标：总播放遍数（含当前这一遍）= 剩余重播次数 + 1；无限循环显示 ∞；
+// 未循环（loopRemaining 为 0）不显示。
+const loopBadge = computed(() => {
+  const r = musicLoopRemaining.value
+  if (!Number.isFinite(r)) return '∞'
+  return r > 0 ? String(r + 1) : ''
+})
+
+// 音乐音量：滑块控制 0–1；0 视为静音，图标切换为静音态。
+const musicMuted = computed(() => musicVolume.value < 0.005)
+// 喇叭放在播放进度之后，点它展开/收起竖向音量滑块（上下拖拉调音量），
+// 避免再出现一条全宽滑杆。
+const volExpanded = ref(false)
+
+// 竖向音量轨道：按手指/鼠标在轨道内的纵向位置换算音量（轨道底部=0，顶部=1）。
+// 原生 slider 仅横向、CSS 旋转后拖不动，这里用自定义轨道替代。
+// 同时支持触摸与鼠标（桌面 :5173 用鼠标，没有触摸事件），用模板 ref 同步取轨道位置（H5 可靠），
+// 拿不到时退回 uni.createSelectorQuery 缓存，供原生 App 兜底。
+const volTrackRef = ref<unknown>(null)
+let volTrackRect: { top: number; height: number } | null = null
+let volDragging = false
+
+function volRectFromRef(): { top: number; height: number } | null {
+  const raw = (volTrackRef.value as { $el?: unknown } | null) ?? null
+  const node = (raw && (raw as { $el?: unknown }).$el) ?? raw
+  const el = node as { getBoundingClientRect?: () => { top: number; height: number } } | null
+  const rect = el?.getBoundingClientRect?.()
+  if (rect && Number.isFinite(rect.height) && rect.height > 0) return { top: rect.top, height: rect.height }
+  return null
+}
+
+// 从触摸或鼠标事件里取视口 Y 坐标（clientY 两者通用；触摸走 touches[0].clientY）
+function clientYOf(event: unknown): number {
+  const e = event as { clientY?: number; touches?: Array<{ clientY?: number }> }
+  if (typeof e.clientY === 'number') return e.clientY
+  const t = e.touches?.[0]
+  if (t && typeof t.clientY === 'number') return t.clientY
+  return NaN
+}
+
+function applyVolFromY(event: unknown): void {
+  const y = clientYOf(event)
+  if (!Number.isFinite(y)) return
+  const rect = volRectFromRef() ?? volTrackRect
+  if (!rect) {
+    // 退回异步查询并缓存，待后续 move 复用（本次先不跳变）
+    uni.createSelectorQuery()
+      .select('.vol-track')
+      .boundingClientRect((r: unknown) => {
+        const rr = r as { top: number; height: number } | null
+        if (rr && rr.height) volTrackRect = { top: rr.top, height: rr.height }
+      })
+      .exec()
+    return
+  }
+  volTrackRect = rect
+  const frac = 1 - (y - rect.top) / rect.height
+  setMusicVolume(Math.min(1, Math.max(0, frac)))
+}
+
+// 按下：开始拖动并立即按落点设一次音量；桌面端鼠标拖动监听 window，保证移出轨道仍跟手
+function onVolStart(event: unknown): void {
+  volDragging = true
+  applyVolFromY(event)
+  if (typeof window !== 'undefined') {
+    window.addEventListener('mousemove', onVolMove)
+    window.addEventListener('mouseup', onVolEnd)
+  }
+}
+
+// 移动：仅在拖动中更新（触摸由元素上的 @touchmove 触发；鼠标由 window mousemove 触发）
+function onVolMove(event: unknown): void {
+  if (!volDragging) return
+  applyVolFromY(event)
+}
+
+function onVolEnd(): void {
+  volDragging = false
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('mousemove', onVolMove)
+    window.removeEventListener('mouseup', onVolEnd)
+  }
+  // 拖完上报最终音量，让网关音量状态与本地同步（供语音「调大/调小」相对增减准确）。
+  // 只在上报用户拖动结果，不监听 musicVolume 变化，避免网关下发 media.volume 又被回执成环。
+  reportVolume(musicVolume.value)
+}
+
+// 点喇叭图标：展开/收起音量滑块；图标本身按 musicMuted 显示静音态。
+function onToggleVolExpand(): void {
+  volExpanded.value = !volExpanded.value
+  // 展开后预热轨道位置缓存：原生 App 没有 DOM 节点可同步读取，靠 selectorQuery 兜底，
+  // 这样第一下拖动就有位置可算，不至于「点了没反应」。
+  if (volExpanded.value) {
+    nextTick(() => {
+      uni.createSelectorQuery()
+        .select('.vol-track')
+        .boundingClientRect((r: unknown) => {
+          const rr = r as { top: number; height: number } | null
+          if (rr && rr.height) volTrackRect = { top: rr.top, height: rr.height }
+        })
+        .exec()
+    })
+  }
+}
+
 function readSliderValue(event: unknown): number {
   const detail = (event as { detail?: { value?: unknown } } | null)?.detail
   const value = Number(detail?.value)
@@ -175,7 +284,7 @@ function onTogglePause(): void {
 
 function onToggleLoop(): void {
   seekPreview.value = null
-  toggleLoop()
+  cycleLoop()
 }
 
 function onNextMusic(): void {
@@ -217,6 +326,12 @@ onMounted(() => {
 
 onUnmounted(() => {
   uni.offWindowResize(onResize)
+  // 清掉音量拖动可能遗留的 window 监听，避免泄漏
+  volDragging = false
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('mousemove', onVolMove)
+    window.removeEventListener('mouseup', onVolEnd)
+  }
 })
 
 function onToggle(event: Event): void {
@@ -353,19 +468,49 @@ function onConnTap(): void {
           <view class="music-ctrl" :class="{ primary: !musicPaused && !musicEnded }" :aria-label="t('music.next')" @tap="onNextMusic">
             <image class="music-icon" src="/static/icons/next.svg" mode="aspectFit" />
           </view>
-          <view class="music-ctrl" :aria-label="musicEnded ? t('music.resume') : musicPaused ? t('music.resume') : t('music.pause')" @tap="onTogglePause">
-            <image class="music-icon" :src="musicEnded || musicPaused ? '/static/icons/play.svg' : '/static/icons/pause.svg'" mode="aspectFit" />
-          </view>
-          <view class="music-ctrl" :class="{ primary: musicLoopActive }" :aria-label="musicLoopActive ? t('music.loopOff') : t('music.loopOn')" @tap="onToggleLoop">
+          <view class="music-ctrl loop-ctrl" :class="{ primary: musicLoopActive }" :aria-label="musicLoopActive ? t('music.loopOff') + (loopBadge ? (' ' + loopBadge) : '') : t('music.loopOn')" @tap="onToggleLoop">
             <image class="music-icon" src="/static/icons/loop.svg" mode="aspectFit" />
+            <text v-if="loopBadge" class="loop-badge">{{ loopBadge }}</text>
           </view>
           <view class="music-ctrl" :aria-label="t('music.stop')" @tap="onStopMusic">
             <image class="music-icon" src="/static/icons/stop.svg" mode="aspectFit" />
           </view>
+          <!-- 喇叭提升到顶行：面板作为喇叭的兄弟节点（避免点击面板冒泡到开关而缩回），
+               喇叭已在上方，面板改为向下弹出，盖住下方进度行而非飞出屏幕顶部。 -->
+          <view class="vol-group">
+            <view
+              class="music-ctrl vol-ctrl"
+              :class="{ muted: musicMuted, active: volExpanded }"
+              :aria-label="musicMuted ? t('music.unmute') : t('music.mute')"
+              @tap="onToggleVolExpand"
+            >
+              <image class="music-icon" :src="musicMuted ? '/static/icons/volume-mute.svg' : '/static/icons/volume.svg'" mode="aspectFit" />
+            </view>
+            <view v-if="volExpanded" class="vol-slider-wrap">
+              <text class="vol-pct">{{ Math.round(musicVolume * 100) }}%</text>
+              <view
+                ref="volTrackRef"
+                class="vol-track"
+                @touchstart.stop="onVolStart"
+                @touchmove.stop="onVolMove"
+                @touchend.stop="onVolEnd"
+                @mousedown.stop="onVolStart"
+              >
+                <view class="vol-rail">
+                  <view class="vol-fill" :style="{ height: (musicVolume * 100) + '%' }" />
+                  <view class="vol-handle" :style="{ bottom: (musicVolume * 100) + '%' }" />
+                </view>
+              </view>
+            </view>
+          </view>
         </view>
       </view>
       <text v-if="musicError" class="music-error">{{ t('music.error') }}</text>
+      <!-- 播放进度行：暂停/继续按钮提到进度条之前（同一行），其余空间给进度条/直播标识 -->
       <view class="music-progress">
+        <view class="music-ctrl" :aria-label="musicEnded ? t('music.resume') : musicPaused ? t('music.resume') : t('music.pause')" @tap="onTogglePause">
+          <image class="music-icon" :src="musicEnded || musicPaused ? '/static/icons/play.svg' : '/static/icons/pause.svg'" mode="aspectFit" />
+        </view>
         <text class="music-time">{{ musicElapsed }}</text>
         <slider
           v-if="musicSeekable"
@@ -405,7 +550,7 @@ function onConnTap(): void {
       </view>
 
       <view class="buttons">
-        <button class="btn ghost" :disabled="!isActive" @tap="interrupt">{{ t('btn.interrupt') }}</button>
+        <button class="btn warn" :disabled="!isActive" @tap="interrupt">{{ t('btn.interrupt') }}</button>
       </view>
       <text v-if="state === 'standby'" class="talk-hint">{{ t('talk.standby') }}</text>
       <text v-else-if="halfDuplex" class="talk-hint warn">
@@ -882,6 +1027,18 @@ function onConnTap(): void {
   color: #fff;
 }
 
+/* 打断：主动中止当前这一轮，用琥珀色描边与文字表达「需谨慎、但非出错」，
+   比默认幽灵按钮更显眼，又不像红色那样像报错 */
+.btn.warn {
+  color: #ffcf8a;
+  border-color: rgba(255, 207, 138, 0.42);
+  background: rgba(255, 207, 138, 0.1);
+}
+
+.btn.warn:active {
+  background: rgba(255, 207, 138, 0.2);
+}
+
 .btn[disabled] {
   opacity: 0.35;
 }
@@ -948,6 +1105,120 @@ function onConnTap(): void {
 }
 
 .music-ctrl.primary {
+  background: rgba(92, 214, 178, 0.18);
+  border-color: rgba(92, 214, 178, 0.42);
+  color: #8ee0bd;
+}
+
+/* 循环按钮：容纳剩余次数角标 */
+.music-ctrl.loop-ctrl {
+  position: relative;
+}
+
+.loop-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  color: #0f1220;
+  background: #5cd6b2;
+  box-shadow: 0 0 0 1px rgba(15, 18, 32, 0.6);
+}
+
+/* 喇叭 + 音量面板的分组：作为竖向面板的定位锚点，面板是其兄弟节点以免点击面板冒泡到开关 */
+.vol-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* 喇叭：已提升到顶行控制区末尾 */
+.music-ctrl.vol-ctrl {
+  color: #8ee0bd;
+}
+
+/* 竖向滑块：uni-app 的 slider 仅支持横向，这里用旋转把它立起来。
+   深色圆角面板绝对定位在喇叭正下方、顶部贴着喇叭，向下弹出盖住进度行（不飞出屏幕顶部）；
+   顶部显示百分比，绿条自下而上填充到白色手柄。 */
+.vol-slider-wrap {
+  position: absolute;
+  right: 50%;
+  top: calc(100% + 10px);
+  transform: translateX(50%);
+  z-index: 20;
+  width: 54px;
+  padding: 10px 6px 8px;
+  border-radius: 16px;
+  background: rgba(15, 18, 32, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.vol-pct {
+  font-size: 11px;
+  line-height: 1;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 竖向音量轨道：自定义 touch 轨道（原生 slider 旋转后拖不动）。
+   整条 40×120 是触摸命中区，内部一条细轨；绿条从底部向上填充到白色手柄。 */
+.vol-track {
+  position: relative;
+  width: 40px;
+  height: 120px;
+  display: flex;
+  justify-content: center;
+  touch-action: none;
+}
+
+.vol-rail {
+  position: relative;
+  width: 6px;
+  height: 100%;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.vol-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #5cd6b2;
+  border-radius: 3px;
+}
+
+.vol-handle {
+  position: absolute;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translate(-50%, 50%);
+  box-shadow: 0 0 6px rgba(92, 214, 178, 0.75);
+}
+
+.music-ctrl.vol-ctrl.muted {
+  color: #8b91ab;
+}
+
+.music-ctrl.vol-ctrl.active {
   background: rgba(92, 214, 178, 0.18);
   border-color: rgba(92, 214, 178, 0.42);
   color: #8ee0bd;
@@ -1021,6 +1292,9 @@ function onConnTap(): void {
 .music-title {
   font-size: 14px;
   color: #e8eaf6;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 

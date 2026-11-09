@@ -64,6 +64,7 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       asrEndpointMs: config.asr.endpointMs,
       deviceId,
       onEnded: deviceId ? () => removeSession(deviceId) : undefined,
+      config,
     })
 
   // 按 deviceId 复用会话；无 deviceId（旧客户端）则每连接独立会话、不复用。

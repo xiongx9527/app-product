@@ -89,6 +89,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "media.stop" }
 { "type": "media.lyrics", "title": "七里香", "artist": "周杰伦", "lyrics": "窗外的麻雀…" }
 { "type": "client.location.request" }
+{ "type": "client.cue", "cue": "asr-down" }
 { "type": "error", "code": "ASR_TIMEOUT", "message": "识别超时" }
 ```
 
@@ -97,6 +98,8 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 `media.play` 可带可选字段 `loop`（正整数，缺省/1 表示不循环）：客户端播完最后一遍后自动重播同一首直到达到总遍数；播完最后一遍进入「已播放完毕」态（暂停按钮变为「继续播放」按钮）。`loop>1` 时客户端在自己内部循环，不回服务端重新检索。
 
 `client.location.request`：服务端**仅在位置/天气类工具被调用但本会话尚无设备位置时才下发**，客户端据此请求定位授权（manifest 已声明权限）并通过 `session.location` 上报经纬度。不在建连时主动要位置，避免冷启动就弹定位授权框打扰用户；用户没问位置相关问题时完全不触发定位。客户端若已授权/取不到位置则静默跳过，不阻断会话。
+
+`client.cue`：服务端在建连（`session.start`）后一次性探测 ASR/TTS/LLM/外网就绪状态，**任一不可用就下发**对应预录提示音（`asr-down` / `tts-down` / `llm-down` / `network-down`，即网关 `static/cues/<cue>.mp3`）。此时网关还没法用语音播报，只能靠提示音让用户「听得见地」知道能力缺失；探测走与 `/api/health` 同一套带 15s 缓存逻辑，重连/重唤醒都便宜。客户端收到后按名拉取播放，不下发具体文案（提示音已含人声）。与客户端 `/api/health` 轮询互补：客户端负责「运行中 ok→down」的瞬时变化，本事件负责「建连那一刻就已不可用」的兜底（这种情形客户端 watch 的 prev 为空、不会触发，容易静默失效）。
 
 `asr.partial` 是网关对已收音频的滚动重识别结果，可重复、可回退，客户端只用于展示；
 `asr.final` 才是定稿文本。**只有 `asr.final` 之后才会请求大模型**，中间结果不会触发回复。

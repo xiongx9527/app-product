@@ -99,6 +99,8 @@ import admin_panel  # Web 管理面板（鉴权 + 配置编辑 + 启停 + 日志
 import voice_db  # 本地管理数据库（SQLite）：配置的真相源 + 事件 / 审计
 import voice_sync  # 远程数据库同步（Postgres）
 import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库的门面
+import upstream_pool  # 上游地址池：多地址 + 账号池，健康探测 + 轮询
+import model_catalog  # 统一模型目录（LLM / TTS / STT 三端口，对齐 fw-plus-ai-native）
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
@@ -236,6 +238,32 @@ def tts_voice() -> str:
     return value or "zh-CN-XiaoxiaoNeural"
 
 
+# 对外提供的可用音色目录（edge-tts 风格），按语言分组并附说明。
+# 管理面板与 /voide/v1/audio/voices 接口共用这一份，避免两端不一致。
+VOICE_CATALOG = [
+    {"id": "zh-CN-XiaoxiaoNeural", "lang": "中文", "desc": "女声·温柔自然（默认）"},
+    {"id": "zh-CN-YunxiNeural", "lang": "中文", "desc": "男声·年轻活泼"},
+    {"id": "zh-CN-YunyangNeural", "lang": "中文", "desc": "男声·专业新闻播报"},
+    {"id": "zh-CN-XiaoyiNeural", "lang": "中文", "desc": "女声·活泼可爱"},
+    {"id": "zh-CN-YunjianNeural", "lang": "中文", "desc": "男声·成熟稳重"},
+    {"id": "zh-CN-YunxiaNeural", "lang": "中文", "desc": "女声·甜美"},
+    {"id": "zh-CN-XiaoxuanNeural", "lang": "中文", "desc": "女声·清新"},
+    {"id": "zh-TW-HsiaoChenNeural", "lang": "中文(台湾)", "desc": "女声·台湾腔"},
+    {"id": "zh-TW-YunJheNeural", "lang": "中文(台湾)", "desc": "男声·台湾腔"},
+    {"id": "zh-TW-HsiaoYuNeural", "lang": "中文(台湾)", "desc": "女声·台湾腔·温柔"},
+    {"id": "zh-HK-HiuGaaiNeural", "lang": "粤语", "desc": "女声·粤语"},
+    {"id": "zh-HK-WanLungNeural", "lang": "粤语", "desc": "男声·粤语"},
+    {"id": "zh-HK-HiuMaanNeural", "lang": "粤语", "desc": "女声·粤语·活泼"},
+    {"id": "en-US-AriaNeural", "lang": "英文", "desc": "女声·自然通用"},
+    {"id": "en-US-GuyNeural", "lang": "英文", "desc": "男声·沉稳"},
+    {"id": "en-US-JennyNeural", "lang": "英文", "desc": "女声·亲切"},
+    {"id": "en-GB-SoniaNeural", "lang": "英文(英式)", "desc": "女声·优雅英音"},
+    {"id": "en-GB-RyanNeural", "lang": "英文(英式)", "desc": "男声·英音"},
+    {"id": "ja-JP-NanamiNeural", "lang": "日文", "desc": "女声·柔和"},
+    {"id": "ja-JP-KeitaNeural", "lang": "日文", "desc": "男声·清晰"},
+]
+
+
 def tts_timeout() -> float:
     """配置写错时退回 20 秒，不让一个笔误把服务启动拖死。"""
     try:
@@ -329,40 +357,11 @@ def require_api_key(authorization: str | None = Header(default=None)) -> None:
         )
 
 
-def upstream_base(capability: str) -> str:
-    """返回某类能力的上游地址；空字符串表示使用本地后端。
-
-    先看能力专属的 STT_/TTS_UPSTREAM_BASE_URL，再回退通用
-    VOICE_UPSTREAM_BASE_URL。这样只填一个通用的地址就能把 STT 和 TTS
-    一起代理到远程 OpenAI 兼容服务，也允许两类能力分别指向不同服务。
-    """
-    specific = config_value(f"{capability}_UPSTREAM_BASE_URL", "").strip()
-    return specific or config_value("VOICE_UPSTREAM_BASE_URL", "").strip()
-
-
-def upstream_key(capability: str) -> str:
-    specific = config_value(f"{capability}_UPSTREAM_API_KEY", "").strip()
-    return specific or config_value("VOICE_UPSTREAM_API_KEY", "").strip()
-
-
-def upstream_headers(capability: str) -> dict[str, str]:
-    key = upstream_key(capability)
-    return {"Authorization": f"Bearer {key}"} if key else {}
-
-
 def upstream_timeout() -> float:
     try:
         return max(5.0, float(config_value("UPSTREAM_TIMEOUT", "120")))
     except ValueError:
         return 120.0
-
-
-def upstream_url(capability: str, endpoint: str) -> str:
-    """拼出上游完整地址，同时兼容用户填 /v1 或不填 /v1。"""
-    base = upstream_base(capability).rstrip("/")
-    if base.endswith("/v1"):
-        return base + endpoint
-    return base + "/v1" + endpoint
 
 
 def upstream_error(response: httpx.Response) -> str:
@@ -381,44 +380,52 @@ def upstream_error(response: httpx.Response) -> str:
     return text[:500] if text else "上游没有返回错误详情"
 
 
+def tag_upstream(resp, entry: dict | None) -> "object":
+    """在代理响应上打上「实际由哪个上游服务」的标签。
+
+    测试界面 / 调用方据此能直接看到：这次请求路由到了哪个分组（protocol）、
+    哪个地址（base_url）、最终用了哪个模型（model）——验证「模型路由到分组 +
+    组内多账号轮询 + 每分组固定模型」是否如预期。
+    """
+    if entry:
+        resp.headers["X-Upstream-Base"] = entry.get("base_url") or ""
+        resp.headers["X-Upstream-Protocol"] = entry.get("protocol") or "openai_chat_completions"
+        resp.headers["X-Upstream-Vendor"] = entry.get("vendor") or ""
+        resp.headers["X-Upstream-Model"] = entry.get("model") or ""
+    return resp
+
+
 # ── LLM 代理配置 ─────────────────────────────────────────────────
-# /llm 是纯 OpenAI 兼容反向代理：把请求原样转发到 LLM_UPSTREAM_BASE_URL
-# 指向的上游。不加载本地模型、不做 Ollama 风格接口翻译、不做非流式兜底。
-def llm_upstream_base() -> str:
-    return config_value("LLM_UPSTREAM_BASE_URL", "").strip()
-
-
-def llm_upstream_key() -> str:
-    return config_value("LLM_UPSTREAM_API_KEY", "").strip()
-
-
-def llm_headers() -> dict[str, str]:
-    key = llm_upstream_key()
-    return {"Authorization": f"Bearer {key}"} if key else {}
-
-
+# /llm 是纯 OpenAI 兼容反向代理：把请求原样转发到上游地址池（LLM_UPSTREAM_POOL，
+# 或向后兼容的单个 LLM_UPSTREAM_BASE_URL）。不加载本地模型、不做 Ollama 风格接口
+# 翻译、不做非流式兜底；线协议（openai_chat_completions / azure_openai_chat_completions /
+# openai_responses / anthropic_messages / gemini）按池里每个入口的 protocol 字段决定，
+# 不再有全局单一协议；vendor（deepseek / dashscope / ollama 等）只决定路径变体。
 def llm_enabled() -> bool:
-    """auto 模式下配了上游就启用；显式 on / off 始终优先。"""
+    """auto 模式下配了上游池就启用；显式 on / off 始终优先。
+
+    这里只判断、不轮询：has_upstream 不会推进轮询下标、也不会写入健康状态。
+    """
     raw = config_value("LLM_ENABLED", "auto").strip().lower()
     if raw in API_KEY_OFF_VALUES:
         return False
     if raw in ENABLED_VALUES:
         return True
-    return bool(llm_upstream_base())
+    return upstream_pool.has_upstream("LLM")
 
 
-def llm_base_url() -> str:
-    return llm_upstream_base()
+def llm_base_url() -> str | None:
+    """当前选中的上游地址（供 /health 与启动日志展示）。
+
+    展示用，优先取池里第一个入口，避免调用 pick() 推进轮询或误建健康条目。
+    """
+    entries = upstream_pool.load_pool("LLM")
+    return entries[0]["base_url"] if entries else None
 
 
 def llm_model_override() -> str:
     """配置后覆盖客户端传来的模型名；留空则完全沿用请求。"""
     return config_value("LLM_UPSTREAM_MODEL", "").strip()
-
-
-def llm_protocol() -> str:
-    """LLM 上游协议；默认 openai（OpenAI 兼容透传）。详见 llm_protocols。"""
-    return config_value("LLM_UPSTREAM_PROTOCOL", "openai").strip().lower() or "openai"
 
 
 def llm_api_version() -> str:
@@ -451,10 +458,22 @@ async def proxy_transcription(
     response_format: str,
     temperature: float,
 ):
-    """把转写请求原样转给远程 OpenAI 兼容服务，省掉本地模型和依赖。"""
-    url = upstream_url("STT", "/audio/transcriptions")
+    """把转写请求原样转给远程 OpenAI 兼容服务，省掉本地模型和依赖。
+
+    从上游地址池里挑一个（健康优先 + 轮询），这次请求的成功 / 失败都会回写池的健康
+    状态，让后续请求自动绕开挂掉的上游。
+    """
+    # 按请求模型路由到对应分组（同 LLM/TTS：模型名 -> 分组 -> 组内多账号轮询），
+    # 没带模型时退回全局健康优先 + 轮询。
+    req_model = model.strip() or config_value("STT_UPSTREAM_MODEL", "").strip() or None
+    entry = upstream_pool.pick_by_model("STT", req_model)
+    if entry is None:
+        return error_response(502, "未配置 STT 上游地址")
+    url = upstream_pool.build_url(entry["base_url"], "/audio/transcriptions")
     data = {
-        "model": config_value("STT_UPSTREAM_MODEL", model),
+        "model": entry.get("model")
+        or req_model
+        or config_value("STT_UPSTREAM_MODEL", model),
         "response_format": response_format,
         "temperature": str(temperature),
     }
@@ -465,7 +484,7 @@ async def proxy_transcription(
         async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
             response = await client.post(
                 url,
-                headers=upstream_headers("STT"),
+                headers=upstream_pool.auth_headers(entry["api_key"]),
                 data=data,
                 files={
                     "file": (
@@ -476,12 +495,15 @@ async def proxy_transcription(
                 },
             )
     except httpx.HTTPError as exc:
+        upstream_pool.mark_failure("STT", entry)
         return error_response(502, f"上游转写请求失败: {exc}")
 
     if response.status_code >= 400:
+        upstream_pool.mark_failure("STT", entry, response.status_code)
         return error_response(
             502, f"上游转写失败（{response.status_code}）: {upstream_error(response)}"
         )
+    upstream_pool.mark_success("STT", entry)
     return Response(
         content=response.content,
         status_code=response.status_code,
@@ -758,8 +780,8 @@ def transcode_mp3(mp3: bytes, fmt: str):
 
 def voice_health() -> dict:
     # 不主动加载模型：健康检查应该秒回，第一次真正转写时再加载 SenseVoice。
-    stt_upstream = upstream_base("STT")
-    tts_upstream = upstream_base("TTS")
+    stt_upstream = upstream_pool.has_upstream("STT")
+    tts_upstream = upstream_pool.has_upstream("TTS")
     tts_voice_name = (
         (config_value("TTS_UPSTREAM_VOICE", "").strip() or tts_voice())
         if tts_upstream
@@ -770,15 +792,25 @@ def voice_health() -> dict:
         "auth_enabled": auth_enabled(),
         "stt_backend": "upstream" if stt_upstream else "sensevoice",
         "stt_ready": bool(stt_upstream) or sensevoice_ready(),
-        "stt_upstream": stt_upstream or None,
+        "stt_upstream": llm_base_url_of("STT") if stt_upstream else None,
         "tts_backend": "upstream" if tts_upstream else "edge",
         "tts_voice": tts_voice_name,
-        "tts_upstream": tts_upstream or None,
+        "tts_upstream": llm_base_url_of("TTS") if tts_upstream else None,
         # 代理 TTS 时 ffmpeg 不参与，返回 null 避免误判成“缺依赖”。
         "ffmpeg": None if tts_upstream else bool(ffmpeg_path()),
         "model_dir": None if stt_upstream else sensevoice_dir(),
         "tts_cache": tts_cache.stats(),
+        "upstreams": {
+            "STT": upstream_pool.health_snapshot("STT"),
+            "TTS": upstream_pool.health_snapshot("TTS"),
+        },
     }
+
+
+def llm_base_url_of(cap: str) -> str | None:
+    """取某能力池里第一个入口的 base_url 用于展示（不推进轮询、不写健康）。"""
+    entries = upstream_pool.load_pool(cap)
+    return entries[0]["base_url"] if entries else None
 
 
 def llm_health() -> dict:
@@ -790,6 +822,7 @@ def llm_health() -> dict:
         "base_url": llm_base_url() if enabled else None,
         "model": llm_model_override() or None,
         "auth_enabled": auth_enabled(),
+        "upstreams": upstream_pool.health_snapshot("LLM") if enabled else [],
     }
 
 
@@ -799,8 +832,8 @@ def root():
     return {
         "service": "app-product-local-ai",
         "llm": "proxy" if llm_enabled() else "off",
-        "stt": "upstream" if upstream_base("STT") else "sensevoice",
-        "tts": "upstream" if upstream_base("TTS") else "edge",
+        "stt": "upstream" if upstream_pool.has_upstream("STT") else "sensevoice",
+        "tts": "upstream" if upstream_pool.has_upstream("TTS") else "edge",
     }
 
 
@@ -815,8 +848,8 @@ def health():
 def voice_root():
     return {
         "service": "app-product-voice",
-        "stt": "upstream" if upstream_base("STT") else "sensevoice",
-        "tts": "upstream" if upstream_base("TTS") else "edge",
+        "stt": "upstream" if upstream_pool.has_upstream("STT") else "sensevoice",
+        "tts": "upstream" if upstream_pool.has_upstream("TTS") else "edge",
     }
 
 
@@ -827,12 +860,50 @@ def voice_health_route():
 
 @app.get("/voide/v1/models")
 def voice_models():
-    # 只列出实际可用的后端；网关和设置页的“测试连接”都可以拿它做探测。
-    items = [
-        {"id": "edge-tts", "object": "model", "owned_by": "local"},
-        {"id": "sensevoice-small", "object": "model", "owned_by": "local"},
-    ]
-    return {"object": "list", "data": items}
+    """语音模型目录：覆盖 TTS 与 STT 两个端口（对齐 fw-plus-ai-native 的三端口目录）。
+
+    代理模式下列出上游池里配置的模型；本地模式下列出本地后端（edge-tts / sensevoice-small）。
+    统一用 model_catalog.ModelInfo，方便网关按 type 归类与校验。
+    """
+    data = []
+
+    # TTS 端口
+    if upstream_pool.has_upstream("TTS"):
+        for e in upstream_pool.load_pool("TTS"):
+            if e.get("model"):
+                data.append(
+                    model_catalog.ModelInfo(
+                        id=e["model"],
+                        owned_by=(e.get("vendor") or "upstream"),
+                        type=model_catalog.ModelType.TTS,
+                    ).to_openai()
+                )
+    else:
+        data.append(
+            model_catalog.ModelInfo(
+                id="edge-tts", owned_by="local", type=model_catalog.ModelType.TTS
+            ).to_openai()
+        )
+
+    # STT 端口
+    if upstream_pool.has_upstream("STT"):
+        for e in upstream_pool.load_pool("STT"):
+            if e.get("model"):
+                data.append(
+                    model_catalog.ModelInfo(
+                        id=e["model"],
+                        owned_by=(e.get("vendor") or "upstream"),
+                        type=model_catalog.ModelType.STT,
+                    ).to_openai()
+                )
+    else:
+        data.append(
+            model_catalog.ModelInfo(
+                id="sensevoice-small", owned_by="local", type=model_catalog.ModelType.STT
+            ).to_openai()
+        )
+
+    return {"object": "list", "data": data}
 
 
 class SpeechBody(BaseModel):
@@ -847,22 +918,37 @@ class SpeechBody(BaseModel):
 
 
 async def proxy_speech(body: SpeechBody):
-    """把合成请求转给远程 OpenAI 兼容服务，返回上游音频原样透传。"""
-    url = upstream_url("TTS", "/audio/speech")
+    """把合成请求转给远程 OpenAI 兼容服务，返回上游音频原样透传。
+
+    从上游地址池里挑一个（健康优先 + 轮询），成功 / 失败回写池健康状态。
+    """
+    # 按请求模型路由到对应分组（同 LLM：模型名 -> 分组 -> 组内多账号轮询），
+    # 没带模型时退回全局健康优先 + 轮询。路由命中后该分组的模型与请求一致。
+    req_model = body.model.strip() or config_value("TTS_UPSTREAM_MODEL", "").strip() or None
+    entry = upstream_pool.pick_by_model("TTS", req_model)
+    if entry is None:
+        return error_response(502, "未配置 TTS 上游地址")
+    url = upstream_pool.build_url(entry["base_url"], "/audio/speech")
     # 只转发上游认识的字段，避免把本地兼容字段（如空 model）带过去。
     payload = {
         "input": body.input,
         "response_format": body.response_format,
         "speed": body.speed,
     }
-    model = config_value("TTS_UPSTREAM_MODEL", "").strip() or body.model.strip()
+    model = (
+        entry.get("model")
+        or req_model
+        or config_value("TTS_UPSTREAM_MODEL", "").strip()
+        or body.model.strip()
+    )
     if model:
         payload["model"] = model
-    # 网关默认传 zh-CN-XiaoxiaoNeural，OpenAI 官方服务不认识；
-    # 配置 TTS_UPSTREAM_VOICE=alloy 即可覆盖，未配置时也给一个通用默认值。
+    # 请求里的音色优先（UI 选择要生效）；只有请求没带音色时，才回退到
+    # 配置 TTS_UPSTREAM_VOICE（用于把网关默认的 zh-CN-XiaoxiaoNeural 这种
+    # 上游不认识的音色改写成 alloy 之类），最后给一个通用默认。
     payload["voice"] = (
-        config_value("TTS_UPSTREAM_VOICE", "").strip()
-        or body.voice.strip()
+        body.voice.strip()
+        or config_value("TTS_UPSTREAM_VOICE", "").strip()
         or "alloy"
     )
     if body.instructions.strip():
@@ -872,20 +958,27 @@ async def proxy_speech(body: SpeechBody):
         async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
             response = await client.post(
                 url,
-                headers=upstream_headers("TTS"),
+                headers=upstream_pool.auth_headers(entry["api_key"]),
                 json=payload,
             )
     except httpx.HTTPError as exc:
+        upstream_pool.mark_failure("TTS", entry)
         return error_response(502, f"上游合成请求失败: {exc}")
 
     if response.status_code >= 400:
+        upstream_pool.mark_failure("TTS", entry, response.status_code)
         return error_response(
             502, f"上游合成失败（{response.status_code}）: {upstream_error(response)}"
         )
-    return Response(
-        content=response.content,
-        status_code=response.status_code,
-        media_type=response.headers.get("content-type"),
+    upstream_pool.mark_success("TTS", entry)
+    return tag_upstream(
+        Response(
+            content=response.content,
+            status_code=response.status_code,
+            media_type=response.headers.get("content-type"),
+            headers=dict(response.headers),
+        ),
+        entry,
     )
 
 
@@ -901,7 +994,7 @@ async def speech(body: SpeechBody):
         return error_response(400, f"不支持的 response_format: {fmt}")
 
     # 配了上游就完全不碰本地模型和 ffmpeg，代理模式只需要基础 Python 依赖。
-    if upstream_base("TTS"):
+    if upstream_pool.has_upstream("TTS"):
         return await proxy_speech(body)
 
     voice = resolve_voice(body.voice)
@@ -935,6 +1028,15 @@ async def speech(body: SpeechBody):
     )
 
 
+@app.get("/voide/v1/audio/voices")
+async def list_voices():
+    """对外公开的可选音色目录（无需鉴权），供客户端下拉框与第三方调用方拉取。
+
+    返回 {default, voices:[{id,lang,desc}]}，与 /voide/v1/audio/speech 的 voice 字段对齐。
+    """
+    return {"default": tts_voice(), "voices": VOICE_CATALOG}
+
+
 @app.post(
     "/voide/v1/audio/transcriptions", dependencies=[Depends(require_api_key)]
 )
@@ -951,7 +1053,7 @@ async def transcriptions(
         return error_response(400, "上传的音频为空")
 
     # 代理模式允许上游接受 WAV 以外的格式，所以先转发，再做本地 WAV 校验。
-    if upstream_base("STT"):
+    if upstream_pool.has_upstream("STT"):
         return await proxy_transcription(
             file, payload, model, language, response_format, temperature
         )
@@ -1008,17 +1110,68 @@ def llm_health_route():
     return llm_health()
 
 
+def llm_catalog() -> list[model_catalog.ModelInfo]:
+    """合成 LLM 模型目录：所有分组的模型并集（去重）。
+
+    优先用配置里的模型名（入口 model > 分组 model > 全局 LLM_UPSTREAM_MODEL），
+    owned_by 记厂商 / 线协议便于排查。供 /llm/v1/models 与 chat 请求校验共用。
+    """
+    models: dict[str, model_catalog.ModelInfo] = {}
+    override = llm_model_override()
+    if override:
+        models[override] = model_catalog.ModelInfo(
+            id=override, owned_by="config", type=model_catalog.ModelType.LLM
+        )
+    for e in upstream_pool.load_pool("LLM"):
+        m = e.get("model")
+        if m:
+            models.setdefault(
+                m,
+                model_catalog.ModelInfo(
+                    id=m,
+                    owned_by=(e.get("vendor") or e.get("protocol") or "openai"),
+                    type=model_catalog.ModelType.LLM,
+                ),
+            )
+    return list(models.values())
+
+
 @app.get("/llm/v1/models")
 async def llm_models():
-    """模型列表：按上游协议取对应接口，Ollama 翻译回 OpenAI 形状。"""
+    """模型列表：返回「所有分组的模型之和」，而不是只代理某一个上游。
+
+    每个分组（按提供商）有自己固定的模型类型，把它们的模型并集返回给网关 / 用户，
+    这样客户端能在多个提供商之间看到全部可用模型。优先用配置里的模型名（入口 model
+    > 分组 model > 全局 LLM_UPSTREAM_MODEL）合成；如果都没配，则退回真实代理一个
+    上游的 /models（保留 Ollama 翻译），避免空列表。
+    """
     if not llm_enabled():
         return llm_disabled_response()
-    url, headers = llm_protocols.prepare_models(llm_protocol(), llm_upstream_base(), llm_upstream_key())
+    entries = upstream_pool.load_pool("LLM")
+    if not entries:
+        return llm_disabled_response()
+
+    models = llm_catalog()
+    if models:
+        return {
+            "object": "list",
+            "data": [mi.to_openai() for mi in models],
+        }
+
+    # 没有任何配置模型时，退回真实代理一个上游的模型列表。
+    entry = upstream_pool.pick("LLM")
+    if entry is None:
+        return llm_disabled_response()
+    protocol = entry["protocol"] or "openai_chat_completions"
+    url, headers = llm_protocols.prepare_models(
+        protocol, entry["base_url"], entry["api_key"], entry.get("vendor")
+    )
     data = await fetch_json(url, headers)
     if isinstance(data, Response):
         return data
-    if llm_protocol() == "ollama":
+    if entry.get("vendor") == "ollama":
         data = llm_protocols.ollama_tags_to_openai(data)
+    upstream_pool.mark_success("LLM", entry)
     return data
 
 
@@ -1040,9 +1193,34 @@ async def chat_completions(request: Request):
     if not isinstance(body, dict):
         return error_response(400, "请求体必须是 JSON 对象")
 
+    # 接口通过模型名路由到对应分组（提供商），再在组内多账号间轮询「内部消化」。
+    # 命中分组时用该分组的模型（与请求模型一致，幂等）；未命中任何分组时退回
+    # 全局健康优先 + 轮询，且不再用入口 model 覆盖，避免把请求模型偷偷改掉。
+    # 测试界面可显式带 vendor / protocol 覆盖路由与线协议（不影响上游配置）。
+    req_model = body.get("model") if isinstance(body.get("model"), str) else None
+    req_vendor = body.get("vendor") if isinstance(body.get("vendor"), str) else None
+    req_protocol = body.get("protocol") if isinstance(body.get("protocol"), str) else None
+
+    # 模型目录校验：目录非空（即已配置模型）且客户端显式带了模型时，若不在目录内
+    # 直接拒绝，避免把请求发到一个根本不存在的模型上、再由上游返回一堆乱码错误。
+    # 客户端没带模型、或目录为空（没法判定）时放行，由上游决定。
+    if req_model:
+        catalog = llm_catalog()
+        if catalog:
+            v = model_catalog.validate(model_catalog.ModelType.LLM, catalog, req_model)
+            if not v.valid:
+                return error_response(400, f"模型校验失败：{v.reason}（请求模型 {req_model!r}）")
+
+    entry = upstream_pool.pick_by_vendor("LLM", req_vendor) if req_vendor else upstream_pool.pick_by_model("LLM", req_model)
+    if entry is None:
+        return llm_disabled_response()
+    routed_by_model = bool(req_model) and entry.get("model") == req_model
+    effective_model = (
+        entry["model"] if routed_by_model else ""
+    ) or llm_model_override()
     req, stream_cls, resp_transform = llm_protocols.prepare(
-        llm_protocol(), llm_upstream_base(), llm_upstream_key(),
-        llm_model_override(), llm_api_version(), body,
+        req_protocol or entry["protocol"] or "openai_chat_completions", entry["base_url"], entry["api_key"],
+        effective_model, llm_api_version(), body, entry.get("vendor"),
     )
 
     if not body.get("stream"):
@@ -1050,11 +1228,14 @@ async def chat_completions(request: Request):
             async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
                 response = await client.post(req.url, headers=req.headers, json=req.payload)
         except httpx.HTTPError as exc:
+            upstream_pool.mark_failure("LLM", entry)
             return error_response(502, f"上游 LLM 请求失败: {exc}")
         if response.status_code >= 400:
+            upstream_pool.mark_failure("LLM", entry, response.status_code)
             return error_response(
                 502, f"上游 LLM 失败（{response.status_code}）: {upstream_error(response)}"
             )
+        upstream_pool.mark_success("LLM", entry)
         try:
             data = response.json()
         except ValueError:
@@ -1100,6 +1281,35 @@ async def chat_completions(request: Request):
             await client.aclose()
 
     return StreamingResponse(body_gen(), media_type="text/event-stream")
+
+
+@app.get("/llm/v1/providers")
+async def list_llm_providers():
+    """对外公开：列出当前已配置的 LLM 提供商（vendor），供测试界面下拉框与第三方拉取。
+
+    每个条目含 vendor / protocol / model / host（脱敏后的上游主机），不含任何密钥。
+    """
+    entries = upstream_pool.load_pool("LLM")
+    out = []
+    seen = set()
+    for e in entries:
+        vendor = (e.get("vendor") or "").strip().lower()
+        protocol = e.get("protocol") or "openai_chat_completions"
+        model = e.get("model") or ""
+        base = (e.get("base_url") or "").strip()
+        host = ""
+        if base:
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(base).netloc or base
+            except Exception:
+                host = base
+        key = (vendor, protocol, model, host)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"vendor": vendor or "(未指定)", "protocol": protocol, "model": model, "host": host})
+    return {"providers": out}
 
 
 def parse_args(argv=None):
@@ -1160,8 +1370,16 @@ def main(argv=None) -> None:
         _cli_overrides["VOICE_API_KEY"] = "off"
 
     # 配置真相源 = 本地 SQLite，并通过 config_store 统一接口收口缓存与远程同步。
-    # voice.conf 仅在 DB 为空时用于播种（首次初始化 / 兜底），之后不再是权威。
-    db_path = os.path.join(VOICE_HOME, "voice.db")
+    # voice.conf 只在 DB 为空时用于播种（首次初始化 / 兜底），之后不再是权威。
+    # 本地数据库目录本身属于基础设施，必须在 store 配置前确定，故直接读环境变量 / voice.conf。
+    db_dir = (
+        os.environ.get("VOICE_DB_DIR")
+        or _file_values().get("VOICE_DB_DIR")
+        or VOICE_HOME
+    )
+    db_dir = os.path.expanduser(_expand_path(db_dir))
+    os.makedirs(db_dir, exist_ok=True)
+    db_path = os.path.join(db_dir, "voice.db")
     remote_dsn = os.environ.get("VOICE_REMOTE_DSN") or None
     redis_url = os.environ.get("REDIS_URL") or None
     store = config_store.configure(db_path, remote_dsn, redis_url)
@@ -1212,19 +1430,24 @@ def main(argv=None) -> None:
 
     if llm_enabled():
         print(
-            f"[local-ai] LLM  : 代理 {llm_upstream_base()}"
+            f"[local-ai] LLM  : 代理 {llm_base_url()}"
+            f"（地址池共 {len(upstream_pool.load_pool('LLM'))} 个）"
             f"{'（模型 ' + llm_model_override() + '）' if llm_model_override() else ''}",
             flush=True,
         )
     else:
         print(
-            "[local-ai] LLM  : 未启用（在 voice.conf 配置 LLM_UPSTREAM_BASE_URL 即可启用）",
+            "[local-ai] LLM  : 未启用（在 voice.conf 配置 LLM_UPSTREAM_POOL 或 "
+            "LLM_UPSTREAM_BASE_URL 即可启用）",
             flush=True,
         )
 
-    stt_upstream = upstream_base("STT")
-    if stt_upstream:
-        print(f"[local-ai] STT  : 代理 {stt_upstream}", flush=True)
+    stt_count = len(upstream_pool.load_pool("STT"))
+    if stt_count:
+        print(
+            f"[local-ai] STT  : 代理（地址池共 {stt_count} 个，首地址 {llm_base_url_of('STT')}）",
+            flush=True,
+        )
     else:
         print(
             f"[local-ai] STT  : SenseVoice-small (sherpa-onnx) @ {sensevoice_dir()}",
@@ -1235,11 +1458,11 @@ def main(argv=None) -> None:
             flush=True,
         )
 
-    tts_upstream = upstream_base("TTS")
-    if tts_upstream:
+    tts_count = len(upstream_pool.load_pool("TTS"))
+    if tts_count:
         upstream_voice = config_value("TTS_UPSTREAM_VOICE", "").strip()
         print(
-            f"[local-ai] TTS  : 代理 {tts_upstream}"
+            f"[local-ai] TTS  : 代理（地址池共 {tts_count} 个，首地址 {llm_base_url_of('TTS')}）"
             f"{'（音色 ' + upstream_voice + '）' if upstream_voice else ''}",
             flush=True,
         )
@@ -1267,6 +1490,11 @@ def main(argv=None) -> None:
         f"（账号密码见 {os.path.join(VOICE_HOME, 'admin.conf')}）",
         flush=True,
     )
+
+    # 上游地址池健康探测：后台线程定期探活，配合运行期失败累计，自动把挂掉的
+    # 上游从轮询里摘掉、冷却恢复后再放回。与 uvicorn 主事件循环解耦。
+    upstream_pool.start_health_probing()
+    print("[local-ai] 上游 : 地址池健康探测已启动（多地址 + 账号池，健康优先 + 轮询）", flush=True)
 
     print(f"[local-ai] 监听 : http://{host}:{port}", flush=True)
     uvicorn.run(app, host=host, port=port, log_level="info")

@@ -6,6 +6,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { DataService } from './dataService'
 import type { ServerEvent } from '../protocol'
+import type { HealthReport } from './health'
 import type { MusicSource } from './music/types'
 
 /** 100ms 的方波人声帧（16k/16bit/mono），能量远高于自适应门限。 */
@@ -58,6 +59,8 @@ function createHarness(
     deviceId?: string | null
     /** 懒加载定位超时（毫秒）；测试压短，默认 50ms */
     locationRequestTimeoutMs?: number
+    /** 注入能力探测桩：返回各能力 reachable 与否；缺省「全部就绪」，不下发 client.cue */
+    capabilityProbe?: () => Promise<HealthReport | null>
   } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
@@ -140,6 +143,8 @@ function createHarness(
     candidateFetcher: opts.candidateFetcher,
     locationRequestTimeoutMs: opts.locationRequestTimeoutMs ?? 50,
     deviceId: opts.deviceId === undefined ? 'test-device' : opts.deviceId,
+    // 默认「全部就绪」，避免每个用例都下发 client.cue；需要验证不可用时由调用方注入 capabilityProbe
+    capabilityProbe: opts.capabilityProbe,
   }
   service = new VoiceSessionService(deps)
   return {
@@ -346,26 +351,26 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(texts(h)).toContain('已暂停')
   })
 
-  /** 桩源：把每次播放/换歌时收到的关键词编码进标题，便于断言“换一首”是否沿用当前上下文。 */
+  /** 桩源：把每次播放/换歌时收到的关键词编码进标题，并随调用递增序号，便于断言“换一首”是否换到不同歌。 */
   function contextSource(): MusicSource {
-    let last = ''
+    let n = 0
     return {
       resolve: async (g) => {
-        last = g ?? ''
-        return { url: 'u', title: `R:${last}`, channel: 'bilibili' }
+        n += 1
+        return { url: 'u', title: `R:${g ?? ''}#${n}`, channel: 'bilibili' }
       },
       next: async (g) => {
-        const k = g === undefined ? last : g
-        last = k
-        return { url: 'u', title: `N:${k}`, channel: 'bilibili' }
+        n += 1
+        return { url: 'u', title: `N:${g ?? ''}#${n}`, channel: 'bilibili' }
       },
     }
   }
 
-  it('换一首：没指定新偏好时沿用当前上下文（同歌手），不跳到无关电台', async () => {
+  it('换一首：没指定新偏好时按当前歌手找其它歌（歌名可以不一样），不跳到无关电台', async () => {
     // 用户反馈：播放周杰伦时说“换一首”，结果换了一首和当前无关的歌。
     // 根因：原逻辑把“换一首”收敛成 genre=轻音乐（空泛风格），被路由到 SomaFM 电台（与周杰伦无关）。
-    // 修复：bare 换一首传 undefined，让音乐源沿用当前 B 站上下文 → 同歌手下一首。
+    // 修复：bare 换一首用当前歌手（周杰伦）重新搜该歌手的其它作品 → 同歌手、但不同歌名的一首，
+    // 而不是拿「周杰伦 稻香」原关键词再搜（那只会命中同名同一首，像没换）。
     const h = createHarness({
       finalizeTexts: ['播放周杰伦的稻香', '换一首'],
       musicSourceFactory: contextSource,
@@ -376,6 +381,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     const plays1 = h.events.filter((e) => e.type === 'media.play')
     expect(plays1).toHaveLength(1)
     expect((plays1[0] as { title: string }).title).toContain('周杰伦')
+    expect((plays1[0] as { title: string }).title).toContain('稻香')
 
     h.playbackDone()
     await sleep(20)
@@ -384,8 +390,11 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
 
     const plays2 = h.events.filter((e) => e.type === 'media.play')
     expect(plays2).toHaveLength(2)
-    expect((plays2[1] as { title: string }).title).toContain('周杰伦') // 仍是周杰伦（同歌手下一首）
+    expect((plays2[1] as { title: string }).title).toContain('周杰伦') // 仍是周杰伦（同歌手）
     expect((plays2[1] as { title: string }).title).not.toContain('轻音乐')
+    // 换一首给出的是不同的歌（歌名不必一样），不是把「周杰伦 稻香」原样再放一遍
+    expect((plays2[1] as { title: string }).title).not.toContain('稻香')
+    expect((plays2[1] as { title: string }).title).not.toBe((plays1[0] as { title: string }).title)
   })
 
   it('换一首：明确指定新歌手时才切到新偏好（如“换首刘德华的”）', async () => {
@@ -652,6 +661,46 @@ describe('点歌信息不足：候选列表 + 语音选择', () => {
     expect(texts(h)).not.toContain('你想听第几首')
     expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
   })
+
+  it('「再」关掉上下文：正在听周杰伦时点「放稻香」按当前歌手自动播，点「再放稻香」则列清单让用户选', async () => {
+    // 用户强调「再」字很关键：带「再」的请求不当成「还是当前歌手的歌」直接播，而是全新请求。
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '放稻香', '再放稻香'],
+      // 检索「稻香」返回多个歌手版本：有上下文时应只留周杰伦、直接播；带「再」时全部列出让用户选。
+      candidateFetcher: mb([
+        { title: '稻香', artist: '周杰伦' },
+        { title: '稻香', artist: '邓紫棋' },
+      ]),
+      musicSourceFactory: () =>
+        playSource(async (g) => ({
+          url: 'https://bili/a.m4s',
+          title: String(g ?? '稻香'),
+          channel: 'bilibili',
+        })),
+    })
+    await startDialog(h.service)
+
+    // 1) 先建立「正在听周杰伦」的上下文
+    await speakUtterance(h)
+    await sleep(20)
+    expect(h.events.filter((e) => e.type === 'media.play')).toHaveLength(1)
+
+    // 2) 「放稻香」：有上下文 → 自动选周杰伦版本直接播（不列清单）
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(20)
+    expect(h.events.filter((e) => e.type === 'media.play')).toHaveLength(2) // 又直接播了一首
+    expect(texts(h)).not.toContain('你想听第几首')
+
+    // 3) 「再放稻香」：带「再」关掉上下文 → 列候选让用户选，不直接播
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(20)
+    expect(h.events.filter((e) => e.type === 'media.play')).toHaveLength(2) // 没有新增播放
+    expect(texts(h)).toContain('你想听第几首')
+  })
 })
 
 describe('推荐意图：只列候选绝不自动播放', () => {
@@ -709,7 +758,108 @@ describe('推荐意图：只列候选绝不自动播放', () => {
   })
 })
 
+describe('音量控制直连命令（绕开 LLM）', () => {
+  const playSource = (resolve: MusicSource['resolve']): MusicSource => ({ resolve })
+
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  function volumes(h: Harness): number[] {
+    return (h.events.filter((e) => e.type === 'media.volume') as Array<{ type: 'media.volume'; volume: number }>).map(
+      (e) => e.volume
+    )
+  }
+
+  it('「音量30%」：下发 media.volume=0.3，口播「已为您将音量调到 30%」，不进 LLM', async () => {
+    const h = createHarness({
+      finalizeText: '音量30%',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/a.m4s', title: 'a', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(volumes(h)).toEqual([0.3])
+    expect(texts(h)).toContain('已为您将音量调到 30%。')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('「调大音量」：在当前 0.5 基础上 +10% → 0.6，口播「已调大，当前音量 60%」', async () => {
+    const h = createHarness({
+      finalizeText: '调大音量',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/a.m4s', title: 'a', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(volumes(h)).toEqual([0.6])
+    expect(texts(h)).toContain('已调大，当前音量 60%。')
+  })
+
+  it('「调小音量」：0.5 -10% → 0.4，口播「已调小，当前音量 40%」', async () => {
+    const h = createHarness({
+      finalizeText: '调小音量',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/a.m4s', title: 'a', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(volumes(h)).toEqual([0.4])
+    expect(texts(h)).toContain('已调小，当前音量 40%。')
+  })
+
+  it('已到最大再调大：提示「已经最大了」，不下发 media.volume', async () => {
+    const h = createHarness({
+      finalizeText: '调大音量',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/a.m4s', title: 'a', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    // 客户端先回执当前音量已是最大（1.0），网关同步
+    h.service.handleText(JSON.stringify({ type: 'music.volume', volume: 1 }))
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(volumes(h)).toEqual([])
+    expect(texts(h)).toContain('音量已经最大了。')
+  })
+
+  it('已到最小再调小：提示「已经最小了」，不下发 media.volume', async () => {
+    const h = createHarness({
+      finalizeText: '调小音量',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/a.m4s', title: 'a', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    h.service.handleText(JSON.stringify({ type: 'music.volume', volume: 0 }))
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(volumes(h)).toEqual([])
+    expect(texts(h)).toContain('音量已经最小了。')
+  })
+
+  it('「再减 / 再增」仍相对增减（复用 decrease/increase）', async () => {
+    const h = createHarness({
+      finalizeText: '再减',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/a.m4s', title: 'a', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    expect(volumes(h)).toEqual([0.4])
+    expect(texts(h)).toContain('已调小，当前音量 40%。')
+  })
+})
+
 describe('说话被切断（句末端点过激）', () => {
+
   it('句中短停顿：一次说话中途停顿仍定稿为一整段，不被切成两段', async () => {
     const h = createHarness({ asrEndpointMs: 800, finalizeText: '我今天想出去玩' })
     await startDialog(h.service)
@@ -951,3 +1101,52 @@ describe('懒加载定位：client.location.request 下发与 session.location �
   })
 })
 
+
+describe('建连即不可用时下发提示音（client.cue）', () => {
+  function downReport(over: Partial<HealthReport> = {}): HealthReport {
+    return {
+      asr: { provider: 'whisper', configured: true, reachable: false, message: 'down' },
+      llm: { provider: 'ollama', configured: true, reachable: false, message: 'down' },
+      tts: { provider: 'edge', configured: true, reachable: false, message: 'down' },
+      network: { reachable: false, message: 'down' },
+      ...over,
+    }
+  }
+
+  it('ASR/TTS/LLM 全不可达：会话 start 后下发对应 client.cue', async () => {
+    const h = createHarness({ capabilityProbe: async () => downReport() })
+    await startDialog(h.service)
+    await sleep(10)
+    const cues = h.events.filter((e) => e.type === 'client.cue') as Array<{ type: 'client.cue'; cue: string }>
+    expect(cues.map((c) => c.cue).sort()).toEqual(['asr-down', 'llm-down', 'network-down', 'tts-down'])
+  })
+
+  it('全部就绪：不下发任何 client.cue', async () => {
+    const h = createHarness({
+      capabilityProbe: async () => ({
+        asr: { provider: 'whisper', configured: true, reachable: true, message: 'ok' },
+        llm: { provider: 'ollama', configured: true, reachable: true, message: 'ok' },
+        tts: { provider: 'edge', configured: true, reachable: true, message: 'ok' },
+        network: { reachable: true, message: 'ok' },
+      }),
+    })
+    await startDialog(h.service)
+    await sleep(10)
+    expect(h.events.some((e) => e.type === 'client.cue')).toBe(false)
+  })
+
+  it('仅 ASR 不可达：只下发 asr-down', async () => {
+    const h = createHarness({
+      capabilityProbe: async () => ({
+        asr: { provider: 'whisper', configured: true, reachable: false, message: 'down' },
+        llm: { provider: 'ollama', configured: true, reachable: true, message: 'ok' },
+        tts: { provider: 'edge', configured: true, reachable: true, message: 'ok' },
+        network: { reachable: true, message: 'ok' },
+      }),
+    })
+    await startDialog(h.service)
+    await sleep(10)
+    const cues = h.events.filter((e) => e.type === 'client.cue') as Array<{ type: 'client.cue'; cue: string }>
+    expect(cues.map((c) => c.cue)).toEqual(['asr-down'])
+  })
+})

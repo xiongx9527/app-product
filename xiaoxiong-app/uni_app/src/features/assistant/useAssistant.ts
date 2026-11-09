@@ -11,9 +11,10 @@ import {
   pauseMusic,
   resumeMusic,
   replayMusic,
-  toggleLoop,
+  cycleLoop,
   duckMusic,
   seekMusic,
+  setMusicVolume,
   musicState,
 } from '@/core/audio/musicPlayer'
 import {
@@ -156,13 +157,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   transport.onConnecting((value) => {
     connecting.value = value
   })
-  // 网关能力健康度（LLM / ASR / TTS / 外网）：连上后定时轮询
-  const { health, refreshHealth } = useHealth(wsConnected)
+  // 网关能力健康度（LLM / ASR / TTS / 外网）：连上后定时轮询，负责「运行中 ok→down」的瞬时变化；
+  // 「建连那一刻就已不可用」的兜底下发由网关 client.cue 事件负责（见 handleServerEvent）。
+  const { health } = useHealth(wsConnected)
   // 设备权限只读检测（不弹授权框）：麦克风未授权要出声提示，定位只显示状态。
   const { permissions, refreshPermissions } = usePermissions(wsConnected)
   // 定时检测结果：只在某能力「ok → down」时念一次；down→down / down→ok / ok→ok 都静默。
   // 前提是网关连通（断开时 useHealth 清空 health，不触发）。首次拿到报告 prev 为空、不念，
-  // 连上那一刻的未就绪能力由 speakCapabilityProblems() 负责播报，避免重复。
+  // 那种「一开始就不可用」的情形由网关 client.cue 负责播报，避免漏报。
   let prevHealthStatus: Partial<Record<HealthItem['key'], HealthStatus>> = {}
   watch(health, (report) => {
     if (!report) {
@@ -181,7 +183,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   })
 
   // 麦克风是核心能力：仅当「已授权 → 未授权/未知」变化时补播一次提示；
-  // 首次连上时的未授权由 speakCapabilityProblems() 负责播报，避免重复。
+  // 首次连上时的未授权由 announceMicIfNeeded() 负责播报，避免重复。
   // 定位是非必须能力，全程只显示状态、绝不播提示音。
   let prevMicState: PermissionState | null = null
   watch(permissions, (p) => {
@@ -196,6 +198,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   function handleServerEvent(event: ServerEvent): void {
     switch (event.type) {
       case 'asr.partial':
+        // 待唤醒阶段用流式识别结果实时匹配唤醒词，不等整句定稿——
+        // 网关 asr.final 要等 VAD 静音 endpointMs(默认 2.5s) 才下发，那样「说完了还得等一下」
+        // 才唤醒。asr.partial 在说话过程中就随缓冲重识别下发，命中即唤醒；asr.final 仍作兜底。
+        if (mode === 'wake') {
+          if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
+          break
+        }
         // 监听阶段把实时识别文字作为「草稿」展示在页面下方，不进「你说」卡片；
         // 本轮（思考/回答/播报）或排队未消费时不更新，避免顶掉定稿。
         // 播报（TTS）进行中也不更新：其它声音不该被当成实时识别刷出来。
@@ -324,6 +333,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'media.lyrics':
         lyrics.value = { title: event.title, artist: event.artist, lyrics: event.lyrics }
         break
+      case 'media.volume':
+        // 网关语音「音量 30% / 调大 / 调小」下发，直接设到本地播放器与滑块显示；
+        // 这是服务端驱动的，不回执（避免又把同一值上报回去形成环）。
+        setMusicVolume(event.volume)
+        break
       case 'audio.duplex':
         halfDuplex.value = event.mode === 'half'
         break
@@ -337,6 +351,20 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         cancelPendingIdle()
         dispatch({ type: 'ERROR' })
         break
+      case 'client.cue': {
+        // 网关在建连即探测到 ASR/TTS/LLM 不可用，下发预录提示音；
+        // 此时网关没法用语音播报，只能靠提示音让用户「听得见地」知道能力缺失。
+        // 事件里的 cue 是文件名（kebab-case，如 asr-down），需转成 PromptCue（camelCase，如 asrDown）。
+        const map: Record<string, PromptCue> = {
+          'asr-down': 'asrDown',
+          'tts-down': 'ttsDown',
+          'llm-down': 'llmDown',
+          'network-down': 'networkDown',
+        }
+        const cue = map[event.cue]
+        if (cue) playPromptCue(cue)
+        break
+      }
     }
   }
 
@@ -450,12 +478,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 网关可能刚重启过，本地标志会过期；一律以传输层的真实连接状态为准
     if (transport.isConnected()) {
       transport.startSession('wake')
-      void speakCapabilityProblems()
+      void announceMicIfNeeded()
       return
     }
     try {
       await transport.connect('wake')
-      void speakCapabilityProblems()
+      void announceMicIfNeeded()
     } catch (err) {
       errorMessage.value = (err as Error).message
       // 开启唤醒但首次就建连失败（网关一直不可达）：主动念一次「网络不通」
@@ -540,25 +568,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     closingTimer = null
   }
 
-  /** 可用性播报：开启并连上网关后，先看麦克风权限（核心能力，排最前），
-   * 再对未就绪的 LLM / ASR / TTS / 外网逐条念出来，把静默失效变成听得见的提示。
-   * 定位是非必须能力，只显示状态、不参与播报。 */
-  async function speakCapabilityProblems(): Promise<void> {
-    let report = health.value
-    if (!report) {
-      await refreshHealth()
-      report = health.value
-    }
+  /**
+   * 开启并连上网关时，只播「麦克风未授权」这一条核心能力提示。
+   * ASR/TTS/LLM/外网不可用改由网关经 client.cue 在建连即下发（此时网关还无法用语音播报，
+   * 只能靠提示音；且网关是唯一能判定它们是否真接入的一方），客户端不再重复播，避免双份提示音。
+   * 定位是非必须能力，只显示状态、不参与播报。
+   */
+  async function announceMicIfNeeded(): Promise<void> {
     await refreshPermissions()
-    const cues: PromptCue[] = []
-    if (permissions.value.mic !== 'granted') cues.push('micDenied')
-    const problems = report ? toHealthItems(report).filter((i) => i.status !== 'ok') : []
-    cues.push(
-      ...HEALTH_PRIORITY.filter((k) => problems.some((p) => p.key === k)).map(
-        (k) => HEALTH_CUE[k]
-      )
-    )
-    if (cues.length) playPromptCueSequence(cues)
+    if (permissions.value.mic !== 'granted') playPromptCue('micDenied')
   }
 
   function enable(): void {
@@ -598,6 +616,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     transport.requestMusicNext()
   }
 
+  /** 客户端拖动音量滑块后，把当前音量回执网关，保持网关音量状态同步（供「调大/调小」相对增减）。 */
+  function reportVolume(volume: number): void {
+    transport.reportVolume(volume)
+  }
+
   /** 重新唤醒：对话进行中再次叫「小熊小熊」时，停掉当前轮次并重新招呼。 */
   function reWake(): void {
     dispatch({ type: 'REWAKE' })
@@ -620,6 +643,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 单曲循环是否进行中（按钮高亮/aria）：语音「循环 N 遍」的有限 loopRemaining
   // 和按钮开启的 Infinity 都算「循环播放中」。
   const musicLoopActive = computed(() => musicState.loopRemaining.value > 0)
+  // 循环剩余次数（不含当前这一遍）：有限值时即界面要在按钮上显示的剩余遍数；无限时为 Infinity。
+  const musicLoopRemaining = musicState.loopRemaining
+  // 音乐播放音量（0–1）；界面滑块控制，TTS 播报时自动压低。
+  const musicVolume = musicState.musicVolume
 
   return {
     state,
@@ -652,6 +679,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     musicPaused: musicState.paused,
     musicEnded: musicState.ended,
     musicLoopActive,
+    musicLoopRemaining,
+    musicVolume,
+    setMusicVolume,
     musicError: musicState.musicError,
     musicVisible: musicState.visible,
     musicTitle: musicState.title,
@@ -663,8 +693,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     pauseMusic,
     resumeMusic,
     replayMusic,
-    toggleLoop,
+    cycleLoop,
     nextMusic,
+    reportVolume,
     seekMusic,
     closeLyrics,
   }

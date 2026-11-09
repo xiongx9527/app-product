@@ -25,8 +25,13 @@ export type ServerEvent =
   | { type: 'media.resume' }
   /** 让客户端展示某首歌的歌词 */
   | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
+  /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
+  | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置时才下发，客户端据此请求定位授权并上报 session.location；不在建连时主动要 */
   | { type: 'client.location.request' }
+  /** 让客户端播一条「能力不可用」提示音（网关 /static/cues/<cue>.mp3）；
+   *  ASR/TTS/LLM 未就绪时网关没法用语音播报，改发预录提示音让用户听得见。cue 为提示音名。 */
+  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' }
   | { type: 'error'; code: string; message: string }
 
 export type SessionMode = 'wake' | 'dialog'
@@ -53,6 +58,8 @@ export interface AssistantTransport {
   notifyPlaybackDone(): void
   /** 客户端点「换一首 / 换个风格」：请网关用当前音乐源解析下一首 */
   requestMusicNext(genre?: string): void
+  /** 客户端拖动音量滑块后上报当前音量（0–1），让网关保持音量状态同步 */
+  reportVolume(volume: number): void
   close(): void
   onEvent(listener: (event: ServerEvent) => void): () => void
   /** 下行二进制音频帧（TTS PCM）；不支持时返回空订阅函数 */

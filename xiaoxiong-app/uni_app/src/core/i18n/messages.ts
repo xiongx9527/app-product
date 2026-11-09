@@ -207,6 +207,9 @@ const zhCN: Messages = {
   'music.close': '关闭',
   'music.noLyrics': '暂无歌词',
   'music.live': '直播',
+  'music.volume': '音量',
+  'music.mute': '静音',
+  'music.unmute': '取消静音',
 }
 
 const enUS: Messages = {
@@ -422,6 +425,9 @@ const enUS: Messages = {
   'music.close': 'Close',
   'music.noLyrics': 'No lyrics',
   'music.live': 'Live',
+  'music.volume': 'Volume',
+  'music.mute': 'Mute',
+  'music.unmute': 'Unmute',
 }
 
 export const MESSAGES: Record<Locale, Messages> = {

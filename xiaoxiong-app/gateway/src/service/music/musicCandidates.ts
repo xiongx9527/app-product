@@ -5,6 +5,8 @@
  * 交给聚合播放源（B 站）抽音轨，天然接上「歌手、歌名要一样」的严格匹配。
  */
 
+import { genreToKeyword } from './types'
+
 export interface MusicCandidate {
   title: string
   artist: string
@@ -65,7 +67,7 @@ const GENERIC_MUSIC_WORDS = new Set([
 ])
 
 /** 剔除通用音乐词后的实词。如「周杰伦 歌」→ ['周杰伦']，「周杰伦 稻香」→ ['周杰伦','稻香']。 */
-function contentWords(keyword: string): string[] {
+export function contentWords(keyword: string): string[] {
   return keyword
     .trim()
     .split(/\s+/)
@@ -84,6 +86,30 @@ export function needsCandidateList(keyword: string): boolean {
 /** 检索用的核心词（去掉通用音乐词）：「周杰伦 歌」→「周杰伦」。 */
 export function candidateQuery(keyword: string): string {
   return contentWords(keyword).join(' ')
+}
+
+/**
+ * 是否「只点了歌手 + 泛歌曲词」（周杰伦的歌 / 刘德华歌曲 / 周杰伦的音乐 / 邓丽君的作品），
+ * 属按歌手浏览，应列清单让用户挑，不直接播放。
+ * 判定：收敛后的检索词里只剩一个实词（歌手名），且原句是被「的」修饰的泛歌曲名词，
+ * 或连写成「歌手+歌曲/音乐/作品」。
+ * 排除「放一首稻香」这类（是具体歌名，靠当前歌手上下文自动选同歌手版本）；
+ * 也排除「周杰伦的夜曲」这类——「夜曲」是真歌名，不应因末尾带「曲」就当成浏览。
+ */
+export function isArtistBrowse(text: string): boolean {
+  const kw = genreToKeyword(text)
+  if (!kw) return false
+  // 去掉泛歌曲词后只剩一个实词（歌手名），才可能是按歌手浏览
+  if (contentWords(kw).length !== 1) return false
+  const raw = (text ?? '').replace(/\s/g, '')
+  // 「X的歌 / X的歌曲 / X的音乐 / X的作品 / X的乐曲 / X的曲子 / X的曲」：
+  // 被「的」修饰的是泛歌曲名词而非具体歌名 → 按歌手浏览。
+  if (/的(歌|歌曲|音乐|作品|乐曲|曲子|曲)$/.test(raw)) return true
+  // 连写无「的」的常见浏览形式：刘德华歌曲 / 周杰伦音乐 / 邓丽君作品。
+  // 只取绝不会是具体歌名的「歌曲/音乐/作品」收尾，避免误伤「恋歌」这类真歌名。
+  const last = kw.split(/\s+/).filter(Boolean).pop() ?? ''
+  if (/(歌曲|音乐|作品)$/.test(last)) return true
+  return false
 }
 
 /** 疑问/指令/招呼/闲聊：这些不该被当成「光报了个歌手/歌名」，交给 LLM 正常应答。 */
@@ -146,4 +172,50 @@ export function parseSelection(text: string, candidates: readonly MusicCandidate
 function toNumber(raw: string): number | null {
   if (/^\d+$/.test(raw)) return Number(raw)
   return CN_NUM[raw] ?? null
+}
+
+/**
+ * 简繁归一：MusicBrainz 常返回繁体（周杰倫），用户口语多为简体（周杰伦），
+ * 做一层常见字形等价，避免「正在听周杰伦、点七里香」却因倫/伦不同而匹配不上。
+ * 只覆盖歌手名里高频出现的字形，保持小而可控。
+ */
+const TRAD_TO_SIMP: Record<string, string> = {
+  倫: '伦', 傑: '杰', 華: '华', 陳: '陈', 鄧: '邓', 樂: '乐', 張: '张',
+  劉: '刘', 許: '许', 鄭: '郑', 蕭: '萧', 孫: '孙', 藝: '艺', 國: '国',
+  強: '强', 興: '兴', 師: '师', 軍: '军', 飛: '飞', 樹: '树', 蘭: '兰',
+  龍: '龙', 雲: '云', 麗: '丽', 豐: '丰', 歡: '欢', 權: '权', 學: '学',
+  嵐: '岚', 禎: '祯', 勳: '勋', 瑋: '玮', 澤: '泽', 穎: '颖', 靜: '静',
+  潔: '洁', 儀: '仪', 賢: '贤', 榮: '荣', 曉: '晓', 鴻: '鸿', 濤: '涛',
+  燦: '灿', 燁: '烨', 煒: '炜', 瑩: '莹', 峯: '峰', 詩: '诗', 寧: '宁',
+}
+
+/** 歌手名归一：繁转简 + 去空白标点 + 小写，便于跨源比对。 */
+export function normalizeArtist(name: string): string {
+  const mapped = name
+    .split('')
+    .map((c) => TRAD_TO_SIMP[c] ?? c)
+    .join('')
+  return mapped.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')
+}
+
+/** 当前播放歌手与候选歌手是否同一人（归一后相等或互相包含）。 */
+export function artistMatches(current: string, candidate: string): boolean {
+  const a = normalizeArtist(current)
+  const b = normalizeArtist(candidate)
+  if (!a || !b) return false
+  return a === b || a.includes(b) || b.includes(a)
+}
+
+/**
+ * 多个候选里挑出与「当前正在播放歌手」一致的项；没有当前歌手、或没有一致项时原样返回，
+ * 交回常规流程（列出来让用户选）。配合「正在听周杰伦却点七里香」这类场景：
+ * 直接放同歌手版本，不再让用户选。
+ */
+export function filterByCurrentArtist(
+  items: readonly MusicCandidate[],
+  currentArtist: string | undefined
+): MusicCandidate[] {
+  if (!currentArtist || items.length <= 1) return [...items]
+  const matched = items.filter((c) => artistMatches(currentArtist, c.artist))
+  return matched.length > 0 ? [...matched] : [...items]
 }

@@ -151,9 +151,12 @@ def write_voice_config(patch: dict[str, str]) -> str | None:
 
 # ── 运行状态 / 日志 / 控制 ─────────────────────────────────────────
 def voice_port() -> int:
+    # 配置真相源是本地 SQLite（经 config_store），voice.conf 仅在播种阶段被读。
+    # 注意：这里不能用不存在的 read_voice_config()，否则会抛 NameError 被上层吞掉、
+    # 导致 /admin/api/status 的 health 永远为 null。
     try:
-        return int(read_voice_config().get("VOICE_PORT") or "9529")
-    except ValueError:
+        return int(config_store.instance().all().get("VOICE_PORT") or "9529")
+    except Exception:
         return 9529
 
 
@@ -258,6 +261,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center;
            justify-content:space-between; }
   header h1 { font-size:16px; margin:0; font-weight:600; }
+  .who-wrap { display:flex; align-items:center; gap:12px; }
   main { max-width:920px; margin:0 auto; padding:20px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
   .card h2 { font-size:14px; margin:0 0 12px; color:var(--mut); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
@@ -265,10 +269,23 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   button { background:var(--acc); color:#fff; border:0; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13px; }
   button.sec { background:#2a2f3a; color:var(--fg); }
   button.danger { background:#3a1f24; color:#ff8a8a; }
+  button.full { width:100%; }
   button:disabled { opacity:.5; cursor:default; }
   input[type=text], input[type=password] { background:#0f1115; border:1px solid var(--line); color:var(--fg);
            border-radius:8px; padding:8px 10px; font-size:13px; width:260px; }
   label { display:block; color:var(--mut); margin:10px 0 4px; font-size:12px; }
+  textarea { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:8px;
+             padding:9px 11px; font-size:14px; font-family:inherit; line-height:1.5; resize:vertical; width:100%; box-sizing:border-box; }
+  textarea:focus { outline:none; border-color:var(--acc); }
+  select { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:8px; padding:8px 10px; font-size:13px; width:100%; box-sizing:border-box; }
+  .chk { display:flex; align-items:center; gap:6px; color:var(--mut); font-size:12px; margin-top:10px; }
+  .chk input { width:auto; }
+  .tabs { display:flex; gap:8px; margin:0 0 12px; flex-wrap:wrap; }
+  .tab { background:#1b1f27; color:var(--mut); border:1px solid var(--line); border-radius:8px; padding:6px 14px; cursor:pointer; font-size:13px; }
+  .tab.active { background:var(--acc); color:#0b0d11; border-color:var(--acc); font-weight:600; }
+  .tabpane { margin-top:4px; }
+  .fixed-prompt { background:#0f1115; border:1px solid var(--line); border-radius:8px;
+                  padding:8px 10px; font-size:13px; color:var(--fg); margin-bottom:4px; }
   .kv { display:grid; grid-template-columns:240px 1fr; gap:8px 12px; align-items:center; }
   .kv .k { color:var(--mut); font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; word-break:break-all; }
   .kv input { width:100%; }
@@ -280,16 +297,17 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .b-err { background:#3a1f24; color:var(--err); }
   .b-mut { background:#23272f; color:var(--mut); }
   #login { max-width:340px; margin:80px auto; }
-  .err { color:var(--err); font-size:13px; min-height:18px; margin-top:8px; }
+  .err { color:var(--err); font-size:13px; font-weight:700; min-height:18px; margin-top:8px; background:#2a1417; border:1px solid #5a2a2f; border-radius:6px; padding:6px 8px; white-space:pre-wrap; word-break:break-all; }
   .muted { color:var(--mut); }
   a { color:var(--acc); }
 </style>
 </head>
 <body>
-<header><h1>语音代理管理</h1><div id="who" class="muted"></div></header>
+<header><h1>语音代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><button class="sec" id="logout">退出登录</button></div></header>
 <main id="app"></main>
 
 <script>
+const ASR_SAMPLE_B64 = "__ASR_B64__";  // 内嵌的固定测试音频（mp3 base64），由服务端注入
 const api = (path, opts={}) => fetch(path, {credentials:'same-origin', ...opts});
 function el(html){ const d=document.createElement('div'); d.innerHTML=html; return d.firstElementChild; }
 
@@ -320,36 +338,69 @@ function renderLogin(){
   card.querySelector('#p').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
 }
 
-let cfgKeys = [];
 async function renderDashboard(){
   const app = document.getElementById('app'); app.innerHTML='';
 
-  app.appendChild(el(`<div class="card"><div class="row" style="justify-content:space-between">
-    <h2 style="margin:0">运行状态</h2>
-    <button class="sec" id="logout">退出登录</button></div>
-    <div id="status" class="muted">加载中…</div>
-    <div class="row" style="margin-top:12px">
-      <button id="start">启动</button><button id="stop" class="danger">停止</button>
-      <button id="restart">重启</button><button id="refresh" class="sec">刷新</button>
+  app.appendChild(el(`<div class="card"><h2>测试</h2>
+    <div class="row" style="margin-bottom:12px">
+      <span class="muted">鉴权（若推理接口开启了 API Key）：</span>
+      <input id="testKey" type="password" placeholder="可选：API Key" />
     </div>
-  </div>`));
+    <div class="tabs">
+      <button class="tab active" data-tab="llm">对话 LLM</button>
+      <button class="tab" data-tab="asr">语音识别 ASR</button>
+      <button class="tab" data-tab="tts">语音合成 TTS</button>
+    </div>
 
-  app.appendChild(el(`<div class="card"><h2>数据库</h2>
-    <div id="db" class="muted">加载中…</div>
-    <div class="row" style="margin-top:10px">
-      <button id="sync">同步到远程</button>
-      <span id="syncmsg" class="hint"></span>
+    <div id="t-llm" class="tabpane">
+      <label>提供商</label>
+      <select id="llmProvider"><option value="">（默认路由）</option></select>
+      <label>模型（切到本页自动拉取，可留空用默认）</label>
+      <select id="llmModel"><option value="">（沿用上游默认）</option></select>
+      <label>协议</label>
+      <select id="llmProtocol">
+        <option value="openai_chat_completions">openai_chat_completions（OpenAI 对话）</option>
+        <option value="azure_openai_chat_completions">azure_openai_chat_completions（Azure OpenAI）</option>
+        <option value="openai_responses">openai_responses（OpenAI Responses）</option>
+        <option value="anthropic_messages">anthropic_messages（Anthropic）</option>
+        <option value="gemini">gemini（Google Gemini）</option>
+      </select>
+      <div class="hint" id="llmProtoDesc" style="margin-top:4px"></div>
+      <label class="chk"><input type="checkbox" id="llmStream" checked /> 流式（SSE）</label>
+      <label>提示词（固定，不可编辑）</label>
+      <div id="llmInput" class="fixed-prompt">请只回复 ok 两个字。</div>
+      <pre id="llmOut" class="muted">回复将在这里流式显示。</pre>
+      <div class="row" style="margin-top:12px">
+        <button id="llmGo" style="flex:1">发送</button>
+        <button class="sec" id="llmStop" style="flex:1">停止</button>
+      </div>
+      <span class="hint" id="llmStatus" style="display:block; margin-top:6px"></span>
     </div>
-  </div>`));
 
-  app.appendChild(el(`<div class="card"><h2>配置（voice.conf）</h2>
-    <div id="cfg" class="muted">加载中…</div>
-    <div class="hint">密钥字段留空表示不修改；其余字段留空表示清空。</div>
-    <div class="row" style="margin-top:12px">
-      <button id="save">保存</button>
-      <button id="saveRestart">保存并重启</button>
+    <div id="t-asr" class="tabpane" hidden>
+      <div class="muted" style="margin-bottom:8px">点录音可把上面的试听音频替换成你录的，识别也用替换后的；「还原」恢复内置样本。</div>
+      <audio id="asrPlayer" controls style="width:100%;margin:6px 0 12px"></audio>
+      <div class="row">
+        <button id="asrRec">录音</button>
+        <button id="asrRecStop" class="danger" disabled>停止</button>
+        <button id="asrRevert" class="sec" style="display:none">还原</button>
+        <span class="hint" id="asrRecMsg"></span>
+      </div>
+      <pre id="asrOut" class="muted">识别结果将显示在这里。</pre>
+      <button id="asrGo" class="full" style="margin-top:12px">识别</button>
+      <span class="hint" id="asrMsg" style="display:block; margin-top:6px"></span>
     </div>
-    <div id="cfgmsg" class="hint"></div>
+
+    <div id="t-tts" class="tabpane" hidden>
+      <label>文本</label>
+      <textarea id="ttsText" rows="2">你好。</textarea>
+      <label>音色</label>
+      <select id="ttsVoice"></select>
+      <div class="hint" id="ttsVoiceDesc" style="margin-top:4px"></div>
+      <audio id="ttsAudio" controls style="margin-top:10px; width:100%"></audio>
+      <button id="ttsGo" class="full" style="margin-top:12px">合成</button>
+      <span class="hint" id="ttsMsg" style="display:block; margin-top:6px"></span>
+    </div>
   </div>`));
 
   app.appendChild(el(`<div class="card"><h2>日志（voice.log）</h2>
@@ -359,174 +410,243 @@ async function renderDashboard(){
     <pre id="logs">加载中…</pre>
   </div>`));
 
-  app.querySelector('#logout').onclick = async ()=>{
+  document.getElementById('logout').onclick = async ()=>{
     await api('/admin/logout',{method:'POST'}); boot();
   };
-  app.querySelector('#refresh').onclick = loadStatus;
-  app.querySelector('#start').onclick = ()=>doAction('start');
-  app.querySelector('#stop').onclick = ()=>doAction('stop');
-  app.querySelector('#restart').onclick = ()=>doAction('restart');
-  app.querySelector('#save').onclick = ()=>saveConfig(false);
-  app.querySelector('#saveRestart').onclick = ()=>saveConfig(true);
   app.querySelector('#logRefresh').onclick = loadLogs;
-  app.querySelector('#sync').onclick = doSync;
 
-  loadStatus(); loadConfig(); loadLogs(); loadDb();
-}
+  // ---- 测试面板逻辑 ----
+  const authHdr = ()=>{ const k=(document.getElementById('testKey').value||'').trim(); return k?{'Authorization':'Bearer '+k}:{}; };
 
-async function loadDb(){
-  const box = document.getElementById('db');
-  const r = await api('/admin/api/status');
-  if(!r.ok){ box.textContent='加载失败'; return; }
-  const s = await r.json();
-  const st = s.store || {};
-  const stats = st.stats || {};
-  let html = `本地库：<code>${escapeHtml(st.db_path||'?')}</code><br>`;
-  html += `配置项 ${stats.config||0} · 事件 ${stats.events||0} · 审计 ${stats.audit||0}<br>`;
-  const rem = st.remote || {};
-  if(rem.configured){
-    const cls = rem.last_ok ? 'b-ok' : 'b-err';
-    const label = rem.last_ok ? '已同步' : '同步失败';
-    html += `<span class="badge ${cls}">远程库：${label}</span>`;
-    if(rem.last_error) html += ` <span class="muted">${escapeHtml(rem.last_error)}</span>`;
-  } else {
-    html += `<span class="badge b-mut">远程库：未配置</span> <span class="muted">（设 VOICE_REMOTE_DSN 启用）</span>`;
+  // 标签页切换
+  const tabs = app.querySelectorAll('.tab');
+  tabs.forEach(t=>t.onclick=()=>{
+    tabs.forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    ['llm','asr','tts'].forEach(k=>{ document.getElementById('t-'+k).hidden = (t.dataset.tab!==k); });
+    if(t.dataset.tab==='llm'){ populateLlmModels(); populateLlmProviders(); }
+  });
+
+  // TTS 音色下拉：按语言分组，每个音色带一句说明（性别 / 风格 / 适用场景）
+  const voiceSel = document.getElementById('ttsVoice');
+  const VOICE_DESC = document.getElementById('ttsVoiceDesc');
+  // 兜底目录：接口拿不到时用（与服务端 VOICE_CATALOG 保持一致）
+  let VOICE_CATALOG = [
+    {id:'zh-CN-XiaoxiaoNeural',lang:'中文',desc:'女声·温柔自然（默认）'},
+    {id:'zh-CN-YunxiNeural',lang:'中文',desc:'男声·年轻活泼'},
+    {id:'zh-CN-YunyangNeural',lang:'中文',desc:'男声·专业新闻播报'},
+    {id:'zh-CN-XiaoyiNeural',lang:'中文',desc:'女声·活泼可爱'},
+    {id:'zh-CN-YunjianNeural',lang:'中文',desc:'男声·成熟稳重'},
+    {id:'zh-CN-YunxiaNeural',lang:'中文',desc:'女声·甜美'},
+    {id:'zh-CN-XiaoxuanNeural',lang:'中文',desc:'女声·清新'},
+    {id:'zh-TW-HsiaoChenNeural',lang:'中文(台湾)',desc:'女声·台湾腔'},
+    {id:'zh-TW-YunJheNeural',lang:'中文(台湾)',desc:'男声·台湾腔'},
+    {id:'zh-TW-HsiaoYuNeural',lang:'中文(台湾)',desc:'女声·台湾腔·温柔'},
+    {id:'zh-HK-HiuGaaiNeural',lang:'粤语',desc:'女声·粤语'},
+    {id:'zh-HK-WanLungNeural',lang:'粤语',desc:'男声·粤语'},
+    {id:'zh-HK-HiuMaanNeural',lang:'粤语',desc:'女声·粤语·活泼'},
+    {id:'en-US-AriaNeural',lang:'英文',desc:'女声·自然通用'},
+    {id:'en-US-GuyNeural',lang:'英文',desc:'男声·沉稳'},
+    {id:'en-US-JennyNeural',lang:'英文',desc:'女声·亲切'},
+    {id:'en-GB-SoniaNeural',lang:'英文(英式)',desc:'女声·优雅英音'},
+    {id:'en-GB-RyanNeural',lang:'英文(英式)',desc:'男声·英音'},
+    {id:'ja-JP-NanamiNeural',lang:'日文',desc:'女声·柔和'},
+    {id:'ja-JP-KeitaNeural',lang:'日文',desc:'男声·清晰'},
+  ];
+  const voiceDesc = (id)=>{ const f=VOICE_CATALOG.find(v=>v.id===id); return f? f.desc : ''; };
+  const fillVoices = (def)=>{
+    voiceSel.innerHTML='';
+    const groups={};
+    VOICE_CATALOG.forEach(v=>{ (groups[v.lang]=groups[v.lang]||[]).push(v); });
+    Object.entries(groups).forEach(([g,items])=>{
+      const og=document.createElement('optgroup'); og.label=g;
+      items.forEach(v=>{ const o=document.createElement('option'); o.value=v.id; o.textContent=v.id+'　'+v.desc; og.appendChild(o); });
+      voiceSel.appendChild(og);
+    });
+    if(def){ const o=document.createElement('option'); o.value=def; o.textContent=def+'（默认）'; voiceSel.appendChild(o); }
+    voiceSel.value = def || VOICE_CATALOG[0].id;
+    VOICE_DESC.textContent = '音色说明：' + voiceDesc(voiceSel.value) + '　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502';
+  };
+  voiceSel.onchange = ()=>{ VOICE_DESC.textContent = '音色说明：' + voiceDesc(voiceSel.value) + '　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502'; };
+  // 从对外接口拉取最新音色目录（接口不可用时回退兜底）
+  fetch('/voide/v1/audio/voices',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(d=>{
+    if(d && Array.isArray(d.voices) && d.voices.length){ VOICE_CATALOG=d.voices; fillVoices(d.default); }
+  }).catch(()=>{});
+  api('/admin/api/status').then(r=>r.ok?r.json():null).then(s=>{
+    const def = s && s.health && s.health.tts_voice;
+    fillVoices(def||undefined);
+  }).catch(()=>fillVoices());
+
+  // TTS 合成
+  document.getElementById('ttsGo').onclick = async ()=>{
+    const msg=document.getElementById('ttsMsg'), audio=document.getElementById('ttsAudio');
+    msg.textContent='合成中…'; msg.className='hint'; audio.src='';
+    try{
+      const r=await fetch('/voide/v1/audio/speech',{method:'POST',credentials:'same-origin',
+        headers:{'content-type':'application/json',...authHdr()},
+        body:JSON.stringify({input:document.getElementById('ttsText').value,voice:voiceSel.value,response_format:'wav',speed:1.0})});
+      if(!r.ok){ msg.textContent='失败 '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
+      const blob=await r.blob(); audio.src=URL.createObjectURL(blob);
+      msg.textContent='完成（'+(blob.size/1024).toFixed(1)+' KB）'; msg.className='hint';
+    }catch(e){ msg.textContent='错误：'+e.message; msg.className='err'; }
+  };
+
+  // LLM 模型列表（切到本页自动拉取，无需单独按钮）
+  async function populateLlmModels(){
+    const sel=document.getElementById('llmModel');
+    try{
+      const r=await fetch('/llm/v1/models',{credentials:'same-origin',headers:{...authHdr()}});
+      if(!r.ok) return;
+      const d=await r.json(); const ids=(d.data||[]).map(x=>x.id).filter(Boolean);
+      sel.innerHTML='<option value="">（沿用上游默认）</option>';
+      ids.forEach(id=>{ const o=document.createElement('option'); o.value=id; o.textContent=id; sel.appendChild(o); });
+    }catch(_){}
   }
-  if(rem.redis_configured){
-    const rcls = rem.redis_ok ? 'b-ok' : 'b-err';
-    const rlabel = rem.redis_ok ? 'Redis 缓存正常' : 'Redis 不可用（回退查远端库）';
-    html += `<br><span class="badge ${rcls}">远程缓存：${rlabel}</span>`;
-    if(!rem.redis_ok && rem.redis_error) html += ` <span class="muted">${escapeHtml(rem.redis_error)}</span>`;
-  } else {
-    html += `<br><span class="badge b-mut">远程缓存：未配置（设 REDIS_URL 启用）</span>`;
-  }
-  box.innerHTML = html;
-}
 
-async function doSync(){
-  const msg = document.getElementById('syncmsg');
-  msg.textContent = '同步中…';
-  const r = await api('/admin/api/sync', {method:'POST'});
-  if(r.ok){
-    const d = await r.json();
-    const ok = d.push && d.push.ok;
-    msg.innerHTML = ok
-      ? `<span style="color:var(--ok)">已同步（拉取 ${d.pulled_keys} 项）</span>`
-      : `<span style="color:var(--warn)">本地已更新，远程：${(d.push&&d.push.error)||'未配置'}</span>`;
-    loadDb();
-  } else {
-    msg.innerHTML = '<span style="color:var(--err)">同步失败</span>';
-  }
-}
+  // LLM 协议下拉的中文说明（选中后展示）
+  const PROTOCOL_DESC = {
+    'openai_chat_completions': 'OpenAI Chat Completions 线协议（/v1/chat/completions，deepseek / 通义等大多兼容）',
+    'azure_openai_chat_completions': 'Azure OpenAI（路径带 /openai/deployments/{model}，需 api-version）',
+    'openai_responses': 'OpenAI Responses API（/v1/responses）',
+    'anthropic_messages': 'Anthropic Messages（/v1/messages，请求与流式响应双向翻译）',
+    'gemini': 'Google Gemini（generateContent / streamGenerateContent，alt=sse）',
+  };
+  const updateProtoDesc = ()=>{ document.getElementById('llmProtoDesc').textContent = (PROTOCOL_DESC[document.getElementById('llmProtocol').value]||'') + '；是否流式由下方「流式」勾选框单独控制，与协议无关。'; };
+  document.getElementById('llmProtocol').onchange = updateProtoDesc;
+  updateProtoDesc();
 
-function renderUpstreams(title, list){
-  if(!list || !list.length) return '';
-  // 按线协议分组展示：一个分组 = 一个模型类型，组内多个账号健康优先 + 轮询。
-  const groups = {};
-  for(const u of list){ const p = u.protocol||'openai_chat_completions'; (groups[p]=groups[p]||[]).push(u); }
-  let s = `<div style="margin-top:6px"><span class="muted">${title} 地址池（按线协议分组）：</span>`;
-  for(const p in groups){
-    s += `<div style="margin-top:4px"><span class="badge b-mut">${escapeHtml(p)}</span>`;
-    for(const u of groups[p]){
-      const cls = u.healthy ? 'b-ok' : 'b-err';
-      let label;
-      if(u.healthy) label = '在线';
-      else if(u.cooling) label = '冷却中·待探测';
-      else label = '离线'+(u.last_error?(' · '+u.last_error):'');
-      const vnd = u.vendor ? (' ['+u.vendor+']') : '';
-      const mdl = u.model ? (' · '+u.model) : '';
-      s += ` <span class="badge ${cls}">${escapeHtml(u.base_url||'?')}${vnd}${mdl} · ${label}</span>`;
+  // LLM 对话（支持协议 / 提供商 / 流式开关）
+  let llmCtrl=null;
+  document.getElementById('llmGo').onclick = async ()=>{
+    const status=document.getElementById('llmStatus'), out=document.getElementById('llmOut');
+    out.textContent=''; status.textContent='请求中…'; status.className='hint';
+    llmCtrl=new AbortController();
+    try{
+      const model=document.getElementById('llmModel').value.trim();
+      const vendor=document.getElementById('llmProvider').value.trim();
+      const protocol=document.getElementById('llmProtocol').value.trim();
+      const stream=document.getElementById('llmStream').checked;
+      const body={messages:[{role:'user',content:document.getElementById('llmInput').textContent}],stream};
+      if(model) body.model=model;          // 留空则让代理用上游默认模型，不要发 "default"
+      if(vendor) body.vendor=vendor;        // 显式指定提供商，覆盖模型路由
+      if(protocol) body.protocol=protocol;  // 显式指定线协议，覆盖入口配置
+      const r=await fetch('/llm/v1/chat/completions',{method:'POST',credentials:'same-origin',signal:llmCtrl.signal,
+        headers:{'content-type':'application/json',...authHdr()},
+        body:JSON.stringify(body)});
+      if(!r.ok){ status.textContent='失败 '+r.status+'：'+(await r.text()).slice(0,200); status.className='err'; return; }
+      if(stream){
+        const reader=r.body.getReader(), dec=new TextDecoder(); let buf='', text='';
+        while(true){
+          const {done,value}=await reader.read(); if(done) break;
+          buf+=dec.decode(value,{stream:true});
+          let idx;
+          while((idx=buf.indexOf('\n'))>=0){
+            const line=buf.slice(0,idx).trim(); buf=buf.slice(idx+1);
+            if(!line.startsWith('data:')) continue;
+            const data=line.slice(5).trim(); if(data==='[DONE]') break;
+            try{ const j=JSON.parse(data); const d=j.choices&&j.choices[0]&&j.choices[0].delta&&j.choices[0].delta.content; if(d){ text+=d; out.textContent=text; } }catch(_){}
+          }
+        }
+      } else {
+        const d=await r.json();
+        const text=(d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content)||JSON.stringify(d);
+        out.textContent=text;
+      }
+      status.textContent='完成'; status.className='hint';
+    }catch(e){ if(e.name==='AbortError'){ status.textContent='已停止'; status.className='hint'; } else { status.textContent='错误：'+e.message; status.className='err'; } }
+  };
+  document.getElementById('llmStop').onclick = ()=>{ if(llmCtrl) llmCtrl.abort(); };
+
+  // LLM 提供商列表（对外接口拉取，失败则用兜底）
+  async function populateLlmProviders(){
+    const sel=document.getElementById('llmProvider');
+    try{
+      const r=await fetch('/llm/v1/providers',{credentials:'same-origin'});
+      if(!r.ok) return;
+      const d=await r.json(); const ps=(d.providers||[]).filter(p=>p.vendor && p.vendor!=='(未指定)');
+      if(!ps.length) return;
+      sel.innerHTML='<option value="">（默认路由）</option>';
+      ps.forEach(p=>{ const o=document.createElement('option'); o.value=p.vendor; o.textContent=p.vendor+(p.host?('　('+p.host+')'):''); sel.appendChild(o); });
+    }catch(_){}
+  }
+
+  // ASR：可录音（直接替换上方试听音频），或一键识别内嵌的固定音频
+  let asrBlob=null, mediaRec=null, mediaStream=null;
+  document.getElementById('asrRec').onclick = async ()=>{
+    try{
+      mediaStream=await navigator.mediaDevices.getUserMedia({audio:true});
+      mediaRec=new MediaRecorder(mediaStream); const chunks=[];
+      mediaRec.ondataavailable=e=>{ if(e.data.size) chunks.push(e.data); };
+      mediaRec.onstop=async ()=>{
+        const raw=new Blob(chunks,{type:mediaRec.mimeType||'audio/webm'});
+        try{ asrBlob=await toWav(raw); }
+        catch(_){ asrBlob=raw; }
+        document.getElementById('asrPlayer').src=URL.createObjectURL(asrBlob);
+        document.getElementById('asrRevert').style.display='';
+        document.getElementById('asrRecMsg').textContent='已替换试听音频（识别将用这段）';
+        mediaStream.getTracks().forEach(t=>t.stop());
+      };
+      mediaRec.start();
+      document.getElementById('asrRec').disabled=true; document.getElementById('asrRecStop').disabled=false;
+      document.getElementById('asrRecMsg').textContent='录音中…';
+    }catch(e){ document.getElementById('asrRecMsg').textContent='无法录音：'+e.message; }
+  };
+  document.getElementById('asrRecStop').onclick = ()=>{
+    if(mediaRec&&mediaRec.state!=='inactive') mediaRec.stop();
+    document.getElementById('asrRec').disabled=false; document.getElementById('asrRecStop').disabled=true;
+  };
+  document.getElementById('asrRevert').onclick = ()=>{
+    asrBlob=null;
+    if(ASR_SAMPLE_B64) document.getElementById('asrPlayer').src='data:audio/wav;base64,'+ASR_SAMPLE_B64;
+    document.getElementById('asrRevert').style.display='none';
+    document.getElementById('asrRecMsg').textContent='已还原内置样本';
+  };
+  document.getElementById('asrGo').onclick = async ()=>{
+    const msg=document.getElementById('asrMsg'), out=document.getElementById('asrOut');
+    msg.className='hint';
+    let blob=asrBlob, fname='record.wav';
+    if(!blob){
+      if(!ASR_SAMPLE_B64){ msg.textContent='未内嵌音频'; return; }
+      const bin=atob(ASR_SAMPLE_B64); const bytes=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+      blob=new Blob([bytes],{type:'audio/wav'}); fname='sample.wav';
     }
-    s += '</div>';
-  }
-  s += '</div>';
-  return s;
+    msg.textContent='识别中…';
+    try{
+      const fd=new FormData(); fd.append('file',blob,fname); fd.append('model','whisper-1');
+      const r=await fetch('/voide/v1/audio/transcriptions',{method:'POST',credentials:'same-origin',headers:{...authHdr()},body:fd});
+      if(!r.ok){ msg.textContent='失败 '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
+      const d=await r.json(); out.textContent=d.text||'(空)'; msg.textContent='完成'; msg.className='hint';
+    }catch(e){ msg.textContent='错误：'+e.message; msg.className='err'; }
+  };
+  // 固定音频可直接在页面播放试听
+  if(ASR_SAMPLE_B64) document.getElementById('asrPlayer').src='data:audio/wav;base64,'+ASR_SAMPLE_B64;
+
+  populateLlmModels(); populateLlmProviders();  // 初始页就是 LLM，先拉一次模型 / 提供商列表
+  loadLogs();
 }
 
-async function loadStatus(){
-  const box = document.getElementById('status');
-  const r = await api('/admin/api/status');
-  if(!r.ok){ box.innerHTML = '<span class="badge b-err">未授权</span>'; return; }
-  const s = await r.json();
-  const h = s.health || {};
-  let html = '';
-  html += s.running
-    ? `<span class="badge b-ok">运行中</span> pid=${s.pid}`
-    : `<span class="badge b-err">未运行</span>`;
-  html += ` <span class="badge b-mut">端口 ${h.port ?? '?'}</span>`;
-  if(h.llm) html += ` <span class="badge ${h.llm.enabled?'b-ok':'b-mut'}">LLM ${h.llm.enabled?h.llm.base_url:'off'}</span>`;
-  if(h.stt_backend) html += ` <span class="badge b-mut">STT ${h.stt_backend}</span>`;
-  if(h.tts_backend) html += ` <span class="badge b-mut">TTS ${h.tts_backend}</span>`;
-  if(h.upstreams){
-    html += renderUpstreams('STT', h.upstreams.STT);
-    html += renderUpstreams('TTS', h.upstreams.TTS);
-  }
-  if(h.llm && h.llm.upstreams) html += renderUpstreams('LLM', h.llm.upstreams);
-  html += `<div class="hint" style="margin-top:8px;white-space:pre-wrap">${escapeHtml(s.statusText)}</div>`;
-  box.innerHTML = html;
+// 任意音频 blob 转 16-bit PCM WAV（浏览器原生解码后重编码，保证上游能识别）。
+async function toWav(blob){
+  const arr=await blob.arrayBuffer();
+  const Ctx=window.AudioContext||window.webkitAudioContext;
+  const ctx=new Ctx();
+  const buf=await ctx.decodeAudioData(arr);
+  const ch=buf.numberOfChannels, len=buf.length, sr=buf.sampleRate;
+  const out=new ArrayBuffer(44+len*ch*2), dv=new DataView(out);
+  const wr=(o,s)=>{ for(let i=0;i<s.length;i++) dv.setUint8(o+i,s.charCodeAt(i)); };
+  wr(0,'RIFF'); dv.setUint32(4,36+len*ch*2,true); wr(8,'WAVE'); wr(12,'fmt ');
+  dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,ch,true);
+  dv.setUint32(24,sr,true); dv.setUint32(28,sr*ch*2,true); dv.setUint16(32,ch*2,true);
+  dv.setUint16(34,16,true); wr(36,'data'); dv.setUint32(40,len*ch*2,true);
+  let off=44; const data=[]; for(let c=0;c<ch;c++) data.push(buf.getChannelData(c));
+  for(let i=0;i<len;i++){ for(let c=0;c<ch;c++){ let s=Math.max(-1,Math.min(1,data[c][i])); dv.setInt16(off,s<0?s*0x8000:s*0x7FFF,true); off+=2; } }
+  ctx.close();
+  return new Blob([out],{type:'audio/wav'});
 }
 
-async function loadConfig(){
-  const r = await api('/admin/api/config');
-  const box = document.getElementById('cfg');
-  if(!r.ok){ box.textContent='加载失败'; return; }
-  const cfg = await r.json();
-  cfgKeys = Object.keys(cfg);
-  const kv = el('<div class="kv"></div>');
-  for(const k of cfgKeys){
-    const masked = cfg[k] === '********';
-    const inputType = masked ? 'password' : 'text';
-    const ph = masked ? '********（留空=不改）' : '';
-    kv.appendChild(el(`<div class="k" title="${k}">${k}</div>`));
-    kv.appendChild(el(`<input type="${inputType}" data-k="${k}" placeholder="${ph}" value="${masked?'':escapeAttr(cfg[k])}" />`));
-  }
-  box.innerHTML=''; box.appendChild(kv);
-}
-
-async function saveConfig(restart){
-  const patch = {};
-  for(const k of cfgKeys){
-    const inp = document.querySelector(`input[data-k="${k}"]`);
-    if(!inp) continue;
-    let v = inp.value;
-    const orig = await api('/admin/api/config').then(r=>r.json()).then(c=>c[k]);
-    // 密钥字段：留空表示不修改 -> 发 HIDDEN 哨兵
-    if(orig === '********' && v === '') v = '********';
-    patch[k] = v;
-  }
-  const r = await api('/admin/api/config', {method:'POST',
-    headers:{'content-type':'application/json'}, body:JSON.stringify(patch)});
-  const msg = document.getElementById('cfgmsg');
-  if(r.ok){
-    msg.innerHTML = restart
-      ? '<span style="color:var(--warn)">已保存，正在重启…</span>'
-      : '<span style="color:var(--ok)">已保存（需重启才生效的配置请点“保存并重启”）</span>';
-    if(restart) doAction('restart');
-  } else {
-    msg.innerHTML = '<span style="color:var(--err)">'+(await r.json()).detail+'</span>';
-  }
-}
-
-async function doAction(action){
-  const r = await api('/admin/api/action', {method:'POST',
-    headers:{'content-type':'application/json'}, body:JSON.stringify({action})});
-  if(action==='restart'){
-    // 重启会杀掉当前进程，会话丢失；轮询直到又能连上（可能要求重新登录）。
-    await waitReconnect();
-    return;
-  }
-  loadStatus(); loadLogs();
-  if(!r.ok){ console.warn(await r.text()); }
-}
-
-async function waitReconnect(){
-  for(let i=0;i<30;i++){
-    await new Promise(r=>setTimeout(r,1000));
-    const r = await api('/admin/api/me');
-    if(r.ok){ boot(); return; }
-  }
-  document.getElementById('app').innerHTML='<div class="card">重启后未能自动恢复，请刷新页面。</div>';
-}
+// 弃用的面板函数（运行状态 / 数据库 / 配置 / 服务控制）已按需求移除，相关
+// 业务配置一律存放在本地 SQLite（voice.db），不再通过 Web 面板展示或编辑。
 
 async function loadLogs(){
   const r = await api('/admin/api/logs');
@@ -543,6 +663,15 @@ boot();
 </body>
 </html>
 """
+
+# 把内嵌的固定测试音频（mp3 base64）注入页面，避免在源码里放大段字面量。
+try:
+    _asr_b64_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr_sample.b64")
+    with open(_asr_b64_path, encoding="utf-8") as _f:
+        _ASR_SAMPLE_B64 = _f.read().strip()
+except Exception:
+    _ASR_SAMPLE_B64 = ""
+ADMIN_HTML = ADMIN_HTML.replace("__ASR_B64__", _ASR_SAMPLE_B64)
 
 
 # ── 路由注册 ───────────────────────────────────────────────────────

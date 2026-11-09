@@ -5,6 +5,9 @@ import {
   candidateQuery,
   parseSelection,
   looksLikeBareMusicQuery,
+  filterByCurrentArtist,
+  artistMatches,
+  isArtistBrowse,
   type MusicCandidate,
 } from './musicCandidates'
 
@@ -78,6 +81,48 @@ describe('parseSelection（语音选第几首 / 说歌名）', () => {
   })
 })
 
+describe('artistMatches / filterByCurrentArtist（点歌按当前歌手优先）', () => {
+  it('简繁等价：周杰伦(简) 与 周杰倫(繁) 视为同一人', () => {
+    expect(artistMatches('周杰伦', '周杰倫')).toBe(true)
+    expect(artistMatches('周杰倫', '周杰伦')).toBe(true)
+  })
+
+  it('不同歌手不匹配', () => {
+    expect(artistMatches('周杰伦', '陈淑桦')).toBe(false)
+  })
+
+  it('没有当前歌手 / 单候选 → 原样返回', () => {
+    const items: MusicCandidate[] = [
+      { title: '七里香', artist: '陈淑桦' },
+      { title: '七里香', artist: '周杰伦' },
+      { title: '七里香', artist: '周杰伦' },
+    ]
+    expect(filterByCurrentArtist(items, undefined)).toEqual(items)
+    expect(filterByCurrentArtist(items.slice(0, 1), '周杰伦')).toEqual(items.slice(0, 1))
+  })
+
+  it('多候选里有当前歌手 → 只留同歌手版本', () => {
+    const items: MusicCandidate[] = [
+      { title: '七里香', artist: '陈淑桦' },
+      { title: '七里香', artist: '周杰伦' },
+      { title: '七里香', artist: '周杰伦' },
+    ]
+    // 当前在听周杰伦（繁体也行），应过滤掉陈淑桦
+    expect(filterByCurrentArtist(items, '周杰倫')).toEqual([
+      { title: '七里香', artist: '周杰伦' },
+      { title: '七里香', artist: '周杰伦' },
+    ])
+  })
+
+  it('没有任何候选与当前歌手一致 → 原样返回（照旧让用户选）', () => {
+    const items: MusicCandidate[] = [
+      { title: '七里香', artist: '陈淑桦' },
+      { title: '七里香', artist: '邓丽君' },
+    ]
+    expect(filterByCurrentArtist(items, '周杰伦')).toEqual(items)
+  })
+})
+
 describe('searchCandidates（MusicBrainz，桩）', () => {
   it('解析歌名+歌手，过滤空标题', async () => {
     const fetcher = async () => ({
@@ -135,5 +180,32 @@ describe('looksLikeBareMusicQuery（裸歌手/歌名判定）', () => {
   it('太长 / 太短 → false', () => {
     expect(looksLikeBareMusicQuery('a')).toBe(false)
     expect(looksLikeBareMusicQuery('周杰伦的非常好听的歌')).toBe(false)
+  })
+})
+
+describe('isArtistBrowse（按歌手浏览应列清单，不自动播放）', () => {
+  it('「歌手 + 的歌 / 歌曲 / 作品 / 音乐」→ 浏览', () => {
+    expect(isArtistBrowse('周杰伦的歌')).toBe(true)
+    expect(isArtistBrowse('播放周杰伦的歌')).toBe(true)
+    expect(isArtistBrowse('刘德华歌曲')).toBe(true)
+    expect(isArtistBrowse('邓丽君的作品')).toBe(true)
+    expect(isArtistBrowse('周杰伦的音乐')).toBe(true)
+    expect(isArtistBrowse('周杰伦唱的歌')).toBe(true)
+    expect(isArtistBrowse('来点周杰伦的歌')).toBe(true)
+  })
+
+  it('具体歌名（应靠当前歌手上下文自动选，不强制列表）→ false', () => {
+    expect(isArtistBrowse('放一首稻香')).toBe(false)
+    expect(isArtistBrowse('稻香')).toBe(false)
+    expect(isArtistBrowse('周杰伦 稻香')).toBe(false)
+  })
+
+  it('裸歌手（无泛歌曲词）→ false（走常规候选列表分支即可）', () => {
+    expect(isArtistBrowse('周杰伦')).toBe(false)
+  })
+
+  it('空 / 泛化 → false', () => {
+    expect(isArtistBrowse('歌')).toBe(false)
+    expect(isArtistBrowse('')).toBe(false)
   })
 })

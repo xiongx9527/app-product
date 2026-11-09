@@ -146,19 +146,30 @@ def check_llm(server) -> None:
     """检查 LLM 纯转发代理：启用时上游地址必须是 http(s)。
 
     代理不加载任何本地模型，也不要求本机安装 Ollama；上游可以是任意
-    OpenAI 兼容服务（含本机 Ollama 的 /v1）。
+    OpenAI 兼容服务（含本机 Ollama 的 /v1）。支持多个上游（地址池），
+    每个条目自带 protocol，因此不同上游可走不同协议。
     """
     if not server.llm_enabled():
-        line("LLM : 未启用（配置 LLM_UPSTREAM_BASE_URL 后启用纯转发代理）")
+        line("LLM : 未启用（配置 LLM_UPSTREAM_POOL 或 LLM_UPSTREAM_BASE_URL 后启用纯转发代理）")
         return
 
-    upstream = server.llm_upstream_base().strip()
-    if not upstream:
-        problem("LLM: 已启用但未配置 LLM_UPSTREAM_BASE_URL")
-        hints.append("在 voice.conf 配置 LLM_UPSTREAM_BASE_URL（OpenAI 兼容上游地址）")
+    entries = server.upstream_pool.load_pool("LLM")
+    if not entries:
+        problem("LLM: 已启用但未配置 LLM 上游地址")
+        hints.append(
+            "在 voice.conf 配置 LLM_UPSTREAM_POOL 或 LLM_UPSTREAM_BASE_URL"
+            "（OpenAI 兼容上游地址）"
+        )
         return
-    check_upstream("LLM", upstream)
-    line(f"LLM : 转发 {upstream}")
+    for e in entries:
+        check_upstream("LLM", e["base_url"])
+    if len(entries) > 1:
+        line(
+            f"LLM : 转发 {entries[0]['base_url']} 等 {len(entries)} 个上游"
+            "（健康优先 + 轮询）"
+        )
+    else:
+        line(f"LLM : 转发 {entries[0]['base_url']}")
 
 
 def local_stt_issues(server) -> list[str]:
@@ -238,6 +249,15 @@ def check_capability(
 
 
 def check_backends(server) -> None:
+    # preflight 在 server.main() 之前运行，config_store 还没被 configure；
+    # 这里临时按 voice.conf 播种一次，让地址池 / 配置读取和正式运行一致。
+    try:
+        db_path = os.path.join(server.VOICE_HOME, "voice.db")
+        server.config_store.configure(db_path, None, None)
+        server.config_store.instance().seed_from_conf(server._file_values())
+    except Exception:  # noqa: BLE001
+        pass
+
     config_path = getattr(server, "_config_path", "")
     exists = os.path.isfile(config_path)
     line(
@@ -249,8 +269,15 @@ def check_backends(server) -> None:
     if mode:
         line(f"安装  : {mode}")
 
-    stt_upstream = server.upstream_base("STT").strip()
-    tts_upstream = server.upstream_base("TTS").strip()
+    # 上游地址池（多地址 + 账号池）；取第一个用于能力检查展示，并逐个校验格式。
+    stt_entries = server.upstream_pool.load_pool("STT")
+    tts_entries = server.upstream_pool.load_pool("TTS")
+    for e in stt_entries:
+        check_upstream("STT", e["base_url"])
+    for e in tts_entries:
+        check_upstream("TTS", e["base_url"])
+    stt_upstream = stt_entries[0]["base_url"] if stt_entries else ""
+    tts_upstream = tts_entries[0]["base_url"] if tts_entries else ""
 
     check_capability(
         "STT",
@@ -275,8 +302,8 @@ def check_backends(server) -> None:
     if problems and not stt_upstream and not tts_upstream:
         hints.append(
             "如果不想在本机安装模型 / ffmpeg，可在 voice.conf 配置 "
-            "VOICE_UPSTREAM_BASE_URL（STT/TTS）和 LLM_UPSTREAM_BASE_URL（LLM）"
-            "后走代理模式。"
+            "VOICE_UPSTREAM_BASE_URL（STT/TTS）和 LLM_UPSTREAM_POOL / "
+            "LLM_UPSTREAM_BASE_URL（LLM）后走代理模式。"
         )
 
 

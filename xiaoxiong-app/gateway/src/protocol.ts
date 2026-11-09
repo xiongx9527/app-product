@@ -42,6 +42,8 @@ export type ClientMessage =
   | { type: 'session.playback_done' }
   /** 客户端点「换一首 / 换个风格」：网关用当前音乐源解析下一首并下发 media.play */
   | { type: 'music.next'; genre?: string }
+  /** 客户端拖动音量滑块后回执当前音量（0–1），网关据此保持音量状态同步，供「调大/调小」相对增减用 */
+  | { type: 'music.volume'; volume: number }
 
 /** 服务端 → 客户端（文本控制帧），与契约一致 */
 export type ServerEvent =
@@ -72,9 +74,15 @@ export type ServerEvent =
   | { type: 'media.resume' }
   /** 让客户端展示某首歌的歌词 */
   | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
+  /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
+  | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置（位置/天气类工具被调用但会话尚无位置）时才下发，
    * 客户端据此请求定位授权并上报 session.location；不在建连时主动要位置，避免冷启动弹窗。 */
   | { type: 'client.location.request' }
+  /** 让客户端播一条「能力不可用」提示音（网关侧 /static/cues/<cue>.mp3）：
+   *  ASR/TTS/LLM 未就绪时，网关在本帧前无法用语音播报，改用预录提示音告知用户。
+   *  只需传提示音名，客户端按名拉取播放，不下发具体文案（提示音已含人声）。 */
+  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' }
   | { type: 'error'; code: ServerErrorCode; message: string }
 
 /** 契约定义的错误码 */

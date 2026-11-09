@@ -3,6 +3,7 @@ import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
 import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
+import type { GatewayConfig } from '../config'
 import { createMusicSource, type MusicSource } from './music'
 import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest } from './music/types'
 import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
@@ -12,16 +13,21 @@ import {
   candidateQuery,
   parseSelection,
   looksLikeBareMusicQuery,
+  contentWords,
+  filterByCurrentArtist,
+  isArtistBrowse,
   type MusicCandidate,
   type CandidateFetcher,
 } from './music/musicCandidates'
-import { detectMusicCommand, parseLoopCount } from './musicControl'
+import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './musicControl'
+import { detectVolumeCommand } from './volumeControl'
 import { detectMemoryCommand } from './memoryControl'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
+import { buildHealth } from './health'
 
 /** 播报期间最多排几句用户插话，超出直接拒收。 */
 const MAX_QUEUE = 3
@@ -57,6 +63,14 @@ export interface VoiceSessionDeps {
   onEnded?: () => void
   /** 懒加载定位的等待超时（毫秒）：客户端取不到/拒绝/离线时兑现为 null；测试可压短 */
   locationRequestTimeoutMs?: number
+  /** 网关运行配置：用于会话建连时一次性探测 ASR/TTS/LLM 就绪状态，未就绪则下发提示音。
+   *  注入了 capabilityProbe 时可省略（测试用）；生产路径始终传入。 */
+  config?: GatewayConfig
+  /**
+   * 能力就绪探测（返回各能力 reachable 与否）；缺省走网关 /api/health 同一套带缓存逻辑。
+   * 测试可注入桩，避免真打 ASR/TTS/LLM 服务、又能精确控制「哪些能力不可用」。
+   */
+  capabilityProbe?: () => Promise<import('./health').HealthReport | null>
 }
 
 /**
@@ -97,9 +111,16 @@ export class VoiceSessionService {
   /** 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），随会话构建 */
   private musicSource: MusicSource | undefined = undefined
   /** 最近一次下发的曲目（url/title/channel），供「循环播放」指令复用同一首重播 */
-  private lastTrack: { url: string; title: string; channel?: string } | null = null
+  private lastTrack: { url: string; title: string; channel?: string; artist?: string } | null = null
+  /** 当前是否正在播放（播放/切歌/循环置真，停止置假）。决定「点歌按当前歌手优先」是否生效：
+   *  仅当用户正处于某个歌手的播放会话时才自动选同歌手版本；已停止则老老实实列选项让用户选。 */
+  private musicActive = false
+  /** 音乐播放音量（0–1）：网关认定的权威值，随客户端滑块回执同步；语音「调大/调小」相对增减用。 */
+  private musicVolume = 0.5
   /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
   private pendingCandidates: { items: MusicCandidate[]; query: string } | null = null
+  /** 上一轮「换一首」没找到同类型的歌，正等用户确认是否换其它风格（不直接乱播） */
+  private pendingNextFallback = false
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
@@ -169,6 +190,9 @@ export class VoiceSessionService {
           ? this.deps.musicSourceFactory()
           : createMusicSource()
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode)
+        // ASR/TTS/LLM 未就绪时，网关没法用语音播报，改为下发预录提示音，让用户「听得见地」知道；
+        // 探测有 15s 缓存，连重连/重唤醒都便宜，不每次真打服务。不下发具体文案（提示音已含人声）。
+        void this.announceCapabilityProblems()
         break
       case 'session.location':
         // 连接后或位置变化时刷新最新位置，不影响其它会话状态；
@@ -194,27 +218,101 @@ export class VoiceSessionService {
         // 不必走一轮 ASR→LLM（按钮已经是明确的指令）。
         void this.nextMusic(msg.genre)
         break
+      case 'music.volume':
+        // 客户端拖动滑块回执当前音量：保持网关音量状态同步，保证后续的「调大/调小」相对增减准确。
+        if (Number.isFinite(Number(msg.volume))) {
+          this.musicVolume = Math.min(1, Math.max(0, Number(msg.volume)))
+        }
+        break
     }
   }
 
-  /** 用当前音乐源解析下一首并下发 media.play；无音乐源或解析失败则静默忽略。 */
+  /**
+   * 用当前音乐源解析「下一首」：优先用显式关键词，否则退回当前歌手重新搜该歌手的其它作品。
+   * 若拿到的仍与当前同名（同一首的不同视频），再换一次，尽量给出不同歌名，
+   * 避免「换一首却还是同一首歌、像没反应」。解析失败返回 null，由调用方决定提示或静默。
+   */
+  private async nextTrack(query?: string): Promise<{ url: string; title: string; channel?: string } | null> {
+    const source = this.musicSource
+    if (!source) return null
+    try {
+      let track = source.next ? await source.next(query) : await source.resolve(query)
+      // 换一首若仍拿到与当前同名的那一首（同一首的不同视频），再换一次，尽量给出不同歌名
+      if (this.lastTrack && track?.title === this.lastTrack.title) {
+        const alt = source.next ? await source.next(query) : await source.resolve(query)
+        if (alt?.url) track = alt
+      }
+      return track?.url ? track : null
+    } catch {
+      return null
+    }
+  }
+
+  /** 换一首实在找不到同类型时，可退回的「其它风格」池（风格电台，与当前歌手无关也能播）。 */
+  private static readonly FALLBACK_GENRES = ['轻音乐', '流行', '电子', '爵士', '民谣', '古典']
+
+  /**
+   * 换一首找不到同类型的其它歌时：从风格池里随机挑一个，直接播一首不同风格的歌并口播一句。
+   * 兜底保证「换一首」永远有去处（不静默、也不追问），用户想指定仍可说「放首XX」。
+   */
+  private async playOtherType(): Promise<void> {
+    const source = this.musicSource
+    if (!source) return
+    const genre =
+      VoiceSessionService.FALLBACK_GENRES[
+        Math.floor(Math.random() * VoiceSessionService.FALLBACK_GENRES.length)
+      ]
+    try {
+      const track = source.resolve ? await source.resolve(genre) : null
+      if (!track?.url) return
+      // 退回风格电台后不再绑死原歌手，后续「换一首」走电台换台而非继续找原歌手
+      await this.playTrack(track, messages(this.lang).music.switchedOther())
+      this.musicActive = true
+    } catch {
+      // 实在不行就静默，不再递归追问
+    }
+  }
+
+  /** 用户上一句「换一首」没找到同类型、正在等确认：这句是不是同意换其它风格？ */
+  private shouldAcceptOtherType(text: string): boolean {
+    // 再次说「换一首 / 来首其它的」这类没指定新偏好的换歌指令 = 同意换其它；
+    // 「换首刘德华的」带了具体偏好，应交回正常流程去放刘德华，不强行换风格。
+    if (detectMusicCommand(text) === 'next') return !nextPreference(text)
+    const t = (text ?? '').trim()
+    return /^(好|可以|行|嗯|要|就换|好的|好的呀|没问题|同意|是|对|换成|换一个|再来一个|别的|其它|其他|换首其它的|来首其它的|来个其它的)$/.test(
+      t
+    )
+  }
+
+  /** 客户端点「换一首 / 换个风格」：解析下一首并下发 media.play；无音乐源或解析失败则静默忽略。 */
   private async nextMusic(genre?: string): Promise<void> {
     const source = this.musicSource
     if (!source) return
-    try {
-      const track = source.next ? await source.next(genre) : await source.resolve(genre)
-      if (!track?.url) return
-      this.lastTrack = { url: track.url, title: track.title, channel: track.channel }
-      this.deps.send({
-        type: 'media.play',
-        url: track.url,
-        title: track.title,
-        channel: track.channel,
-      })
-    } catch {
-      // 解析失败（SomaFM/B 站都搜不到）：静默忽略，客户端保留上一首而不打断，
-      // 由上层（工具/口播）统一告知用户「没找到这首歌」。
+    // 没指定新风格/歌手时，用当前歌手重新搜该歌手的其它作品，而不是拿「歌手+歌名」原关键词
+    // 再搜——后者常只命中同一首（不同视频但同名），用户看到歌名没变会以为没换。
+    const query = genre || this.lastTrack?.artist || undefined
+    const track = await this.nextTrack(query)
+    if (!track) {
+      // 换一首实在找不到同类型的其它歌（如动画片主题曲只有一首）：不直接乱播、也不静默无响应，
+      // 反问用户、把选择权交给用户——用助手正常语音问要不要换其它风格（或直接点名想听的）。
+      this.pendingNextFallback = true
+      await this.speakReply(m.offerOtherType())
+      return
     }
+    // 换一首时歌手通常不变（同歌手下一首），沿用上一首歌手，保持点歌上下文
+    this.lastTrack = {
+      url: track.url,
+      title: track.title,
+      channel: track.channel,
+      artist: this.lastTrack?.artist,
+    }
+    this.musicActive = true
+    this.deps.send({
+      type: 'media.play',
+      url: track.url,
+      title: track.title,
+      channel: track.channel,
+    })
   }
 
   /**
@@ -226,10 +324,12 @@ export class VoiceSessionService {
   private async playTrack(
     track: { url: string; title: string; channel?: string },
     confirm: string,
-    loop?: number
+    loop?: number,
+    artist?: string
   ): Promise<void> {
-    // 记下当前曲目，供「循环播放」指令复用（不必重新检索就能把同一首再播 N 遍）。
-    this.lastTrack = { url: track.url, title: track.title, channel: track.channel }
+    // 记下当前曲目，供「循环播放」指令复用（不必重新检索就能把同一首再播 N 遍）；
+    // 同时记下歌手，供后续「点一首歌」时按当前歌手优先（避免正在听周杰伦却让我选）。
+    this.lastTrack = { url: track.url, title: track.title, channel: track.channel, artist }
     this.deps.send({
       type: 'media.play',
       url: track.url,
@@ -251,13 +351,24 @@ export class VoiceSessionService {
    * 多于 1 首 → 口播编号列表并挂起待选；正好 1 首且非强制列表 → 直接播；0 首 → 交回调用方。
    * 返回 true 表示本次已处理（列表已给或已播），调用方不必再 resolve。
    */
-  private async offerCandidates(text: string, forceList = false): Promise<boolean> {
+  /**
+   * 点歌信息不足时给候选列表让用户选。
+   * @param forceList 即使检索到 1 首也只列不给播（推荐意图 / 按歌手浏览，绝不替用户直接播放）
+   * @param recommend 列表话术用「为你推荐」而非「找到几首」（推荐意图时用）
+   * @param allowContext 是否允许「按当前歌手优先」自动选同歌手版本；带「再」的请求关掉它
+   */
+  private async offerCandidates(
+    text: string,
+    forceList = false,
+    recommend = false,
+    allowContext = true
+  ): Promise<boolean> {
     const genre = genreToKeyword(text)
     if (!needsCandidateList(genre) && !forceList) return false
     const query = candidateQuery(genre)
     const m = messages(this.lang).music
     if (!query) {
-      // 推荐但没具体歌手/风格：引导用户补充，绝不自动播放
+      // 推荐/浏览但没具体歌手/风格：引导用户补充，绝不自动播放
       if (forceList) {
         await this.speakReply(m.recommendPrompt())
         return true
@@ -276,10 +387,22 @@ export class VoiceSessionService {
       await this.playChosen(items[0], query)
       return true
     }
-    this.pendingCandidates = { items, query }
+    // 多候选：仅当正处于某个歌手的播放会话（musicActive）时，才优先挑同歌手的版本，
+    // 避免「正在听周杰伦、点七里香却让我选」；已停止则老老实实列选项。
+    // 仅当列表被「真正收窄」（过滤掉非同歌手候选）才直接播第一首；否则（含全部同歌手、
+    // 或都没匹配）照旧列出来让用户选，不替用户做主。
+    // 强制列表（推荐/按歌手浏览）一律不收窄、不自动播放，直接列出来。
+    const ranked = !forceList
+      ? filterByCurrentArtist(items, allowContext && this.musicActive ? this.lastTrack?.artist : undefined)
+      : items
+    if (ranked.length < items.length) {
+      await this.playChosen(ranked[0], query)
+      return true
+    }
+    this.pendingCandidates = { items: ranked, query }
     const labels = items.map((c) => (c.artist ? `${c.title}，${c.artist}` : c.title))
     await this.speakReply(
-      (forceList ? m.recommend(labels) : m.candidates(labels)) + m.chooseHint()
+      (recommend ? m.recommend(labels) : m.candidates(labels)) + m.chooseHint()
     )
     return true
   }
@@ -296,7 +419,7 @@ export class VoiceSessionService {
     try {
       const track = await source.resolve(keyword)
       if (!track?.url) throw new Error('no track')
-      await this.playTrack(track, m.playing(track.title))
+      await this.playTrack(track, m.playing(track.title), undefined, chosen.artist)
     } catch {
       await this.speakReply(m.notFound(isSpokenContentRequest(keyword)))
     }
@@ -331,26 +454,40 @@ export class VoiceSessionService {
       switch (action) {
         case 'recommend': {
           // 推荐：只给候选列表绝不自动播放，即使检索到 1 首也只列出来让用户选
-          await this.offerCandidates(text, true)
+          await this.offerCandidates(text, true, true)
           break
         }
         case 'play': {
-          // 只说「周杰伦」「稻香」「周杰伦的歌」：先给候选列表让用户选
-          if (await this.offerCandidates(text)) break
+          // 只说「周杰伦」「稻香」：先给候选列表让用户选。
+          // 「周杰伦的歌 / 刘德华歌曲」是按歌手浏览，强制列清单、绝不自动播放；
+          // 「放一首稻香」靠当前歌手上下文自动选同歌手版本，不强制列表。
+          // 带「再」的请求（再放稻香…）关掉上下文，不当成「还是当前歌手的歌」直接播。
+          if (await this.offerCandidates(text, isArtistBrowse(text), false, !hasAgainMarker(text))) break
           const track = await source.resolve(genre)
           if (!track?.url) throw new Error('no track')
           // 「循环 N 遍」可作为点歌后缀（如「放稻香循环3遍」），一并下发给客户端循环
           const loop = parseLoopCount(text)
-          await this.playTrack(track, m.playing(track.title), loop > 1 ? loop : undefined)
+          // 关键词带了歌手（如「周杰伦 稻香」）→ 记下歌手，供后续点歌按当前歌手优先
+          const words = contentWords(genre)
+          const artistGuess = words.length >= 2 ? words[0] : this.lastTrack?.artist
+          await this.playTrack(track, m.playing(track.title), loop > 1 ? loop : undefined, artistGuess)
+          this.musicActive = true
           break
         }
         case 'next': {
-          // 没指定新歌手/风格（纯粹「换一首」）：传 undefined，让音乐源沿用当前上下文，
-          // 放同歌手/同风格的下一首；指定了才用新关键词。
-          const req = nextPreference(text)
-          const track = source.next ? await source.next(req) : await source.resolve(req)
-          if (!track?.url) throw new Error('no track')
+          // 没指定新歌手/风格（纯粹「换一首」）：用当前歌手重新搜该歌手的其它作品，
+          // 给出不同歌名的另一首，而不是拿「歌手+歌名」原关键词再搜（后者常只命中同名的同一首）；
+          // 明确说了新歌手/风格（「换首刘德华的」）才切到新偏好。
+          const req = nextPreference(text) || this.lastTrack?.artist || undefined
+          const track = await this.nextTrack(req)
+          if (!track) {
+            // 没找到同类型的其它歌：把选择权交给用户——问要不要换其它风格（或直接点名），由用户确认
+            this.pendingNextFallback = true
+            await this.speakReply(m.offerOtherType())
+            break
+          }
           await this.playTrack(track, m.switched(track.title))
+          this.musicActive = true
           break
         }
         case 'loop': {
@@ -362,6 +499,7 @@ export class VoiceSessionService {
           }
           const loop = parseLoopCount(text)
           await this.playTrack(this.lastTrack, m.looping(loop), loop > 1 ? loop : undefined)
+          this.musicActive = true
           break
         }
         case 'pause':
@@ -374,12 +512,51 @@ export class VoiceSessionService {
           break
         case 'stop':
           this.deps.send({ type: 'media.stop' })
+          this.musicActive = false
           await this.speakReply(m.stopped())
           break
       }
     } catch {
       await this.speakReply(m.notFound(isSpokenContentRequest(text)))
     }
+  }
+
+  /**
+   * 处理音量控制指令（绕开 LLM）：set 设到绝对值、increase/decrease 在当前值上 ±10%，
+   * 下发 media.volume 让客户端真正调音量，并口播确认（含当前百分比）。
+   * 已到最大/最小时再让调大/调小，提示「已经最大/最小了」而非静默或重复确认。
+   * 音量状态由网关持有，随客户端滑块回执（music.volume）同步，保证相对增减准确。
+   */
+  private async runVolumeCommand(cmd: NonNullable<ReturnType<typeof detectVolumeCommand>>): Promise<void> {
+    const m = messages(this.lang).music
+    const step = 0.1
+    if (cmd.kind === 'increase') {
+      if (this.musicVolume >= 1 - 1e-6) {
+        await this.speakReply(m.volumeMax())
+        return
+      }
+      const next = Math.min(1, this.musicVolume + step)
+      this.musicVolume = next
+      this.deps.send({ type: 'media.volume', volume: next })
+      await this.speakReply(m.volumeUp(Math.round(next * 100)))
+      return
+    }
+    if (cmd.kind === 'decrease') {
+      if (this.musicVolume <= 1e-6) {
+        await this.speakReply(m.volumeMin())
+        return
+      }
+      const next = Math.max(0, this.musicVolume - step)
+      this.musicVolume = next
+      this.deps.send({ type: 'media.volume', volume: next })
+      await this.speakReply(m.volumeDown(Math.round(next * 100)))
+      return
+    }
+    // set：设到绝对值（超出范围收敛到 0–1）
+    const next = Math.min(1, Math.max(0, cmd.value))
+    this.musicVolume = next
+    this.deps.send({ type: 'media.volume', volume: next })
+    await this.speakReply(m.volumeSet(Math.round(next * 100)))
   }
 
   /** 处理「忘了XX / 清空记忆」直接指令：落地删除并口播确认，不进 LLM。 */
@@ -536,6 +713,15 @@ export class VoiceSessionService {
     if (memCmd && !this.playbackPending && !this.processing && this.deviceId) {
       this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
       await this.runMemoryCommand(memCmd)
+      return
+    }
+
+    // 音量控制指令（音量 30% / 调大 / 调小）直接处理，不进 LLM，
+    // 避免模型幻觉「说调音量却没调」。仅在空闲（未在播报、未在应答）时拦截。
+    const volCmd = detectVolumeCommand(text)
+    if (volCmd && !this.playbackPending && !this.processing) {
+      this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+      await this.runVolumeCommand(volCmd)
       return
     }
 
@@ -748,6 +934,33 @@ export class VoiceSessionService {
       this.echoUntil = Date.now() + 1200
       this.deps.sendAudio(frame)
     }
+  }
+
+  /**
+   * 会话建连时一次性探测 ASR/TTS/LLM 就绪状态；任一未就绪就下发预录提示音，
+   * 让用户「听得见地」知道能力缺失（此时网关还没法用语音播报，只能靠提示音）。
+   * 探测走 /api/health 的同一套带缓存逻辑（15s 缓存），重连/重唤醒都便宜，不每次真打服务。
+   * 与客户端 health watch 互补：watch 负责「运行中 ok→down」的瞬时变化，这里负责
+   * 「建连那一刻就已不可用」的兜底——这种情形 watch 的 prev 为空、不会触发，容易静默失效。
+   */
+  private async announceCapabilityProblems(): Promise<void> {
+    let report: import('./health').HealthReport | null = null
+    try {
+      report = this.deps.capabilityProbe
+        ? await this.deps.capabilityProbe()
+        : this.deps.config
+          ? await buildHealth(this.deps.config)
+          : null
+    } catch {
+      return
+    }
+    if (!report) return
+    const down: Array<'asr-down' | 'tts-down' | 'llm-down' | 'network-down'> = []
+    if (!report.asr.reachable) down.push('asr-down')
+    if (!report.tts.reachable) down.push('tts-down')
+    if (!report.llm.reachable) down.push('llm-down')
+    if (!report.network.reachable) down.push('network-down')
+    for (const cue of down) this.deps.send({ type: 'client.cue', cue })
   }
 
   private async start(

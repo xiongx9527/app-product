@@ -38,7 +38,20 @@ START_SCRIPT="$SCRIPT_DIR/start-voice.sh"
 VENV_PY="$VOICE_HOME/venv/bin/python"
 CHECKER="$SCRIPT_DIR/voice/preflight.py"
 PID_FILE="$VOICE_HOME/voice.pid"
+# 日志路径默认 $VOICE_HOME/voice.log；voice.conf 写 VOICE_LOG_FILE 可改（支持 ~ 与 $VOICE_HOME）。
 LOG_FILE="$VOICE_HOME/voice.log"
+if [ -n "${VOICE_CONFIG:-}" ] && [ -f "$VOICE_CONFIG" ]; then
+  _conf_line=$(grep -m1 '^[[:space:]]*VOICE_LOG_FILE[[:space:]]*=' "$VOICE_CONFIG" 2>/dev/null || true)
+elif [ -f "$VOICE_HOME/voice.conf" ]; then
+  _conf_line=$(grep -m1 '^[[:space:]]*VOICE_LOG_FILE[[:space:]]*=' "$VOICE_HOME/voice.conf" 2>/dev/null || true)
+else
+  _conf_line=""
+fi
+if [ -n "$_conf_line" ]; then
+  _lf=$(printf '%s' "$_conf_line" | cut -d= -f2- | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^["'"'"']//; s/["'"'"']$//' | sed "s|\$VOICE_HOME|$VOICE_HOME|g; s|~|$HOME|g")
+  [ -n "$_lf" ] && LOG_FILE="$_lf"
+fi
+unset _conf_line _lf
 DEFAULT_TAIL=80
 
 usage() {
