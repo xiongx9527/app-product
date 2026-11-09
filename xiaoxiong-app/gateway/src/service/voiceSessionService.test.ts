@@ -416,6 +416,92 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect((plays2[1] as { title: string }).title).not.toContain('周杰伦')
   })
 
+  /** 桩源：模拟「某类型只有一首」（如动画片主题曲），换一首始终换不出不同歌。 */
+  function singleTrackSource(): MusicSource {
+    return {
+      // 点歌与换一首都只返回这一首（同名），触发「换不出不同歌」
+      resolve: async (g) =>
+        g && /轻音乐|流行|电子|爵士|民谣|古典/.test(g)
+          ? { url: 'u', title: `其它风格:${g}`, channel: 'bilibili' }
+          : { url: 'u', title: '猪八戒主题曲', channel: 'bilibili' },
+      next: async () => ({ url: 'u', title: '猪八戒主题曲', channel: 'bilibili' }),
+    }
+  }
+
+  it('换一首找不到同类型：反问用户让用户决定（不直接乱播、也不静默），用户说「好」则换其它风格', async () => {
+    // 用户反馈：听动画片主题曲（只有一首）说「换一首」毫无反应。
+    // 修复：换不出不同歌时不静默、不乱播，而是反问用户要不要换其它风格；
+    // 用户确认（好/换其他的）才真的换一首其它风格并口播。
+    const h = createHarness({
+      finalizeTexts: ['播放天上掉下个猪八戒的主题曲', '换一首', '好'],
+      musicSourceFactory: singleTrackSource,
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(20)
+
+    // 第一首已播
+    let plays = h.events.filter((e) => e.type === 'media.play')
+    expect(plays).toHaveLength(1)
+    expect((plays[0] as { title: string }).title).toBe('猪八戒主题曲')
+
+    // 换一首：换不出不同歌 → 反问用户，不下发新的 media.play、不进 LLM
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(20)
+    plays = h.events.filter((e) => e.type === 'media.play')
+    expect(plays).toHaveLength(1) // 仍只有第一首，没有乱播
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('要我直接换首其它风格的，还是你想听点别的')
+
+    // 用户说「好」：接受换其它风格 → 真的换一首其它风格并口播
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(20)
+    plays = h.events.filter((e) => e.type === 'media.play')
+    expect(plays).toHaveLength(2)
+    expect((plays[1] as { title: string }).title).toContain('其它风格') // 换到了不同的风格
+    expect((plays[1] as { title: string }).title).not.toBe('猪八戒主题曲')
+    expect(texts(h)).toContain('给你换首其它风格的')
+  })
+
+  it('换一首找不到同类型：用户点名想听的（放首刘德华的忘情水）直接按名字播，不强行换风格', async () => {
+    // 用户没说「换其他的」，而是指名了一首想听的歌：不应被强行换成风格电台，
+    // 而是照常走点歌流程播用户点名的那首。
+    const h = createHarness({
+      finalizeTexts: ['播放天上掉下个猪八戒的主题曲', '换一首', '放首刘德华的忘情水'],
+      musicSourceFactory: () => ({
+        resolve: async (g) =>
+          g && /刘德华/.test(g)
+            ? { url: 'u', title: '刘德华 忘情水', channel: 'bilibili' }
+            : { url: 'u', title: '猪八戒主题曲', channel: 'bilibili' },
+        next: async () => ({ url: 'u', title: '猪八戒主题曲', channel: 'bilibili' }),
+      }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(20)
+
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h) // 换一首 → 反问
+    await sleep(20)
+    let plays = h.events.filter((e) => e.type === 'media.play')
+    expect(plays).toHaveLength(1)
+    expect(h.agentCalls()).toBe(0)
+
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h) // 放首刘德华的忘情水 → 点名
+    await sleep(20)
+    plays = h.events.filter((e) => e.type === 'media.play')
+    expect(plays).toHaveLength(2)
+    expect((plays[1] as { title: string }).title).toContain('刘德华') // 播的是点名的，不是强行换风格
+    expect(texts(h)).not.toContain('给你换首其它风格的')
+  })
+
   it('循环播放N遍：复用当前曲下发带 loop 的 media.play，不重新检索、不进 LLM', async () => {
     // 用户要求：播放完继续播放、循环播放（几遍）。验证「循环播放3遍」能复用最近一次曲目，
     // 下发 media.play 且带 loop:3，且不重新检索、不进大模型。
@@ -506,6 +592,52 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(texts(h)).toContain('没找到')
     expect(texts(h)).not.toContain('操作失败')
   })
+
+  /** 把 llm.delta 拼起来，便于断言口播文案（本 describe 未定义共享 texts，这里局部提供）。 */
+  function textsOf(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('排队回放的音乐指令走直连拦截（给候选列表），不丢给大模型自动播放', async () => {
+    // 用户在助手思考/播报期间说「播放周杰伦的歌」会被排队；排队句回放时必须走
+    // 音乐直连拦截（按歌手浏览给候选列表），而不是交给大模型由 play_music 自动播放。
+    // 这正是「周杰伦的歌 直接播放了」的根因：排队句此前绕过直连拦截、直奔 LLM。
+    const h = createHarness({
+      delayDelta: true,
+      finalizeTexts: ['你好', '播放周杰伦的歌'],
+      candidateFetcher: async () => ({
+        ok: true,
+        json: async () => ({
+          recordings: [
+            { title: '稻香', 'artist-credit': [{ name: '周杰伦' }] },
+            { title: '晴天', 'artist-credit': [{ name: '周杰伦' }] },
+            { title: '七里香', 'artist-credit': [{ name: '周杰伦' }] },
+          ],
+        }),
+      }),
+      musicSourceFactory: contextSource,
+    })
+    await startDialog(h.service)
+    await speakUtterance(h) // 「你好」→ 进入思考（processing=true，playbackPending=false）
+    expect(h.agentCalls()).toBe(1)
+
+    await speakUtterance(h) // 「播放周杰伦的歌」在思考期到达 → 排队（不进 LLM）
+    expect(h.agentCalls()).toBe(1)
+    expect(h.events.some((e) => e.type === 'asr.queued')).toBe(true)
+
+    h.finishReply() // 思考结束并播报
+    await sleep(40)
+    h.playbackDone() // 播完回执 → 排队句被回放
+    await sleep(40)
+
+    // 排队句走直连拦截：给出候选列表（没直接播、没进 LLM）
+    expect(h.agentCalls()).toBe(1)
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(textsOf(h)).toContain('你想听第几首')
+  });
 })
 
 describe('点歌信息不足：候选列表 + 语音选择', () => {

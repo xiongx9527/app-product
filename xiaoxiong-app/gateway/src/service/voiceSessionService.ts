@@ -237,10 +237,13 @@ export class VoiceSessionService {
     if (!source) return null
     try {
       let track = source.next ? await source.next(query) : await source.resolve(query)
-      // 换一首若仍拿到与当前同名的那一首（同一首的不同视频），再换一次，尽量给出不同歌名
+      // 换一首若仍拿到与当前同名的那一首（同一首的不同视频 / 该歌手/类型只有这一首），
+      // 再换一次，尽量给出不同歌名。若第二次仍是同名（或没结果），说明实在换不出不同歌
+      // —— 返回 null 让调用方去问用户要不要换其它风格，而不是把同名歌重放一遍（像没反应）。
       if (this.lastTrack && track?.title === this.lastTrack.title) {
         const alt = source.next ? await source.next(query) : await source.resolve(query)
-        if (alt?.url) track = alt
+        if (!alt?.url || alt.title === this.lastTrack.title) return null
+        track = alt
       }
       return track?.url ? track : null
     } catch {
@@ -288,6 +291,7 @@ export class VoiceSessionService {
   private async nextMusic(genre?: string): Promise<void> {
     const source = this.musicSource
     if (!source) return
+    const m = messages(this.lang).music
     // 没指定新风格/歌手时，用当前歌手重新搜该歌手的其它作品，而不是拿「歌手+歌名」原关键词
     // 再搜——后者常只命中同一首（不同视频但同名），用户看到歌名没变会以为没换。
     const query = genre || this.lastTrack?.artist || undefined
@@ -522,6 +526,37 @@ export class VoiceSessionService {
   }
 
   /**
+   * 音乐/音量/记忆等「意图明确」的指令直连拦截，确定性落地、绕开大模型。
+   * 复用于两处：
+   *  - finalizeUtterance 的空闲实时定稿；
+   *  - runTurn 里排队句的回放（否则排队句会被丢给大模型，由 play_music 自动播放，
+   *    破坏「按歌手浏览要给候选列表让用户选」的直连行为）。
+   * 调用方负责保证「不在播报中」（playbackPending=false）并自行下发 asr.final；
+   * 不在此处再判 playbackPending/processing——回放时 processing 仍为 true 属正常。
+   * 返回 true 表示已被直连命令消费。
+   */
+  private async handleDirectCommand(text: string): Promise<boolean> {
+    const memCmd = detectMemoryCommand(text)
+    if (memCmd && this.deviceId) {
+      await this.runMemoryCommand(memCmd)
+      return true
+    }
+    const volCmd = detectVolumeCommand(text)
+    if (volCmd) {
+      await this.runVolumeCommand(volCmd)
+      return true
+    }
+    const action = detectMusicCommand(text)
+    const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
+      action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
+    if (effectiveAction && this.musicSource) {
+      await this.runMusicCommand(effectiveAction, text)
+      return true
+    }
+    return false
+  }
+
+  /**
    * 处理音量控制指令（绕开 LLM）：set 设到绝对值、increase/decrease 在当前值上 ±10%，
    * 下发 media.volume 让客户端真正调音量，并口播确认（含当前百分比）。
    * 已到最大/最小时再让调大/调小，提示「已经最大/最小了」而非静默或重复确认。
@@ -682,6 +717,20 @@ export class VoiceSessionService {
     // 否则会被 resemblesSpoken 当成播报回声丢掉，导致永远选不中。
     if (this.pendingCandidates && await this.handleCandidateSelection(text)) return
 
+    // 上一轮「换一首」没找到同类型的其它歌，正等用户确认是否换其它风格：
+    // 把决定权交还给用户。这句优先判定为「接受换其它 / 点名想听什么」。
+    if (this.pendingNextFallback) {
+      this.pendingNextFallback = false
+      // 用户同意换其它风格（好/换其他的/来首其它的…）→ 直接播一首不同风格的并口播一句。
+      if (this.shouldAcceptOtherType(text)) {
+        this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+        await this.playOtherType()
+        return
+      }
+      // 用户没说「换其它的」：可能是点名想听的（放首XX / 换首刘德华的），或无关闲聊。
+      // 不消费这句、也不替用户做主——清掉待确认标记后照常走下面的音乐/LLM 分支处理。
+    }
+
     // 播报（TTS）进行中：不放行成新轮次，也不排队插话——其它声音一律忽略。
     // 但保留唤醒词识别：把识别结果回传客户端做「小熊小熊」比对，
     // 只有命中唤醒词才允许打断，否则播报完整播完。
@@ -706,43 +755,9 @@ export class VoiceSessionService {
       return
     }
 
-    // 记忆直连指令（忘了XX / 清空记忆）在空闲时优先拦截，确定性落地，不进 LLM。
-    // 与音乐直连同理：意图明确，直接forget/clear 并口播确认，避免模型幻觉「说忘了却没忘」。
-    // 必须在音乐/LLM 分支之前，且同样只在空闲（未播报、未应答）时拦截。
-    const memCmd = detectMemoryCommand(text)
-    if (memCmd && !this.playbackPending && !this.processing && this.deviceId) {
-      this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-      await this.runMemoryCommand(memCmd)
-      return
-    }
-
-    // 音量控制指令（音量 30% / 调大 / 调小）直接处理，不进 LLM，
-    // 避免模型幻觉「说调音量却没调」。仅在空闲（未在播报、未在应答）时拦截。
-    const volCmd = detectVolumeCommand(text)
-    if (volCmd && !this.playbackPending && !this.processing) {
-      this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-      await this.runVolumeCommand(volCmd)
-      return
-    }
-
-    // 音乐控制指令（播放/换一首/暂停/继续/停止）直接处理，不进 LLM，
-    // 避免模型幻觉「说播放却没播放」。仅在空闲（未在播报、未在应答）时拦截，
-    // 否则让现有排队/打断逻辑处理。没有配置音乐源时不拦截，交给 LLM 自然应答。
-    // 没有明确播放动词、但像「只报了一个歌手/歌名」（如「周杰伦」「稻香」）时，
-    // 也按「播放」处理：先给候选列表让用户选，检索不到就直接解析播放，不劫持闲聊/指令。
-    const action = detectMusicCommand(text)
-    const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
-      action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
-    if (effectiveAction && !this.playbackPending && !this.processing && this.musicSource) {
-      // 音乐直连同样要先下发 asr.final：这是「我说」卡片的数据源，不能因为绕开
-      // LLM 就把用户说的话吞掉，否则卡片一直是空的。
-      this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-      await this.runMusicCommand(effectiveAction, text)
-      return
-    }
-
-    // 当前轮还没跑完：不打断、不作废，只把这句排进队列（不下发 asr.final，
-    // 客户端「我说」卡片保持显示当前项，排队句由 asr.queued 只标数量）
+    // 当前轮还没跑完（未播完/未在应答）：不打断、不消费，仅把这句排进队列；
+    // 排队句会在本轮播完后由 runTurn 回放，并同样走下面的直连拦截，
+    // 避免被丢给大模型由 play_music 自动播放（破坏「按歌手浏览要给候选列表让用户选」）。
     if (this.processing) {
       if (this.queue.length >= MAX_QUEUE) {
         this.deps.send({
@@ -764,7 +779,13 @@ export class VoiceSessionService {
       return
     }
 
+    // 空闲：音乐/音量/记忆等意图明确的指令直连拦截，确定性落地，绕开大模型
+    // （避免模型幻觉「说播放却没播放 / 说调音量却没调」）。没有音乐源时不拦截音乐类。
+    // 这里统一下发一次 asr.final（「我说」卡片数据源），命中命令则由拦截内部消费，
+    // 未命中则继续交给大模型正常应答。
     this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+    if (await this.handleDirectCommand(text)) return
+
     void this.runTurn(text)
   }
 
@@ -789,16 +810,20 @@ export class VoiceSessionService {
         // 先建好等待再开播：客户端可能在音频下发完之前就回执播完
         const playback = this.armPlaybackWait()
         let ttsStarted = false
+        let directHandled = false
         try {
           this.deps.data.insertCommandLog(this.deviceId, current, 'pending')
-          ttsStarted = await this.runAgent(current, turn)
+          // 排队回放的句子也要走直连拦截（音乐/音量/记忆），不能丢给大模型自动播放；
+          // 首句已由 finalizeUtterance 拦过，这里再拦一次是幂等的（非指令会返回 false）。
+          directHandled = await this.handleDirectCommand(current)
+          if (!directHandled) ttsStarted = await this.runAgent(current, turn)
         } catch (err) {
           this.sendError('LLM_ERROR', (err as Error).message)
         }
         if (this.turn !== turn || this.cancelled) break
         // 必须等这一句真正播完，才轮到下一句：否则会掐掉尾音、
         // 也会让「你说」提前跳到下一句识别内容。
-        if (ttsStarted) {
+        if (ttsStarted || directHandled) {
           this.tightenPlaybackTimeout()
           await playback
         } else this.cancelPlaybackWait()
@@ -996,6 +1021,7 @@ export class VoiceSessionService {
 
     // 全新会话：清空跨轮状态并重建 LLM
     this.pendingCandidates = null
+    this.pendingNextFallback = false
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
     // 加载该设备的长期记忆并注入系统提示（让助手「知道你的习惯」）；
     // memoryStore 同时交给工具层，供 remember/recall/forget 读写。无 deviceId 则无记忆。
@@ -1060,6 +1086,7 @@ export class VoiceSessionService {
     this.echoUntil = 0
     this.queue.length = 0
     this.pendingCandidates = null
+    this.pendingNextFallback = false
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)

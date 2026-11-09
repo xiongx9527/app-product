@@ -25,6 +25,8 @@ from typing import Any
 import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库，调用方无感
 import upstream_pool  # 上游地址池：配置变更后需要清掉池缓存（见 admin_config_save）
 import voice_db  # 本地库：配置真相源 + 事件 / 审计 + 会话（落库，跨重启一致）
+import httpx  # 探测上游连通性（/admin/api/probe）
+import llm_protocols  # 由协议名推导模型列表接口地址（prepare_models）
 
 from fastapi import Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -264,7 +266,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .who-wrap { display:flex; align-items:center; gap:12px; }
   main { max-width:920px; margin:0 auto; padding:20px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
-  .card h2 { font-size:14px; margin:0 0 12px; color:var(--mut); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .card h2 { font-size:14px; margin:0 0 12px; color:var(--mut); font-weight:600; text-transform:uppercase; letter-spacing:.04em; cursor:pointer; user-select:none; display:flex; justify-content:space-between; align-items:center; }
+  .card h2::after { content:'▾'; font-size:16px; line-height:1; color:var(--fg); opacity:.8; }
+  .card.collapsed > *:not(h2) { display:none; }
+  .card.collapsed > h2 { margin-bottom:0; }
+  .card.collapsed > h2::after { content:'▸'; }
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   button { background:var(--acc); color:#fff; border:0; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13px; }
   button.sec { background:#2a2f3a; color:var(--fg); }
@@ -292,6 +298,15 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .hint { color:var(--mut); font-size:12px; margin-top:6px; }
   pre { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:12px;
         overflow:auto; max-height:320px; font-size:12px; color:#cdd3de; white-space:pre-wrap; word-break:break-all; }
+  .think { background:#161a22; border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:6px; padding:8px 10px; font-size:12px; color:#c2c9d6; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-all; font-style:italic; }
+  table.cfg-table { width:100%; border-collapse:collapse; margin:6px 0 4px; }
+  table.cfg-table th, table.cfg-table td { border:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; font-size:12px; }
+  table.cfg-table th { background:#161a22; color:var(--mut); font-weight:600; }
+  table.cfg-table input { width:100%; box-sizing:border-box; background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:5px 7px; font-size:12px; }
+  table.cfg-table .prov-cell { background:#14171f; }
+  table.cfg-table .prov-models { color:var(--mut); font-size:11px; margin-top:4px; line-height:1.5; }
+  table.cfg-table .row-act { white-space:nowrap; }
+  table.cfg-table .mini { padding:4px 8px; font-size:12px; }
   .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; margin-right:6px; }
   .b-ok { background:#13352a; color:var(--ok); }
   .b-err { background:#3a1f24; color:var(--err); }
@@ -338,8 +353,89 @@ function renderLogin(){
   card.querySelector('#p').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
 }
 
+// ── 配置卡片（LLM / ASR / TTS / 其它配置 四个 tab，置于测试之上）──
+const CFG_TABS = {
+  llm: ['LLM_ENABLED','LLM_UPSTREAM_BASE_URL','LLM_UPSTREAM_API_KEY','LLM_UPSTREAM_MODEL','LLM_UPSTREAM_PROTOCOL','LLM_UPSTREAM_VENDOR'],
+  asr: ['VOICE_UPSTREAM_BASE_URL','VOICE_UPSTREAM_API_KEY','STT_UPSTREAM_BASE_URL','STT_UPSTREAM_API_KEY','STT_UPSTREAM_MODEL'],
+  tts: ['TTS_UPSTREAM_VOICE','TTS_UPSTREAM_MODEL','TTS_UPSTREAM_BASE_URL','TTS_UPSTREAM_API_KEY','TTS_VOICE'],
+};
+const CFG_LABEL = {
+  LLM_ENABLED:'LLM 启用（auto/on/off）', LLM_UPSTREAM_BASE_URL:'上游地址（OpenAI 兼容）', LLM_UPSTREAM_API_KEY:'API Key（留空=不修改）',
+  LLM_UPSTREAM_MODEL:'模型名', LLM_UPSTREAM_PROTOCOL:'协议（openai/ollama/...）', LLM_UPSTREAM_VENDOR:'厂商（ollama/deepseek/...）',
+  VOICE_UPSTREAM_BASE_URL:'共享上游（ASR/TTS 共用）', VOICE_UPSTREAM_API_KEY:'共享 Key（ASR/TTS 共用）',
+  STT_UPSTREAM_BASE_URL:'ASR 专属地址（留空用共享）', STT_UPSTREAM_API_KEY:'ASR 专属 Key（留空用共享）', STT_UPSTREAM_MODEL:'ASR 模型名',
+  TTS_UPSTREAM_VOICE:'默认音色', TTS_UPSTREAM_MODEL:'TTS 模型名（可选）', TTS_UPSTREAM_BASE_URL:'TTS 专属地址（留空用共享）',
+  TTS_UPSTREAM_API_KEY:'TTS 专属 Key（留空用共享）', TTS_VOICE:'TTS 兜底音色',
+};
+const CFG_KNOWN = new Set([...CFG_TABS.llm, ...CFG_TABS.asr, ...CFG_TABS.tts]);
+const isSecret = k => /API_KEY|PASSWORD|SECRET|DSN/i.test(k);
+let cfgOrig = {};
+let cfgOtherKeys = [];
+
+function buildConfigCard(){
+  const fields = (id,keys)=> keys.map(k=>{
+    if(k==='LLM_ENABLED') return `<label>${CFG_LABEL[k]}</label><select id="cfg_${k}"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select>`;
+    const secret = isSecret(k);
+    return `<label>${CFG_LABEL[k]||k}</label><input id="cfg_${k}"${secret?' type="password" placeholder="（留空则不修改）"':''} />`;
+  }).join('') + `<div class="row" style="margin-top:12px"><button id="cfgSave_${id}">保存</button><span class="hint" id="cfgStat_${id}" style="margin-left:10px"></span></div>`;
+  return el(`<div class="card"><h2>配置</h2>
+    <div class="tabs" id="cfgTabs">
+      <button class="tab active" data-ctab="llm">LLM</button>
+      <button class="tab" data-ctab="asr">ASR</button>
+      <button class="tab" data-ctab="tts">TTS</button>
+      <button class="tab" data-ctab="other">其它配置</button>
+    </div>
+    <div id="c-llm" class="cfgpane">${fields('llm',CFG_TABS.llm)}</div>
+    <div id="c-asr" class="cfgpane" hidden>${fields('asr',CFG_TABS.asr)}</div>
+    <div id="c-tts" class="cfgpane" hidden>${fields('tts',CFG_TABS.tts)}</div>
+    <div id="c-other" class="cfgpane" hidden><div id="cfgOther"></div><div class="row" style="margin-top:12px"><button id="cfgSave_other">保存</button><span class="hint" id="cfgStat_other" style="margin-left:10px"></span></div></div>
+  </div>`);
+}
+
+async function loadConfig(){
+  try{
+    const r = await fetch('/admin/api/config',{credentials:'same-origin'});
+    if(!r.ok) return;
+    cfgOrig = await r.json();
+    ['llm','asr','tts'].forEach(t=>CFG_TABS[t].forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); }));
+    const other = Object.keys(cfgOrig).filter(k=>!CFG_KNOWN.has(k));
+    cfgOtherKeys = other;
+    const body=document.getElementById('cfgOther'); if(!body) return;
+    body.innerHTML = other.map(k=>`<label>${k}</label><input id="cfg_${k}"${isSecret(k)?' type="password" placeholder="（留空则不修改）"':''} />`).join('');
+    other.forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); });
+  }catch(_){}
+}
+
+function cfgVal(k){
+  const inp=document.getElementById('cfg_'+k); if(!inp) return undefined;
+  if(inp.type==='password'){ return inp.value ? inp.value : null; }  // 空=不发送，保留原密钥
+  return inp.value;
+}
+
+function wireConfig(){
+  document.querySelectorAll('#cfgTabs .tab').forEach(t=>{
+    t.onclick=()=>{ document.querySelectorAll('#cfgTabs .tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
+      ['llm','asr','tts','other'].forEach(p=>{ const e=document.getElementById('c-'+p); if(e) e.hidden=(t.dataset.ctab!==p); }); };
+  });
+  const save = async (id,keys,statId)=>{
+    const stat=document.getElementById(statId); stat.className='hint'; stat.textContent='保存中…';
+    const patch={}; keys.forEach(k=>{ const v=cfgVal(k); if(v!==undefined && v!==null) patch[k]=v; });
+    try{
+      const r=await fetch('/admin/api/config',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ stat.className='err'; stat.textContent='失败：'+(d.detail||r.status); return; }
+      stat.className='hint'; stat.textContent='已保存'+(d.remote_push&&d.remote_push.ok?'（已同步远端）':'');
+      loadConfig();
+    }catch(e){ stat.className='err'; stat.textContent='错误：'+e.message; }
+  };
+  ['llm','asr','tts'].forEach(t=>{ const b=document.getElementById('cfgSave_'+t); if(b) b.onclick=()=>save(t,CFG_TABS[t],'cfgStat_'+t); });
+  const ob=document.getElementById('cfgSave_other'); if(ob) ob.onclick=()=>save('other',cfgOtherKeys,'cfgStat_other');
+}
+
 async function renderDashboard(){
   const app = document.getElementById('app'); app.innerHTML='';
+
+  app.appendChild(buildConfigCard());
 
   app.appendChild(el(`<div class="card"><h2>测试</h2>
     <div class="row" style="margin-bottom:12px">
@@ -369,6 +465,11 @@ async function renderDashboard(){
       <label class="chk"><input type="checkbox" id="llmStream" checked /> 流式（SSE）</label>
       <label>提示词（固定，不可编辑）</label>
       <div id="llmInput" class="fixed-prompt">请只回复 ok 两个字。</div>
+      <div id="llmThinkWrap" hidden style="margin-top:10px">
+        <div class="muted" style="margin-bottom:4px">思考过程</div>
+        <pre id="llmThink" class="think"></pre>
+      </div>
+      <div class="muted" style="margin-top:10px">回复</div>
       <pre id="llmOut" class="muted">回复将在这里流式显示。</pre>
       <div class="row" style="margin-top:12px">
         <button id="llmGo" style="flex:1">发送</button>
@@ -415,11 +516,16 @@ async function renderDashboard(){
   };
   app.querySelector('#logRefresh').onclick = loadLogs;
 
+  wireConfig(); loadConfig();
+
+  // 卡片可折叠：点击标题（配置 / 测试 / 日志）展开或收起
+  app.querySelectorAll('.card > h2').forEach(h=>{ h.onclick=()=>h.parentElement.classList.toggle('collapsed'); });
+
   // ---- 测试面板逻辑 ----
   const authHdr = ()=>{ const k=(document.getElementById('testKey').value||'').trim(); return k?{'Authorization':'Bearer '+k}:{}; };
 
-  // 标签页切换
-  const tabs = app.querySelectorAll('.tab');
+  // 标签页切换（只作用于测试卡片的 tab，配置卡片的 tab 由 wireConfig 单独处理，互不干扰）
+  const tabs = app.querySelectorAll('.tab[data-tab]');
   tabs.forEach(t=>t.onclick=()=>{
     tabs.forEach(x=>x.classList.remove('active'));
     t.classList.add('active');
@@ -519,7 +625,8 @@ async function renderDashboard(){
   let llmCtrl=null;
   document.getElementById('llmGo').onclick = async ()=>{
     const status=document.getElementById('llmStatus'), out=document.getElementById('llmOut');
-    out.textContent=''; status.textContent='请求中…'; status.className='hint';
+    const thinkWrap=document.getElementById('llmThinkWrap'), thinkEl=document.getElementById('llmThink');
+    out.textContent=''; thinkEl.textContent=''; thinkWrap.hidden=true; status.textContent='请求中…'; status.className='hint';
     llmCtrl=new AbortController();
     try{
       const model=document.getElementById('llmModel').value.trim();
@@ -535,7 +642,7 @@ async function renderDashboard(){
         body:JSON.stringify(body)});
       if(!r.ok){ status.textContent='失败 '+r.status+'：'+(await r.text()).slice(0,200); status.className='err'; return; }
       if(stream){
-        const reader=r.body.getReader(), dec=new TextDecoder(); let buf='', text='';
+        const reader=r.body.getReader(), dec=new TextDecoder(); let buf='', text='', think='';
         while(true){
           const {done,value}=await reader.read(); if(done) break;
           buf+=dec.decode(value,{stream:true});
@@ -544,12 +651,19 @@ async function renderDashboard(){
             const line=buf.slice(0,idx).trim(); buf=buf.slice(idx+1);
             if(!line.startsWith('data:')) continue;
             const data=line.slice(5).trim(); if(data==='[DONE]') break;
-            try{ const j=JSON.parse(data); const d=j.choices&&j.choices[0]&&j.choices[0].delta&&j.choices[0].delta.content; if(d){ text+=d; out.textContent=text; } }catch(_){}
+            try{
+              const j=JSON.parse(data); const d=j.choices&&j.choices[0]&&j.choices[0].delta; if(!d) continue;
+              if(d.reasoning_content){ think+=d.reasoning_content; thinkEl.textContent=think; thinkWrap.hidden=false; }
+              if(d.content){ text+=d.content; out.textContent=text; }
+            }catch(_){}
           }
         }
       } else {
         const d=await r.json();
-        const text=(d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content)||JSON.stringify(d);
+        const ch=(d.choices&&d.choices[0]&&d.choices[0].message)||{};
+        const think=ch.reasoning_content||'';
+        const text=ch.content||JSON.stringify(d);
+        if(think){ thinkEl.textContent=think; thinkWrap.hidden=false; }
         out.textContent=text;
       }
       status.textContent='完成'; status.className='hint';
@@ -775,3 +889,59 @@ def register_admin_routes(app) -> None:
             "push": push,
             "remote": store.status()["remote"],
         }
+
+    @app.get("/admin/api/llm-pool", dependencies=[Depends(require_admin)])
+    def admin_llm_pool():
+        """LLM 上游按提供商分组返回：每组含厂商、协议、去重模型列表、账号清单（地址/Key）。
+        供配置页表格渲染（提供商上下合并、模型映射）使用。"""
+        entries = upstream_pool.load_pool("LLM")
+        groups: dict[str, Any] = {}
+        for e in entries:
+            v = (e.get("vendor") or e.get("protocol") or "unknown")
+            g = groups.setdefault(v, {"vendor": v, "protocol": e.get("protocol") or "", "models": set(), "accounts": []})
+            m = e.get("model")
+            if m:
+                g["models"].add(m)
+            g["accounts"].append({"base_url": e.get("base_url", ""), "api_key": e.get("api_key", "")})
+        out = [
+            {"vendor": g["vendor"], "protocol": g["protocol"], "models": sorted(g["models"]), "accounts": g["accounts"]}
+            for g in groups.values()
+        ]
+        return {"groups": out}
+
+    @app.post("/admin/api/probe", dependencies=[Depends(require_admin)])
+    async def admin_probe(request: Request):
+        """探测任意上游连通性：给定地址/Key/协议，拉一次模型列表验证可用；支持未保存的配置。"""
+        try:
+            b = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="请求体不是合法 JSON")
+        if not isinstance(b, dict):
+            raise HTTPException(status_code=400, detail="请求体必须是对象")
+        base = (b.get("base_url") or "").strip()
+        key = (b.get("api_key") or "").strip()
+        protocol = (b.get("protocol") or "openai").strip()
+        if not base:
+            return {"ok": False, "error": "缺少上游地址"}
+        try:
+            url, headers = llm_protocols.prepare_models(protocol, base, key)
+        except Exception:
+            url = base.rstrip("/") + "/v1/models"
+            headers = {"Authorization": f"Bearer {key}"} if key else {}
+        try:
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                r = await client.get(url, headers=headers)
+            ok = r.status_code < 400
+            names: list[str] = []
+            try:
+                d = r.json()
+                if isinstance(d, dict):
+                    if isinstance(d.get("data"), list):
+                        names = [m.get("id", "") for m in d["data"][:20]]
+                    elif isinstance(d.get("models"), list):
+                        names = [m.get("name", "") for m in d["models"][:20]]
+            except Exception:
+                pass
+            return {"ok": ok, "status": r.status_code, "models": [n for n in names if n][:20]}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
