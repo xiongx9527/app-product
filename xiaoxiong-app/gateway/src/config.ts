@@ -1,15 +1,15 @@
 /** 网关运行配置，全部可由环境变量覆盖。 */
 
 /**
- * LLM 能力提供方：stub 为离线测试实现；openai 兼容端点（本地 AI 服务的 /llm/v1
- * 纯转发代理、本地 Ollama 的 /v1 也在内）、dashscope、deepseek 等为真实厂商。
- * ollama 走原生 /api/chat，需把 baseUrl 直接指向 Ollama；只有它能保留 thinking。
+ * 能力提供方：只有「内置」与「DashScope」两种来源，由客户端设置页选择（session.start.voice）。
+ * 网关据此决定走哪套传输：内置走本地 AI 服务的 OpenAI 兼容层（/llm/v1、/voice），
+ * DashScope 走其 OpenAI 兼容 /compatible-mode 与官方 SDK。stub 仅离线测试用。
  */
-export type LlmProviderKind = 'stub' | 'openai' | 'ollama' | 'dashscope' | 'deepseek'
-/** ASR 提供方：whisper/azure/aliyun/xunfei 等真实厂商（统一走本地 HTTP baseUrl）；stub 为离线测试实现。 */
-export type AsrProviderKind = 'stub' | 'whisper' | 'azure' | 'aliyun' | 'xunfei'
-/** TTS 提供方：edge/azure/aliyun/xunfei 等真实厂商（统一走本地 HTTP baseUrl）；stub 为离线测试实现。 */
-export type TtsProviderKind = 'stub' | 'edge' | 'azure' | 'aliyun' | 'xunfei'
+export type LlmProviderKind = 'stub' | 'builtin' | 'dashscope'
+/** ASR 提供方：内置 / DashScope / stub（离线测试）。 */
+export type AsrProviderKind = 'stub' | 'builtin' | 'dashscope'
+/** TTS 提供方：内置 / DashScope / stub（离线测试）。 */
+export type TtsProviderKind = 'stub' | 'builtin' | 'dashscope'
 
 /** 各能力的厂商级额外参数（key-value 映射），透传给对应服务，例如：
  *  llm: { temperature, top_p, ... }；asr: { language, sampleRate, ... }；tts: { voice, speed, ... }。 */
@@ -62,10 +62,6 @@ export interface TtsConfig {
 export interface DbConfig {
   /** SQLite 文件路径，:memory: 表示内存库 */
   path: string
-  /** 落库加密公钥（RSA 公钥 PEM）：加密 device_data 中的 api-key 等敏感字段 */
-  publicKey: string
-  /** 落库加密私钥（RSA 私钥 PEM）：解密读取的敏感字段，仅网关侧持有 */
-  privateKey: string
 }
 
 export interface GatewayConfig {
@@ -93,11 +89,6 @@ export interface GatewayConfig {
   db: DbConfig
 }
 
-function oneOf<T extends string>(value: string | undefined, fallback: T): T {
-  return (value as T | undefined) ?? fallback
-}
-
-/** 环境变量里以 JSON 字符串形式提供厂商级参数，缺省或非法时回退为空对象。 */
 function paramsFromEnv(name: string): VendorParams {
   const raw = process.env[name]
   if (!raw) return {}
@@ -118,20 +109,26 @@ export function loadConfig(): GatewayConfig {
     rsaBackendPrivateKey: process.env.RSA_BACKEND_PRIVATE_KEY ?? '',
     rsaFrontendPublicKey: process.env.RSA_FRONTEND_PUBLIC_KEY ?? '',
     timeZone: process.env.TIME_ZONE ?? 'Asia/Shanghai',
-    voiceBuiltinUrl: process.env.VOICE_BUILTIN_URL ?? 'http://127.0.0.1:9529',
-    voiceDashscopeUrl: process.env.VOICE_DASHSCOPE_URL ?? 'https://dashscope.aliyuncs.com',
+    // 内置 / DashScope 的默认根地址：仅作兜底（客户端未带 url 时用），由部署环境变量决定。
+    voiceBuiltinUrl: process.env.VOICE_BUILTIN_URL ?? '',
+    voiceDashscopeUrl: process.env.VOICE_DASHSCOPE_URL ?? '',
     ws: { path: process.env.WS_PATH ?? '/ws' },
+    // 以下 provider / baseUrl 仅为类型占位，真实值由客户端设置（session.start.voice）
+    // 经 voiceConfig.resolveCapabilityConfig 展开。
     llm: {
-      provider: oneOf(process.env.LLM_PROVIDER, 'stub'),
-      baseUrl: process.env.LLM_BASE_URL ?? 'http://127.0.0.1:9529/llm/v1',
-      model: process.env.LLM_MODEL ?? 'gpt-oss:120b-cloud',
-      apiKey: process.env.LLM_API_KEY ?? '',
+      provider: 'builtin',
+      baseUrl: '',
+      // 默认空：模型名完全来自客户端配置（session.start.voice），网关不预设任何模型。
+      model: '',
+      // apiKey 来自客户端设置（session.start.voice），不在此读 .env。
+      apiKey: '',
       params: paramsFromEnv('LLM_PARAMS'),
     },
     asr: {
-      provider: oneOf(process.env.ASR_PROVIDER, 'stub'),
-      baseUrl: process.env.ASR_BASE_URL ?? 'http://127.0.0.1:9529/voice',
-      apiKey: process.env.ASR_API_KEY ?? '',
+      provider: 'builtin',
+      baseUrl: '',
+      // apiKey 来自客户端设置（session.start.voice），不在此读 .env。
+      apiKey: '',
       // 句末静音判定：停顿超过该值才定稿为一轮。默认 2500ms——给自然思考的停顿留足余地，
       // 避免说话中途一停顿（>endpointMs）就被切断、识别成多段（用户反馈"只识别前一段"）。
       // 这也直接决定"助手像失忆"的体感：阈值太短会让一句话被切成几段、只听到前半句。
@@ -140,15 +137,14 @@ export function loadConfig(): GatewayConfig {
       params: paramsFromEnv('ASR_PARAMS'),
     },
     tts: {
-      provider: oneOf(process.env.TTS_PROVIDER, 'stub'),
-      baseUrl: process.env.TTS_BASE_URL ?? 'http://127.0.0.1:9529/voice',
-      apiKey: process.env.TTS_API_KEY ?? '',
+      provider: 'builtin',
+      baseUrl: '',
+      // apiKey 来自客户端设置（session.start.voice），不在此读 .env。
+      apiKey: '',
       params: paramsFromEnv('TTS_PARAMS'),
     },
     db: {
       path: process.env.DB_PATH ?? './data/app.db',
-      publicKey: process.env.DB_PUBLIC_KEY ?? '',
-      privateKey: process.env.DB_PRIVATE_KEY ?? '',
     },
   }
 }

@@ -87,10 +87,12 @@ xiaoxiong-app/uni_app/src/
 
 - 后端是独立 Node 服务 `xiaoxiong-app/gateway`，是客户端**唯一**允许的通信对象：语音走 WebSocket，数据走 REST，第三方能力（ASR / LLM / TTS / 数据库）只在网关这一侧落地。
 - **前端不得直接调用任何第三方服务**，一律经 Node 网关转发；客户端只与网关通信。
+- **第三方地址只由网关持有**：`VOICE_BUILTIN_URL` / `VOICE_DASHSCOPE_URL` 等来源地址写在网关配置（或 `.env`）里，前端**绝不**把来源地址（如 `http://127.0.0.1:9529`）传给后端当 fetch 目标。前端调 `/api/*` 时只传业务参数（如 `provider`），由网关用自身配置去中转拉取；api-key 这类只落本机的密钥可从前端带来，但地址不行。
+- **每次新增前端→后端的取数/调用**，先确认它只打到网关、且目标地址来自网关配置，而不是前端拼出来的 URL。
 - 数据库只在 Node 端落地（SQLite via `node:sqlite`）；客户端经 REST 读写，不再直接写业务数据到 `plus.sqlite`（`core/database` 仅作离线缓存/降级）。
 - 所有后端接口需提供 Swagger / OpenAPI 文档（网关 `/docs`），新增或修改接口先更文档。
 - 后端文案按 `lang` 本地化（见「语言与国际化」）。
-- **设置接口免登录**：`/api/assistant/*`（长期记忆、语音服务配置）是语音助手自身使用的接口，**永远不需要登录、不做任何鉴权**。不要为这些端点加登录开关或 Bearer 拦截——它们面向本机设置页，登录只属于未来的平台托管模式（届时由不同入口承载）。详见 `xiaoxiong-app/contracts/README.md` 的「设置接口」小节与 `gateway/src/controller/apiController.ts`。
+- **设置接口免登录**：`/api/admin/*`（长期记忆、语音服务配置、LLM 模型目录、TTS 音色目录）是语音助手设置页自身使用的接口，**永远不需要登录、不做任何鉴权**。不要为这些端点加登录开关或 Bearer 拦截——它们面向本机设置页，登录只属于未来的平台托管模式（届时由不同入口承载）。详见 `xiaoxiong-app/contracts/README.md` 的「设置接口」小节与 `gateway/src/controller/apiController.ts`。其它模块若需要这些能力，不要复用 `/api/admin/*`，应新开接口。
 
 ### 音频与唤醒
 

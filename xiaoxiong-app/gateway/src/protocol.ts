@@ -5,6 +5,8 @@
  * 服务端→客户端=TTS PCM pcm16/24000），方向天然区分上下行。
  */
 
+import type { VoiceConfig } from './voiceConfig'
+
 export type Lang = 'zh-CN'
 
 /** 设备上报的位置：经纬度必填，address 为系统定位回调附带的可读地址（城市/街道），可选。 */
@@ -26,6 +28,11 @@ export type ClientMessage =
       location?: LocationInfo
       /** wake=只做 ASR（用于本地唤醒词检测，不跑 LLM/TTS）；dialog=完整对话，默认 */
       mode?: 'wake' | 'dialog'
+      /**
+       * 客户端设置页选的语音服务配置（内置 / DashScope + 地址 + Key）。
+       * 网关据此展开成 ASR / LLM / TTS 三套能力的真实地址，不再依赖服务端写死的 .env 地址。
+       */
+      voice?: VoiceConfig
       /**
        * 设备稳定标识：客户端持久化生成（一次），连接时随 WS URL query 与 payload 上报。
        * 网关据此把会话与连接解耦——同一设备的重连/重唤醒走「重新武装」复用会话，

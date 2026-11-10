@@ -27,13 +27,6 @@ const BOOTSTRAP_SQL = `
     ended_at INTEGER,
     created_at INTEGER DEFAULT (strftime('%s', 'now'))
   );
-  CREATE TABLE IF NOT EXISTS device_data (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id TEXT,
-    type TEXT NOT NULL,
-    payload TEXT NOT NULL,
-    created_at INTEGER DEFAULT (strftime('%s', 'now'))
-  );
   CREATE TABLE IF NOT EXISTS command_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id TEXT,
@@ -46,9 +39,13 @@ const BOOTSTRAP_SQL = `
     device_id TEXT,
     key TEXT NOT NULL,
     value TEXT NOT NULL,
-    updated_at INTEGER DEFAULT (strftime('%s', 'now')),
-    UNIQUE(device_id, key)
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
   );
+  -- 唯一约束用显式索引落地：CREATE TABLE IF NOT EXISTS 不会改已有表结构，
+  -- 旧库若缺这条唯一约束，onConflictDoUpdate 会因「找不到冲突目标」而报错；
+  -- 用 IF NOT EXISTS 创建索引可同时覆盖「新建库」与「已存在但缺约束的旧库」。
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_user_memory_device_key ON user_memory(device_id, key);
 `
 
 /** 创建数据库连接（Node 内置 node:sqlite，无原生编译依赖）并引导建表。 */
@@ -59,5 +56,15 @@ export function createDb(path: string): AppDb {
   }
   const sqlite = new DatabaseSync(path)
   sqlite.exec(BOOTSTRAP_SQL)
+  // 旧库可能缺 created_at 列（早期 schema 只有 updated_at）；CREATE TABLE IF NOT EXISTS 不会给
+  // 已有表加列，这里显式补列。注意：SQLite 的 ALTER ADD COLUMN 只允许「常量」默认值，
+  // 不能写 strftime('%s','now') 这种函数默认值（会报 "Cannot add a column with non-constant default"），
+  // 故加列时用 NULL 默认，旧行的 created_at 用 updated_at 兜底（与 mapper 取值逻辑一致）。
+  try {
+    sqlite.exec('ALTER TABLE user_memory ADD COLUMN created_at INTEGER')
+    sqlite.exec('UPDATE user_memory SET created_at = updated_at WHERE created_at IS NULL')
+  } catch {
+    // 列已存在，无需处理
+  }
   return drizzle({ client: sqlite })
 }

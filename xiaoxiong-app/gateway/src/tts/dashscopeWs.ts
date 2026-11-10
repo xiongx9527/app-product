@@ -31,10 +31,8 @@ const MAX_TEXT_CHARS = 20000
  * 官方建议复用连接处理多个任务；会话是按句调用 synthesize 的，这里仍选择一句一连接：
  * 句末直接关闭最省状态，也不会让上一句的残留音频串到下一句，代价是每句多一次握手。
  *
- * 该类目前未接入 createTts 工厂；接线时只需在 tts/index.ts 增加一个分支：
- *   if (config.tts.provider === 'aliyun' && config.tts.baseUrl.startsWith('ws')) {
- *     return new DashScopeWsTts(config.tts.baseUrl, config.tts.params, config.tts.apiKey)
- *   }
+ * 已接入 createTts 工厂：provider === 'dashscope' 时直接走该实现，
+ * baseUrl 既支持 wss:// 原生 WS 入口，也支持 https:// 业务空间域名（自动换算成 /api-ws/v1/inference）。
  */
 export class DashScopeWsTts implements TtsProvider {
   private readonly url: string
@@ -386,9 +384,9 @@ function defaultVoice(model: string): string {
 }
 
 /**
- * 客户端模板里的系统音色名是 v1 命名（longxiaochun / longxiaoxia / longwan），
+ * 客户端模板里的系统音色名是 v1 命名（longxiaochun / longxiaoxia / longwan 等），
  * 在 v2/v3 模型上需要带版本后缀，否则任务会直接报“音色不存在”。
- * 只处理这三个已知系统音色，复刻音色 ID 原样透传。
+ * 对任何未带版本后缀的基础音色都补上对应后缀；已带 _v1/_v2/_v3 的（如复刻音色）原样透传。
  */
 function normalizeVoice(model: string, voice: string): string {
   const version = model.startsWith('cosyvoice-v3')
@@ -397,10 +395,8 @@ function normalizeVoice(model: string, voice: string): string {
       ? '_v2'
       : ''
   if (!version) return voice
-  if (voice === 'longxiaochun' || voice === 'longxiaoxia' || voice === 'longwan') {
-    return `${voice}${version}`
-  }
-  return voice
+  if (/_v[123]$/.test(voice)) return voice
+  return `${voice}${version}`
 }
 
 /** 静音帧长度：约按文本长度估，最短 0.1s（24kHz/16bit 单声道 = 48000 B/s）。 */

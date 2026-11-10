@@ -55,13 +55,14 @@ import { getLanguage } from '@/core/config'
 /** 一轮对话的阶段：界面据此告诉用户「现在在干嘛」，避免以为卡住而插话。 */
 export type Phase = 'idle' | 'listening' | 'thinking' | 'replying' | 'speaking' | 'done'
 
+/** 一轮对话的阶段 → i18n key（文案走 core/i18n，按当前语言取值）。 */
 const PHASE_LABEL: Record<Phase, string> = {
-  idle: '待唤醒',
-  listening: '正在听…',
-  thinking: '正在思考…',
-  replying: '正在回答…',
-  speaking: '正在播报…',
-  done: '本轮完成',
+  idle: 'phase.idle',
+  listening: 'phase.listening',
+  thinking: 'phase.thinking',
+  replying: 'phase.replying',
+  speaking: 'phase.speaking',
+  done: 'phase.done',
 }
 
 /** 健康项 → 不可用提示音：连上时未就绪、以及定时检测到 ok→down 都用它选音 */
@@ -120,8 +121,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    */
   const queuePending = ref(0)
 
-  const stateLabel = computed(() => STATE_LABEL[state.value])
-  const phaseLabel = computed(() => PHASE_LABEL[phase.value])
+  const stateLabel = computed(() => t(STATE_LABEL[state.value]))
+  const phaseLabel = computed(() => t(PHASE_LABEL[phase.value]))
   const enabled = computed(() => state.value !== 'idle')
   // 唤醒改为网关本地 ASR（SenseVoice）识别，不依赖浏览器/Google 的语音服务
   const wakeSupported = true
@@ -439,6 +440,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'playGreeting': {
         // 招呼先落到界面，声音由本地提示音负责
         reply.value = '我在'
+        // 本地招呼是完整播放、不走 LLM 生成，标记完成，避免助手卡片一直显示「生成中」
+        replyDone.value = true
         playPromptCue('greeting')
         break
       }

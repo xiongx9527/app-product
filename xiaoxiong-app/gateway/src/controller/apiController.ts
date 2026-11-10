@@ -1,6 +1,7 @@
 import type { DataService } from '../service/dataService'
+import { listLlmModels } from '../service/llmModels'
+import { listTtsVoices } from '../service/ttsVoices'
 import { openApiSpec } from '../openapi'
-import { normalizeVoiceConfig } from '../voiceConfig'
 
 export interface ApiRequest {
   method: string
@@ -18,13 +19,13 @@ export interface ApiResult {
  * 对外 REST 接口 controller：集中处理所有 /api/* 请求（含 OpenAPI 文档与数据接口），
  * 只负责解析请求、调用 service、组装响应；参数加密在 server 传输层统一处理。
  *
- * 设置相关接口（长期记忆、语音服务配置）统一挂在 /api/assistant 下，与通用数据接口（sessions /
- * device-data / command-logs）区分开。这是语音助手自己使用的接口，不需要登录。
+ * 设置相关接口（长期记忆）统一挂在 /api/admin 下，与通用数据接口（sessions /
+ * command-logs）区分开。这是语音助手设置页自己使用的接口，不需要登录。
  *
  * 注意：DataService 的各方法都是异步（Drizzle 查询返回 Promise），这里统一 await，
  * 否则会把 pending Promise 直接 JSON 序列化成了 {}。
  */
-export function createApiController(data: DataService) {
+export function createApiController(data: DataService, config: { voiceBuiltinUrl: string; voiceDashscopeUrl: string }) {
   return async (req: ApiRequest): Promise<ApiResult> => {
     const { method, pathname, query, body } = req
     const deviceId = query.get('deviceId')
@@ -41,15 +42,6 @@ export function createApiController(data: DataService) {
       return { status: 200, body: await data.listSessions(deviceId) }
     }
 
-    if (pathname === '/api/device-data' && method === 'POST') {
-      const b = (body ?? {}) as { type?: string; payload?: unknown }
-      const id = await data.insertDeviceData(deviceId ?? null, b.type ?? 'unknown', JSON.stringify(b.payload ?? b))
-      return { status: 201, body: { id } }
-    }
-    if (pathname === '/api/device-data' && method === 'GET') {
-      return { status: 200, body: await data.listDeviceData(deviceId) }
-    }
-
     if (pathname === '/api/command-logs' && method === 'POST') {
       const b = (body ?? {}) as { command?: string; result?: string }
       const id = await data.insertCommandLog(deviceId ?? null, b.command ?? '', b.result ?? '')
@@ -59,12 +51,18 @@ export function createApiController(data: DataService) {
       return { status: 200, body: await data.listCommandLogs(deviceId) }
     }
 
-    // 设置接口（/api/assistant）：语音助手自己使用，长期记忆 + 语音服务配置，按设备维度，不需要登录。
-    if (pathname === '/api/assistant/memories' && method === 'GET') {
+    // 设置接口（/api/admin）：语音助手设置页自己使用，长期记忆按设备维度，不需要登录。
+    if (pathname === '/api/admin/memories' && method === 'GET') {
       if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
-      return { status: 200, body: await data.getMemories(deviceId) }
+      // 分页：page 从 1 起，pageSize 默认 20、上限 100，避免一次拉全量。
+      // q 为可选关键词，对 key / value 模糊检索（设置页的检索框使用）。
+      const page = Math.max(1, Number(query.get('page')) || 1)
+      const pageSize = Math.min(100, Math.max(1, Number(query.get('pageSize')) || 20))
+      const q = query.get('q') ?? undefined
+      const result = await data.listMemoriesPage(deviceId, page, pageSize, q)
+      return { status: 200, body: { ...result, page, pageSize } }
     }
-    if (pathname === '/api/assistant/memories' && method === 'DELETE') {
+    if (pathname === '/api/admin/memories' && method === 'DELETE') {
       if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
       const b = (body ?? {}) as { key?: string }
       // key 优先取请求体，其次取 query（清空记忆时不传 key）；空串表示清空全部。
@@ -72,15 +70,40 @@ export function createApiController(data: DataService) {
       const n = await data.forgetMemory(deviceId, key)
       return { status: 200, body: { deleted: n } }
     }
-    if (pathname === '/api/assistant/voice-config' && method === 'GET') {
-      if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
-      return { status: 200, body: await data.getVoiceConfig(deviceId) }
+
+    // 设置接口（/api/admin）：语音助手设置页自身使用，不需要登录。
+    // LLM 模型下拉框的数据源：按 provider 从网关配置的来源地址拉可选模型
+    // （内置=网关 VOICE_BUILTIN_URL 指向的服务已配置的上游模型；百炼=网关 VOICE_DASHSCOPE_URL
+    // + 用户本机 api-key 拉真实模型目录）。地址由网关持有并中转，前端只传 provider、绝不直接指定来源地址。
+    if (pathname === '/api/admin/llm-models' && method === 'GET') {
+      const provider = query.get('provider')
+      const apiKey = query.get('apiKey') ?? undefined
+      if (provider !== 'builtin' && provider !== 'dashscope') {
+        return { status: 400, body: { error: 'provider 仅支持 builtin / dashscope' } }
+      }
+      try {
+        const models = await listLlmModels(provider as 'builtin' | 'dashscope', config, apiKey)
+        return { status: 200, body: { models } }
+      } catch (err) {
+        return { status: 502, body: { error: (err as Error).message } }
+      }
     }
-    if (pathname === '/api/assistant/voice-config' && (method === 'POST' || method === 'PUT')) {
-      if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
-      const voice = normalizeVoiceConfig(body)
-      const id = await data.saveVoiceConfig(deviceId, voice)
-      return { status: 200, body: { id, voice } }
+
+    // 设置接口（/api/admin）：语音助手设置页自身使用，不需要登录。
+    // 音色下拉框数据源：两份固定精选目录（内置=Edge-TTS 常用音色；百炼=官方 CosyVoice 标准目录），
+    // 均写死、不实时拉取（否则无法国际化），按前端传来的 lang 本地化标签。前端只传 provider + lang。
+    if (pathname === '/api/admin/tts-voices' && method === 'GET') {
+      const provider = query.get('provider')
+      const lang = query.get('lang') ?? undefined
+      if (provider !== 'builtin' && provider !== 'dashscope') {
+        return { status: 400, body: { error: 'provider 仅支持 builtin / dashscope' } }
+      }
+      try {
+        const result = await listTtsVoices(provider as 'builtin' | 'dashscope', lang)
+        return { status: 200, body: result }
+      } catch (err) {
+        return { status: 502, body: { error: (err as Error).message } }
+      }
     }
 
     return { status: 404, body: { error: 'not found' } }

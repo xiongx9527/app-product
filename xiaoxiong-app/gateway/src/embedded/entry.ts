@@ -13,6 +13,15 @@ import { createGateway } from '../server'
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 
+// 单条会话的异步异常（如模型构造失败、上游抖动）不应拖垮整个网关：
+// 记录后继续运行，让其它会话不受影响，避免助手「老老挂掉」。
+process.on('unhandledRejection', (reason) => {
+  console.error('[gateway] unhandledRejection (isolated, server kept alive):', reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[gateway] uncaughtException (kept alive):', err)
+})
+
 const gateway = createGateway()
 const server = gateway.httpServer
 

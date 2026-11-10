@@ -6,6 +6,7 @@ import type { AgentService } from './agentService'
 import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { DataService } from './dataService'
+import type { ResolvedCapabilities } from '../voiceConfig'
 import type { ServerEvent } from '../protocol'
 import type { HealthReport } from './health'
 import type { MusicSource } from './music/types'
@@ -145,13 +146,14 @@ function createHarness(
     },
   } as unknown as DataService
   const deps: VoiceSessionDeps = {
-    agentFactory: (_lang, _tz, _loc, _music, _emit, _store, memoryContext) => {
+    agentFactory: (_lang, _tz, _loc, _music, _emit, _store, _memStore, memoryContext) => {
       factoryCalls += 1
       lastMemoryContext = memoryContext
       return agent
     },
-    asr,
-    tts,
+    createAsr: () => asr,
+    createTts: () => tts,
+    resolveVoice: () => ({}) as unknown as ResolvedCapabilities,
     data,
     send: (event) => events.push(event),
     sendAudio: () => {},

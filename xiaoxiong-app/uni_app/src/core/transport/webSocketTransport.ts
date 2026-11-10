@@ -1,7 +1,8 @@
-import { appConfig } from '@/core/config'
+import { appConfig, activeVoiceConfig } from '@/core/config'
 import { DEFAULT_GATEWAY_WS_URL } from '@/core/config/constants'
 import { getDeviceId } from '@/core/config/deviceId'
 import { getGatewayWsUrl, isEmbeddedGateway } from './gatewayBootstrap'
+import { t } from '@/core/i18n'
 import type { AssistantTransport, ServerEvent, SessionMode } from './types'
 
 /** 客户端上报给网关的位置快照（经纬度必填，address 为反向地理编码结果）。 */
@@ -143,7 +144,7 @@ export class WebSocketTransport implements AssistantTransport {
       ws.onerror = () => {
         // 不在此清 connecting：通常随后会触发 onclose，由 onclose 决定是否继续显示「连接中…」
         this.setConnected(false)
-        reject(new Error(`无法连接网关：${this.activeUrl}`))
+        reject(new Error(t('error.gatewayConnectFailed', { url: this.activeUrl })))
       }
       ws.onclose = () => {
         this.ws = null
@@ -277,9 +278,9 @@ export class WebSocketTransport implements AssistantTransport {
       sessionId: this.sessionId,
       lang: this.lang,
       timezone: appConfig.timezone,
-      // 语音服务配置（ASR / LLM / TTS 共用一份）：网关按 provider 展开成三套地址；
-      // 旧客户端不带 voice → 网关完全沿用自身 env，行为不变
-      voice: appConfig.voice,
+      // 语音服务配置（ASR / LLM / TTS 共用一份）：取当前来源这一份压平后下发，
+      // 网关按 provider 展开成三套地址；旧客户端不带 voice → 网关完全沿用自身 env，行为不变
+      voice: activeVoiceConfig(),
       // 音乐为网关内置能力，无需客户端上报配置
       location: this.lastLocation ?? undefined,
       mode,

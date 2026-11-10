@@ -60,24 +60,6 @@ export const openApiSpec = {
         responses: { '201': { description: '已创建' } },
       },
     },
-    '/api/device-data': {
-      get: {
-        summary: '列出设备数据',
-        parameters: [{ name: 'deviceId', in: 'query', schema: { type: 'string' } }],
-        responses: { '200': { description: '设备数据列表' } },
-      },
-      post: {
-        summary: '写入设备数据',
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: { type: 'object', properties: { type: { type: 'string' }, payload: { type: 'object' } } },
-            },
-          },
-        },
-        responses: { '201': { description: '已写入' } },
-      },
-    },
     '/api/command-logs': {
       get: {
         summary: '列出命令日志',
@@ -96,11 +78,21 @@ export const openApiSpec = {
         responses: { '201': { description: '已写入' } },
       },
     },
-    '/api/assistant/memories': {
+    '/api/admin/memories': {
       get: {
-        summary: '列出该设备的长期记忆',
-        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: '记忆列表（key/value/updatedAt）' }, '400': { description: '缺 deviceId' } },
+        summary: '分页列出该设备的长期记忆',
+        parameters: [
+          { name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } },
+          { name: 'page', in: 'query', required: false, schema: { type: 'integer', minimum: 1, default: 1 }, description: '页码，从 1 起' },
+          { name: 'pageSize', in: 'query', required: false, schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 }, description: '每页条数' },
+          { name: 'q', in: 'query', required: false, schema: { type: 'string' }, description: '关键词，对 key / value 模糊检索' },
+        ],
+        responses: {
+          '200': {
+            description: '{ items: 本页记忆(key/value/createdAt/updatedAt)[], total: 总数, page, pageSize }',
+          },
+          '400': { description: '缺 deviceId' },
+        },
       },
       delete: {
         summary: '删除记忆：key 为空清空全部，否则按话题/内容模糊删除',
@@ -115,36 +107,32 @@ export const openApiSpec = {
         responses: { '200': { description: '{ deleted: 删除条数 }' }, '400': { description: '缺 deviceId' } },
       },
     },
-    '/api/assistant/voice-config': {
+    '/api/admin/llm-models': {
       get: {
-        summary: '读取该设备的语音服务配置（内置 / DashScope）',
-        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: '当前配置（provider/url/apiKey）' }, '400': { description: '缺 deviceId' } },
-      },
-      post: {
-        summary: '保存该设备的语音服务配置（内置 / DashScope）',
-        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
-        requestBody: {
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  provider: { type: 'string', enum: ['builtin', 'dashscope'], description: '语音服务来源' },
-                  url: { type: 'string', description: '服务地址；内置可编辑，DashScope 有默认值' },
-                  apiKey: { type: 'string', description: 'API 密钥（落库加密）' },
-                },
-              },
-            },
-          },
+        summary: '列出某来源的 LLM 模型（设置页「LLM 模型」下拉框数据源）',
+        parameters: [
+          { name: 'provider', in: 'query', required: true, schema: { type: 'string', enum: ['builtin', 'dashscope'] }, description: '语音服务来源（地址由网关配置持有并中转，前端不传）' },
+          { name: 'apiKey', in: 'query', schema: { type: 'string' }, description: '来源 api-key，只落本机、由前端带来；百炼必带，内置非必填（可空）' },
+        ],
+        responses: {
+          '200': { description: '{ models: string[] }：从来源配置读到的可选模型列表', content: { 'application/json': { schema: { type: 'object', properties: { models: { type: 'array', items: { type: 'string' } } } } } } },
+          '400': { description: 'provider 缺失或非法' },
+          '502': { description: '无法从来源拉取模型列表' },
         },
-        responses: { '200': { description: '{ id, voice }' }, '400': { description: '缺 deviceId' } },
       },
-      put: {
-        summary: '更新该设备的语音服务配置（与 POST 语义一致，幂等覆盖）',
-        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
-        requestBody: { $ref: '#/paths/~1api~1assistant~1voice-config/post/requestBody' },
-        responses: { '200': { description: '{ id, voice }' }, '400': { description: '缺 deviceId' } },
+    },
+    '/api/admin/tts-voices': {
+      get: {
+        summary: '列出某来源的 TTS 音色（设置页「音色」下拉框数据源；固定精选目录，按 lang 本地化标签）',
+        parameters: [
+          { name: 'provider', in: 'query', required: true, schema: { type: 'string', enum: ['builtin', 'dashscope'] }, description: '语音服务来源（固定目录，不实时拉取）' },
+          { name: 'lang', in: 'query', schema: { type: 'string' }, description: '展示语言，如 zh-CN / en；决定标签里的名称、性别、语言的文案，默认 zh-CN' },
+        ],
+        responses: {
+          '200': { description: '{ defaultVoice, voices:[{value,label}] }：从来源读到的可选音色', content: { 'application/json': { schema: { type: 'object', properties: { defaultVoice: { type: 'string' }, voices: { type: 'array', items: { type: 'object', properties: { value: { type: 'string' }, label: { type: 'string' } } } } } } } } },
+          '400': { description: 'provider 缺失或非法' },
+          '502': { description: '无法从来源拉取音色列表' },
+        },
       },
     },
     '/music/stream': {
@@ -168,7 +156,7 @@ export const openApiSpec = {
       ProviderStatus: {
         type: 'object',
         properties: {
-          provider: { type: 'string', description: '提供商名（whisper/edge/ollama/stub…）' },
+          provider: { type: 'string', description: '提供商名（builtin/dashscope/stub…）' },
           configured: { type: 'boolean', description: '是否真接入真实引擎（stub 为 false）' },
           reachable: { type: 'boolean', description: '真实引擎地址是否可达' },
           message: { type: 'string', description: '人类可读状态' },

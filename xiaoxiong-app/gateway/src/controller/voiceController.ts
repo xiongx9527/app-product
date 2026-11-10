@@ -3,6 +3,7 @@ import type { IncomingMessage } from 'node:http'
 import { createAgentService } from '../service/agentService'
 import { createAsr } from '../asr'
 import { createTts } from '../tts'
+import { resolveCapabilityConfig } from '../voiceConfig'
 import { VoiceSessionService } from '../service/voiceSessionService'
 import { getSession, setSession, removeSession } from '../service/sessionRegistry'
 import type { GatewayConfig } from '../config'
@@ -45,9 +46,13 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
 
   const makeService = (): VoiceSessionService =>
     new VoiceSessionService({
-      agentFactory: (lang, timezone, locationProvider, musicSource, emit, memoryStore, memoryContext, requestLocation) =>
+      // 语音配置（地址/密钥/模型/参数）一律来自客户端 session.start.voice，经 resolveCapabilityConfig 展开
+      resolveVoice: (voice) => resolveCapabilityConfig(voice, config),
+      createAsr,
+      createTts,
+      agentFactory: (llm, lang, timezone, locationProvider, musicSource, emit, memoryStore, memoryContext, requestLocation) =>
         createAgentService(
-          { ...config, timeZone: timezone },
+          { llm, timeZone: timezone },
           lang,
           locationProvider,
           musicSource,
@@ -56,8 +61,6 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
           memoryContext,
           requestLocation
         ),
-      asr: createAsr(config),
-      tts: createTts(config),
       data,
       send,
       sendAudio,

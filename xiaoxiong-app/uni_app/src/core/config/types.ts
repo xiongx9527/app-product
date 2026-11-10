@@ -8,16 +8,33 @@ export type ServiceMode = 'byok' | 'platform'
 /** 语音服务来源：内置（本地 / 局域网 AI 服务）或 DashScope 云端 */
 export type VoiceProviderKind = 'builtin' | 'dashscope'
 
-/**
- * 一份语音服务配置同时覆盖 ASR / LLM / TTS，切换只改 provider。
- * 模型、音色不在这里填，由网关按 provider 用默认值（见 dashscope-ws-voice.md §5）。
- */
-export interface VoiceServiceConfig {
-  provider: VoiceProviderKind
+/** 单个来源的语音服务配置（地址 + 密钥 + 可选 LLM 模型），内置 / DashScope 各存一份，互不影响 */
+export interface VoiceProviderSettings {
   /** 服务根地址；内置默认 http://127.0.0.1:9529，DashScope 默认 https://dashscope.aliyuncs.com */
   url: string
   /** 内置通常为空；DashScope 必填 */
   apiKey: string
+  /**
+   * 该来源的 LLM 模型名；留空则由网关用来源默认模型。
+   * 下拉选项由设置页「LLM 模型」从来源配置实时拉取。
+   */
+  model?: string
+  /**
+   * 该来源的 TTS 音色（voice）；留空则由网关用来源默认音色。
+   * 下拉选项由设置页「音色」从来源配置实时拉取（内置=语音服务接口；百炼=官方标准目录）。
+   */
+  voice?: string
+}
+
+/**
+ * 语音服务配置同时覆盖 ASR / LLM / TTS，按 provider 切换。
+ * 各来源独立保存自己的地址、密钥与模型，切换来源只改 provider，不会清掉另一份数据。
+ * 选中的 LLM 模型随会话下发，网关据此路由到来源对应的上游。
+ */
+export interface VoiceServiceConfig {
+  provider: VoiceProviderKind
+  builtin: VoiceProviderSettings
+  dashscope: VoiceProviderSettings
 }
 
 export interface AppConfig {
@@ -29,4 +46,15 @@ export interface AppConfig {
   timezone: string
   /** 语音服务（ASR / LLM / TTS 共用一份）：取代旧的三份 asr / llm / tts 子配置 */
   voice: VoiceServiceConfig
+  /** 播放设置（音乐播放源等），独立于语音服务 */
+  playback: PlaybackConfig
+}
+
+/** 音乐播放源；当前仅百度（B站音轨 + 百度搜索兜底），后续可扩展 */
+export type PlaybackSource = 'baidu'
+
+/** 播放设置：音乐播放来源等，独立于语音服务（ASR / LLM / TTS） */
+export interface PlaybackConfig {
+  /** 当前播放源，默认百度 */
+  source: PlaybackSource
 }

@@ -26,7 +26,7 @@ const config: GatewayConfig = {
   llm: { provider: 'stub', baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5', apiKey: '', params: {} },
   asr: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', endpointMs: 30, params: {} },
   tts: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', params: {} },
-  db: { path: DB_PATH, publicKey: '', privateKey: '' },
+  db: { path: DB_PATH },
 }
 
 let gateway: ReturnType<typeof createGateway>
@@ -34,7 +34,7 @@ let gateway: ReturnType<typeof createGateway>
 beforeAll(async () => {
   // 先用同一份临时库插一条记忆，保证 DELETE 能真正删到（验证跨域删除全链路，而非只看头）。
   const db = createDb(DB_PATH)
-  const data = createDataService(db, '', '', config)
+  const data = createDataService(db)
   await data.saveMemory('xctest', 'cross-origin', '小熊记住了这件事')
   gateway = createGateway(config)
   gateway.listen()
@@ -50,8 +50,8 @@ afterAll(() => {
   }
 })
 
-it('OPTIONS 预检：DELETE /api/assistant/memories 返回 204 + CORS 头', async () => {
-  const res = await fetch(`http://127.0.0.1:${PORT}/api/assistant/memories?deviceId=xctest`, {
+it('OPTIONS 预检：DELETE /api/admin/memories 返回 204 + CORS 头', async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/api/admin/memories?deviceId=xctest`, {
     method: 'OPTIONS',
     headers: {
       Origin: ORIGIN,
@@ -67,28 +67,18 @@ it('OPTIONS 预检：DELETE /api/assistant/memories 返回 204 + CORS 头', asyn
   expect(res.headers.get('access-control-allow-headers')).toBe('content-type')
 })
 
-it('GET /api/assistant/memories（带 Origin）返回 200 + CORS 头', async () => {
-  const res = await fetch(`http://127.0.0.1:${PORT}/api/assistant/memories?deviceId=xctest`, {
+it('GET /api/admin/memories（带 Origin）返回 200 + CORS 头', async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/api/admin/memories?deviceId=xctest`, {
     headers: { Origin: ORIGIN },
   })
   expect(res.status).toBe(200)
   expect(res.headers.get('access-control-allow-origin')).toBe('*')
-  const body = (await res.json()) as Array<{ key: string }>
-  expect(body.some((m) => m.key === 'cross-origin')).toBe(true)
+  const body = (await res.json()) as { items: Array<{ key: string }> }
+  expect(body.items.some((m) => m.key === 'cross-origin')).toBe(true)
 })
 
-it('GET /api/assistant/voice-config（带 Origin）返回 200 + CORS 头', async () => {
-  const res = await fetch(`http://127.0.0.1:${PORT}/api/assistant/voice-config?deviceId=xctest`, {
-    headers: { Origin: ORIGIN },
-  })
-  expect(res.status).toBe(200)
-  expect(res.headers.get('access-control-allow-origin')).toBe('*')
-  const body = (await res.json()) as { provider: string }
-  expect(body.provider).toBe('builtin')
-})
-
-it('DELETE /api/assistant/memories（带 Origin）跨域删除成功，返回 CORS 头 + {deleted:1}', async () => {
-  const res = await fetch(`http://127.0.0.1:${PORT}/api/assistant/memories?deviceId=xctest`, {
+it('DELETE /api/admin/memories（带 Origin）跨域删除成功，返回 CORS 头 + {deleted:1}', async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/api/admin/memories?deviceId=xctest`, {
     method: 'DELETE',
     headers: { Origin: ORIGIN, 'Content-Type': 'application/json' },
     body: JSON.stringify({ key: 'cross-origin' }),
@@ -99,11 +89,11 @@ it('DELETE /api/assistant/memories（带 Origin）跨域删除成功，返回 CO
   expect(body.deleted).toBe(1)
 
   // 删除后确实没了：跨域读回来为空
-  const after = await fetch(`http://127.0.0.1:${PORT}/api/assistant/memories?deviceId=xctest`, {
+  const after = await fetch(`http://127.0.0.1:${PORT}/api/admin/memories?deviceId=xctest`, {
     headers: { Origin: ORIGIN },
   })
-  const list = (await after.json()) as Array<{ key: string }>
-  expect(list.some((m) => m.key === 'cross-origin')).toBe(false)
+  const body2 = (await after.json()) as { items: Array<{ key: string }> }
+  expect(body2.items.some((m) => m.key === 'cross-origin')).toBe(false)
 })
 
 it('GET /api/health（带 Origin）返回 200 + CORS 头（能力自检允许跨域、不鉴权）', async () => {
@@ -119,9 +109,9 @@ it('GET /api/health（带 Origin）返回 200 + CORS 头（能力自检允许跨
 it('DELETE 清空全部（key 缺省）跨域也返回 CORS 头', async () => {
   // 再补一条，验证清空路径
   const db = createDb(DB_PATH)
-  const data = createDataService(db, '', '', config)
+  const data = createDataService(db)
   await data.saveMemory('xctest', 'another', '第二条')
-  const res = await fetch(`http://127.0.0.1:${PORT}/api/assistant/memories?deviceId=xctest`, {
+  const res = await fetch(`http://127.0.0.1:${PORT}/api/admin/memories?deviceId=xctest`, {
     method: 'DELETE',
     headers: { Origin: ORIGIN },
   })

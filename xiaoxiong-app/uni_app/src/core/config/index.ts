@@ -28,6 +28,7 @@ export {
 export {
   CONFIG_STORAGE_KEY,
   createDefaultConfig,
+  createDefaultPlayback,
   createDefaultVoice,
   loadConfig,
   normalizeConfig,
@@ -58,13 +59,37 @@ export function isPlatformMode(): boolean {
 }
 
 /**
- * 切换语音服务来源（内置 / DashScope）。切换时清空地址，让各自套用默认根地址
- * （内置 9529 / DashScope 云端），避免把上一个来源的地址带过来展示；已填的 Key 保留。
+ * 切换语音服务来源（内置 / DashScope）。只改 provider，两套来源的地址、密钥各自保留，
+ * 不会互相清掉——切回内置时它之前填过的地址还在，切到 DashScope 也是。
  */
 export function setVoiceProvider(provider: VoiceProviderKind): void {
-  if (appConfig.voice.provider === provider) return
   appConfig.voice.provider = provider
-  appConfig.voice.url = ''
+}
+
+/**
+ * 取当前来源这一份配置，压平成网关识别的扁平结构（provider / url / apiKey / model / voice）。
+ * 各来源独立保存，这里只取「当前选中的那一份」；model / voice 缺省时留空，由网关用来源默认值。
+ * voice 经 params.voice 下发，网关据此透传给 TTS（见 gateway voiceConfig.resolveCapabilityConfig）。
+ */
+export function activeVoiceConfig(): {
+  provider: VoiceProviderKind
+  url: string
+  apiKey: string
+  model: string
+  voice: string
+  params?: { voice: string }
+} {
+  const v = appConfig.voice
+  const active = v.provider === 'dashscope' ? v.dashscope : v.builtin
+  const voice = active.voice ?? ''
+  return {
+    provider: v.provider,
+    url: active.url,
+    apiKey: active.apiKey,
+    model: active.model ?? '',
+    voice,
+    params: voice ? { voice } : undefined,
+  }
 }
 
 /** 语音服务恢复默认（内置 / 本地 9529 / 无密钥） */

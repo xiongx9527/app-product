@@ -1,9 +1,7 @@
 import { Agent } from '@agentscope-ai/agentscope/agent'
 import {
   OpenAIChatModel,
-  OllamaChatModel,
   DashScopeChatModel,
-  DeepSeekChatModel,
 } from '@agentscope-ai/agentscope/model'
 import type { ChatModelBase } from '@agentscope-ai/agentscope/model'
 import { UserMsg } from '@agentscope-ai/agentscope/message'
@@ -28,30 +26,19 @@ export interface AgentService {
 function createModel(cfg: LlmConfig): ChatModelBase {
   const { provider, baseUrl, model, apiKey, params } = cfg
   switch (provider) {
-    case 'openai':
-      // OpenAI 兼容端点：可指向本地 AI 服务的 /llm/v1，由它纯转发到任意上游。
+    case 'builtin':
+      // 内置：本地 AI 服务的 OpenAI 兼容层（/llm/v1 纯转发到任意上游），统一走 OpenAI 兼容接口。
+      // 本地服务不校验 key，apiKey 为空时用占位符，避免 OpenAI SDK 在构造时因缺凭证抛错拖垮进程。
       return new OpenAIChatModel({
         modelName: model,
-        apiKey,
+        apiKey: apiKey || 'builtin-local',
         baseURL: baseUrl || undefined,
         stream: true,
         presetGenParams: params,
       })
-    case 'ollama':
-      // 原生 /api/chat：只有它能透出模型的思考过程，OpenAI 兼容层会丢弃 reasoning。
-      // 本地 AI 服务不再提供 /llm/api/chat，这里要把 baseUrl 直接指向 Ollama（11434）。
-      return new OllamaChatModel({
-        modelName: model,
-        // 原生接口不接受 /v1 后缀，自动去掉。
-        host: baseUrl ? baseUrl.replace(/\/v1\/?$/, '') : undefined,
-        stream: true,
-        options: params,
-        thinkingConfig: { enableThinking: true, thinkingLevel: 'low' },
-      })
     case 'dashscope':
+      // DashScope 官方 SDK（apiKey 必填），走其托管端点。
       return new DashScopeChatModel({ modelName: model, apiKey, stream: true, presetGenParams: params })
-    case 'deepseek':
-      return new DeepSeekChatModel({ modelName: model, apiKey, stream: true, presetGenParams: params })
     default:
       throw new Error(`不支持的 LLM 提供方：${provider as string}`)
   }

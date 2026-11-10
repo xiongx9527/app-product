@@ -3,21 +3,13 @@ import { sqliteTable, integer, text, uniqueIndex } from 'drizzle-orm/sqlite-core
 
 /**
  * 数据库表结构（Drizzle schema）。表定义即源码，迁移 SQL 由 drizzle-kit 生成，
- * 不手写为应用代码。对应 AGENTS.md 提到的三类本地数据：会话记录、设备数据、命令日志。
+ * 不手写为应用代码。对应 AGENTS.md 提到的本地数据：会话记录、命令日志、用户长期记忆。
  */
 export const sessions = sqliteTable('sessions', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   deviceId: text('device_id'),
   startedAt: integer('started_at'),
   endedAt: integer('ended_at'),
-  createdAt: integer('created_at').default(sql`(strftime('%s', 'now'))`),
-})
-
-export const deviceData = sqliteTable('device_data', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  deviceId: text('device_id'),
-  type: text('type').notNull(),
-  payload: text('payload').notNull(),
   createdAt: integer('created_at').default(sql`(strftime('%s', 'now'))`),
 })
 
@@ -42,6 +34,7 @@ export const userMemory = sqliteTable(
     deviceId: text('device_id'),
     key: text('key').notNull(),
     value: text('value').notNull(),
+    createdAt: integer('created_at').default(sql`(strftime('%s', 'now'))`),
     updatedAt: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
   },
   // 同设备下 (device_id, key) 唯一：save 用 ON CONFLICT 覆盖更新，去重不堆积。
@@ -49,6 +42,5 @@ export const userMemory = sqliteTable(
 )
 
 export type SessionRow = typeof sessions.$inferSelect
-export type DeviceDataRow = typeof deviceData.$inferSelect
 export type CommandLogRow = typeof commandLogs.$inferSelect
 export type UserMemoryRow = typeof userMemory.$inferSelect

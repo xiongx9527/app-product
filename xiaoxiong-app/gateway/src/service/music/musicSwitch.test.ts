@@ -6,6 +6,7 @@ import type { AsrProvider } from '../../asr'
 import type { TtsProvider } from '../../tts'
 import type { DataService } from '../dataService'
 import type { MusicSource } from './types'
+import type { ResolvedCapabilities } from '../../voiceConfig'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -38,12 +39,13 @@ function createHarness(): Harness {
     insertCommandLog: () => {},
   } as unknown as DataService
   const deps: VoiceSessionDeps = {
-    agentFactory: (_lang, _tz, _loc, musicSource) => {
+    agentFactory: (_lang, _tz, _loc, _locProvider, musicSource) => {
       captured.push(musicSource)
       return agent
     },
-    asr,
-    tts,
+    createAsr: () => asr,
+    createTts: () => tts,
+    resolveVoice: () => ({}) as unknown as ResolvedCapabilities,
     data,
     send: () => {},
     sendAudio: () => {},

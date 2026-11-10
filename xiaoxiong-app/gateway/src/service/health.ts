@@ -1,8 +1,9 @@
 import type { GatewayConfig } from '../config'
+import { resolveCapabilityConfig } from '../voiceConfig'
 
 /** 单个能力（ASR / LLM / TTS）的就绪状态，供界面直接展示 */
 export interface ProviderStatus {
-  /** 配置的提供商名（whisper / edge / ollama / stub…） */
+  /** 配置的提供商名（builtin / dashscope / stub…） */
   provider: string
   /** 是否真接入了真实引擎（provider !== 'stub'）；false 表示仍是占位桩，功能不可用 */
   configured: boolean
@@ -241,10 +242,11 @@ async function probeExternal(): Promise<NetworkStatus> {
 /** 汇总 LLM / ASR / TTS 三类能力的就绪状态，供 /api/health 返回。
  *  ASR/TTS 用功能性探测（真发请求验证），LLM 沿用轻量连通探测。 */
 export async function buildHealth(config: GatewayConfig): Promise<HealthReport> {
+  const resolved = resolveCapabilityConfig(undefined, config)
   const [asr, llm, tts, network] = await Promise.all([
-    buildStatus(config.asr.provider, config.asr.baseUrl, 'asr'),
-    buildStatus(config.llm.provider, config.llm.baseUrl, 'llm'),
-    buildStatus(config.tts.provider, config.tts.baseUrl, 'tts'),
+    buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr'),
+    buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm'),
+    buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts'),
     probeExternal(),
   ])
   return { asr, llm, tts, network }

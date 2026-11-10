@@ -5,17 +5,17 @@ export const DEFAULT_LANGUAGE = 'zh-CN'
 export const DEFAULT_TIMEZONE = 'Asia/Shanghai'
 
 /**
- * 常用时区选项；值用 IANA 名，标签含城市与 UTC 偏移方便辨识。
+ * 常用时区选项；值用 IANA 名，展示文案走 i18n（label 由页面按当前语言翻译）。
  * 默认且置顶东 8 区，其余按 UTC 偏移升序排列。
  */
-export const TIMEZONE_OPTIONS: Array<{ label: string; value: string }> = [
-  { label: '北京 / 上海 (UTC+8)', value: 'Asia/Shanghai' },
-  { label: '东京 (UTC+9)', value: 'Asia/Tokyo' },
-  { label: '新加坡 (UTC+8)', value: 'Asia/Singapore' },
-  { label: '伦敦 (UTC+0)', value: 'Europe/London' },
-  { label: '纽约 (UTC-5)', value: 'America/New_York' },
-  { label: '洛杉矶 (UTC-8)', value: 'America/Los_Angeles' },
-  { label: '协调世界时 (UTC+0)', value: 'UTC' },
+export const TIMEZONE_OPTIONS: Array<{ value: string; i18nKey: string }> = [
+  { value: 'Asia/Shanghai', i18nKey: 'settings.timezone.shanghai' },
+  { value: 'Asia/Tokyo', i18nKey: 'settings.timezone.tokyo' },
+  { value: 'Asia/Singapore', i18nKey: 'settings.timezone.singapore' },
+  { value: 'Europe/London', i18nKey: 'settings.timezone.london' },
+  { value: 'America/New_York', i18nKey: 'settings.timezone.newyork' },
+  { value: 'America/Los_Angeles', i18nKey: 'settings.timezone.losangeles' },
+  { value: 'UTC', i18nKey: 'settings.timezone.utc' },
 ]
 
 /** 把任意输入收敛到列表里的合法时区，非法或缺省回退东 8 区 */

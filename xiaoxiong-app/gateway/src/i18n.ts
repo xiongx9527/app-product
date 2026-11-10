@@ -61,6 +61,8 @@ export interface Messages {
   memory: {
     /** items 是已格式化的「- 话题：内容」清单；空串表示还没记忆 */
     context: (items: string) => string
+    /** 语音「记住XX」命中后口播：key 话题，value 内容 */
+    remembered: (key: string, value: string) => string
     /** 语音「忘了XX」命中后口播：topic 话题，n 删除条数 */
     forgot: (topic: string, n: number) => string
     /** 清空全部记忆后口播 */
@@ -139,14 +141,37 @@ const zhCN: Messages = {
         ? '\n\n以下是关于这位用户长期记住的信息（习惯 / 偏好 / 作息 / 日程等），回答时自然参考，不要逐条复述：\n' +
           items
         : '',
+    remembered: (key, value) => `已记住：${key} —— ${value}。`,
     forgot: (topic, n) => `已忘掉关于「${topic}」的 ${n} 条记忆。`,
     cleared: () => '已清空关于你的全部记忆。',
     nothingToForget: () => '没找到匹配的，没什么可忘的。',
   },
 }
 
+/**
+ * 英文目录：音乐口播等其余文案先复用中文（按用户要求暂不动），
+ * 只把喂给模型的 systemPrompt 国际化，让英文会话收到英文指令。
+ */
+const en: Messages = {
+  ...zhCN,
+  systemPrompt:
+    'You are «XiongXiong», a voice assistant living inside the user\'s device. ' +
+    'Reply concisely and naturally in English, avoiding long-winded answers. ' +
+    'Use tools for music control: play_music to start, stop_music to stop, ' +
+    'pause_music to pause, resume_music to resume, next_music to switch to another track / style. ' +
+    'When the user says "play some music / a song / I want to listen to music", use play_music; ' +
+    'when they say "next one / another / a different style / something else", use next_music (genre optional); ' +
+    'pause_music for "pause / hold on", resume_music for "resume / keep going", stop_music for "stop / turn it off". ' +
+    '[Output & expression constraints] Output plain text only. No Markdown or formatting symbols ' +
+    '(**bold**, # headings, list bullets, tables, code blocks, etc.). ' +
+    'Do not add filler or apologies before or after calling a tool (especially music tools) — ' +
+    'no "Sure", "Just a moment", "Sorry, ...", "Let me see", "Skipping...", etc. ' +
+    'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing.',
+}
+
 const catalogs: Record<string, Messages> = {
   'zh-CN': zhCN,
+  en,
 }
 
 export function messages(lang: Lang | string = 'zh-CN'): Messages {

@@ -1262,12 +1262,24 @@ async def chat_completions(request: Request):
     # 直接拒绝，避免把请求发到一个根本不存在的模型上、再由上游返回一堆乱码错误。
     # 客户端没带模型、或目录为空（没法判定）时放行，由上游决定。
     # 显式带 base_url 的「按 URL 测试」场景跳过此门禁（不受配置池目录约束）。
+    #
+    # 例外：客户端/网关带了目录里没有的模型（例如网关占位默认 gpt-oss:120b-cloud），
+    # 但配置了全局默认模型（LLM_UPSTREAM_MODEL）且该模型真实存在时，回落到默认模型，
+    # 让本地代理用真实可用的模型接管，而不是一刀切 400 拒绝。这样网关不必硬编码
+    # 业务侧的具体模型名，内置服务侧一处配好默认即可。
     if req_model and not body.get("bypass_catalog") and not req_base_url:
         catalog = llm_catalog()
         if catalog:
             v = model_catalog.validate(model_catalog.ModelType.LLM, catalog, req_model)
             if not v.valid:
-                return error_response(400, f"模型校验失败：{v.reason}（请求模型 {req_model!r}）")
+                override_model = llm_model_override()
+                if override_model and any(
+                    e.get("model") == override_model
+                    for e in upstream_pool.load_pool("LLM")
+                ):
+                    req_model = override_model
+                else:
+                    return error_response(400, f"模型校验失败：{v.reason}（请求模型 {req_model!r}）")
 
     # 测试界面可显式带 base_url，直接打到该上游地址（绕过池内路由），用于验证任意
     # OpenAI 兼容端点；此时厂商/模型路由不再生效，完全按客户端给的 URL + 协议转发。

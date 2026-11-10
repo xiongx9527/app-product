@@ -10,7 +10,7 @@
     {
       "path": "pages/settings/settings",
       "style": {
-        "navigationBarTitleText": "语音配置"
+        "navigationBarTitleText": "设置"
       }
     }
   ],

@@ -4,12 +4,6 @@ import { createGateway } from './server'
 import type { ServerEvent } from './protocol'
 import type { GatewayConfig } from './config'
 import { generateRsaKeyPair, encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
-import { createDb } from './db/client'
-import { deviceData } from './db/schema'
-import { deviceDataMapper } from './mapper/deviceDataMapper'
-
-// 落库加密用的第三对密钥（网关持有 db 公钥 + 私钥）。
-const dbKeys = generateRsaKeyPair()
 
 const base: GatewayConfig = {
   port: 8799,
@@ -24,7 +18,7 @@ const base: GatewayConfig = {
   llm: { provider: 'stub', baseUrl: 'http://127.0.0.1:11434', model: 'qwen2.5', apiKey: '', params: {} },
   asr: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', endpointMs: 30, params: {} },
   tts: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', params: {} },
-  db: { path: ':memory:', publicKey: dbKeys.publicKey, privateKey: dbKeys.privateKey },
+  db: { path: ':memory:' },
 }
 
 /** 100ms 方波人声帧：客户端持续上行后，静音帧会被 VAD 丢掉，测试得送人声。 */
@@ -128,23 +122,4 @@ it('param encryption round-trip', async () => {
   // 网关用前端公钥加密响应；前端用前端私钥解密。
   const decrypted = JSON.parse(decryptWithPrivateKey(frontendKeys.privateKey, body.data)) as { id: number }
   expect(typeof decrypted.id).toBe('number')
-})
-
-it('device_data: api-key 落库加密、读取解密；其它类型保持明文', async () => {
-  const db = createDb(':memory:')
-  const k = generateRsaKeyPair()
-  const mapper = deviceDataMapper(db, k.publicKey, k.privateKey)
-  const secret = JSON.stringify({ provider: 'openai', apiKey: 'sk-123' })
-  await mapper.create('dkey', 'api-key', secret)
-  await mapper.create('dkey', 'sensor', '{"temp":26}')
-
-  // 落库原文应为密文，不等于明文
-  const raw = await db.select().from(deviceData)
-  const apiRow = raw.find((r) => r.type === 'api-key')!
-  expect(apiRow.payload).not.toBe(secret)
-
-  // 读取应解密回原文；非 api-key 类型保持明文
-  const listed = await mapper.listByDevice('dkey')
-  expect(listed.find((r) => r.type === 'api-key')!.payload).toBe(secret)
-  expect(listed.find((r) => r.type === 'sensor')!.payload).toBe('{"temp":26}')
 })

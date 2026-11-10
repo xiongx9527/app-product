@@ -215,29 +215,20 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
   - 响应 `201`：`{ "id": number }`
 - `GET /api/command-logs?deviceId=xxx`：列出（倒序，最多 200）。
 
-#### 设置接口（语音助手自用，/api/assistant，不需要登录）
+#### 设置接口（语音助手自用，/api/admin，不需要登录）
 
 语音助手自身的设置页（`uni_app` 的 `pages/settings`）使用的接口，与通用数据接口（sessions / device-data / command-logs）区分开。这是客户端与网关之间的第一方通信。
 
-> **免登录**：`/api/assistant/*` 是语音助手自身使用的接口，**永远不需要登录**，也不做任何鉴权。不要为这些端点加登录开关或 Bearer 拦截——它们面向本机设置页，登录只属于未来的平台托管模式（届时由不同入口承载）。
+> **免登录**：`/api/admin/*` 是语音助手自身使用的接口，**永远不需要登录**，也不做任何鉴权。不要为这些端点加登录开关或 Bearer 拦截——它们面向本机设置页，登录只属于未来的平台托管模式（届时由不同入口承载）。
 
 ##### 长期记忆 memories
 
 设备维度的用户长期记忆（习惯 / 偏好 / 作息 / 日程等），只存本机 SQLite，按 `deviceId` 隔离，不上云、不跨设备同步。同设备下 `(device_id, key)` 唯一，重复写同一 `key` 覆盖更新。
 
-- `GET /api/assistant/memories?deviceId=xxx`：列出该设备全部记忆（按最近更新倒序），每项为 `{ "key": string, "value": string, "updatedAt": number }`。缺 `deviceId` 返回 `400`。
-- `DELETE /api/assistant/memories?deviceId=xxx`（body `{ "key"?: string }`）：删除记忆。`key` 缺省或空串表示清空该设备全部记忆；否则按「话题/内容」模糊匹配（命中 `key` 等于、包含，或 `value` 包含）删除。响应 `{ "deleted": number }`。
+- `GET /api/admin/memories?deviceId=xxx`：列出该设备全部记忆（按最近更新倒序），每项为 `{ "key": string, "value": string, "updatedAt": number }`。缺 `deviceId` 返回 `400`。
+- `DELETE /api/admin/memories?deviceId=xxx`（body `{ "key"?: string }`）：删除记忆。`key` 缺省或空串表示清空该设备全部记忆；否则按「话题/内容」模糊匹配（命中 `key` 等于、包含，或 `value` 包含）删除。响应 `{ "deleted": number }`。
 
 > 语音侧的「记住 / 回忆 / 忘了XX」由对话智能体的 `remember` / `recall` / `forget` 工具与「忘了XX / 清空记忆」直接指令处理（见 `gateway/src/service/memoryControl.ts` 与 `tools/memoryTool.ts`），写入同样落到本接口背后的 `user_memory` 表。设置页（`uni_app` 的 `pages/settings`）可调 REST 查看与删除。
-
-##### 语音服务配置 voice-config
-
-ASR / LLM / TTS 共用一份来源选择（内置 / DashScope），落 SQLite 的 `device_data`（`type = 'voice-config'`，`apiKey` 等敏感字段落库加密），按 `deviceId` 隔离。内置默认地址与 DashScope 默认地址由网关环境变量注入（`VOICE_BUILTIN_URL` / `VOICE_DASHSCOPE_URL`），不在代码里写死。
-
-- `GET /api/assistant/voice-config?deviceId=xxx`：返回当前配置 `{ "provider": ("builtin"|"dashscope"), "url": string, "apiKey": string }`。缺 `deviceId` 返回 `400`；无记录时回退默认内置配置。
-- `POST /api/assistant/voice-config?deviceId=xxx`（或 `PUT`，幂等覆盖）body `{ "provider": ("builtin"|"dashscope"), "url": string, "apiKey": string }`：保存该设备配置。响应 `{ "id": number, "voice": {...} }`。缺 `deviceId` 返回 `400`。
-  - `builtin`：`url` 可编辑（默认 `VOICE_BUILTIN_URL`）。
-  - `dashscope`：`url` 走默认 `VOICE_DASHSCOPE_URL`，前端只填 `apiKey`。
 
 
 #### 参数加密（PARAM_ENCRYPT=true）

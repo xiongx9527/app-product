@@ -4,6 +4,8 @@ import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
 import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
 import type { GatewayConfig } from '../config'
+import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
+import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
 import { createMusicSource, type MusicSource } from './music'
 import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest } from './music/types'
 import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
@@ -35,6 +37,7 @@ const MAX_QUEUE = 3
 /** 单个语音会话的业务编排：ASR → 智能体 → TTS，并记录日志到数据库。 */
 export interface VoiceSessionDeps {
   agentFactory: (
+    llm: LlmConfig,
     lang: Lang,
     timezone?: string,
     locationProvider?: () => LocationInfo | null,
@@ -44,8 +47,11 @@ export interface VoiceSessionDeps {
     memoryContext?: string,
     requestLocation?: RequestLocation
   ) => AgentService
-  asr: AsrProvider
-  tts: TtsProvider
+  /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
+  createAsr: (cfg: AsrConfig) => AsrProvider
+  createTts: (cfg: TtsConfig) => TtsProvider
+  /** 把客户端设置的语音服务配置展开成三套能力配置 */
+  resolveVoice: (voice?: VoiceConfig) => ResolvedCapabilities
   data: DataService
   send: (event: ServerEvent) => void
   sendAudio: (bytes: Uint8Array) => void
@@ -125,6 +131,9 @@ export class VoiceSessionService {
   private sessionRowId = 0
   private agent: AgentService | null = null
   private readonly deviceId: string | null = null
+  /** 本次会话的 ASR / TTS 实例：在 start() 里按客户端设置的语音配置构建（地址/密钥/参数来自设置） */
+  private asr!: AsrProvider
+  private tts!: TtsProvider
   /**
    * 客户端持续上行（含静音），所以句末不再靠「收不到数据」判断：
    * 只有 VAD 判为语音的帧才喂给 ASR，最后一个人声帧之后静音够久才定稿。
@@ -189,7 +198,7 @@ export class VoiceSessionService {
         this.musicSource = this.deps.musicSourceFactory
           ? this.deps.musicSourceFactory()
           : createMusicSource()
-        void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode)
+        void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, msg.voice)
         // ASR/TTS/LLM 未就绪时，网关没法用语音播报，改为下发预录提示音，让用户「听得见地」知道；
         // 探测有 15s 缓存，连重连/重唤醒都便宜，不每次真打服务。不下发具体文案（提示音已含人声）。
         void this.announceCapabilityProblems()
@@ -600,6 +609,11 @@ export class VoiceSessionService {
   private async runMemoryCommand(cmd: ReturnType<typeof detectMemoryCommand>): Promise<void> {
     if (!cmd || !this.deviceId) return
     const m = messages(this.lang).memory
+    if (cmd.action === 'remember') {
+      await this.deps.data.saveMemory(this.deviceId, cmd.key, cmd.value)
+      await this.speakReply(m.remembered(cmd.key, cmd.value))
+      return
+    }
     if (cmd.action === 'clear') {
       await this.deps.data.forgetMemory(this.deviceId)
       await this.speakReply(m.cleared())
@@ -675,7 +689,7 @@ export class VoiceSessionService {
     if (this.halfDuplex && !this.echo.muted()) this.syncDuplex()
     const vad = this.vad.push(chunk, { strict: false })
     for (const frame of vad.frames) {
-      void this.deps.asr.push(frame).then((partial) => {
+      void this.asr.push(frame).then((partial) => {
         // 播报期间只做唤醒词识别（用定稿），实时草稿不上发给客户端，避免回声刷屏
         if (partial && !this.playbackPending) {
           this.deps.send({ type: 'asr.partial', text: partial })
@@ -708,7 +722,7 @@ export class VoiceSessionService {
     // 打断/关闭后串行链里可能还挂着定稿，不能让它再发 asr.final 或排队
     if (!this.active || this.cancelled) return
     // 只有确认用户说完了（静音够久）才定稿；中间结果从不触发回复
-    const text = await this.deps.asr.finalize()
+    const text = await this.asr.finalize()
     if (!this.active || this.cancelled) return
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
     // 不进模型也不进队列，避免凭空多出一轮回答和 TTS
@@ -957,7 +971,7 @@ export class VoiceSessionService {
     this.spoken.push(sentence)
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
-    for await (const frame of this.deps.tts.synthesize(sentence)) {
+    for await (const frame of this.tts.synthesize(sentence)) {
       if (this.turn !== turn || this.cancelled) return
       this.downlinkBytes += frame.byteLength
       this.echo.onDownlink()
@@ -998,13 +1012,19 @@ export class VoiceSessionService {
     _sessionId: string,
     lang: Lang,
     timezone?: string,
-    mode: 'wake' | 'dialog' = 'dialog'
+    mode: 'wake' | 'dialog' = 'dialog',
+    voice?: VoiceConfig
   ): Promise<void> {
     this.lang = lang
     // 用户没带时区或带的是非法值就退回东 8 区
     this.timezone = timezone?.trim() || 'Asia/Shanghai'
     this.mode = mode
     this.active = true
+    // 按客户端设置展开三套能力配置并构建实例：地址 / 密钥 / 参数一律来自设置，
+    // 不再读网关硬编码。每次 start 重建（重武装也重建，状态由 reset 清空，跨轮记忆不丢）。
+    const resolved = this.deps.resolveVoice(voice)
+    this.asr = this.deps.createAsr(resolved.asr)
+    this.tts = this.deps.createTts(resolved.tts)
     // 新会话（或重武装）作废旧会话的在途回调与排队
     this.turn += 1
     this.cancelled = false
@@ -1017,7 +1037,7 @@ export class VoiceSessionService {
     this.cancelPlaybackWait()
     this.echo.release()
     this.syncDuplex()
-    this.deps.asr.reset()
+    this.asr.reset()
     this.vad.reset()
 
     // 重新武装：同一实例的二次 start（设备重连/重唤醒，agent 已存在）——
@@ -1045,6 +1065,7 @@ export class VoiceSessionService {
       mode === 'wake'
         ? null
         :                   this.deps.agentFactory(
+            resolved.llm,
             lang,
             this.timezone,
             () => this.getLocation(),
@@ -1079,7 +1100,7 @@ export class VoiceSessionService {
     this.echo.release()
     this.syncDuplex()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
-    this.deps.asr.reset()
+    this.asr.reset()
     this.vad.reset()
   }
 
@@ -1097,7 +1118,7 @@ export class VoiceSessionService {
     this.cancelPlaybackWait()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
     if (this.sessionRowId) this.deps.data.endSession(this.sessionRowId, Date.now())
-    this.deps.asr.reset()
+    this.asr.reset()
     this.vad.reset()
     // 会话显式结束：销毁对话记忆，下次 start 视为全新会话（不再保留历史/候选）。
     this.agent = null
@@ -1117,7 +1138,7 @@ export class VoiceSessionService {
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
-    this.deps.asr.reset()
+    this.asr.reset()
     this.vad.reset()
   }
 }

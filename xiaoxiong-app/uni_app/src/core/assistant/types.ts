@@ -50,10 +50,11 @@ export const DEFAULT_ASSISTANT_CONFIG: AssistantConfig = {
   t2GraceMs: 15_000,
 }
 
+/** 状态 → i18n key（文案走 core/i18n，按当前语言取值）。 */
 export const STATE_LABEL: Record<AssistantState, string> = {
-  idle: '未开启',
-  standby: '待唤醒',
-  listening: '对话中',
-  confirming: '等待回应',
-  closing: '结束中',
+  idle: 'state.idle',
+  standby: 'state.standby',
+  listening: 'state.listening',
+  confirming: 'state.confirming',
+  closing: 'state.closing',
 }

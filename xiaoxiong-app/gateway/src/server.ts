@@ -30,8 +30,8 @@ export interface Gateway {
  */
 export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
   const db = createDb(config.db.path)
-  const data = createDataService(db, config.db.publicKey, config.db.privateKey, config)
-  const api = createApiController(data)
+  const data = createDataService(db)
+  const api = createApiController(data, config)
   const docs = createDocsController()
 
   const httpServer = createServer(async (req, res) => {
