@@ -256,7 +256,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title data-i18n="语音助手模型代理管理">语音助手模型代理管理</title>
+<title data-i18n="app.title">语音助手模型代理管理</title>
 <style>
   :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --fg:#e6e8ec; --mut:#9aa3b2;
           --acc:#4f8cff; --ok:#3ecf8e; --warn:#f5a623; --err:#ff5c5c; }
@@ -392,46 +392,46 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<header><h1 data-i18n="语音助手模型代理管理">语音助手模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="退出登录">退出登录</button></div></header>
+<header><h1 data-i18n="app.title">语音助手模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
 <main id="app"></main>
-<div id="panelLoading"><div class="loading-box"><span class="spinner"></span><span data-i18n="请求中…">请求中…</span></div></div>
+<div id="panelLoading"><div class="loading-box"><span class="spinner"></span><span data-i18n="common.loading">请求中…</span></div></div>
 
 <div class="modal-mask" id="testModal">
   <div class="modal">
-    <h3 id="testModalTitle" data-i18n="模型测试">模型测试</h3>
-    <label data-i18n="协议">协议</label>
+    <h3 id="testModalTitle" data-i18n="modal.testTitle">模型测试</h3>
+    <label data-i18n="common.protocol">协议</label>
     <select id="testModalProto"></select>
     <div class="hint" id="testModalProtoDesc" style="margin-top:4px"></div>
-    <label data-i18n="鉴权（若推理接口开启了 API Key）">鉴权（若推理接口开启了 API Key）</label>
-    <input id="testModalAuthKey" type="password" data-i18n-ph="可选：API Key" placeholder="可选：API Key" />
+    <label data-i18n="common.authHint">鉴权（若推理接口开启了 API Key）</label>
+    <input id="testModalAuthKey" type="password" data-i18n-ph="common.apiKeyOptional" placeholder="可选：API Key" />
     <div id="testModalExtra"></div>
-    <label class="chk"><input type="checkbox" id="testModalStream" checked /> <span data-i18n="流式（SSE）">流式（SSE）</span></label>
-    <div class="hint" style="margin-top:2px" data-i18n="开启后逐字返回；关闭则等待完整回复。">开启后逐字返回；关闭则等待完整回复。</div>
-    <label class="chk"><input type="checkbox" id="testModalThinkMode" /> <span data-i18n="思考模式（推理链）">思考模式（推理链）</span></label>
-    <div class="hint" style="margin-top:2px" data-i18n="关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。">关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。</div>
-    <div class="hint" style="margin-top:10px" data-i18n="提示词（固定，不可编辑）">提示词（固定，不可编辑）</div>
+    <label class="chk"><input type="checkbox" id="testModalStream" checked /> <span data-i18n="common.streaming">流式（SSE）</span></label>
+    <div class="hint" style="margin-top:2px" data-i18n="common.streamingHint">开启后逐字返回；关闭则等待完整回复。</div>
+    <label class="chk"><input type="checkbox" id="testModalThinkMode" /> <span data-i18n="common.thinkMode">思考模式（推理链）</span></label>
+    <div class="hint" style="margin-top:2px" data-i18n="common.thinkOffHint">关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。</div>
+    <div class="hint" style="margin-top:10px" data-i18n="common.promptFixed">提示词（固定，不可编辑）</div>
     <pre class="m-prompt" id="testModalPrompt" style="margin-top:2px">请只回复 ok 两个字。</pre>
     <div id="testModalThinkWrap" hidden style="margin-top:10px">
-      <div class="think-head"><span class="muted" data-i18n="思考过程">思考过程</span><button class="mini" type="button" id="testModalThinkToggle" data-i18n="折叠">折叠</button></div>
+      <div class="think-head"><span class="muted" data-i18n="common.thinking">思考过程</span><button class="mini" type="button" id="testModalThinkToggle" data-i18n="common.collapse">折叠</button></div>
       <pre id="testModalThink" class="think"></pre>
     </div>
-    <div class="hint" style="margin-top:10px" data-i18n="回复">回复</div>
-    <pre class="m-out" id="testModalOut" style="margin-top:2px" data-i18n="回复将在这里显示。">回复将在这里显示。</pre>
+    <div class="hint" style="margin-top:10px" data-i18n="common.reply">回复</div>
+    <pre class="m-out" id="testModalOut" style="margin-top:2px" data-i18n="modal.replyPlaceholder">回复将在这里显示。</pre>
     <div class="hint" id="testModalStatus" style="margin-top:8px"></div>
-    <div class="row" style="justify-content:flex-end;margin-top:12px; gap:8px"><button id="testModalRun" data-i18n="测试">测试</button><button class="sec" id="testModalClose" data-i18n="关闭">关闭</button></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px; gap:8px"><button id="testModalRun" data-i18n="common.test">测试</button><button class="sec" id="testModalClose" data-i18n="common.close">关闭</button></div>
   </div>
 </div>
 
 <div class="modal-mask" id="accModal">
   <div class="modal">
-    <h3 id="accModalTitle" data-i18n="编辑地址与密钥">编辑地址与密钥</h3>
-    <label data-i18n="地址">地址</label>
+    <h3 id="accModalTitle" data-i18n="modal.editTitle">编辑地址与密钥</h3>
+    <label data-i18n="common.url">地址</label>
     <input id="accUrl" type="text" autocomplete="off" placeholder="https://..." />
-    <label data-i18n="API Key">API Key</label>
-    <input id="accKey" type="password" autocomplete="off" data-i18n-ph="（留空=清空）" placeholder="（留空=清空）" />
+    <label data-i18n="common.apiKey">API Key</label>
+    <input id="accKey" type="password" autocomplete="off" data-i18n-ph="modal.keyClearHint" placeholder="（留空=清空）" />
     <div class="row" style="justify-content:flex-end;margin-top:16px; gap:8px">
-      <button class="sec" id="accCancel" data-i18n="取消">取消</button>
-      <button id="accSave" data-i18n="保存">保存</button>
+      <button class="sec" id="accCancel" data-i18n="common.cancel">取消</button>
+      <button id="accSave" data-i18n="common.save">保存</button>
     </div>
   </div>
 </div>
@@ -444,169 +444,321 @@ function el(html){ const d=document.createElement('div'); d.innerHTML=html; retu
 /* ── i18n：只翻译界面文字（标题/按钮/标签/提示/状态），数据值（厂商名/模型名/配置键/音色分组/固定提示词）保持原样。
    以中文原文为 key，zh-CN 为空（源串兜底），en 为译文。 ── */
 const I18N = {
-  'zh-CN': {},
+  'zh-CN': {
+    "app.logout": "退出登录",
+    "app.title": "语音助手模型代理管理",
+    "asr.builtinModel": "内置模型（离线推理，无需外部服务）",
+    "asr.builtinNote": "当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。",
+    "asr.cannotRecord": "无法录音：",
+    "asr.detectFailed": "检测失败",
+    "asr.detecting": "正在真实加载内置模型并跑一次推理…",
+    "asr.detectingTitle": "真实加载内置模型并跑一次推理",
+    "asr.modelFile": "模型文件：model.int8.onnx + tokens.txt（放在 ~/.app-product/voice/models/sensevoice/，约 240MB，由 install-voice 下载）",
+    "asr.noAudio": "未内嵌音频",
+    "asr.ok": "内置可用：模型加载与推理均正常",
+    "asr.outPlaceholder": "识别结果将显示在这里。",
+    "asr.reasonDepMissing": "依赖缺失",
+    "asr.reasonException": "检测异常",
+    "asr.reasonInferFailed": "模型加载或推理失败",
+    "asr.reasonModelMissing": "模型文件缺失",
+    "asr.reasonNotWired": "检测能力未注入",
+    "asr.recHint": "点录音可把上面的试听音频替换成你录的，识别也用替换后的；「还原」恢复内置样本。",
+    "asr.recognize": "识别",
+    "asr.recognizing": "识别中…",
+    "asr.record": "录音",
+    "asr.recording": "录音中…",
+    "asr.replaced": "已替换试听音频（识别将用这段）",
+    "asr.requestFailed": "内置不可用：请求失败 ",
+    "asr.restore": "还原",
+    "asr.reverted": "已还原内置样本",
+    "asr.unavailPrefix": "内置不可用：",
+    "body.fieldName": "字段名",
+    "body.label": "自定义 body 参数（作为额外字段透传到上游；不保存，本次填写本次生效）",
+    "builtin": "内置",
+    "cfg.apiKeyAuth": "是否启用 API-Key 鉴权",
+    "cfg.apiKeyList": "API Key 列表（一行一个；填 auto 自动生成）",
+    "cfg.ipAllow": "IP 白名单（一行一个 IP 或 CIDR；留空=不限制）",
+    "cfg.llmApiKey": "API Key（留空=不修改）",
+    "cfg.llmEnabled": "LLM 启用（auto/on/off）",
+    "cfg.llmModel": "模型名",
+    "cfg.llmProtocol": "协议（openai/ollama/...）",
+    "cfg.llmUpstreamUrl": "上游地址（OpenAI 兼容）",
+    "cfg.llmVendor": "厂商（ollama/deepseek/...）",
+    "cfg.ttsDedicatedKey": "TTS 专属 Key（留空用共享）",
+    "cfg.ttsDedicatedUrl": "TTS 专属地址（留空用共享）",
+    "cfg.ttsDefaultVoice": "默认音色",
+    "cfg.ttsFallbackVoice": "TTS 兜底音色",
+    "cfg.ttsModel": "TTS 模型名（可选）",
+    "cfg.ttsUpstreamKey": "TTS 上游 Key（留空用共享）",
+    "cfg.ttsUpstreamUrl": "TTS 上游地址（留空走内置 edge-tts）",
+    "common.action": "操作",
+    "common.add": "+ 添加",
+    "common.apiKey": "API Key",
+    "common.apiKeyOptional": "可选：API Key",
+    "common.authHint": "鉴权（若推理接口开启了 API Key）",
+    "common.available": "可用",
+    "common.cancel": "取消",
+    "common.close": "关闭",
+    "common.collapse": "折叠",
+    "common.default": "默认",
+    "common.defaultParen": "（默认）",
+    "common.delete": "删除",
+    "common.deps": "依赖环境",
+    "common.detecting": "检测中…",
+    "common.done": "完成",
+    "common.empty": "（空）",
+    "common.emptyParen": "(空)",
+    "common.errorPrefix": "错误：",
+    "common.expand": "展开",
+    "common.failPrefix": "失败：",
+    "common.failed": "失败",
+    "common.failedX": "失败 ",
+    "common.loadFailed": "加载失败",
+    "common.loadFailedX": "加载失败 ",
+    "common.loading": "请求中…",
+    "common.loadingX": "加载中…",
+    "common.model": "模型",
+    "common.notTested": "未测",
+    "common.promptFixed": "提示词（固定，不可编辑）",
+    "common.protocol": "协议",
+    "common.provider": "提供商",
+    "common.refreshing": "刷新中…",
+    "common.reply": "回复",
+    "common.save": "保存",
+    "common.saved": "已保存",
+    "common.saving": "保存中…",
+    "common.status": "状态",
+    "common.stop": "停止",
+    "common.stopped": "已停止",
+    "common.streaming": "流式（SSE）",
+    "common.streamingHint": "开启后逐字返回；关闭则等待完整回复。",
+    "common.syncedRemote": "（已同步远端）",
+    "common.test": "测试",
+    "common.testAvail": "测试可用",
+    "common.testShort": "测",
+    "common.text": "文本",
+    "common.thinkMode": "思考模式（推理链）",
+    "common.thinkOffHint": "关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。",
+    "common.thinking": "思考过程",
+    "common.unavailPrefix": "不可用：",
+    "common.unavailReqFail": "不可用：请求失败 ",
+    "common.unavailable": "不可用",
+    "common.url": "地址",
+    "common.value": "值",
+    "common.voice": "音色",
+    "config.blankNoChange": "（留空则不修改）",
+    "config.security": "安全",
+    "config.title": "配置",
+    "hdr.label": "自定义请求头（仅 LLM 对话请求透传到上游；不保存，本次填写本次生效）",
+    "hdr.name": "Header 名",
+    "llm.defaultModel": "默认模型",
+    "llm.defaultProvider": "默认供应商",
+    "llm.defaultRoute": "（默认路由）",
+    "llm.includeInProvider": "选入提供商",
+    "llm.modelHint": "模型（先选提供商，再选该提供商下的模型）",
+    "llm.pickProvider": "（请先选提供商）",
+    "llm.protoDescSuffix": "；是否流式由下方「流式」勾选框单独控制，与协议无关。",
+    "llm.refreshModels": "刷新该提供商的模型列表",
+    "llm.testAvail": "测可用性",
+    "llm.testPrefix": "模型测试：",
+    "llm.useUpstreamDefault": "（沿用上游默认）",
+    "log.last200": "最近 200 行",
+    "log.refresh": "刷新日志",
+    "log.title": "日志（voice.log）",
+    "login.account": "账号",
+    "login.accountPrefix": "账号：",
+    "login.failed": "登录失败",
+    "login.login": "登录",
+    "login.password": "密码",
+    "modal.editPrefix": "编辑：",
+    "modal.editTitle": "编辑地址与密钥",
+    "modal.keyClearHint": "（留空=清空）",
+    "modal.replyPlaceholder": "回复将在这里显示。",
+    "modal.testTitle": "模型测试",
+    "proto.anthropic": "Anthropic Messages（/v1/messages，请求与流式响应双向翻译）",
+    "proto.azure": "Azure OpenAI（路径带 /openai/deployments/{model}，需 api-version）",
+    "proto.gemini": "Google Gemini（generateContent / streamGenerateContent，alt=sse）",
+    "proto.openaiChat": "OpenAI Chat Completions 线协议（/v1/chat/completions，deepseek / 通义等大多兼容）",
+    "proto.openaiResponses": "OpenAI Responses API（/v1/responses）",
+    "sec.ipHint": "一行一个 IP 或 CIDR（如 192.168.1.0/24）。留空=不限制来源",
+    "sec.keyHint": "一行一个 Key；或填 auto 自动生成并写入文件。留空则不修改",
+    "sec.offDefault": "关闭（默认）",
+    "sec.on": "开启",
+    "sec.onHint": "开启后 /llm 与 /voice 数据接口须持有效 Key；/health 与管理面板不受影响",
+    "test.replyStream": "回复将在这里流式显示。",
+    "test.send": "发送",
+    "test.tabAsr": "语音识别 ASR",
+    "test.tabLlm": "对话 LLM",
+    "test.tabTts": "语音合成 TTS",
+    "tts.builtinNote": "当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。",
+    "tts.builtinSynth": "内置合成（edge-tts 在线服务）",
+    "tts.ffmpeg": "ffmpeg：wav 输出需要（由 install-voice 安装）",
+    "tts.needNetwork": "需联网访问微软语音服务，无需本地模型文件",
+    "tts.ok": "可用：合成成功",
+    "tts.synthTitle": "真实合成一句验证内置 TTS 是否可用",
+    "tts.synthcing": "正在按配置合成一句…",
+    "tts.synthcingX": "合成中…",
+    "tts.synthesize": "合成",
+    "tts.voiceNote": "音色说明：",
+    "tts.voiceParam": "　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502",
+  },
   'en': {
-    // ── 头部 / 弹框 / 静态 ──
-    '语音助手模型代理管理': 'Voice Assistant Model Proxy Admin',
-    '退出登录': 'Log out',
-    '模型测试': 'Model Test',
-    '协议': 'Protocol',
-    '鉴权（若推理接口开启了 API Key）': 'Auth (if the inference API requires an API Key)',
-    '可选：API Key': 'Optional: API Key',
-    '流式（SSE）': 'Streaming (SSE)',
-    '开启后逐字返回；关闭则等待完整回复。': 'On: tokens stream in; off: wait for the full reply.',
-    '思考模式（推理链）': 'Thinking mode (reasoning chain)',
-    '关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。': 'Off: the "thinking" box is hidden and the proxy sends vendor-native params via the X-Proxy-Think header (e.g. ollama think=false) to truly disable reasoning; on: the reasoning is shown.',
-    '提示词（固定，不可编辑）': 'Prompt (fixed, not editable)',
-    '思考过程': 'Thinking',
-    '折叠': 'Collapse',
-    '回复': 'Reply',
-    '回复将在这里显示。': 'Reply will appear here.',
-    '测试': 'Test',
-    '关闭': 'Close',
-    '编辑地址与密钥': 'Edit URL & Key',
-    '地址': 'URL',
-    'API Key': 'API Key',
-    '（留空=清空）': '(leave blank to clear)',
-    '取消': 'Cancel',
-    '保存': 'Save',
-    '请求中…': 'Loading…',
-    // ── 登录 ──
-    '登录': 'Login',
-    '账号': 'Account',
-    '账号：': 'Account: ',
-    '密码': 'Password',
-    '登录失败': 'Login failed',
-    // ── 配置卡片 ──
-    '（留空则不修改）': '(blank = no change)',
-    '配置': 'Config',
-    '安全': 'Security',
-    '加载中…': 'Loading…',
-    '保存中…': 'Saving…',
-    '失败：': 'Failed: ',
-    '已保存': 'Saved',
-    '（已同步远端）': '(synced to remote)',
-    '错误：': 'Error: ',
-    // ── LLM 表格 ──
-    '模型': 'Model',
-    '默认': 'Default',
-    '操作': 'Action',
-    '状态': 'Status',
-    '可用': 'Available',
-    '不可用': 'Unavailable',
-    '未测': 'Not tested',
-    '选入提供商': 'Include in provider',
-    '默认模型': 'Default model',
-    '测可用性': 'Test availability',
-    '测': 'Test',
-    '；是否流式由下方「流式」勾选框单独控制，与协议无关。': '; streaming is controlled separately by the "Streaming" checkbox below and is independent of the protocol.',
-    '模型测试：': 'Model Test: ',
-    '编辑：': 'Edit: ',
-    '（空）': '(empty)',
-    '加载失败 ': 'Load failed ',
-    '提供商': 'Provider',
-    '默认供应商': 'Default provider',
-    '刷新该提供商的模型列表': 'Refresh this provider\'s model list',
-    '刷新中…': 'Refreshing…',
-    // ── ASR / TTS 内置表格 ──
-    '依赖环境': 'Dependencies',
-    '内置模型（离线推理，无需外部服务）': 'Built-in model (offline inference, no external service)',
-    '模型文件：model.int8.onnx + tokens.txt（放在 ~/.app-product/voice/models/sensevoice/，约 240MB，由 install-voice 下载）': 'Model files: model.int8.onnx + tokens.txt (place under ~/.app-product/voice/models/sensevoice/, ~240MB, downloaded by install-voice)',
-    '测试可用': 'Test availability',
-    '当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。': 'ASR is fixed to the built-in model; whether it works depends on the runtime (click "Test availability" to verify on demand); external upstreams will be added per vendor later.',
-    '正在真实加载内置模型并跑一次推理…': 'Loading the built-in model and running one inference…',
-    '模型文件缺失': 'Model file missing',
-    '依赖缺失': 'Dependency missing',
-    '模型加载或推理失败': 'Model load or inference failed',
-    '检测能力未注入': 'Detection capability not injected',
-    '检测异常': 'Detection exception',
-    '内置可用：模型加载与推理均正常': 'Built-in OK: model loads and infers normally',
-    '内置不可用：': 'Built-in unavailable: ',
-    '检测失败': 'detection failed',
-    '内置不可用：请求失败 ': 'Built-in unavailable: request failed ',
-    '内置合成（edge-tts 在线服务）': 'Built-in synthesis (edge-tts online service)',
-    '需联网访问微软语音服务，无需本地模型文件': 'Requires network access to Microsoft\'s speech service; no local model file needed',
-    'ffmpeg：wav 输出需要（由 install-voice 安装）': 'ffmpeg: required for wav output (installed by install-voice)',
-    '当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。': 'TTS is fixed to built-in edge-tts; whether it works depends on the runtime (click "Test availability" to verify on demand); external upstreams will be added per vendor later.',
-    '正在按配置合成一句…': 'Synthesizing one sentence per config…',
-    '可用：合成成功': 'Available: synthesis succeeded',
-    '不可用：': 'Unavailable: ',
-    '关闭（默认）': 'Off (default)',
-    '开启': 'On',
-    '开启后 /llm 与 /voice 数据接口须持有效 Key；/health 与管理面板不受影响': 'On: /llm and /voice data APIs require a valid Key; /health and the admin panel are unaffected',
-    '一行一个 Key；或填 auto 自动生成并写入文件。留空则不修改': 'One Key per line; or fill "auto" to auto-generate and write to file. Blank = no change',
-    '一行一个 IP 或 CIDR（如 192.168.1.0/24）。留空=不限制来源': 'One IP or CIDR per line (e.g. 192.168.1.0/24). Blank = no source restriction',
-    // ── 自定义请求头 / body ──
-    '自定义请求头（仅 LLM 对话请求透传到上游；不保存，本次填写本次生效）': 'Custom request headers (forwarded to upstream only for LLM chat; not saved, applies to this session)',
-    'Header 名': 'Header name',
-    '值': 'Value',
-    '+ 添加': '+ Add',
-    '删除': 'Delete',
-    '自定义 body 参数（作为额外字段透传到上游；不保存，本次填写本次生效）': 'Custom body params (forwarded to upstream as extra fields; not saved, applies to this session)',
-    '字段名': 'Field name',
-    // ── 对话测试 / 状态 ──
-    '请求中…': 'Loading…',
-    '失败 ': 'Failed ',
-    '完成': 'Done',
-    '已停止': 'Stopped',
-    // ── 测试卡片 ──
-    '对话 LLM': 'Chat LLM',
-    '语音识别 ASR': 'Speech Recognition ASR',
-    '语音合成 TTS': 'Speech Synthesis TTS',
-    '（默认路由）': '(default route)',
-    '模型（先选提供商，再选该提供商下的模型）': 'Model (pick a provider first, then a model under it)',
-    '（请先选提供商）': '(pick a provider first)',
-    '回复将在这里流式显示。': 'Reply will stream here.',
-    '发送': 'Send',
-    '停止': 'Stop',
-    '点录音可把上面的试听音频替换成你录的，识别也用替换后的；「还原」恢复内置样本。': 'Tap record to replace the sample audio with yours; recognition uses the replaced clip; "Restore" reverts to the built-in sample.',
-    '录音': 'Record',
-    '还原': 'Restore',
-    '识别结果将显示在这里。': 'Recognition result will appear here.',
-    '识别': 'Recognize',
-    '文本': 'Text',
-    '音色': 'Voice',
-    '合成': 'Synthesize',
-    // ── 日志 ──
-    '日志（voice.log）': 'Logs (voice.log)',
-    '刷新日志': 'Refresh logs',
-    '最近 200 行': 'Last 200 lines',
-    '展开': 'Expand',
-    '音色说明：': 'Voice note: ',
-    '　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502': ' · Params: voice language must match the text (incl. dialects: Taiwanese/Cantonese need matching text), otherwise upstream returns 502',
-    '合成中…': 'Synthesizing…',
-    '（沿用上游默认）': '(use upstream default)',
-    '已替换试听音频（识别将用这段）': 'Sample audio replaced (recognition will use this clip)',
-    '录音中…': 'Recording…',
-    '无法录音：': 'Cannot record: ',
-    '已还原内置样本': 'Reverted to built-in sample',
-    '未内嵌音频': 'No embedded audio',
-    '识别中…': 'Recognizing…',
-    '(空)': '(empty)',
-    '加载失败': 'Load failed',
-    // ── 配置标签（CFG_LABEL，经 t() 解析）──
-    'LLM 启用（auto/on/off）': 'LLM enabled (auto/on/off)',
-    '上游地址（OpenAI 兼容）': 'Upstream URL (OpenAI-compatible)',
-    'API Key（留空=不修改）': 'API Key (blank = no change)',
-    '模型名': 'Model name',
-    '协议（openai/ollama/...）': 'Protocol (openai/ollama/...)',
-    '厂商（ollama/deepseek/...）': 'Vendor (ollama/deepseek/...)',
-    'TTS 上游地址（留空走内置 edge-tts）': 'TTS upstream URL (blank = built-in edge-tts)',
-    'TTS 上游 Key（留空用共享）': 'TTS upstream Key (blank = shared)',
-    '默认音色': 'Default voice',
-    'TTS 模型名（可选）': 'TTS model name (optional)',
-    'TTS 专属地址（留空用共享）': 'TTS dedicated URL (blank = shared)',
-    'TTS 专属 Key（留空用共享）': 'TTS dedicated Key (blank = shared)',
-    'TTS 兜底音色': 'TTS fallback voice',
-    '是否启用 API-Key 鉴权': 'Enable API-Key auth',
-    'API Key 列表（一行一个；填 auto 自动生成）': 'API Key list (one per line; fill "auto" to auto-generate)',
-    'IP 白名单（一行一个 IP 或 CIDR；留空=不限制）': 'IP allowlist (one IP or CIDR per line; blank = no restriction)',
-    // ── 线协议说明（PROTOCOL_DESC，经 t() 解析）──
-    'OpenAI Chat Completions 线协议（/v1/chat/completions，deepseek / 通义等大多兼容）': 'OpenAI Chat Completions wire protocol (/v1/chat/completions, compatible with deepseek / Qwen etc.)',
-    'Azure OpenAI（路径带 /openai/deployments/{model}，需 api-version）': 'Azure OpenAI (path includes /openai/deployments/{model}, requires api-version)',
-    'OpenAI Responses API（/v1/responses）': 'OpenAI Responses API (/v1/responses)',
-    'Anthropic Messages（/v1/messages，请求与流式响应双向翻译）': 'Anthropic Messages (/v1/messages, request and streamed response are bidirectionally translated)',
-    'Google Gemini（generateContent / streamGenerateContent，alt=sse）': 'Google Gemini (generateContent / streamGenerateContent, alt=sse)',
+    "app.logout": "Log out",
+    "app.title": "Voice Assistant Model Proxy Admin",
+    "asr.builtinModel": "Built-in model (offline inference, no external service)",
+    "asr.builtinNote": "ASR is fixed to the built-in model; whether it works depends on the runtime (click \"Test availability\" to verify on demand); external upstreams will be added per vendor later.",
+    "asr.cannotRecord": "Cannot record: ",
+    "asr.detectFailed": "detection failed",
+    "asr.detecting": "Loading the built-in model and running one inference…",
+    "asr.detectingTitle": "Load the built-in model and run one inference",
+    "asr.modelFile": "Model files: model.int8.onnx + tokens.txt (place under ~/.app-product/voice/models/sensevoice/, ~240MB, downloaded by install-voice)",
+    "asr.noAudio": "No embedded audio",
+    "asr.ok": "Built-in OK: model loads and infers normally",
+    "asr.outPlaceholder": "Recognition result will appear here.",
+    "asr.reasonDepMissing": "Dependency missing",
+    "asr.reasonException": "Detection exception",
+    "asr.reasonInferFailed": "Model load or inference failed",
+    "asr.reasonModelMissing": "Model file missing",
+    "asr.reasonNotWired": "Detection capability not injected",
+    "asr.recHint": "Tap record to replace the sample audio with yours; recognition uses the replaced clip; \"Restore\" reverts to the built-in sample.",
+    "asr.recognize": "Recognize",
+    "asr.recognizing": "Recognizing…",
+    "asr.record": "Record",
+    "asr.recording": "Recording…",
+    "asr.replaced": "Sample audio replaced (recognition will use this clip)",
+    "asr.requestFailed": "Built-in unavailable: request failed ",
+    "asr.restore": "Restore",
+    "asr.reverted": "Reverted to built-in sample",
+    "asr.unavailPrefix": "Built-in unavailable: ",
+    "body.fieldName": "Field name",
+    "body.label": "Custom body params (forwarded to upstream as extra fields; not saved, applies to this session)",
+    "builtin": "Built-in",
+    "cfg.apiKeyAuth": "Enable API-Key auth",
+    "cfg.apiKeyList": "API Key list (one per line; fill \"auto\" to auto-generate)",
+    "cfg.ipAllow": "IP allowlist (one IP or CIDR per line; blank = no restriction)",
+    "cfg.llmApiKey": "API Key (blank = no change)",
+    "cfg.llmEnabled": "LLM enabled (auto/on/off)",
+    "cfg.llmModel": "Model name",
+    "cfg.llmProtocol": "Protocol (openai/ollama/...)",
+    "cfg.llmUpstreamUrl": "Upstream URL (OpenAI-compatible)",
+    "cfg.llmVendor": "Vendor (ollama/deepseek/...)",
+    "cfg.ttsDedicatedKey": "TTS dedicated Key (blank = shared)",
+    "cfg.ttsDedicatedUrl": "TTS dedicated URL (blank = shared)",
+    "cfg.ttsDefaultVoice": "Default voice",
+    "cfg.ttsFallbackVoice": "TTS fallback voice",
+    "cfg.ttsModel": "TTS model name (optional)",
+    "cfg.ttsUpstreamKey": "TTS upstream Key (blank = shared)",
+    "cfg.ttsUpstreamUrl": "TTS upstream URL (blank = built-in edge-tts)",
+    "common.action": "Action",
+    "common.add": "+ Add",
+    "common.apiKey": "API Key",
+    "common.apiKeyOptional": "Optional: API Key",
+    "common.authHint": "Auth (if the inference API requires an API Key)",
+    "common.available": "Available",
+    "common.cancel": "Cancel",
+    "common.close": "Close",
+    "common.collapse": "Collapse",
+    "common.default": "Default",
+    "common.defaultParen": "(default)",
+    "common.delete": "Delete",
+    "common.deps": "Dependencies",
+    "common.detecting": "Detecting…",
+    "common.done": "Done",
+    "common.empty": "(empty)",
+    "common.emptyParen": "(empty)",
+    "common.errorPrefix": "Error: ",
+    "common.expand": "Expand",
+    "common.failPrefix": "Failed: ",
+    "common.failed": "Failed",
+    "common.failedX": "Failed ",
+    "common.loadFailed": "Load failed",
+    "common.loadFailedX": "Load failed ",
+    "common.loading": "Loading…",
+    "common.loadingX": "Loading…",
+    "common.model": "Model",
+    "common.notTested": "Not tested",
+    "common.promptFixed": "Prompt (fixed, not editable)",
+    "common.protocol": "Protocol",
+    "common.provider": "Provider",
+    "common.refreshing": "Refreshing…",
+    "common.reply": "Reply",
+    "common.save": "Save",
+    "common.saved": "Saved",
+    "common.saving": "Saving…",
+    "common.status": "Status",
+    "common.stop": "Stop",
+    "common.stopped": "Stopped",
+    "common.streaming": "Streaming (SSE)",
+    "common.streamingHint": "On: tokens stream in; off: wait for the full reply.",
+    "common.syncedRemote": "(synced to remote)",
+    "common.test": "Test",
+    "common.testAvail": "Test availability",
+    "common.testShort": "Test",
+    "common.text": "Text",
+    "common.thinkMode": "Thinking mode (reasoning chain)",
+    "common.thinkOffHint": "Off: the \"thinking\" box is hidden and the proxy sends vendor-native params via the X-Proxy-Think header (e.g. ollama think=false) to truly disable reasoning; on: the reasoning is shown.",
+    "common.thinking": "Thinking",
+    "common.unavailPrefix": "Unavailable: ",
+    "common.unavailReqFail": "Unavailable: request failed ",
+    "common.unavailable": "Unavailable",
+    "common.url": "URL",
+    "common.value": "Value",
+    "common.voice": "Voice",
+    "config.blankNoChange": "(blank = no change)",
+    "config.security": "Security",
+    "config.title": "Config",
+    "hdr.label": "Custom request headers (forwarded to upstream only for LLM chat; not saved, applies to this session)",
+    "hdr.name": "Header name",
+    "llm.defaultModel": "Default model",
+    "llm.defaultProvider": "Default provider",
+    "llm.defaultRoute": "(default route)",
+    "llm.includeInProvider": "Include in provider",
+    "llm.modelHint": "Model (pick a provider first, then a model under it)",
+    "llm.pickProvider": "(pick a provider first)",
+    "llm.protoDescSuffix": "; streaming is controlled separately by the \"Streaming\" checkbox below and is independent of the protocol.",
+    "llm.refreshModels": "Refresh this provider's model list",
+    "llm.testAvail": "Test availability",
+    "llm.testPrefix": "Model Test: ",
+    "llm.useUpstreamDefault": "(use upstream default)",
+    "log.last200": "Last 200 lines",
+    "log.refresh": "Refresh logs",
+    "log.title": "Logs (voice.log)",
+    "login.account": "Account",
+    "login.accountPrefix": "Account: ",
+    "login.failed": "Login failed",
+    "login.login": "Login",
+    "login.password": "Password",
+    "modal.editPrefix": "Edit: ",
+    "modal.editTitle": "Edit URL & Key",
+    "modal.keyClearHint": "(leave blank to clear)",
+    "modal.replyPlaceholder": "Reply will appear here.",
+    "modal.testTitle": "Model Test",
+    "proto.anthropic": "Anthropic Messages (/v1/messages, request and streamed response are bidirectionally translated)",
+    "proto.azure": "Azure OpenAI (path includes /openai/deployments/{model}, requires api-version)",
+    "proto.gemini": "Google Gemini (generateContent / streamGenerateContent, alt=sse)",
+    "proto.openaiChat": "OpenAI Chat Completions wire protocol (/v1/chat/completions, compatible with deepseek / Qwen etc.)",
+    "proto.openaiResponses": "OpenAI Responses API (/v1/responses)",
+    "sec.ipHint": "One IP or CIDR per line (e.g. 192.168.1.0/24). Blank = no source restriction",
+    "sec.keyHint": "One Key per line; or fill \"auto\" to auto-generate and write to file. Blank = no change",
+    "sec.offDefault": "Off (default)",
+    "sec.on": "On",
+    "sec.onHint": "On: /llm and /voice data APIs require a valid Key; /health and the admin panel are unaffected",
+    "test.replyStream": "Reply will stream here.",
+    "test.send": "Send",
+    "test.tabAsr": "Speech Recognition ASR",
+    "test.tabLlm": "Chat LLM",
+    "test.tabTts": "Speech Synthesis TTS",
+    "tts.builtinNote": "TTS is fixed to built-in edge-tts; whether it works depends on the runtime (click \"Test availability\" to verify on demand); external upstreams will be added per vendor later.",
+    "tts.builtinSynth": "Built-in synthesis (edge-tts online service)",
+    "tts.ffmpeg": "ffmpeg: required for wav output (installed by install-voice)",
+    "tts.needNetwork": "Requires network access to Microsoft's speech service; no local model file needed",
+    "tts.ok": "Available: synthesis succeeded",
+    "tts.synthTitle": "Synthesize one sentence to verify built-in TTS",
+    "tts.synthcing": "Synthesizing one sentence per config…",
+    "tts.synthcingX": "Synthesizing…",
+    "tts.synthesize": "Synthesize",
+    "tts.voiceNote": "Voice note: ",
+    "tts.voiceParam": " · Params: voice language must match the text (incl. dialects: Taiwanese/Cantonese need matching text), otherwise upstream returns 502",
   }
 };
 let curLang = localStorage.getItem('admin_lang') || 'zh-CN';
@@ -635,17 +787,17 @@ applyStaticI18n();
 async function boot(){
   const me = await api('/admin/api/me').then(r=>r.ok?r.json():null);
   if(!me || !me.authenticated){ renderLogin(); document.getElementById('logout').style.display='none'; }
-  else { document.getElementById('who').textContent = t('账号：')+me.user; document.getElementById('logout').style.display=''; renderDashboard(); }
+  else { document.getElementById('who').textContent = t('login.accountPrefix')+me.user; document.getElementById('logout').style.display=''; renderDashboard(); }
 }
 
 function renderLogin(){
   document.getElementById('app').innerHTML = '';
   const card = el(`<div class="card" id="login">
-    <h2>${t('登录')}</h2>
-    <label>${t('账号')}</label><input type="text" id="u" autocomplete="username" />
-    <label>${t('密码')}</label><input type="password" id="p" autocomplete="current-password" />
+    <h2>${t('login.login')}</h2>
+    <label>${t('login.account')}</label><input type="text" id="u" autocomplete="username" />
+    <label>${t('login.password')}</label><input type="password" id="p" autocomplete="current-password" />
     <div class="err" id="e"></div>
-    <div class="row" style="margin-top:12px"><button id="go">${t('登录')}</button></div>
+    <div class="row" style="margin-top:12px"><button id="go">${t('login.login')}</button></div>
   </div>`);
   document.getElementById('app').appendChild(card);
   const submit = async ()=>{
@@ -653,7 +805,7 @@ function renderLogin(){
       headers:{'content-type':'application/x-www-form-urlencoded'},
       body:`user=${encodeURIComponent(document.getElementById('u').value)}&password=${encodeURIComponent(document.getElementById('p').value)}`});
     if(r.ok){ boot(); }
-    else { document.getElementById('e').textContent = (await r.json()).detail || t('登录失败'); }
+    else { document.getElementById('e').textContent = (await r.json()).detail || t('login.failed'); }
   };
   card.querySelector('#go').onclick = submit;
   card.querySelector('#p').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
@@ -667,13 +819,13 @@ const CFG_TABS = {
   sec: ['VOICE_API_KEY_AUTH','VOICE_API_KEY','VOICE_IP_ALLOW'],
 };
 const CFG_LABEL = {
-  LLM_ENABLED:'LLM 启用（auto/on/off）', LLM_UPSTREAM_BASE_URL:'上游地址（OpenAI 兼容）', LLM_UPSTREAM_API_KEY:'API Key（留空=不修改）',
-  LLM_UPSTREAM_MODEL:'模型名', LLM_UPSTREAM_PROTOCOL:'协议（openai/ollama/...）', LLM_UPSTREAM_VENDOR:'厂商（ollama/deepseek/...）',
-  VOICE_UPSTREAM_BASE_URL:'TTS 上游地址（留空走内置 edge-tts）', VOICE_UPSTREAM_API_KEY:'TTS 上游 Key（留空用共享）',
-  TTS_UPSTREAM_VOICE:'默认音色', TTS_UPSTREAM_MODEL:'TTS 模型名（可选）', TTS_UPSTREAM_BASE_URL:'TTS 专属地址（留空用共享）',
-  TTS_UPSTREAM_API_KEY:'TTS 专属 Key（留空用共享）', TTS_VOICE:'TTS 兜底音色',
-  VOICE_API_KEY_AUTH:'是否启用 API-Key 鉴权', VOICE_API_KEY:'API Key 列表（一行一个；填 auto 自动生成）',
-  VOICE_IP_ALLOW:'IP 白名单（一行一个 IP 或 CIDR；留空=不限制）',
+  LLM_ENABLED:'cfg.llmEnabled', LLM_UPSTREAM_BASE_URL:'cfg.llmUpstreamUrl', LLM_UPSTREAM_API_KEY:'cfg.llmApiKey',
+  LLM_UPSTREAM_MODEL:'cfg.llmModel', LLM_UPSTREAM_PROTOCOL:'cfg.llmProtocol', LLM_UPSTREAM_VENDOR:'cfg.llmVendor',
+  VOICE_UPSTREAM_BASE_URL:'cfg.ttsUpstreamUrl', VOICE_UPSTREAM_API_KEY:'cfg.ttsUpstreamKey',
+  TTS_UPSTREAM_VOICE:'cfg.ttsDefaultVoice', TTS_UPSTREAM_MODEL:'cfg.ttsModel', TTS_UPSTREAM_BASE_URL:'cfg.ttsDedicatedUrl',
+  TTS_UPSTREAM_API_KEY:'cfg.ttsDedicatedKey', TTS_VOICE:'cfg.ttsFallbackVoice',
+  VOICE_API_KEY_AUTH:'cfg.apiKeyAuth', VOICE_API_KEY:'cfg.apiKeyList',
+  VOICE_IP_ALLOW:'cfg.ipAllow',
 };
 const isSecret = k => /API_KEY|PASSWORD|SECRET|DSN|_POOL$/i.test(k);
 let cfgOrig = {};
@@ -682,23 +834,23 @@ function buildConfigCard(){
   const fields = (id,keys)=> keys.map(k=>{
     if(k==='LLM_ENABLED') return `<label>${t(CFG_LABEL[k]||k)}</label><select id="cfg_${k}"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select>`;
     const secret = isSecret(k);
-    return `<label>${t(CFG_LABEL[k]||k)}</label><input id="cfg_${k}"${secret?` type="password" placeholder="${t('（留空则不修改）')}"`:''} />`;
-  }).join('') + `<div class="row" style="margin-top:12px"><button id="cfgSave_${id}">${t('保存')}</button><span class="hint" id="cfgStat_${id}" style="margin-left:10px"></span></div>`;
-  return el(`<div class="card collapsed" id="cfgCard"><h2>${t('配置')}</h2>
+    return `<label>${t(CFG_LABEL[k]||k)}</label><input id="cfg_${k}"${secret?` type="password" placeholder="${t('config.blankNoChange')}"`:''} />`;
+  }).join('') + `<div class="row" style="margin-top:12px"><button id="cfgSave_${id}">${t('common.save')}</button><span class="hint" id="cfgStat_${id}" style="margin-left:10px"></span></div>`;
+  return el(`<div class="card collapsed" id="cfgCard"><h2>${t('config.title')}</h2>
     <div class="tabs" id="cfgTabs">
       <button class="tab active" data-ctab="llm">LLM</button>
       <button class="tab" data-ctab="asr">ASR</button>
       <button class="tab" data-ctab="tts">TTS</button>
-      <button class="tab" data-ctab="sec">${t('安全')}</button>
+      <button class="tab" data-ctab="sec">${t('config.security')}</button>
     </div>
-    <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">${t('加载中…')}</div><div class="row" style="margin-top:12px"><button id="cfgSave_llm">${t('保存')}</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
+    <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">${t('common.loadingX')}</div><div class="row" style="margin-top:12px"><button id="cfgSave_llm">${t('common.save')}</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
     <div id="c-asr" class="cfgpane" hidden>
-      <div id="asrTableWrap" class="hint">${t('加载中…')}</div>
+      <div id="asrTableWrap" class="hint">${t('common.loadingX')}</div>
     </div>
     <div id="c-tts" class="cfgpane" hidden>
-      <div id="ttsTableWrap" class="hint">${t('加载中…')}</div>
+      <div id="ttsTableWrap" class="hint">${t('common.loadingX')}</div>
     </div>
-    <div id="c-sec" class="cfgpane" hidden><div id="secWrap"></div><div class="row" style="margin-top:12px"><button id="cfgSave_sec">${t('保存')}</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div></div>
+    <div id="c-sec" class="cfgpane" hidden><div id="secWrap"></div><div class="row" style="margin-top:12px"><button id="cfgSave_sec">${t('common.save')}</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div></div>
   </div>`);
 }
 
@@ -728,14 +880,14 @@ function wireConfig(){
       ['llm','asr','tts','sec'].forEach(p=>{ const e=document.getElementById('c-'+p); if(e) e.hidden=(t.dataset.ctab!==p); }); };
   });
   const postConfig = async (patch, statId)=>{
-    const stat=document.getElementById(statId); stat.className='hint'; stat.textContent=t('保存中…');
+    const stat=document.getElementById(statId); stat.className='hint'; stat.textContent=t('common.saving');
     try{
       const r=await fetch('/admin/api/config',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
       const d=await r.json().catch(()=>({}));
-      if(!r.ok){ stat.className='err'; stat.textContent=t('失败：')+(d.detail||r.status); return; }
-      stat.className='hint'; stat.textContent=t('已保存')+(d.remote_push&&d.remote_push.ok?t('（已同步远端）'):'');
+      if(!r.ok){ stat.className='err'; stat.textContent=t('common.failPrefix')+(d.detail||r.status); return; }
+      stat.className='hint'; stat.textContent=t('common.saved')+(d.remote_push&&d.remote_push.ok?t('common.syncedRemote'):'');
       loadConfig();
-    }catch(e){ stat.className='err'; stat.textContent=t('错误：')+e.message; }
+    }catch(e){ stat.className='err'; stat.textContent=t('common.errorPrefix')+e.message; }
   };
   const save = async (id,keys,statId)=>{
     const patch={}; keys.forEach(k=>{ const v=cfgVal(k); if(v!==undefined && v!==null) patch[k]=v; });
@@ -787,19 +939,19 @@ function buildModelPick(gi){
   if(!g._avail) g._avail={};   // 各模型最近一次测试结果：'ok' / 'err'
   if(g._def===undefined) g._def = (g.vendor===llmDefVendor && llmDefModel && g.models.includes(llmDefModel)) ? llmDefModel : (g.models[0]||'');
   let html='<div class="model-pick">';
-  html+='<table class="model-sub"><thead><tr><th></th><th>'+t('模型')+'</th><th>'+t('默认')+'</th><th>'+t('操作')+'</th><th>'+t('状态')+'</th></tr></thead><tbody>';
+  html+='<table class="model-sub"><thead><tr><th></th><th>'+t('common.model')+'</th><th>'+t('common.default')+'</th><th>'+t('common.action')+'</th><th>'+t('common.status')+'</th></tr></thead><tbody>';
   g._cands.forEach(m=>{
     const checked=g._sel.has(m)?'checked':'';
     const isDef=g._def===m?'checked':'';
     const av=g._avail[m];
-    const badge = av==='ok' ? '<span class="b-ok">'+t('可用')+'</span>'
-                : av==='err' ? '<span class="b-err">'+t('不可用')+'</span>'
-                : '<span class="b-mut">'+t('未测')+'</span>';
+    const badge = av==='ok' ? '<span class="b-ok">'+t('common.available')+'</span>'
+                : av==='err' ? '<span class="b-err">'+t('common.unavailable')+'</span>'
+                : '<span class="b-mut">'+t('common.notTested')+'</span>';
     html+=`<tr>`
-      +`<td><input type="checkbox" class="lp-model" data-g="${gi}" data-m="${escapeAttr(m)}" title="${t('选入提供商')}" ${checked}/></td>`
+      +`<td><input type="checkbox" class="lp-model" data-g="${gi}" data-m="${escapeAttr(m)}" title="${t('llm.includeInProvider')}" ${checked}/></td>`
       +`<td class="mm" title="${escapeAttr(m)}">${escapeHtml(m)}</td>`
-      +`<td><input type="radio" name="lpDef_${gi}" value="${escapeAttr(m)}" title="${t('默认模型')}" ${isDef}/></td>`
-      +`<td><button class="mini" data-test="${gi}" data-m="${escapeAttr(m)}" title="${t('测可用性')}">${t('测')}</button></td>`
+      +`<td><input type="radio" name="lpDef_${gi}" value="${escapeAttr(m)}" title="${t('llm.defaultModel')}" ${isDef}/></td>`
+      +`<td><button class="mini" data-test="${gi}" data-m="${escapeAttr(m)}" title="${t('llm.testAvail')}">${t('common.testShort')}</button></td>`
       +`<td class="avail-cell">${badge}</td>`
       +`</tr>`;
   });
@@ -845,13 +997,13 @@ function bindModelCell(gi){
 const TEST_PROMPT = '请只回复 ok 两个字。';   // 测试用的固定提示词（不可编辑）
 // 线协议中文说明：底部测试卡片与配置里的模型测试弹窗共用一份
 const PROTOCOL_DESC = {
-  'openai_chat_completions': 'OpenAI Chat Completions 线协议（/v1/chat/completions，deepseek / 通义等大多兼容）',
-  'azure_openai_chat_completions': 'Azure OpenAI（路径带 /openai/deployments/{model}，需 api-version）',
-  'openai_responses': 'OpenAI Responses API（/v1/responses）',
-  'anthropic_messages': 'Anthropic Messages（/v1/messages，请求与流式响应双向翻译）',
-  'gemini': 'Google Gemini（generateContent / streamGenerateContent，alt=sse）',
+  'openai_chat_completions': 'proto.openaiChat',
+  'azure_openai_chat_completions': 'proto.azure',
+  'openai_responses': 'proto.openaiResponses',
+  'anthropic_messages': 'proto.anthropic',
+  'gemini': 'proto.gemini',
 };
-const protoDescText = (v)=> t(PROTOCOL_DESC[v]||'') + t('；是否流式由下方「流式」勾选框单独控制，与协议无关。');
+const protoDescText = (v)=> t(PROTOCOL_DESC[v]||'') + t('llm.protoDescSuffix');
 let testModalG=null, testModalM=null, testModalGi=-1;
 function openTestModal(gi, m){
   const g=llmGroups[gi];
@@ -861,7 +1013,7 @@ function openTestModal(gi, m){
   const stat=document.getElementById('testModalStatus');
   if(!mask||!title||!out||!stat||!g) return;
   testModalG=g; testModalM=m; testModalGi=gi;
-  title.textContent = t('模型测试：') + g.vendor + ' / ' + m;
+  title.textContent = t('llm.testPrefix') + g.vendor + ' / ' + m;
   const defProto=(g.accounts[0] && g.accounts[0].protocol) || g.protocol || '';
   const protoSel=document.getElementById('testModalProto');
   protoSel.innerHTML = LLM_PROTOCOLS.map(p=>`<option value="${p}"${p===defProto?' selected':''}>${p}</option>`).join('');
@@ -872,10 +1024,10 @@ function openTestModal(gi, m){
   stat.textContent=''; stat.className='hint';
   const tw=document.getElementById('testModalThinkWrap');
   if(tw){ tw.hidden=true; tw.classList.remove('collapsed'); }
-  const tToggle=document.getElementById('testModalThinkToggle'); if(tToggle) tToggle.textContent=t('折叠');
+  const tToggle=document.getElementById('testModalThinkToggle'); if(tToggle) tToggle.textContent=t('common.collapse');
   const tk=document.getElementById('testModalThink'); if(tk) tk.textContent='';
   const pm=document.getElementById('testModalPrompt'); if(pm) pm.textContent=TEST_PROMPT;  // 提示词框固定显示
-  out.textContent=t('回复将在这里显示。');  // 回复框每次打开重置（占位提示，不显示为回复内容）
+  out.textContent=t('modal.replyPlaceholder');  // 回复框每次打开重置（占位提示，不显示为回复内容）
   mask.classList.add('show');
 }
 function runModalTest(){
@@ -893,7 +1045,7 @@ function runModalTest(){
     statusEl: stat, outEl: out,
     thinkEl: document.getElementById('testModalThink'), thinkWrapEl: document.getElementById('testModalThinkWrap'),
     onDone:(ok)=>{
-      stat.textContent = ok ? t('可用') : t('不可用'); stat.className = ok ? 'hint' : 'err';
+      stat.textContent = ok ? t('common.available') : t('common.unavailable'); stat.className = ok ? 'hint' : 'err';
       // 记录测试结果到该模型，刷新子表徽标（可用/不可用/未测）
       if(g && m){ g._avail[m] = ok ? 'ok':'err'; if(gi>=0) refreshModelCell(gi); }
     } };
@@ -906,7 +1058,7 @@ function openAccModal(gi, ai){
   const g=llmGroups[gi], a=g && g.accounts[ai];
   if(!a) return;
   editAccGi=gi; editAccAi=ai;
-  document.getElementById('accModalTitle').textContent = t('编辑：') + g.vendor + '（' + t('账号') + ' ' + (ai+1) + '）';
+  document.getElementById('accModalTitle').textContent = t('modal.editPrefix') + g.vendor + '（' + t('login.account') + ' ' + (ai+1) + '）';
   document.getElementById('accUrl').value = a.base_url||'';
   document.getElementById('accKey').value = a.api_key||'';
   document.getElementById('accModal').classList.add('show');
@@ -915,7 +1067,7 @@ function refreshAccCells(gi, ai){
   const a=llmGroups[gi] && llmGroups[gi].accounts[ai]; if(!a) return;
   document.querySelectorAll(`#llmTableWrap .acc-cell[data-g="${gi}"][data-a="${ai}"]`).forEach(td=>{
     const key=td.querySelector('.acc-key');
-    if(key) key.textContent = a.api_key ? '••••••' : t('（空）');
+    if(key) key.textContent = a.api_key ? '••••••' : t('common.empty');
     else { const u=td.querySelector('.acc-url'); if(u) u.textContent = a.base_url||''; }
   });
 }
@@ -932,10 +1084,10 @@ function saveAccModal(){
 async function renderLlmTable(){
   const wrap = document.getElementById('llmTableWrap');
   if(!wrap) return;
-  wrap.className='hint'; wrap.textContent=t('加载中…');
+  wrap.className='hint'; wrap.textContent=t('common.loadingX');
   try{
     const r = await fetch('/admin/api/llm-pool',{credentials:'same-origin'});
-    if(!r.ok){ wrap.className='err'; wrap.textContent=t('加载失败 ')+r.status; return; }
+    if(!r.ok){ wrap.className='err'; wrap.textContent=t('common.loadFailedX')+r.status; return; }
     const data = await r.json();
     // LLM 固定两个提供商：ollama（预填本机地址）+ 自定义（留空由用户填写）。
     // 池里已有的数据按 vendor 合并进这两行；没有就给默认行。其余 vendor 不展示、保存时不再写回。
@@ -953,7 +1105,7 @@ async function renderLlmTable(){
     llmDefVendor = data.default_vendor||'';
     llmDefModel  = data.default_model||'';
     let html = '<table class="cfg-table"><thead><tr>'
-      + '<th>'+t('默认')+'</th><th>'+t('提供商')+'</th><th>'+t('地址')+'</th><th>API Key</th><th>'+t('模型')+'</th>'
+      + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.url')+'</th><th>API Key</th><th>'+t('common.model')+'</th>'
       + '</tr></thead><tbody>';
     llmGroups.forEach((g, gi)=>{
       const n = g.accounts.length;
@@ -961,11 +1113,11 @@ async function renderLlmTable(){
         const first = ai===0;
         html += '<tr>';
         if(first){
-          html += `<td rowspan="${n}" class="row-act"><input type="radio" name="lpDefault" value="${escapeAttr(g.vendor)}" ${g.vendor===llmDefVendor?'checked':''} title="${t('默认供应商')}" /></td>`;
-          html += `<td class="prov-cell" rowspan="${n}"><b>${escapeHtml(g.vendor)}</b> <button class="mini lp-refresh" data-g="${gi}" title="${t('刷新该提供商的模型列表')}">↻</button></td>`;
+          html += `<td rowspan="${n}" class="row-act"><input type="radio" name="lpDefault" value="${escapeAttr(g.vendor)}" ${g.vendor===llmDefVendor?'checked':''} title="${t('llm.defaultProvider')}" /></td>`;
+          html += `<td class="prov-cell" rowspan="${n}"><b>${escapeHtml(g.vendor)}</b> <button class="mini lp-refresh" data-g="${gi}" title="${t('llm.refreshModels')}">↻</button></td>`;
         }
         html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-url">${escapeHtml(a.base_url||'')}</span></td>`;
-        html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-key">${a.api_key?'••••••':t('（空）')}</span></td>`;
+        html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-key">${a.api_key?'••••••':t('common.empty')}</span></td>`;
         if(first){
           html += `<td class="lp-modelcell" rowspan="${n}" data-g="${gi}">${buildModelPick(gi)}</td>`;
         }
@@ -977,13 +1129,13 @@ async function renderLlmTable(){
     llmGroups.forEach((g, gi)=> bindModelCell(gi));
     wrap.querySelectorAll('.acc-cell').forEach(td=> td.onclick=()=> openAccModal(+td.dataset.g, +td.dataset.a));
     wrap.querySelectorAll('.lp-refresh').forEach(b=> b.onclick=()=> refreshProviderModels(+b.dataset.g));
-  }catch(e){ wrap.className='err'; wrap.textContent=t('错误：')+e.message; }
+  }catch(e){ wrap.className='err'; wrap.textContent=t('common.errorPrefix')+e.message; }
 }
 
 // 只刷新指定提供商（gi）的模型列表；不刷新其它行，避免误刷无关上游
 async function refreshProviderModels(gi){
   const btn=document.querySelector(`.lp-refresh[data-g="${gi}"]`);
-  if(btn){ btn.disabled=true; btn.textContent=t('刷新中…'); }
+  if(btn){ btn.disabled=true; btn.textContent=t('common.refreshing'); }
   try{
     const g=llmGroups[gi];
     if(!g){ return; }
@@ -997,7 +1149,7 @@ async function refreshProviderModels(gi){
 async function saveLlmTable(){
   const wrap=document.getElementById('llmTableWrap');
   const stat=document.getElementById('cfgStat_llm'); if(!stat) return;
-  stat.className='hint'; stat.textContent=t('保存中…');
+  stat.className='hint'; stat.textContent=t('common.saving');
   try{
     const defRadio=document.querySelector('input[name=lpDefault]:checked');
     const defaultVendor = defRadio ? defRadio.value : '';
@@ -1027,15 +1179,15 @@ async function saveLlmTable(){
     }
     const r=await fetch('/admin/api/config',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){ stat.className='err'; stat.textContent=t('失败：')+(d.detail||r.status); return; }
-    stat.className='hint'; stat.textContent=t('已保存')+(d.remote_push&&d.remote_push.ok?t('（已同步远端）'):'');
+    if(!r.ok){ stat.className='err'; stat.textContent=t('common.failPrefix')+(d.detail||r.status); return; }
+    stat.className='hint'; stat.textContent=t('common.saved')+(d.remote_push&&d.remote_push.ok?t('common.syncedRemote'):'');
     renderLlmTable();
-  }catch(e){ stat.className='err'; stat.textContent=t('错误：')+e.message; }
+  }catch(e){ stat.className='err'; stat.textContent=t('common.errorPrefix')+e.message; }
 }
 
 // ── ASR 配置（固定使用内置模型，取决于运行环境；只展示内置一行 + 按需「测试可用」）──
 // 外部上游以后按具体厂商单独接入，暂不在此提供地址/密钥/协议等配置。
-const ASR_BUILTIN = '内置';
+const ASR_BUILTIN = 'builtin';
 let asrBuiltinAvail = null;   // 内置最近一次按需检测：'ok' / 'err' / null(未测)
 let asrBuiltinDetail = '';    // 内置检测的补充说明（成功/失败原因），在表格下方行内显示
 let ttsBuiltinAvail = null;   // TTS 内置最近一次按需检测：'ok' / 'err' / null(未测)
@@ -1044,24 +1196,24 @@ let ttsBuiltinDetail = '';    // TTS 内置检测的补充说明，在表格下�
 function paintAsrTable(){
   const wrap=document.getElementById('asrTableWrap');
   if(!wrap) return;
-  const bAvail = asrBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('可用')+'</span>'
-               : asrBuiltinAvail==='err' ? '<span class="badge b-err">'+t('不可用')+'</span>'
-               : '<span class="badge b-mut">'+t('未测')+'</span>';
+  const bAvail = asrBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('common.available')+'</span>'
+               : asrBuiltinAvail==='err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
+               : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>'+t('提供商')+'</th><th>'+t('依赖环境')+'</th><th>'+t('状态')+'</th><th>'+t('操作')+'</th>'
+    + '<th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.status')+'</th><th>'+t('common.action')+'</th>'
     + '</tr></thead><tbody>';
   // 固定只展示内置一行：写清依赖环境要求、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
   html += `<tr class="asr-builtin" data-builtin="1">
     <td class="prov-cell"><b>${t(ASR_BUILTIN)}</b></td>
     <td class="env-cell">
-      <span class="muted">${t('内置模型（离线推理，无需外部服务）')}</span>
-      <div class="env-req">${t('模型文件：model.int8.onnx + tokens.txt（放在 ~/.app-product/voice/models/sensevoice/，约 240MB，由 install-voice 下载）')}</div>
+      <span class="muted">${t('asr.builtinModel')}</span>
+      <div class="env-req">${t('asr.modelFile')}</div>
     </td>
     <td>${bAvail}</td>
-    <td class="row-act"><button class="mini asr-builtin-test" title="${t('真实加载内置模型并跑一次推理')}">${t('测试可用')}</button></td>
+    <td class="row-act"><button class="mini asr-builtin-test" title="${t('asr.detectingTitle')}">${t('common.testAvail')}</button></td>
   </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。')+'</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
+  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('asr.builtinNote')+'</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.asr-builtin-test'); if(bt) bt.onclick=testAsrBuiltin;
   const bh=document.getElementById('asrTableHint');
@@ -1073,19 +1225,19 @@ async function testAsrBuiltin(){
   const wrap=document.getElementById('asrTableWrap');
   const btn=wrap && wrap.querySelector('.asr-builtin-test');
   const hint=document.getElementById('asrTableHint');
-  if(btn){ btn.disabled=true; btn.textContent=t('检测中…'); }
-  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent=t('正在真实加载内置模型并跑一次推理…'); }
-  const REASON={ model_missing:t('模型文件缺失'), dep_missing:t('依赖缺失'), infer_failed:t('模型加载或推理失败'), not_wired:t('检测能力未注入'), exception:t('检测异常') };
+  if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
+  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent=t('asr.detecting'); }
+  const REASON={ model_missing:t('asr.reasonModelMissing'), dep_missing:t('asr.reasonDepMissing'), infer_failed:t('asr.reasonInferFailed'), not_wired:t('asr.reasonNotWired'), exception:t('asr.reasonException') };
   try{
     const r=await fetch('/admin/api/stt-builtin-test',{method:'POST',credentials:'same-origin'});
     const d=await r.json().catch(()=>({}));
     asrBuiltinAvail = d.ok ? 'ok' : 'err';
     asrBuiltinDetail = d.ok
-      ? t('内置可用：模型加载与推理均正常')
-      : t('内置不可用：') + (REASON[d.reason]||t('检测失败')) + (d.detail?('（'+d.detail+'）'):'');
+      ? t('asr.ok')
+      : t('asr.unavailPrefix') + (REASON[d.reason]||t('asr.detectFailed')) + (d.detail?('（'+d.detail+'）'):'');
   }catch(e){
     asrBuiltinAvail='err';
-    asrBuiltinDetail=t('内置不可用：请求失败 ')+e.message;
+    asrBuiltinDetail=t('asr.requestFailed')+e.message;
   }
   paintAsrTable();
   const h=document.getElementById('asrTableHint');
@@ -1095,25 +1247,25 @@ async function testAsrBuiltin(){
 function paintTtsTable(){
   const wrap=document.getElementById('ttsTableWrap');
   if(!wrap) return;
-  const bAvail = ttsBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('可用')+'</span>'
-               : ttsBuiltinAvail==='err' ? '<span class="badge b-err">'+t('不可用')+'</span>'
-               : '<span class="badge b-mut">'+t('未测')+'</span>';
+  const bAvail = ttsBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('common.available')+'</span>'
+               : ttsBuiltinAvail==='err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
+               : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>'+t('提供商')+'</th><th>'+t('依赖环境')+'</th><th>'+t('状态')+'</th><th>'+t('操作')+'</th>'
+    + '<th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.status')+'</th><th>'+t('common.action')+'</th>'
     + '</tr></thead><tbody>';
   // 固定只展示内置一行：写清依赖环境要求、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
   html += `<tr class="tts-builtin" data-builtin="1">
-    <td class="prov-cell"><b>${t('内置')}</b></td>
+    <td class="prov-cell"><b>${t('builtin')}</b></td>
     <td class="env-cell">
-      <span class="muted">${t('内置合成（edge-tts 在线服务）')}</span>
-      <div class="env-req">${t('需联网访问微软语音服务，无需本地模型文件')}</div>
-      <div class="env-req">${t('ffmpeg：wav 输出需要（由 install-voice 安装）')}</div>
+      <span class="muted">${t('tts.builtinSynth')}</span>
+      <div class="env-req">${t('tts.needNetwork')}</div>
+      <div class="env-req">${t('tts.ffmpeg')}</div>
     </td>
     <td>${bAvail}</td>
-    <td class="row-act"><button class="mini tts-builtin-test" title="${t('真实合成一句验证内置 TTS 是否可用')}">${t('测试可用')}</button></td>
+    <td class="row-act"><button class="mini tts-builtin-test" title="${t('tts.synthTitle')}">${t('common.testAvail')}</button></td>
   </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。')+'</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
+  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('tts.builtinNote')+'</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.tts-builtin-test'); if(bt) bt.onclick=testTtsBuiltin;
   const bh=document.getElementById('ttsTableHint');
@@ -1125,16 +1277,16 @@ async function testTtsBuiltin(){
   const wrap=document.getElementById('ttsTableWrap');
   const btn=wrap && wrap.querySelector('.tts-builtin-test');
   const hint=document.getElementById('ttsTableHint');
-  if(btn){ btn.disabled=true; btn.textContent=t('检测中…'); }
-  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent=t('正在按配置合成一句…'); }
+  if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
+  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent=t('tts.synthcing'); }
   try{
     const r=await fetch('/admin/api/tts-builtin-test',{method:'POST',credentials:'same-origin'});
     const d=await r.json().catch(()=>({}));
     ttsBuiltinAvail = d.ok ? 'ok' : 'err';
-    ttsBuiltinDetail = d.ok ? t('可用：合成成功') : t('不可用：')+(d.detail||d.reason||t('检测失败'));
+    ttsBuiltinDetail = d.ok ? t('tts.ok') : t('common.unavailPrefix')+(d.detail||d.reason||t('asr.detectFailed'));
   }catch(e){
     ttsBuiltinAvail='err';
-    ttsBuiltinDetail=t('不可用：请求失败 ')+e.message;
+    ttsBuiltinDetail=t('common.unavailReqFail')+e.message;
   }
   paintTtsTable();
   const h=document.getElementById('ttsTableHint');
@@ -1151,16 +1303,16 @@ function renderSecTable(){
   wrap.innerHTML = `
     <div class="row"><label>${t(CFG_LABEL['VOICE_API_KEY_AUTH'])}</label>
       <select id="cfg_VOICE_API_KEY_AUTH">
-        <option value="off"${auth==='off'?' selected':''}>${t('关闭（默认）')}</option>
-        <option value="on"${auth==='on'?' selected':''}>${t('开启')}</option>
+        <option value="off"${auth==='off'?' selected':''}>${t('sec.offDefault')}</option>
+        <option value="on"${auth==='on'?' selected':''}>${t('sec.on')}</option>
       </select>
-      <span class="hint">${t('开启后 /llm 与 /voice 数据接口须持有效 Key；/health 与管理面板不受影响')}</span>
+      <span class="hint">${t('sec.onHint')}</span>
     </div>
     <div class="row"><label>${t(CFG_LABEL['VOICE_API_KEY'])}</label>
-      <textarea id="cfg_VOICE_API_KEY" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('一行一个 Key；或填 auto 自动生成并写入文件。留空则不修改')}">${escapeHtml(keyVal)}</textarea>
+      <textarea id="cfg_VOICE_API_KEY" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('sec.keyHint')}">${escapeHtml(keyVal)}</textarea>
     </div>
     <div class="row"><label>${t(CFG_LABEL['VOICE_IP_ALLOW'])}</label>
-      <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('一行一个 IP 或 CIDR（如 192.168.1.0/24）。留空=不限制来源')}">${escapeHtml(ipVal)}</textarea>
+      <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('sec.ipHint')}">${escapeHtml(ipVal)}</textarea>
     </div>`;
 }
 
@@ -1176,9 +1328,9 @@ let testOrigin = '';
 // 表格每行一组 Key/Value -> 普通 HTTP 请求头对象（不持久化，每次请求自己带）。
 // 客户端填什么头，请求里就是什么头；代理原样透传给上游，无需特殊协议。
 function hdrTableHtml(kind){
-  return `<label>${t('自定义请求头（仅 LLM 对话请求透传到上游；不保存，本次填写本次生效）')}</label>
+  return `<label>${t('hdr.label')}</label>
     <table class="hdr-table">
-      <thead><tr><th>${t('Header 名')}</th><th>${t('值')}</th><th><button class="mini" type="button" data-add-hdr="${kind}">${t('+ 添加')}</button></th></tr></thead>
+      <thead><tr><th>${t('hdr.name')}</th><th>${t('common.value')}</th><th><button class="mini" type="button" data-add-hdr="${kind}">${t('common.add')}</button></th></tr></thead>
       <tbody data-hdr-body="${kind}"></tbody>
     </table>`;
 }
@@ -1187,8 +1339,8 @@ function addHeaderRow(kind, k, v){
   if(!tb) return;
   const tr=document.createElement('tr');
   tr.innerHTML='<td><input type="text" class="h-k" placeholder="X-Tenant-Id" /></td>'
-             + '<td><input type="text" class="h-v" placeholder="'+t('值')+'" /></td>'
-             + '<td><button class="mini danger" type="button" data-del-hdr>'+t('删除')+'</button></td>';
+             + '<td><input type="text" class="h-v" placeholder="'+t('common.value')+'" /></td>'
+             + '<td><button class="mini danger" type="button" data-del-hdr>'+t('common.delete')+'</button></td>';
   tr.querySelector('.h-k').value=k||'';
   tr.querySelector('.h-v').value=v||'';
   tb.appendChild(tr);
@@ -1209,9 +1361,9 @@ function proxyExtraHeaders(kind){
 // 同样按 tab 隔离、不持久化（当前只启用 LLM）。因各线协议 payload 结构不同，
 // 用单独字段 extra_body 承载，由代理统一合并到上游 payload，不覆盖协议自身字段。
 function bodyTableHtml(kind){
-  return `<label>${t('自定义 body 参数（作为额外字段透传到上游；不保存，本次填写本次生效）')}</label>
+  return `<label>${t('body.label')}</label>
     <table class="hdr-table">
-      <thead><tr><th>${t('字段名')}</th><th>${t('值')}</th><th><button class="mini" type="button" data-add-body="${kind}">${t('+ 添加')}</button></th></tr></thead>
+      <thead><tr><th>${t('body.fieldName')}</th><th>${t('common.value')}</th><th><button class="mini" type="button" data-add-body="${kind}">${t('common.add')}</button></th></tr></thead>
       <tbody data-extra-body="${kind}"></tbody>
     </table>`;
 }
@@ -1220,8 +1372,8 @@ function addBodyRow(kind, k, v){
   if(!tb) return;
   const tr=document.createElement('tr');
   tr.innerHTML='<td><input type="text" class="h-k" placeholder="custom_field" /></td>'
-             + '<td><input type="text" class="h-v" placeholder="'+t('值')+'" /></td>'
-             + '<td><button class="mini danger" type="button" data-del-body>'+t('删除')+'</button></td>';
+             + '<td><input type="text" class="h-v" placeholder="'+t('common.value')+'" /></td>'
+             + '<td><button class="mini danger" type="button" data-del-body>'+t('common.delete')+'</button></td>';
   tr.querySelector('.h-k').value=k||'';
   tr.querySelector('.h-v').value=v||'';
   tb.appendChild(tr);
@@ -1276,7 +1428,7 @@ async function runLlmChat(opts){
   const setStatus = (t,c)=>{ statusEl.textContent=t; statusEl.className=c; };
   if(outEl) outEl.textContent='';
   if(thinkEl){ thinkEl.textContent=''; if(thinkWrapEl) thinkWrapEl.hidden=true; }
-  setStatus(t('请求中…'),'hint');
+  setStatus(t('common.loading'),'hint');
   const ctrl = new AbortController();
   llmCtrl = ctrl;
   let done=false;
@@ -1297,7 +1449,7 @@ async function runLlmChat(opts){
     const r=await fetch(testOrigin+'/llm/v1/chat/completions',{method:'POST',credentials:'same-origin',signal:ctrl.signal,
       headers:{'content-type':'application/json',...auth,...thinkHdr,...proxyExtraHeaders(hkind)}, body:JSON.stringify(body)});
     if(!r.ok){
-      const txt=await r.text(); let msg=t('失败 ')+r.status;
+      const txt=await r.text(); let msg=t('common.failedX')+r.status;
       try{ const d=JSON.parse(txt);
         if(d&&d.error&&d.error.message) msg+=': '+d.error.message;
         else if(d&&d.detail) msg+=': '+d.detail;
@@ -1330,8 +1482,8 @@ async function runLlmChat(opts){
       if(wantThink && thinkEl && reasoning && thinkWrapEl){ thinkEl.textContent=reasoning; thinkWrapEl.hidden=false; }
       if(outEl) outEl.textContent=text;
     }
-    setStatus(t('完成'),'hint'); done=true;
-  }catch(e){ if(e.name==='AbortError'){ setStatus(t('已停止'),'hint'); } else { setStatus(t('错误：')+e.message,'err'); } }
+    setStatus(t('common.done'),'hint'); done=true;
+  }catch(e){ if(e.name==='AbortError'){ setStatus(t('common.stopped'),'hint'); } else { setStatus(t('common.errorPrefix')+e.message,'err'); } }
   if(onDone) onDone(done);
 }
 
@@ -1342,23 +1494,23 @@ async function renderDashboard(){
 
   app.appendChild(buildConfigCard());
 
-  app.appendChild(el(`<div class="card collapsed" id="testCard"><h2>${t('测试')}</h2>
-    <label>${t('鉴权（若推理接口开启了 API Key）')}</label>
-    <input id="testKey" type="password" placeholder="${t('可选：API Key')}" />
+  app.appendChild(el(`<div class="card collapsed" id="testCard"><h2>${t('common.test')}</h2>
+    <label>${t('common.authHint')}</label>
+    <input id="testKey" type="password" placeholder="${t('common.apiKeyOptional')}" />
     <div class="tabs">
-      <button class="tab active" data-tab="llm">${t('对话 LLM')}</button>
-      <button class="tab" data-tab="asr">${t('语音识别 ASR')}</button>
-      <button class="tab" data-tab="tts">${t('语音合成 TTS')}</button>
+      <button class="tab active" data-tab="llm">${t('test.tabLlm')}</button>
+      <button class="tab" data-tab="asr">${t('test.tabAsr')}</button>
+      <button class="tab" data-tab="tts">${t('test.tabTts')}</button>
     </div>
 
     <div id="t-llm" class="tabpane">
-      <label>${t('提供商')}</label>
-      <select id="llmProvider"><option value="">${t('（默认路由）')}</option></select>
-      <label>${t('模型（先选提供商，再选该提供商下的模型）')}</label>
+      <label>${t('common.provider')}</label>
+      <select id="llmProvider"><option value="">${t('llm.defaultRoute')}</option></select>
+      <label>${t('llm.modelHint')}</label>
       <select id="llmModel" disabled>
-        <option value="">${t('（请先选提供商）')}</option>
+        <option value="">${t('llm.pickProvider')}</option>
       </select>
-      <label>${t('协议')}</label>
+      <label>${t('common.protocol')}</label>
       <select id="llmProtocol">
         <option value="openai_chat_completions">openai_chat_completions（OpenAI 对话）</option>
         <option value="azure_openai_chat_completions">azure_openai_chat_completions（Azure OpenAI）</option>
@@ -1369,47 +1521,47 @@ async function renderDashboard(){
       <div class="hint" id="llmProtoDesc" style="margin-top:4px"></div>
       ${hdrTableHtml('llm')}
       ${bodyTableHtml('llm')}
-      <label class="chk"><input type="checkbox" id="llmStream" checked /> <span>${t('流式（SSE）')}</span></label>
-      <div class="hint" style="margin-top:2px">${t('开启后逐字返回；关闭则等待完整回复。')}</div>
-      <label class="chk"><input type="checkbox" id="llmThinkMode" /> <span>${t('思考模式（推理链）')}</span></label>
-      <div class="hint" style="margin-top:2px">${t('关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。')}</div>
-      <label>${t('提示词（固定，不可编辑）')}</label>
+      <label class="chk"><input type="checkbox" id="llmStream" checked /> <span>${t('common.streaming')}</span></label>
+      <div class="hint" style="margin-top:2px">${t('common.streamingHint')}</div>
+      <label class="chk"><input type="checkbox" id="llmThinkMode" /> <span>${t('common.thinkMode')}</span></label>
+      <div class="hint" style="margin-top:2px">${t('common.thinkOffHint')}</div>
+      <label>${t('common.promptFixed')}</label>
       <div id="llmInput" class="fixed-prompt">请只回复 ok 两个字。</div>
       <div id="llmThinkWrap" hidden style="margin-top:10px">
-        <div class="think-head"><span class="muted">${t('思考过程')}</span><button class="mini" type="button" id="llmThinkToggle">${t('折叠')}</button></div>
+        <div class="think-head"><span class="muted">${t('common.thinking')}</span><button class="mini" type="button" id="llmThinkToggle">${t('common.collapse')}</button></div>
         <pre id="llmThink" class="think"></pre>
       </div>
-      <div class="muted" style="margin-top:10px">${t('回复')}</div>
-      <pre id="llmOut" class="muted">${t('回复将在这里流式显示。')}</pre>
+      <div class="muted" style="margin-top:10px">${t('common.reply')}</div>
+      <pre id="llmOut" class="muted">${t('test.replyStream')}</pre>
       <div class="row" style="margin-top:12px">
-        <button id="llmGo" style="flex:1">${t('发送')}</button>
-        <button class="sec" id="llmStop" style="flex:1">${t('停止')}</button>
+        <button id="llmGo" style="flex:1">${t('test.send')}</button>
+        <button class="sec" id="llmStop" style="flex:1">${t('common.stop')}</button>
       </div>
       <span class="hint" id="llmStatus" style="display:block; margin-top:6px"></span>
     </div>
 
     <div id="t-asr" class="tabpane" hidden>
-      <div class="muted" style="margin-bottom:8px">${t('点录音可把上面的试听音频替换成你录的，识别也用替换后的；「还原」恢复内置样本。')}</div>
+      <div class="muted" style="margin-bottom:8px">${t('asr.recHint')}</div>
       <audio id="asrPlayer" controls style="width:100%;margin:6px 0 12px"></audio>
       <div class="row">
-        <button id="asrRec">${t('录音')}</button>
-        <button id="asrRecStop" class="danger" disabled>${t('停止')}</button>
-        <button id="asrRevert" class="sec" style="display:none">${t('还原')}</button>
+        <button id="asrRec">${t('asr.record')}</button>
+        <button id="asrRecStop" class="danger" disabled>${t('common.stop')}</button>
+        <button id="asrRevert" class="sec" style="display:none">${t('asr.restore')}</button>
         <span class="hint" id="asrRecMsg"></span>
       </div>
-      <pre id="asrOut" class="muted">${t('识别结果将显示在这里。')}</pre>
-      <button id="asrGo" class="full" style="margin-top:12px">${t('识别')}</button>
+      <pre id="asrOut" class="muted">${t('asr.outPlaceholder')}</pre>
+      <button id="asrGo" class="full" style="margin-top:12px">${t('asr.recognize')}</button>
       <span class="hint" id="asrMsg" style="display:block; margin-top:6px"></span>
     </div>
 
     <div id="t-tts" class="tabpane" hidden>
-      <label>${t('文本')}</label>
+      <label>${t('common.text')}</label>
       <textarea id="ttsText" rows="2">你好。</textarea>
-      <label>${t('音色')}</label>
+      <label>${t('common.voice')}</label>
       <select id="ttsVoice"></select>
       <div class="hint" id="ttsVoiceDesc" style="margin-top:4px"></div>
       <audio id="ttsAudio" controls style="margin-top:10px; width:100%"></audio>
-      <button id="ttsGo" class="full" style="margin-top:12px">${t('合成')}</button>
+      <button id="ttsGo" class="full" style="margin-top:12px">${t('tts.synthesize')}</button>
       <span class="hint" id="ttsMsg" style="display:block; margin-top:6px"></span>
     </div>
   </div>`));
@@ -1425,11 +1577,11 @@ async function renderDashboard(){
     addHeaderRow('modal'); addBodyRow('modal');
   }
 
-  app.appendChild(el(`<div class="card"><h2>${t('日志（voice.log）')}</h2>
+  app.appendChild(el(`<div class="card"><h2>${t('log.title')}</h2>
     <div class="row" style="margin-bottom:10px">
-      <button class="sec" id="logRefresh">${t('刷新日志')}</button>
-      <span class="muted">${t('最近 200 行')}</span></div>
-    <pre id="logs">${t('加载中…')}</pre>
+      <button class="sec" id="logRefresh">${t('log.refresh')}</button>
+      <span class="muted">${t('log.last200')}</span></div>
+    <pre id="logs">${t('common.loadingX')}</pre>
   </div>`));
 
   document.getElementById('logout').onclick = async ()=>{
@@ -1464,7 +1616,7 @@ async function renderDashboard(){
     tToggle.onclick=()=>{
       const w=document.getElementById('testModalThinkWrap'); if(!w) return;
       const collapsed=w.classList.toggle('collapsed');
-      tToggle.textContent=collapsed?t('展开'):t('折叠');
+      tToggle.textContent=collapsed?t('common.expand'):t('common.collapse');
     };
   }
   // 思考模式开关：关闭时立即隐藏「思考过程」区域（不再展示推理链）
@@ -1474,7 +1626,7 @@ async function renderDashboard(){
       const w=document.getElementById('testModalThinkWrap'); if(!w) return;
       if(!tMode.checked){
         w.hidden=true; w.classList.remove('collapsed');
-        if(tToggle) tToggle.textContent=t('折叠');
+        if(tToggle) tToggle.textContent=t('common.collapse');
       }
     };
   }
@@ -1522,11 +1674,11 @@ async function renderDashboard(){
       items.forEach(v=>{ const o=document.createElement('option'); o.value=v.id; o.textContent=v.id+'　'+v.desc; og.appendChild(o); });
       voiceSel.appendChild(og);
     });
-    if(def){ const o=document.createElement('option'); o.value=def; o.textContent=def+t('（默认）'); voiceSel.appendChild(o); }
+    if(def){ const o=document.createElement('option'); o.value=def; o.textContent=def+t('common.defaultParen'); voiceSel.appendChild(o); }
     voiceSel.value = def || VOICE_CATALOG[0].id;
-    VOICE_DESC.textContent = t('音色说明：') + voiceDesc(voiceSel.value) + t('　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502');
+    VOICE_DESC.textContent = t('tts.voiceNote') + voiceDesc(voiceSel.value) + t('tts.voiceParam');
   };
-  voiceSel.onchange = ()=>{ VOICE_DESC.textContent = t('音色说明：') + voiceDesc(voiceSel.value) + t('　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502'); };
+  voiceSel.onchange = ()=>{ VOICE_DESC.textContent = t('tts.voiceNote') + voiceDesc(voiceSel.value) + t('tts.voiceParam'); };
   // 从对外接口拉取最新音色目录（接口不可用时回退兜底）
   fetch('/voice/v1/audio/voices',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(d=>{
     if(d && Array.isArray(d.voices) && d.voices.length){ VOICE_CATALOG=d.voices; fillVoices(d.default); }
@@ -1540,15 +1692,15 @@ async function renderDashboard(){
   // TTS 合成
   document.getElementById('ttsGo').onclick = async ()=>{
     const msg=document.getElementById('ttsMsg'), audio=document.getElementById('ttsAudio');
-    msg.textContent=t('合成中…'); msg.className='hint'; audio.src='';
+    msg.textContent=t('tts.synthcingX'); msg.className='hint'; audio.src='';
     try{
       const r=await fetch(testOrigin+'/voice/v1/audio/speech',{method:'POST',credentials:'same-origin',
         headers:{'content-type':'application/json',...authHdr()},
         body:JSON.stringify({input:document.getElementById('ttsText').value,voice:voiceSel.value,response_format:'wav',speed:1.0})});
-      if(!r.ok){ msg.textContent=t('失败')+' '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
+      if(!r.ok){ msg.textContent=t('common.failed')+' '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
       const blob=await r.blob(); audio.src=URL.createObjectURL(blob);
-      msg.textContent=t('完成')+'（'+(blob.size/1024).toFixed(1)+' KB）'; msg.className='hint';
-    }catch(e){ msg.textContent=t('错误：')+e.message; msg.className='err'; }
+      msg.textContent=t('common.done')+'（'+(blob.size/1024).toFixed(1)+' KB）'; msg.className='hint';
+    }catch(e){ msg.textContent=t('common.errorPrefix')+e.message; msg.className='err'; }
   };
 
   // 模型下拉按所选提供商联动：没选提供商时禁用；选了才列出该提供商下的模型。
@@ -1561,7 +1713,7 @@ async function renderDashboard(){
     const models=llmProviderModels[v]||[];
     sel.innerHTML='';
     const head=document.createElement('option');
-    head.value=''; head.textContent = v ? t('（沿用上游默认）') : t('（请先选提供商）');
+    head.value=''; head.textContent = v ? t('llm.useUpstreamDefault') : t('llm.pickProvider');
     sel.appendChild(head);
     models.forEach(m=>{ const o=document.createElement('option'); o.value=m; o.textContent=m; sel.appendChild(o); });
     sel.disabled = !v;
@@ -1596,7 +1748,7 @@ async function renderDashboard(){
     llmThinkTog.onclick=()=>{
       const w=document.getElementById('llmThinkWrap'); if(!w) return;
       const collapsed=w.classList.toggle('collapsed');
-      llmThinkTog.textContent=collapsed?t('展开'):t('折叠');
+      llmThinkTog.textContent=collapsed?t('common.expand'):t('common.collapse');
     };
   }
   const llmThinkMode=document.getElementById('llmThinkMode');
@@ -1605,7 +1757,7 @@ async function renderDashboard(){
       const w=document.getElementById('llmThinkWrap'); if(!w) return;
       if(!llmThinkMode.checked){
         w.hidden=true; w.classList.remove('collapsed');
-        if(llmThinkTog) llmThinkTog.textContent=t('折叠');
+        if(llmThinkTog) llmThinkTog.textContent=t('common.collapse');
       }
     };
   }
@@ -1630,7 +1782,7 @@ async function renderDashboard(){
     }catch(_){}
     llmProviderModels=map;
     if(sel){
-      sel.innerHTML='<option value="">'+t('（默认路由）')+'</option>';
+      sel.innerHTML='<option value="">'+t('llm.defaultRoute')+'</option>';
       Object.keys(map).forEach(v=>{
         const o=document.createElement('option'); o.value=v;
         o.textContent=v+(hosts[v]?('　('+hosts[v]+')'):''); sel.appendChild(o);
@@ -1654,13 +1806,13 @@ async function renderDashboard(){
         catch(_){ asrBlob=raw; }
         document.getElementById('asrPlayer').src=URL.createObjectURL(asrBlob);
         document.getElementById('asrRevert').style.display='';
-        document.getElementById('asrRecMsg').textContent=t('已替换试听音频（识别将用这段）');
+        document.getElementById('asrRecMsg').textContent=t('asr.replaced');
         mediaStream.getTracks().forEach(t=>t.stop());
       };
       mediaRec.start();
       document.getElementById('asrRec').disabled=true; document.getElementById('asrRecStop').disabled=false;
-      document.getElementById('asrRecMsg').textContent=t('录音中…');
-    }catch(e){ document.getElementById('asrRecMsg').textContent=t('无法录音：')+e.message; }
+      document.getElementById('asrRecMsg').textContent=t('asr.recording');
+    }catch(e){ document.getElementById('asrRecMsg').textContent=t('asr.cannotRecord')+e.message; }
   };
   document.getElementById('asrRecStop').onclick = ()=>{
     if(mediaRec&&mediaRec.state!=='inactive') mediaRec.stop();
@@ -1670,25 +1822,25 @@ async function renderDashboard(){
     asrBlob=null;
     if(ASR_SAMPLE_B64) document.getElementById('asrPlayer').src='data:audio/wav;base64,'+ASR_SAMPLE_B64;
     document.getElementById('asrRevert').style.display='none';
-    document.getElementById('asrRecMsg').textContent=t('已还原内置样本');
+    document.getElementById('asrRecMsg').textContent=t('asr.reverted');
   };
   document.getElementById('asrGo').onclick = async ()=>{
     const msg=document.getElementById('asrMsg'), out=document.getElementById('asrOut');
     msg.className='hint';
     let blob=asrBlob, fname='record.wav';
     if(!blob){
-      if(!ASR_SAMPLE_B64){ msg.textContent=t('未内嵌音频'); return; }
+      if(!ASR_SAMPLE_B64){ msg.textContent=t('asr.noAudio'); return; }
       const bin=atob(ASR_SAMPLE_B64); const bytes=new Uint8Array(bin.length);
       for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
       blob=new Blob([bytes],{type:'audio/wav'}); fname='sample.wav';
     }
-    msg.textContent=t('识别中…');
+    msg.textContent=t('asr.recognizing');
     try{
       const fd=new FormData(); fd.append('file',blob,fname); fd.append('model','whisper-1');
       const r=await fetch(testOrigin+'/voice/v1/audio/transcriptions',{method:'POST',credentials:'same-origin',headers:{...authHdr()},body:fd});
-      if(!r.ok){ msg.textContent=t('失败')+' '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
-      const d=await r.json(); out.textContent=d.text||t('(空)'); msg.textContent=t('完成'); msg.className='hint';
-    }catch(e){ msg.textContent=t('错误：')+e.message; msg.className='err'; }
+      if(!r.ok){ msg.textContent=t('common.failed')+' '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
+      const d=await r.json(); out.textContent=d.text||t('common.emptyParen'); msg.textContent=t('common.done'); msg.className='hint';
+    }catch(e){ msg.textContent=t('common.errorPrefix')+e.message; msg.className='err'; }
   };
   // 固定音频可直接在页面播放试听
   if(ASR_SAMPLE_B64) document.getElementById('asrPlayer').src='data:audio/wav;base64,'+ASR_SAMPLE_B64;
@@ -1722,7 +1874,7 @@ async function toWav(blob){
 async function loadLogs(){
   const r = await api('/admin/api/logs');
   const pre = document.getElementById('logs');
-  if(!r.ok){ pre.textContent=t('加载失败'); return; }
+  if(!r.ok){ pre.textContent=t('common.loadFailed'); return; }
   pre.textContent = await r.text();
 }
 
