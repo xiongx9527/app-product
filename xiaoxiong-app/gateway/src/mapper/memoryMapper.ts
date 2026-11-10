@@ -2,10 +2,11 @@ import { eq, desc, like, or, and, sql } from 'drizzle-orm'
 import type { AppDb } from '../db/client'
 import { userMemory } from '../db/schema'
 
-/** 一条记忆：话题标签 + 具体内容。 */
+/** 一条记忆：话题标签 + 具体内容 + 创建/更新时间（秒级时间戳）。 */
 export interface MemoryEntry {
   key: string
   value: string
+  createdAt: number
   updatedAt: number
 }
 
@@ -40,7 +41,45 @@ export function memoryMapper(db: AppDb) {
             .where(eq(userMemory.deviceId, deviceId))
             .orderBy(desc(userMemory.updatedAt))
         : await db.select().from(userMemory).orderBy(desc(userMemory.updatedAt))
-      return rows.map((r) => ({ key: r.key, value: r.value, updatedAt: r.updatedAt ?? 0 }))
+      return rows.map((r) => ({ key: r.key, value: r.value, createdAt: r.createdAt ?? r.updatedAt ?? 0, updatedAt: r.updatedAt ?? 0 }))
+    },
+
+    /**
+     * 分页列表（设置页长期记忆用）。与 list 不同：list 用于注入系统提示（要全量），
+     * 这里按页返回并带总数，避免记忆很多时一次性拉全。page 从 1 起，pageSize 由调用方限定上限。
+     */
+    async listPage(
+      deviceId: string | null,
+      page: number,
+      pageSize: number,
+      q?: string,
+    ): Promise<{ items: MemoryEntry[]; total: number }> {
+      const kw = (q ?? '').trim()
+      // 关键词检索：在 key / value 中模糊匹配（与 forget 的匹配口径一致）。
+      const kwCond = kw
+        ? or(like(userMemory.key, `%${kw}%`), like(userMemory.value, `%${kw}%`))
+        : undefined
+      const where = deviceId
+        ? kwCond
+          ? and(eq(userMemory.deviceId, deviceId), kwCond)
+          : eq(userMemory.deviceId, deviceId)
+        : kwCond
+      const countRows = await db
+        .select({ c: sql<number>`count(*)` })
+        .from(userMemory)
+        .where(where)
+      const total = Number(countRows[0]?.c ?? 0)
+      const rows = await db
+        .select()
+        .from(userMemory)
+        .where(where)
+        .orderBy(desc(userMemory.updatedAt))
+        .limit(pageSize)
+        .offset((page - 1) * pageSize)
+      return {
+        items: rows.map((r) => ({ key: r.key, value: r.value, createdAt: r.createdAt ?? r.updatedAt ?? 0, updatedAt: r.updatedAt ?? 0 })),
+        total,
+      }
     },
 
     /**

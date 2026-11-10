@@ -8,6 +8,7 @@
 export type MemoryCommand =
   | { action: 'forget'; topic: string }
   | { action: 'clear' }
+  | { action: 'remember'; key: string; value: string }
 
 const FORGET_PATTERNS: RegExp[] = [
   /^忘了(.+)$/,
@@ -15,6 +16,32 @@ const FORGET_PATTERNS: RegExp[] = [
   /^别记(?:住)?(.+)$/,
   /^不要记(.+)$/,
 ]
+
+/**
+ * 「记住XX」直连：与「忘了XX」对称，绕过 LLM 确定性落地。
+ * 支持「话题：内容 / 话题，内容」分隔；无分隔时整句作为内容，话题取剥掉主语前缀后的主体，
+ * 保证每条记忆独立（同 key 才覆盖更新），避免把不同习惯堆进同一条。
+ */
+const REMEMBER_PATTERNS: RegExp[] = [
+  /^记住(.+)$/,
+  /^记录(?:一下|下)?(.+)$/,
+  /^记一下(.+)$/,
+  /^记着(.+)$/,
+  /^帮我记(?:住)?(.+)$/,
+  /^记一个(.+)$/,
+  /^记下来(.+)$/,
+]
+
+function parseRemember(body: string): { key: string; value: string } {
+  const text = body.replace(/^[\s,，:：]+/, '').trim()
+  const sep = text.match(/^(.*?)[：:，,]+(.+)$/)
+  if (sep && sep[1].trim() && sep[2].trim()) {
+    return { key: sep[1].trim(), value: sep[2].trim() }
+  }
+  // 无分隔符：剥掉「我（的）/俺/咱们」等主语前缀当话题标签，value 保留原句
+  const key = text.replace(/^(我(?:的)?|俺|咱们?|我们)/, '').trim() || text
+  return { key, value: text }
+}
 
 const CLEAR_PATTERNS: RegExp[] = [
   /^清空记忆$/,
@@ -42,6 +69,14 @@ export function detectMemoryCommand(text: string): MemoryCommand | null {
       // 只说「忘了」没给话题：当作清空意图，避免空 topic 命中全盘
       if (!topic) return { action: 'clear' }
       return { action: 'forget', topic }
+    }
+  }
+  for (const p of REMEMBER_PATTERNS) {
+    const m = t.match(p)
+    if (m) {
+      const body = (m[1] ?? '').trim()
+      if (!body) return null
+      return { action: 'remember', ...parseRemember(body) }
     }
   }
   return null
