@@ -317,14 +317,19 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           transport.notifyPlaybackDone()
         })
         break
-      case 'media.play':
-        // B 站音轨走网关代理补 Referer；SomaFM 等公共流直连。
+      case 'media.play': {
+        // proxy 标记由网关按频道判定（B 站等防盗链直链需走网关 /music/stream 代理补 Referer）；
+        // 客户端不再写死任何频道名，只按此标记决定是否拼代理地址。
+        const playUrl = event.proxy
+          ? toProxiedMusicUrl(event.url, resolveGatewayHttpBase())
+          : event.url
         playMusic(
-          toProxiedMusicUrl(event.url, event.channel, resolveGatewayHttpBase()),
+          playUrl,
           event.title,
           event.loop != null ? { loop: event.loop } : undefined
         )
         break
+      }
       case 'media.pause':
         pauseMusic()
         break
