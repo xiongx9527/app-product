@@ -6,6 +6,8 @@ import type { Lang, ServerErrorCode } from './protocol'
  */
 export interface Messages {
   systemPrompt: string
+  /** 当前正在播放的曲目上下文：拼进系统提示，让助手能回答「现在播的什么歌」。 */
+  nowPlayingContext: (title: string, artist?: string) => string
   errors: Record<ServerErrorCode, string>
   /** 排队提示与拒绝原因，按 lang 本地化后下发给客户端展示 */
   queue: {
@@ -54,6 +56,10 @@ export interface Messages {
     volumeMax: () => string
     /** 已到最小还让调小 */
     volumeMin: () => string
+    /** 语音「关闭字幕」后口播 */
+    subtitleOff: () => string
+    /** 语音「开启字幕」后口播 */
+    subtitleOn: () => string
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
@@ -97,6 +103,9 @@ const zhCN: Messages = {
     '**加粗**、# 标题、列表符号、表格、代码块等）。禁止在调用工具（尤其是音乐工具）前后' +
     '说铺垫废话或道歉（如“好的”“稍等”“对不起，出现…”“让我看看”“Skipping…”之类），' +
     '直接调用工具或给一句最简短的回复即可。全程使用简体中文，不要中英混排。',
+  nowPlayingContext: (title, artist) =>
+    `【当前正在播放】歌曲：《${title}》${artist ? `（演唱：${artist}）` : ''}。` +
+    '若用户问起正在播放的歌曲、这首歌叫什么、谁唱的，请直接据此回答，不要说不知道。',
   errors: {
     AUTH_FAILED: '鉴权失败，请重新登录',
     ASR_TIMEOUT: '识别超时',
@@ -150,6 +159,10 @@ const zhCN: Messages = {
     volumeMax: () => '音量已经最大了。',
     /** 已到最小还让调小 */
     volumeMin: () => '音量已经最小了。',
+    /** 语音「关闭字幕」后口播 */
+    subtitleOff: () => '已关闭字幕。',
+    /** 语音「开启字幕」后口播 */
+    subtitleOn: () => '已开启字幕。',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
@@ -185,11 +198,16 @@ const en: Messages = {
     'Do not add filler or apologies before or after calling a tool (especially music tools) — ' +
     'no "Sure", "Just a moment", "Sorry, ...", "Let me see", "Skipping...", etc. ' +
     'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing.',
+  nowPlayingContext: (title, artist) =>
+    `[Now playing] Song: "${title}"${artist ? ` (by ${artist})` : ''}. ` +
+    'If the user asks what song is playing, its name, or who sings it, answer directly from this; do not say you don\'t know.',
   // 占位播放源提示：英文会话也要拿到本地化展示名与英文文案，不残留中文
   music: {
     ...zhCN.music,
     notImplemented: (kind) =>
       `The music source "${sourceDisplayName(kind, 'en')}" is not yet available. Please switch to "${sourceDisplayName('baidu', 'en')}" in settings.`,
+    subtitleOff: () => 'Subtitles off.',
+    subtitleOn: () => 'Subtitles on.',
   },
 }
 

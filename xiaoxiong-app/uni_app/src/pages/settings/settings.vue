@@ -198,6 +198,11 @@ const playbackCollapsed = ref(true)
 function togglePlayback(): void {
   playbackCollapsed.value = !playbackCollapsed.value
 }
+/** 通用设置（语言 / 时区）默认折叠，展开后再调整。 */
+const generalCollapsed = ref(true)
+function toggleGeneral(): void {
+  generalCollapsed.value = !generalCollapsed.value
+}
 /** 关键词检索：对 key / value 模糊匹配，网关 q 参数下发。 */
 const memQuery = ref('')
 
@@ -311,26 +316,37 @@ watch(
 
 <template>
   <view class="page">
-    <!-- 语言（排第一位，跟随全局；唤醒/ASR/TTS 默认语言都继承它） -->
+    <!-- 通用设置（语言 / 时区），默认折叠 -->
     <view class="group">
-      <SelectRow
-        :title="t('settings.language.title')"
-        :hint="t('settings.language.hint')"
-        :options="LANGUAGE_OPTIONS"
-        :model-value="appConfig.language"
-        @update:model-value="(v: string) => (appConfig.language = v)"
-      />
-    </view>
+      <view class="group-head">
+        <view class="group-title-row" @tap="toggleGeneral">
+          <text class="group-chevron">{{ generalCollapsed ? '▸' : '▾' }}</text>
+          <text class="group-title">{{ t('settings.general.title') }}</text>
+        </view>
+      </view>
+      <template v-if="!generalCollapsed">
+        <!-- 语言（跟随全局；唤醒/ASR/TTS 默认语言都继承它） -->
+        <view class="sub">
+          <SelectRow
+            :title="t('settings.language.title')"
+            :hint="t('settings.language.hint')"
+            :options="LANGUAGE_OPTIONS"
+            :model-value="appConfig.language"
+            @update:model-value="(v: string) => (appConfig.language = v)"
+          />
+        </view>
 
-    <!-- 时区（语言下方） -->
-    <view class="group">
-      <SelectRow
-        :title="t('settings.timezone.title')"
-        :hint="t('settings.timezone.hint')"
-        :options="timezoneOptions"
-        :model-value="appConfig.timezone"
-        @update:model-value="(v: string) => (appConfig.timezone = v)"
-      />
+        <!-- 时区（语言下方） -->
+        <view class="sub">
+          <SelectRow
+            :title="t('settings.timezone.title')"
+            :hint="t('settings.timezone.hint')"
+            :options="timezoneOptions"
+            :model-value="appConfig.timezone"
+            @update:model-value="(v: string) => (appConfig.timezone = v)"
+          />
+        </view>
+      </template>
     </view>
 
     <!-- 语音服务（ASR / LLM / TTS 共用一份配置），默认折叠 -->
@@ -650,6 +666,12 @@ watch(
   align-items: center;
   gap: 6px;
   cursor: pointer;
+}
+
+.sub {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .group-chevron {

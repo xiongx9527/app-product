@@ -97,8 +97,9 @@ export type ServerEvent =
   /** 让客户端恢复（继续）被暂停的播放 */
   | { type: 'media.resume' }
   /** 让客户端展示某首歌/视频的字幕（同源：来自当前播放源）。
-   *  lines 为带每行起始时间的逐行字幕，客户端据此跟随播放进度高亮并支持复制。 */
-  | { type: 'media.subtitle'; title: string; artist?: string; lines: SubtitleLine[] }
+   *  lines 为带每行起始时间的逐行字幕，客户端据此跟随播放进度高亮并支持复制。
+   *  close=true 时客户端收起字幕面板（语音「关闭字幕」指令下发），忽略 title/lines。 */
+  | { type: 'media.subtitle'; title: string; artist?: string; lines: SubtitleLine[]; close?: boolean }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置（位置/天气类工具被调用但会话尚无位置）时才下发，

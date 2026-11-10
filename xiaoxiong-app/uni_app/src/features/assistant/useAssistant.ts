@@ -354,6 +354,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         stopMusic()
         break
       case 'media.subtitle':
+        // close=true 由语音「关闭字幕」指令下发，直接收起字幕面板；否则按 lines 渲染/更新。
+        if (event.close) {
+          subtitle.value = null
+          break
+        }
         subtitle.value = { title: event.title, artist: event.artist, lines: event.lines ?? [] }
         break
       case 'media.volume':
@@ -716,7 +721,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 单曲循环是否进行中（按钮高亮/aria）：语音「循环 N 遍」的有限 loopRemaining
   // 和按钮开启的 Infinity 都算「循环播放中」。
   const musicLoopActive = computed(() => musicState.loopRemaining.value > 0)
-  // 循环剩余次数（不含当前这一遍）：有限值时即界面要在按钮上显示的剩余遍数；无限时为 Infinity。
+  // 循环剩余次数（不含当前这一遍）：有限值时即内部还要重播几次；无限时为 Infinity。
   const musicLoopRemaining = musicState.loopRemaining
   // 音乐播放音量（0–1）；界面滑块控制，TTS 播报时自动压低。
   const musicVolume = musicState.musicVolume

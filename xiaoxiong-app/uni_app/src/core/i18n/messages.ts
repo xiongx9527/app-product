@@ -82,6 +82,7 @@ const zhCN: Messages = {
   'settings.notice.title': '当前模式：自带服务（BYOK）',
   'settings.notice.text':
     '登录与计费上线后，付费用户可切换到平台托管，无需配置下面的三项。',
+  'settings.general.title': '通用设置',
   'settings.language.title': '语言',
   'settings.language.sub': '唤醒、ASR、TTS 的默认语言',
   'settings.language.hint': '厂商里语言留空时使用这里的值；唤醒识别同样跟随。',
@@ -282,6 +283,7 @@ const enUS: Messages = {
   'settings.notice.title': 'Mode: bring your own services (BYOK)',
   'settings.notice.text':
     'After login and billing launch, paid users can switch to platform hosting and skip these three sections.',
+  'settings.general.title': 'General',
   'settings.language.title': 'Language',
   'settings.language.sub': 'Default language for wake word, ASR and TTS',
   'settings.language.hint':

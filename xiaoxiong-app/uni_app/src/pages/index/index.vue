@@ -148,8 +148,8 @@ const musicPercent = computed(() => progressPercent(musicProgress.value, seekPre
 const musicElapsed = computed(() => elapsedLabel(musicProgress.value, seekPreview.value))
 const musicTotal = computed(() => totalLabel(musicProgress.value))
 
-// 循环按钮角标：总播放遍数（含当前这一遍）= 剩余重播次数 + 1；无限循环显示 ∞；
-// 未循环（loopRemaining 为 0）不显示。
+// 循环按钮角标：总播放遍数（含当前这一遍）= 剩余重播次数 + 1，随重播递减；
+// 无限循环显示 ∞；未循环（loopRemaining 为 0）不显示。
 const loopBadge = computed(() => {
   const r = musicLoopRemaining.value
   if (!Number.isFinite(r)) return '∞'

@@ -25,6 +25,7 @@ import {
 import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './musicControl'
 import { detectVolumeCommand } from './volumeControl'
 import { detectMemoryCommand } from './memoryControl'
+import { detectSubtitleCommand } from './subtitleControl'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -50,7 +51,8 @@ export interface VoiceSessionDeps {
     autoSubtitle?: boolean,
     defaultLoop?: number,
     defaultVolume?: number,
-    autoLoop?: boolean
+    autoLoop?: boolean,
+    getNowPlaying?: () => { title: string; artist?: string } | null
   ) => AgentService
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
   createAsr: (cfg: AsrConfig) => AsrProvider
@@ -410,7 +412,7 @@ export class VoiceSessionService {
 
   /**
    * 自动字幕：开关开启时，用当前音乐源拉取字幕并下发 media.subtitle。
-   * 尽力而为——拉取失败/超时不影响播放；无字幕时不发（客户端不会弹空面板）。
+   * 尽力而为——拉取失败/超时不影响播放；取不到时也下发空 lyrics，让客户端显示「暂无字幕」而非什么都不提示。
    */
   private async emitAutoSubtitle(title: string, artist?: string): Promise<void> {
     if (!this.autoSubtitle) return
@@ -418,9 +420,7 @@ export class VoiceSessionService {
     if (!source?.getSubtitle) return
     try {
       const lines = await source.getSubtitle(artist ?? '', title)
-      if (lines && lines.length) {
-        this.deps.send({ type: 'media.subtitle', title, artist, lines })
-      }
+      this.deps.send({ type: 'media.subtitle', title, artist, lines: lines ?? [] })
     } catch {
       // 字幕失败不影响播放
     }
@@ -642,6 +642,11 @@ export class VoiceSessionService {
       await this.runVolumeCommand(volCmd)
       return true
     }
+    const subCmd = detectSubtitleCommand(text)
+    if (subCmd) {
+      await this.runSubtitleCommand(subCmd)
+      return true
+    }
     const action = detectMusicCommand(text)
     const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
       action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
@@ -706,6 +711,24 @@ export class VoiceSessionService {
     }
     const n = await this.deps.data.forgetMemory(this.deviceId, cmd.topic)
     await this.speakReply(n > 0 ? m.forgot(cmd.topic, n) : m.nothingToForget())
+  }
+
+  /**
+   * 处理「关闭字幕 / 开启字幕」直接指令（绕开 LLM）：运行时切换 autoSubtitle 开关，
+   * 关闭时下发 close 事件收起当前字幕面板，开启时对正在播放的曲子重发字幕。
+   * 只影响本会话，持久设置仍由设置页的开关控制。
+   */
+  private async runSubtitleCommand(action: NonNullable<ReturnType<typeof detectSubtitleCommand>>): Promise<void> {
+    const m = messages(this.lang).music
+    this.autoSubtitle = action === 'on'
+    if (action === 'off') {
+      this.deps.send({ type: 'media.subtitle', title: '', lines: [], close: true })
+      await this.speakReply(m.subtitleOff())
+      return
+    }
+    // 开启：对当前正在播放的曲子重发字幕；没有则在下一首播放时自动带出。
+    if (this.lastTrack) await this.emitAutoSubtitle(this.lastTrack.title, this.lastTrack.artist)
+    await this.speakReply(m.subtitleOn())
   }
 
   /** 口播一句短确认：复用 TTS 下发链路（tts.start → 流式 → tts.end），不进 LLM。 */
@@ -1162,7 +1185,8 @@ export class VoiceSessionService {
             this.autoSubtitle,
             this.defaultLoop,
             this.defaultVolume,
-            this.autoLoop
+            this.autoLoop,
+            () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist } : null)
           )
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }

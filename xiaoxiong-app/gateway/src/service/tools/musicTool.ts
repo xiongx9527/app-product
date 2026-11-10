@@ -13,7 +13,7 @@ export type MediaDirective = Extract<
 
 /**
  * 自动字幕：开关开启时，用当前音乐源拉取字幕并下发 media.subtitle（随播放进度高亮）。
- * 尽力而为——拉取失败/超时不影响播放；无字幕行时不发（客户端不会弹空面板）。
+ * 尽力而为——拉取失败/超时不影响播放；取不到时也下发空 lyrics，让客户端显示「暂无字幕」而非什么都不提示。
  * artist 仅用于更精准地检索同源字幕，缺省时按 title 检索；ResolvedTrack 不含 artist 时传空串。
  */
 export async function emitAutoSubtitles(
@@ -28,7 +28,7 @@ export async function emitAutoSubtitles(
   if (!source?.getSubtitle) return
   try {
     const lines = await source.getSubtitle(artist ?? '', title)
-    if (lines && lines.length) emit({ type: 'media.subtitle', title, artist, lines })
+    emit({ type: 'media.subtitle', title, artist, lines: lines ?? [] })
   } catch {
     // 字幕失败不影响播放
   }

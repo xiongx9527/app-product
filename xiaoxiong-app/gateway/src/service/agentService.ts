@@ -56,22 +56,32 @@ export function createAgentService(
   autoSubtitle?: boolean,
   defaultLoop?: number,
   defaultVolume?: number,
-  autoLoop?: boolean
+  autoLoop?: boolean,
+  getNowPlaying?: () => { title: string; artist?: string } | null
 ): AgentService {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
   const m = messages(lang)
   // 把该设备已记住的内容拼进系统提示（memoryContext 由会话层按 deviceId 加载并格式化），
   // 让助手在唤醒后自然参考用户习惯，而不是每次都从零开始问。无记忆时为空串，不影响原提示。
-  const sysPrompt = m.systemPrompt + (memoryContext ?? '')
+  const baseSysPrompt = m.systemPrompt + (memoryContext ?? '')
   const agent = new Agent({
     name: 'Xiong',
-    sysPrompt,
+    sysPrompt: baseSysPrompt,
     model,
     toolkit: createToolkit(lang, config.timeZone, locationProvider, getMusicSource, emit, memoryStore, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop),
   })
+  // 当前播放曲目动态拼进系统提示：每轮 reply 前按最新曲目刷新，让助手能回答
+  // 「现在播的什么歌 / 谁唱的」，而不必回「不知道」。Agent 只在 reply 时读 this.sysPrompt，
+  // 这里更新其底层字段即可（不重建 Agent，避免丢失多轮对话上下文）。
+  function refreshNowPlaying(): void {
+    const now = getNowPlaying?.()
+    const ctx = now ? m.nowPlayingContext(now.title, now.artist) : ''
+    ;(agent as unknown as { _sysPrompt: string })._sysPrompt = baseSysPrompt + ctx
+  }
   return {
     async reply(userText, onDelta, onThinking) {
+      refreshNowPlaying()
       const stream = agent.replyStream({ msgs: UserMsg({ name: 'user', content: userText }) })
       // 推理模型会把思考过程连同控制符当作普通文本流下发，这里按 channel 拆开：
       // 思考走 onThinking（不进 TTS），最终答案走 onDelta。

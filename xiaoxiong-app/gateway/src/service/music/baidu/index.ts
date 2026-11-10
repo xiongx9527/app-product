@@ -4,6 +4,8 @@ import { genreToKeyword, isGenreRequest } from '../types'
 import { createSomaSource } from './somaSource'
 import { createBilibiliSearchSource, searchOrdered, type BiliResult } from './bilibiliSearchSource'
 import { getBilibiliSubtitle } from './bilibiliAudio'
+import { getNeteaseLyrics } from '../lyrics/neteaseLyrics'
+import { getKugouLyrics } from '../lyrics/kugouLyrics'
 
 /**
  * 百度播放源：风格/氛围请求走 SomaFM 免费电台，具体歌名/歌手走 B 站搜索兜底抽音轨；
@@ -60,6 +62,20 @@ export function createBaiduMusicSource(fetcher: MusicFetcher): MusicSource {
       for (const r of ranked.slice(0, 5)) {
         const lines = await getBilibiliSubtitle(r.bvid, fetcher)
         if (lines && lines.length) return lines
+      }
+      // B 站无字幕时回退网易云歌词：覆盖大多数歌曲；网易云曲库受限的歌手（如周杰伦）取不到时返回 null。
+      try {
+        const nc = await getNeteaseLyrics(artist, title, fetcher)
+        if (nc && nc.length) return nc
+      } catch {
+        // 网易云失败不影响播放，继续回退酷狗
+      }
+      // 网易云仍取不到时回退酷狗歌词：免登录、对有版权的歌手（如周杰伦）能补上词；取不到返回 null。
+      try {
+        const kg = await getKugouLyrics(artist, title, fetcher)
+        if (kg && kg.length) return kg
+      } catch {
+        // 酷狗失败不影响播放，回退「暂无字幕」
       }
       return null
     },

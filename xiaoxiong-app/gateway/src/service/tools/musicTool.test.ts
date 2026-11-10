@@ -156,6 +156,17 @@ describe('音乐控制工具', () => {
     ])
   })
 
+  it('自动字幕开启（getSubtitle 返回 null）：仍下发空 media.subtitle，让客户端显示「暂无字幕」', async () => {
+    const source: MusicSource = { resolve: async () => sample, getSubtitle: async () => null }
+    const { directives, emit } = collect()
+    await createMusicTool('zh-CN', () => source, emit, true, 3, 0.5, true).call({ genre: '稻香' })
+    expect(directives).toContainEqual({
+      type: 'media.subtitle',
+      title: sample.title,
+      lines: [],
+    })
+  })
+
   it('next_music 自动字幕开启：换歌后也同源拉取字幕并下发 media.subtitle', async () => {
     const nextTrack: ResolvedTrack = { url: 'https://x/2.mp3', title: '歌B', channel: 'soma' }
     const subtitleLines = [{ time: 3, text: 'X' }]
@@ -182,7 +193,7 @@ describe('音乐控制工具', () => {
   it('play_music 尊重传入的 defaultLoop / defaultVolume：带入 loop 与 media.volume', async () => {
     const source: MusicSource = { resolve: async () => sample }
     const { directives, emit } = collect()
-    await createMusicTool('zh-CN', () => source, emit, true, 2, 0.4).call({ genre: '轻音乐' })
+    await createMusicTool('zh-CN', () => source, emit, true, 2, 0.4, true).call({ genre: '轻音乐' })
     expect(directives).toEqual([
       { type: 'media.volume', volume: 0.4 },
       { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 2 },
@@ -192,7 +203,7 @@ describe('音乐控制工具', () => {
   it('next_music 尊重传入的 defaultLoop / defaultVolume', async () => {
     const source: MusicSource = { resolve: async () => sample }
     const { directives, emit } = collect()
-    await createNextMusicTool('zh-CN', () => source, emit, true, 5, 0.7).call({})
+    await createNextMusicTool('zh-CN', () => source, emit, true, 5, 0.7, true).call({})
     expect(directives).toEqual([
       { type: 'media.volume', volume: 0.7 },
       { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 5 },

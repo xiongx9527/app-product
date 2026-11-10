@@ -413,7 +413,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
         type: 'session.start',
         sessionId: 's1',
         lang: 'zh-CN',
-        playback: { source: 'baidu', autoSubtitle: false, defaultLoop: 2, defaultVolume: 0.3 },
+        playback: { source: 'baidu', autoSubtitle: false, autoLoop: true, defaultLoop: 2, defaultVolume: 0.3 },
       })
     )
     await sleep(5)
@@ -477,7 +477,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
         type: 'session.start',
         sessionId: 's1',
         lang: 'zh-CN',
-        playback: { source: 'baidu', autoSubtitle: false, defaultLoop: 1, defaultVolume: 0.5 },
+        playback: { source: 'baidu', autoSubtitle: false, autoLoop: true, defaultLoop: 1, defaultVolume: 0.5 },
       })
     )
     await sleep(5)
@@ -487,7 +487,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     await sleep(20)
     // 播放中途（换一首前）刷新默认循环为 4、默认音量为 0.2
     h.service.handleText(
-      JSON.stringify({ type: 'session.playback', source: 'baidu', autoSubtitle: false, defaultLoop: 4, defaultVolume: 0.2 })
+      JSON.stringify({ type: 'session.playback', source: 'baidu', autoSubtitle: false, autoLoop: true, defaultLoop: 4, defaultVolume: 0.2 })
     )
     await sleep(5)
     await speakUtterance(h)
@@ -811,6 +811,44 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
     expect(textsOf(h)).toContain('你想听第几首')
   });
+})
+
+describe('字幕开关指令（绕开 LLM）', () => {
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('语音「关闭字幕」：下发 media.subtitle(close) 收起面板并口播，不进 LLM', async () => {
+    const h = createHarness({ finalizeText: '关闭字幕' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const close = h.events.find((e) => e.type === 'media.subtitle') as
+      | { type: 'media.subtitle'; close?: boolean }
+      | undefined
+    expect(close).toBeDefined()
+    expect(close?.close).toBe(true)
+    // 直连指令绕开大模型
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('已关闭字幕')
+  })
+
+  it('语音「开启字幕」：口播开启，不进 LLM', async () => {
+    const h = createHarness({ finalizeText: '开启字幕' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const subs = h.events.filter((e) => e.type === 'media.subtitle') as Array<{ type: 'media.subtitle'; close?: boolean }>
+    // 没有正在播放的曲子时不会下发 close，也不会误发空字幕面板
+    expect(subs.some((e) => e.close)).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('已开启字幕')
+  })
 })
 
 describe('点歌信息不足：候选列表 + 语音选择', () => {
