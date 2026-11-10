@@ -40,7 +40,7 @@ async function onSave(): Promise<void> {
     // 未连接时退化为「下一次唤醒随 session.start 生效」，不强行发（发了也没人收）。
     const transport = getActiveTransport()
     if (transport?.isConnected()) {
-      transport.notifyPlaybackSource(appConfig.playback.source)
+      transport.notifyPlaybackSource(appConfig.playback.source, appConfig.playback.autoSubtitle ?? true)
     }
     // 本地落盘是同步的，加一个最短可见时长让加载遮罩有反馈，而不是一闪而过。
     await new Promise((r) => setTimeout(r, 400))
@@ -51,6 +51,11 @@ async function onSave(): Promise<void> {
 
 function onResetVoice(): void {
   resetVoice()
+}
+
+/** 进入「我的收藏」页：查看/播放/移除已收藏的歌。 */
+function openFavorites(): void {
+  uni.navigateTo({ url: '/pages/favorites/favorites' })
 }
 
 /** LLM 模型下拉：选项来自来源配置（内置=已配置上游模型；百炼=带 key 拉真实目录）。 */
@@ -456,6 +461,65 @@ watch(
           </view>
         </view>
         <text class="hint">{{ t('settings.playback.sourceHint') }}</text>
+
+        <!-- 播放完自动收藏：与播放源无关，全局一个开关 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.playback.autoSave') }}</text>
+            <text class="hint">{{ t('settings.playback.autoSaveHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.playback.autoSave"
+            color="#6c8cff"
+            @change="(e: any) => (appConfig.playback.autoSave = e.detail.value)"
+          />
+        </view>
+
+        <!-- 自动显示字幕：与播放源无关，全局一个开关；播放音乐时同源字幕自动拉取展示 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.playback.autoSubtitle') }}</text>
+            <text class="hint">{{ t('settings.playback.autoSubtitleHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.playback.autoSubtitle"
+            color="#6c8cff"
+            @change="(e: any) => (appConfig.playback.autoSubtitle = e.detail.value)"
+          />
+        </view>
+
+        <!-- 默认循环次数：非负整数，0 表示不循环 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.defaultLoop') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.playback.defaultLoop"
+          />
+          <text class="hint">{{ t('settings.playback.defaultLoopHint') }}</text>
+        </view>
+
+        <!-- 默认音量：0–100%，与播放器音量同域 -->
+        <view class="setting-row column">
+          <text class="row-label">
+            {{ t('settings.playback.defaultVolume') }} · {{ Math.round(appConfig.playback.defaultVolume * 100) }}%
+          </text>
+          <slider
+            :value="Math.round(appConfig.playback.defaultVolume * 100)"
+            activeColor="#6c8cff"
+            backgroundColor="#3a3f55"
+            block-size="18"
+            @change="(e: any) => (appConfig.playback.defaultVolume = e.detail.value / 100)"
+            @changing="(e: any) => (appConfig.playback.defaultVolume = e.detail.value / 100)"
+          />
+          <text class="hint">{{ t('settings.playback.defaultVolumeHint') }}</text>
+        </view>
+
+        <!-- 我的收藏入口 -->
+        <view class="entry" @tap="openFavorites">
+          <text class="entry-label">{{ t('settings.playback.favorites') }}</text>
+          <text class="entry-arrow">›</text>
+        </view>
       </template>
     </view>
 
@@ -654,6 +718,50 @@ picker {
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.setting-row.column {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.setting-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.entry-label {
+  font-size: 13px;
+  color: #e8eaf6;
+}
+
+.entry-arrow {
+  font-size: 16px;
+  color: #6f7691;
 }
 
 .row-text {

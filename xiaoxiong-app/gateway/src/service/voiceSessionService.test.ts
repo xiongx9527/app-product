@@ -349,6 +349,57 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(texts(h)).toContain('正在为你播放')
   })
 
+  it('自动字幕开启：播放后同源自动拉取并下发 media.subtitle，字幕不进 LLM', async () => {
+    const subtitleLines = [
+      { time: 1, text: '第一句' },
+      { time: 5, text: '第二句' },
+    ]
+    const h = createHarness({
+      finalizeText: '播放周杰伦的稻香',
+      musicSourceFactory: () => ({
+        resolve: async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }),
+        getSubtitle: async () => subtitleLines,
+      }),
+    })
+    // 显式下发带 autoSubtitle:true 的 session.start
+    h.service.handleText(
+      JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN', playback: { source: 'baidu', autoSubtitle: true } })
+    )
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
+    const sub = h.events.find((e) => e.type === 'media.subtitle') as
+      | { type: 'media.subtitle'; title: string; artist?: string; lines: Array<{ time: number; text: string }> }
+      | undefined
+    expect(sub).toBeDefined()
+    expect(sub?.title).toBe('稻香')
+    expect(sub?.artist).toBe('周杰伦')
+    expect(sub?.lines).toEqual(subtitleLines)
+    // 字幕只在客户端展示，绝不进 TTS / LLM
+    expect(texts(h)).not.toContain('第一句')
+  })
+
+  it('自动字幕关闭：播放后不下发 media.subtitle', async () => {
+    const h = createHarness({
+      finalizeText: '播放周杰伦的稻香',
+      musicSourceFactory: () => ({
+        resolve: async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }),
+        getSubtitle: async () => [{ time: 1, text: '第一句' }],
+      }),
+    })
+    h.service.handleText(
+      JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN', playback: { source: 'baidu', autoSubtitle: false } })
+    )
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(true)
+    expect(h.events.some((e) => e.type === 'media.subtitle')).toBe(false)
+  })
+
   it('暂停播放：下发 media.pause（不是 media.stop），不进 LLM', async () => {
     // 用户反馈：说「暂停播放」结果被关掉（误判成 stop）。这条端到端用例走真实
     // finalizeUtterance 路径（带音乐源），验证命中 pause 后下发 media.pause、

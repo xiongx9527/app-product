@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { getBilibiliSubtitle } from './bilibiliAudio'
-import type { MusicFetcher, SubtitleLine } from '../types'
+import type { MusicFetcher } from '../types'
 
 /** 用预设响应构造 fetcher，便于单测字幕解析，不触网。 */
 function fakeFetcher(responses: Record<string, { ok: boolean; json: () => unknown }>): MusicFetcher {
@@ -37,7 +37,7 @@ describe('getBilibiliSubtitle（同源字幕：保留每行时间轴、合并连
         ],
       },
     })
-    const lines: SubtitleLine[] = await getBilibiliSubtitle('BVtest', fetcher)
+    const lines = await getBilibiliSubtitle('BVtest', fetcher)
     expect(lines).toEqual([
       { time: 1, text: '第一句' },
       { time: 9, text: '第二句' },

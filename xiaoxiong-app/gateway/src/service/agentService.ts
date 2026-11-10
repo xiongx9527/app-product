@@ -52,7 +52,8 @@ export function createAgentService(
   emit?: MediaEmitter,
   memoryStore?: MemoryStore,
   memoryContext?: string,
-  requestLocation?: RequestLocation
+  requestLocation?: RequestLocation,
+  autoSubtitle?: boolean
 ): AgentService {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
@@ -64,7 +65,7 @@ export function createAgentService(
     name: 'Xiong',
     sysPrompt,
     model,
-    toolkit: createToolkit(lang, config.timeZone, locationProvider, getMusicSource, emit, memoryStore, requestLocation),
+    toolkit: createToolkit(lang, config.timeZone, locationProvider, getMusicSource, emit, memoryStore, requestLocation, autoSubtitle),
   })
   return {
     async reply(userText, onDelta, onThinking) {

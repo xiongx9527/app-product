@@ -11,6 +11,29 @@ export type MediaDirective = Extract<
   { type: 'media.play' | 'media.stop' | 'media.subtitle' | 'media.pause' | 'media.resume' }
 >
 
+/**
+ * 自动字幕：开关开启时，用当前音乐源拉取字幕并下发 media.subtitle（随播放进度高亮）。
+ * 尽力而为——拉取失败/超时不影响播放；无字幕行时不发（客户端不会弹空面板）。
+ * artist 仅用于更精准地检索同源字幕，缺省时按 title 检索；ResolvedTrack 不含 artist 时传空串。
+ */
+export async function emitAutoSubtitles(
+  getSource: () => MusicSource | undefined,
+  emit?: (m: MediaDirective) => void,
+  title = '',
+  artist?: string,
+  autoSubtitle = true
+): Promise<void> {
+  if (!autoSubtitle || !emit) return
+  const source = getSource()
+  if (!source?.getSubtitle) return
+  try {
+    const lines = await source.getSubtitle(artist ?? '', title)
+    if (lines && lines.length) emit({ type: 'media.subtitle', title, artist, lines })
+  } catch {
+    // 字幕失败不影响播放
+  }
+}
+
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const MUSIC_TOOL_NAME = 'play_music'
 export const STOP_MUSIC_TOOL_NAME = 'stop_music'
@@ -31,7 +54,8 @@ const DESCRIPTIONS: Record<string, string> = {
 export function createMusicTool(
   lang: Lang | string,
   getSource: () => MusicSource | undefined,
-  emit?: (m: MediaDirective) => void
+  emit?: (m: MediaDirective) => void,
+  autoSubtitle = true
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   return {
@@ -55,6 +79,8 @@ export function createMusicTool(
           proxy: needsProxy(track.channel, track.url),
           ...(loop && loop > 1 ? { loop } : {}),
         })
+        // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示）。
+        void emitAutoSubtitles(getSource, emit, track.title, undefined, autoSubtitle)
         return prefix === 'en'
           ? `Now playing: ${track.title}. (${track.url})`
           : `正在为你播放：${track.title}。`
@@ -143,7 +169,8 @@ const NEXT_DESCRIPTIONS: Record<string, string> = {
 export function createNextMusicTool(
   lang: Lang | string,
   getSource: () => MusicSource | undefined,
-  emit?: (m: MediaDirective) => void
+  emit?: (m: MediaDirective) => void,
+  autoSubtitle = true
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   return {
@@ -158,6 +185,8 @@ export function createNextMusicTool(
         if (!source) throw new Error('music source unavailable')
         const track = await (source.next ? source.next(args?.genre) : source.resolve(args?.genre))
         emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel, proxy: needsProxy(track.channel, track.url) })
+        // 自动字幕：开关开启时，换歌后尽力同源拉取字幕并下发（无字幕则不显示）。
+        void emitAutoSubtitles(getSource, emit, track.title, undefined, autoSubtitle)
         return prefix === 'en'
           ? `Now playing: ${track.title}. (${track.url})`
           : `已为你切换到：${track.title}。`

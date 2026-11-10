@@ -57,4 +57,21 @@ export type PlaybackSource = 'baidu' | 'netease' | 'tencent' | 'kugou'
 export interface PlaybackConfig {
   /** 当前播放源，默认百度 */
   source: PlaybackSource
+  /** 播放音乐时是否自动拉取并展示字幕（同源），默认开启 */
+  autoSubtitle?: boolean
+  /**
+   * 播放完是否自动收藏：歌曲自然播放结束（含循环播完）后自动加入「我的收藏」。
+   * 默认关闭；收藏的读写后端（网关 SQLite + REST）尚未实现，当前仅客户端内存列表演示。
+   */
+  autoSave: boolean
+  /**
+   * 默认循环播放次数（含当前这一遍）；0 表示不循环。默认 3。
+   * 与界面「循环」按钮的临时档位独立：此处是每次新播放的默认值，由网关下发 media.play 时带入。
+   */
+  defaultLoop: number
+  /**
+   * 默认音量（0–1，与 media.volume / 播放器音量同域）；默认 0.5（即 50%）。
+   * 由网关开始播放时带入；后续实现后端时按此默认值下发 media.volume。
+   */
+  defaultVolume: number
 }

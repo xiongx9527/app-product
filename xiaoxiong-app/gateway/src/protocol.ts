@@ -56,8 +56,8 @@ export type ClientMessage =
   | { type: 'session.end' }
   /** 客户端定位更新：连接后或位置变化时补报/刷新最新位置 */
   | { type: 'session.location'; latitude: number; longitude: number; address?: string }
-  /** 播放设置实时更新：在已建立的会话里改了播放源，立即推给网关重建音乐源，无需重连/重唤醒 */
-  | { type: 'session.playback'; source?: string }
+  /** 播放设置实时更新：在已建立的会话里改了播放源/自动字幕开关，立即推给网关重建音乐源或刷新开关，无需重连/重唤醒 */
+  | { type: 'session.playback'; source?: string; autoSubtitle?: boolean }
   /** 客户端本地播放队列清空后回执：网关据此才消费排队的下一句 */
   | { type: 'session.playback_done' }
   /** 客户端点「换一首 / 换个风格」：网关用当前音乐源解析下一首并下发 media.play */

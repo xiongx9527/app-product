@@ -249,9 +249,9 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendJson({ type: 'session.playback_done' })
   }
 
-  /** 播放源实时变更：设置页改了播放源后推送，网关据此立即重建音乐源，无需重连/重唤醒 */
-  notifyPlaybackSource(source: string): void {
-    this.sendJson({ type: 'session.playback', source })
+  /** 播放设置实时变更：设置页改了播放源/自动字幕后推送，网关据此立即重建音乐源或刷新开关，无需重连/重唤醒 */
+  notifyPlaybackSource(source: string, autoSubtitle?: boolean): void {
+    this.sendJson({ type: 'session.playback', source, ...(typeof autoSubtitle === 'boolean' ? { autoSubtitle } : {}) })
   }
 
   close(): void {
@@ -287,7 +287,8 @@ export class WebSocketTransport implements AssistantTransport {
       // 网关按 provider 展开成三套地址；旧客户端不带 voice → 网关完全沿用自身 env，行为不变
       voice: activeVoiceConfig(),
       // 播放设置（音乐播放源等）：来自客户端设置页，网关据此决定点歌走哪个来源；缺省百度。
-      playback: { source: appConfig.playback.source },
+      // autoSubtitle 一并下发：网关据此在每次播放时自动拉取并展示同源字幕（缺省开启）。
+      playback: { source: appConfig.playback.source, autoSubtitle: appConfig.playback.autoSubtitle ?? true },
       location: this.lastLocation ?? undefined,
       mode,
       // 本机稳定设备标识：网关据此复用会话（重连/重唤醒保留记忆）；URL query 也带一份作主路径

@@ -51,6 +51,8 @@ import type { ServerEvent, SessionMode } from '@/core/transport/types'
 import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
 import { matchWakeWord } from '@/core/wake/wakeWord'
 import { getLanguage } from '@/core/config'
+import { appConfig } from '@/core/config'
+import { addFavorite } from '@/features/favorites/favoritesStore'
 
 /** 一轮对话的阶段：界面据此告诉用户「现在在干嘛」，避免以为卡住而插话。 */
 export type Phase = 'idle' | 'listening' | 'thinking' | 'replying' | 'speaking' | 'done'
@@ -199,6 +201,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
     if (prevMicState === 'granted' && p.mic !== 'granted') playPromptCue('micDenied')
     prevMicState = p.mic
+  })
+
+  // 播放完自动收藏（前端）：歌曲自然播放结束（含循环播完）时，若开关开启，
+  // 把当前曲目加入收藏。与播放源无关，单一收藏列表；收藏读写后端未实现，先入内存列表演示。
+  watch(musicState.ended, (endedNow) => {
+    if (!endedNow) return
+    if (!appConfig.playback.autoSave) return
+    const title = musicState.title.value.trim()
+    const url = musicState.url.value.trim()
+    if (title && url) addFavorite({ title, url })
   })
 
   function handleServerEvent(event: ServerEvent): void {

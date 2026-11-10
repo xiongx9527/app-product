@@ -46,7 +46,8 @@ export interface VoiceSessionDeps {
     emit?: (m: ServerEvent) => void,
     memoryStore?: MemoryStore,
     memoryContext?: string,
-    requestLocation?: RequestLocation
+    requestLocation?: RequestLocation,
+    autoSubtitle?: boolean
   ) => AgentService
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
   createAsr: (cfg: AsrConfig) => AsrProvider
@@ -119,6 +120,8 @@ export class VoiceSessionService {
   private musicSource: MusicSource | undefined = undefined
   /** 最近一次下发的曲目（url/title/channel），供「循环播放」指令复用同一首重播 */
   private lastTrack: { url: string; title: string; channel?: string; artist?: string } | null = null
+  /** 自动字幕开关：播放音乐时同源字幕是否自动拉取并展示；来自客户端设置（缺省开启）。 */
+  private autoSubtitle = true
   /** 当前是否正在播放（播放/切歌/循环置真，停止置假）。决定「点歌按当前歌手优先」是否生效：
    *  仅当用户正处于某个歌手的播放会话时才自动选同歌手版本；已停止则老老实实列选项让用户选。 */
   private musicActive = false
@@ -200,6 +203,8 @@ export class VoiceSessionService {
         this.musicSource = this.deps.musicSourceFactory
           ? this.deps.musicSourceFactory()
           : createMusicSource({ source: msg.playback?.source })
+        // 自动字幕开关：来自客户端设置页（session.start.playback.autoSubtitle），缺省开启。
+        this.autoSubtitle = msg.playback?.autoSubtitle ?? true
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, msg.voice)
         // ASR/TTS/LLM 未就绪时，网关没法用语音播报，改为下发预录提示音，让用户「听得见地」知道；
         // 探测有 15s 缓存，连重连/重唤醒都便宜，不每次真打服务。不下发具体文案（提示音已含人声）。
@@ -222,6 +227,8 @@ export class VoiceSessionService {
         this.musicSource = this.deps.musicSourceFactory
           ? this.deps.musicSourceFactory()
           : createMusicSource({ source: msg.source })
+        // 自动字幕开关也可实时切换：设置页打开/关闭后由客户端随本消息推来。
+        if (typeof msg.autoSubtitle === 'boolean') this.autoSubtitle = msg.autoSubtitle
         break
       case 'session.cancel':
         this.cancel()
@@ -337,6 +344,8 @@ export class VoiceSessionService {
       channel: track.channel,
       proxy: needsProxy(track.channel, track.url),
     })
+    // 自动字幕：开关开启时，「换一首」同样是一次播放，同源尽力拉取字幕下发，与 playTrack 一致。
+    void this.emitAutoSubtitle(track.title, this.lastTrack?.artist)
   }
 
   /**
@@ -362,7 +371,27 @@ export class VoiceSessionService {
       proxy: needsProxy(track.channel, track.url),
       ...(loop && loop > 1 ? { loop } : {}),
     })
+    // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示，不弹面板）。
+    void this.emitAutoSubtitle(track.title, artist)
     await this.speakReply(confirm)
+  }
+
+  /**
+   * 自动字幕：开关开启时，用当前音乐源拉取字幕并下发 media.subtitle。
+   * 尽力而为——拉取失败/超时不影响播放；无字幕时不发（客户端不会弹空面板）。
+   */
+  private async emitAutoSubtitle(title: string, artist?: string): Promise<void> {
+    if (!this.autoSubtitle) return
+    const source = this.musicSource
+    if (!source?.getSubtitle) return
+    try {
+      const lines = await source.getSubtitle(artist ?? '', title)
+      if (lines && lines.length) {
+        this.deps.send({ type: 'media.subtitle', title, artist, lines })
+      }
+    } catch {
+      // 字幕失败不影响播放
+    }
   }
 
   /**
@@ -1096,7 +1125,8 @@ export class VoiceSessionService {
             (m) => this.deps.send(m),
             memoryStore,
             memoryContext,
-            () => this.requestClientLocation()
+            () => this.requestClientLocation(),
+            this.autoSubtitle
           )
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }

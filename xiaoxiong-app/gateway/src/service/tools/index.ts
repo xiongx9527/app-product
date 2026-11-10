@@ -82,7 +82,8 @@ export function createToolkit(
   getMusicSource?: () => MusicSource | undefined,
   emit?: (media: MediaDirective) => void,
   memoryStore?: MemoryStore,
-  requestLocation?: RequestLocation
+  requestLocation?: RequestLocation,
+  autoSubtitle?: boolean
 ): Toolkit {
   // 网关既有工具（时间/位置/天气）都用空 inputSchema + 0 参 call，与 AgentScope 的 Toolkit 类型一致；
   // 音乐类工具需要入参（genre/minutes 等），zod 泛型在此边界不兼容，故整体按 Tool[] 断言。
@@ -97,11 +98,11 @@ export function createToolkit(
   // musicSource 用 getter 传入，使 session.playback 实时切换源无需重建智能体。
   const musicTools: Tool[] = emit && getMusicSource
     ? [
-        createMusicTool(lang, getMusicSource, emit),
+        createMusicTool(lang, getMusicSource, emit, autoSubtitle),
         createStopMusicTool(lang, emit),
         createPauseMusicTool(lang, emit),
         createResumeMusicTool(lang, emit),
-        createNextMusicTool(lang, getMusicSource, emit),
+        createNextMusicTool(lang, getMusicSource, emit, autoSubtitle),
         createMusicSearchTool(lang),
         createSubtitleTool(lang, getMusicSource, emit),
       ]

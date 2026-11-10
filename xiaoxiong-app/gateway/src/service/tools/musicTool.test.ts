@@ -109,6 +109,50 @@ describe('音乐控制工具', () => {
     expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
   })
 
+  it('自动字幕开启：play_music 播放后同源拉取字幕并下发 media.subtitle', async () => {
+    const subtitleLines = [
+      { time: 1, text: '第一句' },
+      { time: 5, text: '第二句' },
+    ]
+    const source: MusicSource = { resolve: async () => sample, getSubtitle: async () => subtitleLines }
+    const { directives, emit } = collect()
+    await createMusicTool('zh-CN', () => source, emit, true).call({ genre: '稻香' })
+    expect(directives).toEqual([
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel) },
+      { type: 'media.subtitle', title: sample.title, lines: subtitleLines },
+    ])
+  })
+
+  it('自动字幕关闭：play_music 只下发 media.play，不下发 media.subtitle', async () => {
+    const source: MusicSource = { resolve: async () => sample, getSubtitle: async () => [{ time: 1, text: '字幕' }] }
+    const { directives, emit } = collect()
+    await createMusicTool('zh-CN', () => source, emit, false).call({ genre: '稻香' })
+    expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
+  })
+
+  it('自动字幕开启（源无 getSubtitle）：play_music 只下发 media.play，不下发空字幕', async () => {
+    const source: MusicSource = { resolve: async () => sample }
+    const { directives, emit } = collect()
+    await createMusicTool('zh-CN', () => source, emit, true).call({ genre: '稻香' })
+    expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
+  })
+
+  it('next_music 自动字幕开启：换歌后也同源拉取字幕并下发 media.subtitle', async () => {
+    const nextTrack: ResolvedTrack = { url: 'https://x/2.mp3', title: '歌B', channel: 'soma' }
+    const subtitleLines = [{ time: 3, text: 'X' }]
+    const source: MusicSource = {
+      resolve: async () => sample,
+      next: async () => nextTrack,
+      getSubtitle: async () => subtitleLines,
+    }
+    const { directives, emit } = collect()
+    await createNextMusicTool('zh-CN', () => source, emit, true).call({ genre: '爵士' })
+    expect(directives).toEqual([
+      { type: 'media.play', ...nextTrack, proxy: needsProxy(nextTrack.channel) },
+      { type: 'media.subtitle', title: nextTrack.title, lines: subtitleLines },
+    ])
+  })
+
   it('英文文案按 lang 返回', async () => {
     const { emit } = collect()
     const pauseEn = await createPauseMusicTool('en-US', emit).call()
