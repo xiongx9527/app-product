@@ -1411,3 +1411,72 @@ describe('大模型异常回复兜底：不念垃圾，给一句兜底口播', (
     expect(delta).toContain('好的，已为您播放。')
   })
 })
+
+describe('播放源实时切换（session.playback）', () => {
+  /** 与直连命令用例同款的轻量源工厂：resolve 返回带 kind 标记的曲目，便于断言用的是哪个源 */
+  const kindSource = (kind: string): MusicSource => ({
+    resolve: async () => ({ url: `https://x/${kind}`, title: `歌-${kind}`, channel: kind }),
+  })
+
+  function spokenText(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+  function lastPlayTitle(h: Harness, after: number): string | undefined {
+    const plays = h.events.slice(after).filter((e) => e.type === 'media.play') as Array<{
+      type: 'media.play'
+      url: string
+      title: string
+      channel?: string
+    }>
+    return plays[plays.length - 1]?.title
+  }
+
+  it('设置页保存后无需重连：session.playback 立刻让下一句点歌走新源', async () => {
+    // 工厂按可变 kind 返回不同源，模拟「客户端改了设置 → 网关用新源」
+    let kind = 'baidu'
+    const h = createHarness({
+      finalizeText: '播放周杰伦的稻香',
+      musicSourceFactory: () => kindSource(kind),
+    })
+    await startDialog(h.service)
+
+    await speakUtterance(h)
+    await sleep(30)
+    expect(lastPlayTitle(h, 0)).toBe('歌-baidu')
+    h.playbackDone()
+    await sleep(10)
+
+    // 模拟设置页 onSave：切到 netease 并下发 session.playback
+    kind = 'netease'
+    h.service.handleText(JSON.stringify({ type: 'session.playback', source: 'netease' }))
+    await sleep(5)
+
+    const before = h.events.length
+    await speakUtterance(h)
+    await sleep(30)
+    expect(lastPlayTitle(h, before)).toBe('歌-netease')
+    // 全程没进 LLM（直连点歌）
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('未注入工厂时按 msg.source 重新建源：切到未实现的源给出「尚未实现」口播', async () => {
+    // 不传 musicSourceFactory → 网关走 createMusicSource({ source: msg.source })
+    const h = createHarness({ finalizeText: '播放周杰伦的稻香' })
+    await startDialog(h.service)
+
+    // 先切到尚未实现的 netease（stub 不会触网），再点歌，避免默认 baidu 走真实检索
+    h.service.handleText(JSON.stringify({ type: 'session.playback', source: 'netease' }))
+    await sleep(5)
+
+    const before = h.events.length
+    await speakUtterance(h)
+    await sleep(30)
+    // netease 是空实现：不应下发媒体，而口播「尚未实现」
+    expect(h.events.slice(before).some((e) => e.type === 'media.play')).toBe(false)
+    expect(spokenText(h)).toContain('网易云音乐')
+    expect(spokenText(h)).toContain('尚未实现')
+  })
+})

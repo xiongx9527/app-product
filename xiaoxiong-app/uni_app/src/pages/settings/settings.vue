@@ -13,6 +13,7 @@ import { DEFAULT_DASHSCOPE_URL } from '@/core/config/constants'
 import { t } from '@/core/i18n'
 import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
+import { getActiveTransport } from '@/core/transport'
 import { getDeviceId } from '@/core/config/deviceId'
 import SelectRow from '@/components/SelectRow.vue'
 
@@ -22,7 +23,12 @@ const timezoneOptions = computed(() =>
 )
 
 /** 播放源下拉：当前仅百度，后续可扩展；文案按当前语言本地化。 */
-const playbackSources = computed(() => [{ value: 'baidu' as PlaybackSource, label: t('settings.playback.baidu') }])
+const playbackSources = computed(() => [
+  { value: 'baidu' as PlaybackSource, label: t('settings.playback.baidu') },
+  { value: 'netease' as PlaybackSource, label: t('settings.playback.netease') },
+  { value: 'tencent' as PlaybackSource, label: t('settings.playback.tencent') },
+  { value: 'kugou' as PlaybackSource, label: t('settings.playback.kugou') },
+])
 
 const saving = ref(false)
 
@@ -30,6 +36,12 @@ async function onSave(): Promise<void> {
   saving.value = true
   try {
     persistConfig()
+    // 设置页改了播放源：若语音会话仍连着，立即推给网关重建音乐源，无需重连/重唤醒即可生效；
+    // 未连接时退化为「下一次唤醒随 session.start 生效」，不强行发（发了也没人收）。
+    const transport = getActiveTransport()
+    if (transport?.isConnected()) {
+      transport.notifyPlaybackSource(appConfig.playback.source)
+    }
     // 本地落盘是同步的，加一个最短可见时长让加载遮罩有反馈，而不是一闪而过。
     await new Promise((r) => setTimeout(r, 400))
   } finally {
@@ -163,6 +175,11 @@ function toggleMemories(): void {
 const voiceCollapsed = ref(true)
 function toggleVoice(): void {
   voiceCollapsed.value = !voiceCollapsed.value
+}
+/** 播放设置默认折叠，展开后选择播放源。 */
+const playbackCollapsed = ref(true)
+function togglePlayback(): void {
+  playbackCollapsed.value = !playbackCollapsed.value
 }
 /** 关键词检索：对 key / value 模糊匹配，网关 q 参数下发。 */
 const memQuery = ref('')
@@ -412,19 +429,33 @@ watch(
         <text v-if="ttsVoiceHint" class="hint" @tap="loadTtsVoices">{{ ttsVoiceHint }}</text>
       </template>
 
-      <view class="sub-block">
-        <text class="row-label">{{ t('settings.playback.title') }}</text>
-        <SelectRow
-          :title="t('settings.playback.source')"
-          :hint="t('settings.playback.sourceHint')"
-          :options="playbackSources"
-          :model-value="appConfig.playback.source"
-          :disabled="playbackSources.length === 0"
-          @update:model-value="(v: string) => (appConfig.playback.source = v as PlaybackSource)"
-        />
-      </view>
-
       <button class="reset" @tap="onResetVoice">{{ t('settings.reset') }}</button>
+      </template>
+    </view>
+
+    <!-- 播放设置（音乐播放源等），默认折叠 -->
+    <view class="group">
+      <view class="group-head">
+        <view class="group-title-row" @tap="togglePlayback">
+          <text class="group-chevron">{{ playbackCollapsed ? '▸' : '▾' }}</text>
+          <text class="group-title">{{ t('settings.playback.title') }}</text>
+        </view>
+      </view>
+      <template v-if="!playbackCollapsed">
+        <text class="row-label">{{ t('settings.playback.source') }}</text>
+        <view class="providers">
+          <view
+            v-for="opt in playbackSources"
+            :key="opt.value"
+            class="provider"
+            :class="{ active: appConfig.playback.source === opt.value }"
+            @tap="appConfig.playback.source = opt.value as PlaybackSource"
+          >
+            <view class="radio"><view v-if="appConfig.playback.source === opt.value" class="radio-dot" /></view>
+            <text class="provider-name">{{ opt.label }}</text>
+          </view>
+        </view>
+        <text class="hint">{{ t('settings.playback.sourceHint') }}</text>
       </template>
     </view>
 
@@ -636,12 +667,6 @@ picker {
 .row-label {
   font-size: 13px;
   color: #e8eaf6;
-}
-
-.sub-block {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .row-right {

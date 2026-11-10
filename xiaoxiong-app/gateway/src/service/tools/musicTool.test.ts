@@ -13,6 +13,7 @@ import {
   type MediaDirective,
 } from './musicTool'
 import type { MusicSource, ResolvedTrack } from '../music/types'
+import { needsProxy } from '../music'
 
 function collect(): { directives: MediaDirective[]; emit: (m: MediaDirective) => void } {
   const directives: MediaDirective[] = []
@@ -53,15 +54,15 @@ describe('音乐控制工具', () => {
   it('play_music 下发 media.play 并带上解析出的曲目', async () => {
     const source: MusicSource = { resolve: async () => sample }
     const { directives, emit } = collect()
-    const msg = await createMusicTool('zh-CN', source, emit).call({ genre: '轻音乐' })
-    expect(directives).toEqual([{ type: 'media.play', ...sample }])
+    const msg = await createMusicTool('zh-CN', () => source, emit).call({ genre: '轻音乐' })
+    expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
     expect(msg).toContain('歌A')
   })
 
   it('play_music 搜不到时告知找不到且不下发 media.play（不乱播电台）', async () => {
     const source: MusicSource = { resolve: async () => { throw new Error('not found') } }
     const { directives, emit } = collect()
-    const msg = await createMusicTool('zh-CN', source, emit).call({ genre: '不存在的歌' })
+    const msg = await createMusicTool('zh-CN', () => source, emit).call({ genre: '不存在的歌' })
     expect(directives).toEqual([])
     expect(msg).toContain('没找到这首歌')
   })
@@ -72,7 +73,7 @@ describe('音乐控制工具', () => {
       next: async () => { throw new Error('not found') },
     }
     const { directives, emit } = collect()
-    const msg = await createNextMusicTool('zh-CN', source, emit).call({ genre: '不存在的歌' })
+    const msg = await createNextMusicTool('zh-CN', () => source, emit).call({ genre: '不存在的歌' })
     expect(directives).toEqual([])
     expect(msg).toContain('没找到这首歌')
   })
@@ -84,16 +85,16 @@ describe('音乐控制工具', () => {
       next: async () => nextTrack,
     }
     const { directives, emit } = collect()
-    const msg = await createNextMusicTool('zh-CN', source, emit).call({ genre: '爵士' })
-    expect(directives).toEqual([{ type: 'media.play', ...nextTrack }])
+    const msg = await createNextMusicTool('zh-CN', () => source, emit).call({ genre: '爵士' })
+    expect(directives).toEqual([{ type: 'media.play', ...nextTrack, proxy: needsProxy(nextTrack.channel) }])
     expect(msg).toContain('切换到')
   })
 
   it('next_music 在源没有 next 时回退到 resolve', async () => {
     const source: MusicSource = { resolve: async () => sample }
     const { directives, emit } = collect()
-    await createNextMusicTool('zh-CN', source, emit).call({})
-    expect(directives).toEqual([{ type: 'media.play', ...sample }])
+    await createNextMusicTool('zh-CN', () => source, emit).call({})
+    expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
   })
 
   it('英文文案按 lang 返回', async () => {

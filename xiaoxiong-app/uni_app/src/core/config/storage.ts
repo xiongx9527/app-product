@@ -92,7 +92,7 @@ function normalizeVoice(raw: unknown): VoiceServiceConfig {
 function normalizePlayback(raw: unknown): PlaybackConfig {
   const source = isRecord(raw) ? raw : {}
   const src = typeof source.source === 'string' ? source.source : ''
-  const valid: PlaybackSource[] = ['baidu']
+  const valid: PlaybackSource[] = ['baidu', 'netease', 'tencent', 'kugou']
   return { source: valid.includes(src as PlaybackSource) ? (src as PlaybackSource) : 'baidu' }
 }
 

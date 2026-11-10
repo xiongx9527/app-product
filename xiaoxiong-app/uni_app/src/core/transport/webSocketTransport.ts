@@ -249,6 +249,11 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendJson({ type: 'session.playback_done' })
   }
 
+  /** 播放源实时变更：设置页改了播放源后推送，网关据此立即重建音乐源，无需重连/重唤醒 */
+  notifyPlaybackSource(source: string): void {
+    this.sendJson({ type: 'session.playback', source })
+  }
+
   close(): void {
     this.intentionalClose = true
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
@@ -281,7 +286,8 @@ export class WebSocketTransport implements AssistantTransport {
       // 语音服务配置（ASR / LLM / TTS 共用一份）：取当前来源这一份压平后下发，
       // 网关按 provider 展开成三套地址；旧客户端不带 voice → 网关完全沿用自身 env，行为不变
       voice: activeVoiceConfig(),
-      // 音乐为网关内置能力，无需客户端上报配置
+      // 播放设置（音乐播放源等）：来自客户端设置页，网关据此决定点歌走哪个来源；缺省百度。
+      playback: { source: appConfig.playback.source },
       location: this.lastLocation ?? undefined,
       mode,
       // 本机稳定设备标识：网关据此复用会话（重连/重唤醒保留记忆）；URL query 也带一份作主路径

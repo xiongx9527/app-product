@@ -79,7 +79,7 @@ export function createToolkit(
   lang: Lang | string,
   timeZone: string = 'Asia/Shanghai',
   locationProvider: LocationProvider = () => null,
-  musicSource?: MusicSource,
+  getMusicSource?: () => MusicSource | undefined,
   emit?: (media: MediaDirective) => void,
   memoryStore?: MemoryStore,
   requestLocation?: RequestLocation
@@ -93,14 +93,15 @@ export function createToolkit(
     createWeatherTool(lang, locationProvider, undefined, requestLocation),
   ]
   // 媒体指令需要 emit 把指令下发给客户端，且需要 musicSource 决定播什么；
-  // 两者都齐才注册音乐工具，否则（离线测试 / 客户端未配置音乐源）不注册，避免空转
-  const musicTools: Tool[] = emit && musicSource
+  // 两者都齐才注册音乐工具，否则（离线测试 / 客户端未配置音乐源）不注册，避免空转。
+  // musicSource 用 getter 传入，使 session.playback 实时切换源无需重建智能体。
+  const musicTools: Tool[] = emit && getMusicSource
     ? [
-        createMusicTool(lang, musicSource, emit),
+        createMusicTool(lang, getMusicSource, emit),
         createStopMusicTool(lang, emit),
         createPauseMusicTool(lang, emit),
         createResumeMusicTool(lang, emit),
-        createNextMusicTool(lang, musicSource, emit),
+        createNextMusicTool(lang, getMusicSource, emit),
         createMusicSearchTool(lang),
         createLyricsTool(lang, emit),
       ]

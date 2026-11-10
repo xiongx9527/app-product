@@ -19,6 +19,19 @@ export interface MusicSource {
   next?(genre?: string): ResolvedTrack | Promise<ResolvedTrack>
 }
 
+/**
+ * 占位播放源尚未实现：点歌时应明确告知用户该源暂不可用，
+ * 而非被上层 catch 当成「没找到这首歌」误导用户。
+ * 只携带源 kind（如 'netease'，代码值而非展示名），展示名由 i18n 按 lang 解析，
+ * 避免硬编码中文、保证英文会话也拿到本地化文案。
+ */
+export class MusicSourceNotImplementedError extends Error {
+  constructor(public readonly sourceKind: string) {
+    super(`music source not implemented: ${sourceKind}`)
+    this.name = 'MusicSourceNotImplementedError'
+  }
+}
+
 /** 可注入的 fetch：便于单测用桩替换，缺省走全局 fetch。 */
 export interface MusicFetcher {
   (url: string, init?: { headers?: Record<string, string>; method?: string; body?: string }): Promise<{

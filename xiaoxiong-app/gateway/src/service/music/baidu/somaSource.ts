@@ -1,5 +1,5 @@
-import { pickChannel, SOMA_CHANNELS, DEFAULT_CHANNEL, type SomaChannel } from '../tools/musicChannels'
-import { paramString, type MusicSource } from './types'
+import { pickChannel, SOMA_CHANNELS, DEFAULT_CHANNEL, type SomaChannel } from './musicChannels'
+import { paramString, type MusicSource } from '../types'
 
 /**
  * SomaFM 免费网络电台：无需 Key，直接 mp3 流。

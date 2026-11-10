@@ -24,6 +24,8 @@ export interface Messages {
      * 措辞不能叫「这首歌」——否则用户会以为系统把他的话当成了点歌。
      */
     notFound: (spoken?: boolean) => string
+    /** 占位播放源尚未实现：明确告知用户该源暂不可用，并引导改用百度搜索。入参是源 kind（如 'netease'），展示名由 i18n 解析 */
+    notImplemented: (kind: string) => string
     /** 多候选时口播编号列表，让用户用语音选「第几首」或直接说歌名 */
     candidates: (items: readonly string[]) => string
     /** 让用户选择的引导语 */
@@ -72,6 +74,19 @@ export interface Messages {
   }
 }
 
+/** 播放源 kind → 各语言展示名（与客户端 settings.playback.* i18n 保持一致）。kind 是代码值，展示名集中在此处与客户端两侧对齐 */
+const SOURCE_DISPLAY: Record<string, Record<string, string>> = {
+  baidu: { 'zh-CN': '百度搜索', en: 'Baidu Search' },
+  netease: { 'zh-CN': '网易云音乐', en: 'NetEase Cloud Music' },
+  tencent: { 'zh-CN': '腾讯音乐', en: 'Tencent Music' },
+  kugou: { 'zh-CN': '酷狗音乐', en: 'Kugou Music' },
+}
+
+/** 按 lang 解析播放源展示名；未知 kind 退化为 kind 本身，绝不硬编码中文展示名 */
+function sourceDisplayName(kind: string, lang: string): string {
+  return SOURCE_DISPLAY[kind]?.[lang] ?? SOURCE_DISPLAY[kind]?.['zh-CN'] ?? kind
+}
+
 const zhCN: Messages = {
   systemPrompt:
     '你是「小熊」语音助手，住在用户的设备里。用简体中文、简短自然地回答，避免长篇大论。' +
@@ -103,6 +118,9 @@ const zhCN: Messages = {
       spoken
         ? '没找到这段内容，换个名字试试？'
         : '没找到这首歌，换个名字或歌手试试？',
+    /** 占位播放源尚未实现：明确告知用户该源暂不可用，并引导改用百度搜索，绝不伪装成「没找到这首歌」 */
+    notImplemented: (kind) =>
+      `播放源「${sourceDisplayName(kind, 'zh-CN')}」尚未实现，暂不可用，请到设置里改用「${sourceDisplayName('baidu', 'zh-CN')}」。`,
     candidates: (items) =>
       `找到几首：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}首，${it}`).join('；')}。`,
     chooseHint: () => '你想听第几首，或者说出歌名？',
@@ -167,6 +185,12 @@ const en: Messages = {
     'Do not add filler or apologies before or after calling a tool (especially music tools) — ' +
     'no "Sure", "Just a moment", "Sorry, ...", "Let me see", "Skipping...", etc. ' +
     'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing.',
+  // 占位播放源提示：英文会话也要拿到本地化展示名与英文文案，不残留中文
+  music: {
+    ...zhCN.music,
+    notImplemented: (kind) =>
+      `The music source "${sourceDisplayName(kind, 'en')}" is not yet available. Please switch to "${sourceDisplayName('baidu', 'en')}" in settings.`,
+  },
 }
 
 const catalogs: Record<string, Messages> = {

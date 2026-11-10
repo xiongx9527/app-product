@@ -2,7 +2,8 @@ import { z } from 'zod'
 import type { Lang, ServerEvent } from '../../protocol'
 import { messages } from '../../i18n'
 import type { MusicSource } from '../music/types'
-import { isSpokenContentRequest } from '../music/types'
+import { needsProxy } from '../music'
+import { isSpokenContentRequest, MusicSourceNotImplementedError } from '../music/types'
 
 /** 媒体指令：直接透传给客户端；客户端据此播放/停止/暂停/恢复/展示。 */
 export type MediaDirective = Extract<
@@ -25,10 +26,11 @@ const DESCRIPTIONS: Record<string, string> = {
 /**
  * 创建「播放音乐」工具：用注入的 MusicSource 按风格解析出可播放地址，下发 media.play。
  * emit 为空时不真正下发（便于离线测试），但仍返回确认文案。
+ * source 用 getter 传入：播放源可随 session.playback 实时切换，无需重建智能体。
  */
 export function createMusicTool(
   lang: Lang | string,
-  source: MusicSource,
+  getSource: () => MusicSource | undefined,
   emit?: (m: MediaDirective) => void
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
@@ -41,6 +43,8 @@ export function createMusicTool(
     }),
     async call(args: { genre?: string; loop?: number }) {
       try {
+        const source = getSource()
+        if (!source) throw new Error('music source unavailable')
         const track = await source.resolve(args?.genre)
         const loop = args?.loop
         emit?.({
@@ -48,12 +52,18 @@ export function createMusicTool(
           url: track.url,
           title: track.title,
           channel: track.channel,
+          proxy: needsProxy(track.channel),
           ...(loop && loop > 1 ? { loop } : {}),
         })
         return prefix === 'en'
           ? `Now playing: ${track.title}. (${track.url})`
           : `正在为你播放：${track.title}。`
-      } catch {
+      } catch (e) {
+        // 占位播放源尚未实现：明确告知用户该源不可用，引导改用百度搜索，
+        // 绝不把「未实现」伪装成「没找到这首歌」误导用户。
+        if (e instanceof MusicSourceNotImplementedError) {
+          return messages(lang).music.notImplemented(e.sourceKind)
+        }
         // 平台与百度都搜不到：明确告知，不播随机电台（避免乱播放）
         return prefix === 'en'
           ? `Sorry, I couldn't find that. Try another name?`
@@ -128,10 +138,11 @@ const NEXT_DESCRIPTIONS: Record<string, string> = {
 /**
  * 创建「换一首 / 换个风格」工具：用 MusicSource 的 next() 解析出与当前不同的曲目，下发 media.play。
  * 没有 next() 能力的源（如自定义电台）回退到 resolve，仍能让用户换风格重播。
+ * source 用 getter 传入：播放源可随 session.playback 实时切换，无需重建智能体。
  */
 export function createNextMusicTool(
   lang: Lang | string,
-  source: MusicSource,
+  getSource: () => MusicSource | undefined,
   emit?: (m: MediaDirective) => void
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
@@ -143,12 +154,18 @@ export function createNextMusicTool(
     }),
     async call(args: { genre?: string }) {
       try {
+        const source = getSource()
+        if (!source) throw new Error('music source unavailable')
         const track = await (source.next ? source.next(args?.genre) : source.resolve(args?.genre))
-        emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel })
+        emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel, proxy: needsProxy(track.channel) })
         return prefix === 'en'
           ? `Now playing: ${track.title}. (${track.url})`
           : `已为你切换到：${track.title}。`
-      } catch {
+      } catch (e) {
+        // 占位播放源尚未实现：明确告知用户该源不可用，引导改用百度搜索
+        if (e instanceof MusicSourceNotImplementedError) {
+          return messages(lang).music.notImplemented(e.sourceKind)
+        }
         // 平台与百度都搜不到：明确告知，不播随机电台（避免乱播放）
         return prefix === 'en'
           ? `Sorry, I couldn't find that. Try another name?`

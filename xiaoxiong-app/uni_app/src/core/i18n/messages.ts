@@ -143,7 +143,10 @@ const zhCN: Messages = {
   'settings.playback.title': '播放设置',
   'settings.playback.source': '播放源',
   'settings.playback.sourceHint': '音乐播放来源，默认百度',
-  'settings.playback.baidu': '百度',
+  'settings.playback.baidu': '百度搜索',
+  'settings.playback.netease': '网易云音乐',
+  'settings.playback.tencent': '腾讯音乐',
+  'settings.playback.kugou': '酷狗音乐',
 
   'card.thinking': '思考',
   'card.done': '已完成',
@@ -327,7 +330,10 @@ const enUS: Messages = {
   'settings.playback.title': 'Playback',
   'settings.playback.source': 'Playback source',
   'settings.playback.sourceHint': 'Music playback source, Baidu by default',
-  'settings.playback.baidu': 'Baidu',
+  'settings.playback.baidu': 'Baidu Search',
+  'settings.playback.netease': 'NetEase Cloud Music',
+  'settings.playback.tencent': 'Tencent Music',
+  'settings.playback.kugou': 'Kugou Music',
 
   'card.thinking': 'Thinking',
   'card.done': 'Done',

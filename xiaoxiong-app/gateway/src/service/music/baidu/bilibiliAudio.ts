@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { MusicFetcher } from './types'
+import type { MusicFetcher } from '../types'
 
 /**
  * 从 B 站视频抽取可播放音轨（免费、无需登录）：

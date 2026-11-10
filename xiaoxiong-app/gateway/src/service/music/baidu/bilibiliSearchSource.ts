@@ -4,7 +4,7 @@ import {
   type MusicFetcher,
   type MusicSource,
   type ResolvedTrack,
-} from './types'
+} from '../types'
 import { extractBilibiliAudio, extractBvidsFromHtml, getWbiKey, wbiSign } from './bilibiliAudio'
 
 /**

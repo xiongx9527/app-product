@@ -39,8 +39,8 @@ function createHarness(): Harness {
     insertCommandLog: () => {},
   } as unknown as DataService
   const deps: VoiceSessionDeps = {
-    agentFactory: (_lang, _tz, _loc, _locProvider, musicSource) => {
-      captured.push(musicSource)
+    agentFactory: (_lang, _tz, _loc, _locProvider, getMusicSource) => {
+      captured.push(getMusicSource ? getMusicSource() : undefined)
       return agent
     },
     createAsr: () => asr,

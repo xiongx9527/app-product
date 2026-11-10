@@ -50,12 +50,12 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       resolveVoice: (voice) => resolveCapabilityConfig(voice, config),
       createAsr,
       createTts,
-      agentFactory: (llm, lang, timezone, locationProvider, musicSource, emit, memoryStore, memoryContext, requestLocation) =>
+      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation) =>
         createAgentService(
           { llm, timeZone: timezone },
           lang,
           locationProvider,
-          musicSource,
+          getMusicSource,
           emit,
           memoryStore,
           memoryContext,

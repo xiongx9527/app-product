@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { createSomaSource } from './somaSource'
+import { createSomaSource } from './baidu/somaSource'
 import {
   createBilibiliSearchSource,
   titleMatchesKeyword,
   titleMatchesKeywordLoose,
   looksLikeCompilation,
-} from './bilibiliSearchSource'
-import { extractBvidsFromHtml } from './bilibiliAudio'
-import { createMusicSource } from './index'
-import { SOMA_CHANNELS } from '../tools/musicChannels'
+} from './baidu/bilibiliSearchSource'
+import { extractBvidsFromHtml } from './baidu/bilibiliAudio'
+import { createMusicSource, needsProxy } from './index'
+import { SOMA_CHANNELS } from './baidu/musicChannels'
 import type { MusicFetcher } from './types'
 import { isGenreRequest, genreToKeyword, isSpokenContentRequest } from './types'
 
@@ -594,6 +594,38 @@ describe('音乐聚合源（无配置）', () => {
     expect(createMusicSource()).toBeTruthy()
   })
 
+  it('显式指定 baidu 源仍可用', () => {
+    expect(createMusicSource({ source: 'baidu' })).toBeTruthy()
+  })
+
+  it('指定 netease 源返回占位实现，调用抛 MusicSourceNotImplementedError', async () => {
+    const source = createMusicSource({ source: 'netease' })
+    expect(source).toBeTruthy()
+    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow('netease')
+    await expect(source.next!('周杰伦 稻香')).rejects.toThrow('netease')
+  })
+
+  it('指定 tencent 源返回占位实现，调用抛 MusicSourceNotImplementedError', async () => {
+    const source = createMusicSource({ source: 'tencent' })
+    expect(source).toBeTruthy()
+    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow('tencent')
+    await expect(source.next!('周杰伦 稻香')).rejects.toThrow('tencent')
+  })
+
+  it('指定 kugou 源返回占位实现，调用抛 MusicSourceNotImplementedError', async () => {
+    const source = createMusicSource({ source: 'kugou' })
+    expect(source).toBeTruthy()
+    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow('kugou')
+    await expect(source.next!('周杰伦 稻香')).rejects.toThrow('kugou')
+  })
+
+  it('非法/未知播放源回退到百度，不抛错', () => {
+    const source = createMusicSource({ source: 'spotify' })
+    expect(source).toBeTruthy()
+    // 风格请求仍能正常走 SomaFM 分支（源可用）
+    return expect(source.resolve('放点爵士')).resolves.toMatchObject({ url: expect.stringContaining('somafm.com') })
+  })
+
   it('风格请求走 SomaFM（离线可验证，不触网）', async () => {
     const source = createMusicSource()
     const track = await source.resolve('放点爵士')
@@ -614,5 +646,18 @@ describe('音乐聚合源（无配置）', () => {
       const track = await source.resolve(q)
       expect(track.url).toContain('somafm.com')
     }
+  })
+})
+
+describe('needsProxy（频道 → 网关代理判定，源特有知识留在网关）', () => {
+  it('B 站直链需代理', () => {
+    expect(needsProxy('bilibili')).toBe(true)
+  })
+  it('好看直链需代理（百度源下游提供方，防御性保留）', () => {
+    expect(needsProxy('haokan')).toBe(true)
+  })
+  it('SomaFM 等公共流与未知频道不代理', () => {
+    expect(needsProxy('groovesalad')).toBe(false)
+    expect(needsProxy(undefined)).toBe(false)
   })
 })

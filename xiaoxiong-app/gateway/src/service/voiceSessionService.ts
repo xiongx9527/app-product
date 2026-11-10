@@ -6,7 +6,8 @@ import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } 
 import type { GatewayConfig } from '../config'
 import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
-import { createMusicSource, type MusicSource } from './music'
+import { createMusicSource, needsProxy, type MusicSource } from './music'
+import { MusicSourceNotImplementedError } from './music/types'
 import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest } from './music/types'
 import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
 import {
@@ -41,7 +42,7 @@ export interface VoiceSessionDeps {
     lang: Lang,
     timezone?: string,
     locationProvider?: () => LocationInfo | null,
-    musicSource?: MusicSource,
+    getMusicSource?: () => MusicSource | undefined,
     emit?: (m: ServerEvent) => void,
     memoryStore?: MemoryStore,
     memoryContext?: string,
@@ -194,10 +195,11 @@ export class VoiceSessionService {
     switch (msg.type) {
       case 'session.start':
         this.location = msg.location ?? null
-        // 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），音乐工具始终注册
+        // 音乐播放源：来自客户端设置页（session.start.playback.source），缺省百度；
+        // 始终可用（SomaFM 电台 + B 站搜索兜底），音乐工具始终注册。
         this.musicSource = this.deps.musicSourceFactory
           ? this.deps.musicSourceFactory()
-          : createMusicSource()
+          : createMusicSource({ source: msg.playback?.source })
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, msg.voice)
         // ASR/TTS/LLM 未就绪时，网关没法用语音播报，改为下发预录提示音，让用户「听得见地」知道；
         // 探测有 15s 缓存，连重连/重唤醒都便宜，不每次真打服务。不下发具体文案（提示音已含人声）。
@@ -212,6 +214,14 @@ export class VoiceSessionService {
           address: msg.address,
         }
         this.resolvePendingLocation()
+        break
+      case 'session.playback':
+        // 播放设置实时更新：设置页改了播放源后由客户端随本消息推来，
+        // 立即按新 source 重建音乐源，无需重连/重唤醒即可生效（下次点歌/换一首就用新源）。
+        // 缺省/未知值回退到百度，与 session.start 同一套解析逻辑。
+        this.musicSource = this.deps.musicSourceFactory
+          ? this.deps.musicSourceFactory()
+          : createMusicSource({ source: msg.source })
         break
       case 'session.cancel':
         this.cancel()
@@ -325,6 +335,7 @@ export class VoiceSessionService {
       url: track.url,
       title: track.title,
       channel: track.channel,
+      proxy: needsProxy(track.channel),
     })
   }
 
@@ -348,6 +359,7 @@ export class VoiceSessionService {
       url: track.url,
       title: track.title,
       channel: track.channel,
+      proxy: needsProxy(track.channel),
       ...(loop && loop > 1 ? { loop } : {}),
     })
     await this.speakReply(confirm)
@@ -435,7 +447,13 @@ export class VoiceSessionService {
       const track = await source.resolve(keyword)
       if (!track?.url) throw new Error('no track')
       await this.playTrack(track, m.playing(track.title), undefined, chosen.artist)
-    } catch {
+    } catch (e) {
+      // 占位播放源尚未实现：明确告知用户该源不可用，引导改用百度搜索，
+      // 绝不把「未实现」伪装成「没找到这首歌」误导用户。
+      if (e instanceof MusicSourceNotImplementedError) {
+        await this.speakReply(m.notImplemented(e.sourceKind))
+        return
+      }
       await this.speakReply(m.notFound(isSpokenContentRequest(keyword)))
     }
   }
@@ -531,7 +549,12 @@ export class VoiceSessionService {
           await this.speakReply(m.stopped())
           break
       }
-    } catch {
+    } catch (e) {
+      // 占位播放源尚未实现：明确告知用户该源不可用，引导改用百度搜索
+      if (e instanceof MusicSourceNotImplementedError) {
+        await this.speakReply(m.notImplemented(e.sourceKind))
+        return
+      }
       await this.speakReply(m.notFound(isSpokenContentRequest(text)))
     }
   }
@@ -1069,7 +1092,7 @@ export class VoiceSessionService {
             lang,
             this.timezone,
             () => this.getLocation(),
-            this.musicSource,
+            () => this.musicSource,
             (m) => this.deps.send(m),
             memoryStore,
             memoryContext,

@@ -1,7 +1,8 @@
 import type { MusicFetcher, MusicSource } from './types'
-import { genreToKeyword, isGenreRequest } from './types'
-import { createSomaSource } from './somaSource'
-import { createBilibiliSearchSource } from './bilibiliSearchSource'
+import { createBaiduMusicSource } from './baidu'
+import { createNeteaseMusicSource } from './netease'
+import { createTencentMusicSource } from './tencent'
+import { createKugouMusicSource } from './kugou'
 
 export type { MusicSource }
 
@@ -9,43 +10,44 @@ const nativeFetch: MusicFetcher = (url, init) =>
   fetch(url, { method: init?.method, headers: init?.headers, body: init?.body }) as unknown as ReturnType<MusicFetcher>
 
 /**
- * 无配置的音乐聚合源，始终可用（不再有「未配置则不注册音乐工具」的概念）。
- * 分发规则：
- *  - 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台；
- *  - 具体歌名/歌手请求 → B 站搜索兜底，抽到音轨返回可播放直链；
- *    若 B 站原生搜索召回不足，再用百度 web 搜索找回 B 站视频页的 BVID（仅做检索，音轨仍从 B 站抽），
- *    标题依旧过严格匹配，绝不因为走百度就放松「歌手、歌名要一样」。
- * 两边都搜不到时由上层工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。
- * 直链带防盗链，由网关 /music/stream 代理转发给客户端。
+ * 需要走网关 /music/stream 代理的频道：客户端 InnerAudioContext 无法自定义 Referer，
+ * 而这些频道的直链带防盗链（需 Referer）必须由网关代拉再转发。
+ * 本集合对应「百度」播放源内部会吐出的下游提供方（B 站 / 好看），属源特有知识，
+ * 故判定留在网关侧，客户端只认 media.play 里的 `proxy` 标记，不再写死任何频道名。
  */
-export function createMusicSource(fetcher: MusicFetcher = nativeFetch): MusicSource {
-  const soma = createSomaSource()
-  const bili = createBilibiliSearchSource({}, fetcher)
-  // 记住上一次播放用的是哪个子源（电台 or B 站），bare「换一首」要沿用到同一来源，
-  // 否则正在听周杰伦却因没给新风格而被路由到 SomaFM 电台，变成完全不相关的歌。
-  let lastSource: MusicSource = bili
-  // 先用 genreToKeyword 把口语/指令词收敛成搜索词或风格词，再据此分流：
-  // 风格词（轻音乐/电子/爵士…）→ SomaFM 电台；具体歌名/歌手 → B 站搜索兜底抽音轨。
-  // 直接对原始输入用 isGenreRequest 会漏掉「随便放点/播放个音乐」这类泛化请求，
-  // 把它们误送进视频搜索而播到不相关视频（乱播放）。
-  return {
-    async resolve(genre?: string) {
-      const keyword = genreToKeyword(genre)
-      const source = isGenreRequest(keyword) ? soma : bili
-      lastSource = source
-      return source.resolve(keyword)
-    },
-    async next(genre?: string) {
-      // 没给新风格/歌手（纯粹「换一首/下一首」）：沿用上次播放的来源，让「换一首」
-      // 和当前正在听的歌/电台有关联——B 站源会接着放同歌手的下一首，电台源则换台，
-      // 而不是跳到不相关的电台/歌曲。
-      if (genre === undefined || genre === null || genre === '') {
-        return lastSource.next ? lastSource.next() : lastSource.resolve(undefined)
-      }
-      const keyword = genreToKeyword(genre)
-      const source = isGenreRequest(keyword) ? soma : bili
-      lastSource = source
-      return source.next ? source.next(keyword) : source.resolve(keyword)
-    },
+const PROXY_CHANNELS = new Set(['bilibili', 'haokan'])
+
+/** 该频道音频是否需经网关代理；客户端据 media.play.proxy 决定是否改写播放地址。 */
+export function needsProxy(channel?: string): boolean {
+  return !!channel && PROXY_CHANNELS.has(channel)
+}
+
+/** 当前支持的播放源；缺省/未知值一律回退到百度（B 站音轨 + 百度搜索兜底）。 */
+const VALID_SOURCES = ['baidu', 'netease', 'tencent', 'kugou'] as const
+export type MusicSourceKind = (typeof VALID_SOURCES)[number]
+
+function resolveSourceKind(source?: string): MusicSourceKind {
+  return (VALID_SOURCES as readonly string[]).includes(source ?? '') ? (source as MusicSourceKind) : 'baidu'
+}
+
+/**
+ * 按客户端设置页下发的播放源构造音乐源（session.start.playback.source）。
+ * 百度已实现；网易云 / 腾讯音乐 / 酷狗音乐当前为占位空实现，调用会抛「未实现」。
+ * 后续新增来源时在此按 source 分支调用对应 createXxxMusicSource 即可，
+ * 各来源内部自行决定子源组合，互不影响。
+ */
+export function createMusicSource(
+  opts?: { source?: string; fetcher?: MusicFetcher },
+): MusicSource {
+  const fetcher = opts?.fetcher ?? nativeFetch
+  switch (resolveSourceKind(opts?.source)) {
+    case 'baidu':
+      return createBaiduMusicSource(fetcher)
+    case 'netease':
+      return createNeteaseMusicSource(fetcher)
+    case 'tencent':
+      return createTencentMusicSource(fetcher)
+    case 'kugou':
+      return createKugouMusicSource(fetcher)
   }
 }

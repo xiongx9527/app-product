@@ -48,7 +48,7 @@ export function createAgentService(
   config: { llm: LlmConfig; timeZone?: string },
   lang: Lang,
   locationProvider: LocationProvider = () => null,
-  musicSource?: MusicSource,
+  getMusicSource?: () => MusicSource | undefined,
   emit?: MediaEmitter,
   memoryStore?: MemoryStore,
   memoryContext?: string,
@@ -64,7 +64,7 @@ export function createAgentService(
     name: 'Xiong',
     sysPrompt,
     model,
-    toolkit: createToolkit(lang, config.timeZone, locationProvider, musicSource, emit, memoryStore, requestLocation),
+    toolkit: createToolkit(lang, config.timeZone, locationProvider, getMusicSource, emit, memoryStore, requestLocation),
   })
   return {
     async reply(userText, onDelta, onThinking) {

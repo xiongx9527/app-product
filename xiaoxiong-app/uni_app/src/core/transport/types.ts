@@ -15,8 +15,9 @@ export type ServerEvent =
   | { type: 'tts.end' }
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
   /** 让客户端播放一段音频流（电台/歌曲）：客户端用独立播放器，不与 TTS 冲突。
-   *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。 */
-  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number }
+   *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。
+   *  proxy 标记该直链带防盗链需经网关 /music/stream 代理；频道→代理判定在网关侧，客户端只认此标记。 */
+  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
   /** 让客户端暂停当前播放 */
@@ -54,6 +55,8 @@ export interface AssistantTransport {
   sendCancel(): void
   /** 客户端点「换一首 / 换个风格」：下发 music.next 让网关解析下一首 */
   requestMusicNext(genre?: string): void
+  /** 设置页保存后实时通知网关切换播放源，立即可用（无需重连） */
+  notifyPlaybackSource(source: string): void
   /** 本地播放队列真正清空后回执，网关据此才消费排队的下一句 */
   notifyPlaybackDone(): void
   /** 客户端点「换一首 / 换个风格」：请网关用当前音乐源解析下一首 */

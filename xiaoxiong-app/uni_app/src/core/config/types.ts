@@ -50,8 +50,8 @@ export interface AppConfig {
   playback: PlaybackConfig
 }
 
-/** 音乐播放源；当前仅百度（B站音轨 + 百度搜索兜底），后续可扩展 */
-export type PlaybackSource = 'baidu'
+/** 音乐播放源；百度已实现，网易云/腾讯音乐/酷狗音乐为占位空实现（选择后调用会报未实现），后续可扩展 */
+export type PlaybackSource = 'baidu' | 'netease' | 'tencent' | 'kugou'
 
 /** 播放设置：音乐播放来源等，独立于语音服务（ASR / LLM / TTS） */
 export interface PlaybackConfig {

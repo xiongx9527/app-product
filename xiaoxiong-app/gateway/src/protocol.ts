@@ -34,6 +34,11 @@ export type ClientMessage =
        */
       voice?: VoiceConfig
       /**
+       * 播放设置（音乐播放源等），来自客户端设置页。网关据此决定点歌走哪个来源；
+       * 缺省按百度（B 站音轨 + 百度搜索兜底）。新增播放源时在此扩展 source 取值。
+       */
+      playback?: { source?: string }
+      /**
        * 设备稳定标识：客户端持久化生成（一次），连接时随 WS URL query 与 payload 上报。
        * 网关据此把会话与连接解耦——同一设备的重连/重唤醒走「重新武装」复用会话，
        * 保留 LLM 对话记忆与待选歌单，不再因断线重连而失忆。缺省（旧客户端未上报）时
@@ -45,6 +50,8 @@ export type ClientMessage =
   | { type: 'session.end' }
   /** 客户端定位更新：连接后或位置变化时补报/刷新最新位置 */
   | { type: 'session.location'; latitude: number; longitude: number; address?: string }
+  /** 播放设置实时更新：在已建立的会话里改了播放源，立即推给网关重建音乐源，无需重连/重唤醒 */
+  | { type: 'session.playback'; source?: string }
   /** 客户端本地播放队列清空后回执：网关据此才消费排队的下一句 */
   | { type: 'session.playback_done' }
   /** 客户端点「换一首 / 换个风格」：网关用当前音乐源解析下一首并下发 media.play */
@@ -71,8 +78,10 @@ export type ServerEvent =
   /** half=回声兜底中，播报期间不拾音，用户需点「打断」；full=正常全双工 */
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
   /** 让客户端播放一段音频流（如 SomaFM 网络电台）；客户端用独立播放器，不与 TTS 冲突。
-   *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。 */
-  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number }
+   *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。
+   *  proxy 标记该直链带防盗链、需经网关 /music/stream 代理（客户端 InnerAudioContext 无法自定义 Referer）；
+   *  频道→代理的判定由网关持有（源特有知识），客户端只认此标记，不再写死频道名。 */
+  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
   /** 让客户端暂停当前播放（再响一声「暂停」用 media.resume 恢复） */
