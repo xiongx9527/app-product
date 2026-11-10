@@ -1,7 +1,10 @@
 """真实 httpx 路由回归测试。
 
 三层全真实：真实上游 mock（stdlib HTTP 服务）+ 真实 FastAPI/uvicorn 服务（跑本仓库代码）
-+ 真实 httpx 客户端。验证协议翻译、按模型路由到分组、模型目录校验、TTS/STT 路由。
++ 真实 httpx 客户端。验证协议翻译、按模型路由到分组、模型目录校验、TTS/STT 固定本地。
+
+架构：LLM 是唯一有上游池的能力；TTS 固定内置 edge-tts、ASR 固定内置
+SenseVoice（二者都无上游概念，ASR 非 WAV 直接 400）。
 
 运行方式（需要 Python 3.10+）：
     cd scripts/voice
@@ -136,8 +139,7 @@ def _write_conf(m: dict[str, str]) -> None:
 VOICE_API_KEY=off
 VOICE_PORT={TEST_PORT}
 LLM_UPSTREAM_POOL={{"openai":{{"model":"gpt-4o-mini","accounts":[{{"base_url":"{m['openai']}/v1","api_key":"k"}}]}},"anthropic":{{"model":"claude-sonnet","accounts":[{{"base_url":"{m['anthropic']}/v1","api_key":"k"}}]}},"gemini":{{"model":"gemini-1.5-pro","accounts":[{{"base_url":"{m['gemini']}","api_key":"k"}}]}}}}
-TTS_UPSTREAM_POOL={{"gA":{{"model":"tts-a","accounts":[{{"base_url":"{m['ttsA']}","api_key":"k"}}]}},"gB":{{"model":"tts-b","accounts":[{{"base_url":"{m['ttsB']}","api_key":"k"}}]}}}}
-STT_UPSTREAM_POOL={{"gA":{{"model":"stt-a","accounts":[{{"base_url":"{m['sttA']}","api_key":"k"}}]}},"gB":{{"model":"stt-b","accounts":[{{"base_url":"{m['sttB']}","api_key":"k"}}]}}}}
+VOICE_UPSTREAM_BASE_URL={m['tts']}
 """
     with open(CONF_PATH, "w") as f:
         f.write(conf)
@@ -217,29 +219,28 @@ async def _main(base: str) -> None:
     _check("LLM /v1/models 并集",
            {"gpt-4o-mini", "claude-sonnet", "gemini-1.5-pro"} <= ids, f"ids={ids}")
 
-    # 6) TTS 按模型路由到分组
+    # 6) TTS 固定内置 edge-tts：即使 conf 里残留 VOICE_UPSTREAM_BASE_URL 也必须忽略，
+    #    健康检查报告 edge / 无上游，模型目录只列本地 edge-tts，绝不转发到该地址。
     async with httpx.AsyncClient() as c:
-        rA = await c.post(f"{base}/voide/v1/audio/speech",
-                          json={"input": "hi", "model": "tts-a", "voice": "alloy"})
-        rB = await c.post(f"{base}/voide/v1/audio/speech",
-                          json={"input": "hi", "model": "tts-b", "voice": "alloy"})
-    _check("TTS tts-a 路由到 gA", rA.status_code == 200
-           and any(p.endswith("/audio/speech") for _, p, _ in HITS["ttsA"]), f"status={rA.status_code}")
-    _check("TTS tts-b 路由到 gB", rB.status_code == 200
-           and any(p.endswith("/audio/speech") for _, p, _ in HITS["ttsB"]), f"status={rB.status_code}")
+        rh = await c.get(f"{base}/voice/health")
+        rm = await c.get(f"{base}/voice/v1/models")
+    h = rh.json()
+    model_ids = {d["id"] for d in rm.json()["data"]}
+    _check("TTS 健康=edge 且无上游",
+           h.get("tts_backend") == "edge" and h.get("tts_upstream") is None,
+           f"backend={h.get('tts_backend')} upstream={h.get('tts_upstream')}")
+    _check("语音模型目录只列本地后端",
+           {"edge-tts", "sensevoice-small"} <= model_ids, f"ids={model_ids}")
+    _check("残留 VOICE_UPSTREAM_BASE_URL 被忽略（未转发）",
+           not any(p.endswith("/audio/speech") for _, p, _ in HITS["tts"]),
+           f"tts_hits={HITS['tts']}")
 
-    # 7) STT 按模型路由到分组
+    # 7) STT 固定内置：非 WAV 直接 400（不接上游，本地 SenseVoice 只认 RIFF/WAVE）
     async with httpx.AsyncClient() as c:
-        rA = await c.post(f"{base}/voide/v1/audio/transcriptions",
-                          data={"model": "stt-a"},
-                          files={"file": ("a.wav", b"RIFFfake", "audio/wav")})
-        rB = await c.post(f"{base}/voide/v1/audio/transcriptions",
-                          data={"model": "stt-b"},
-                          files={"file": ("a.wav", b"RIFFfake", "audio/wav")})
-    _check("STT stt-a 路由到 gA", rA.status_code == 200 and "stt-ok" in rA.text,
-           f"status={rA.status_code} text={rA.text[:40]}")
-    _check("STT stt-b 路由到 gB", rB.status_code == 200 and "stt-ok" in rB.text,
-           f"status={rB.status_code} text={rB.text[:40]}")
+        r = await c.post(f"{base}/voice/v1/audio/transcriptions",
+                         data={"model": "sensevoice-small"},
+                         files={"file": ("a.bin", b"NOTWAVDATA", "application/octet-stream")})
+    _check("STT 内置拒绝非 WAV（400）", r.status_code == 400, f"status={r.status_code}")
 
 
 def main() -> int:
@@ -247,10 +248,7 @@ def main() -> int:
         "openai": _start_mock("openai", "openai"),
         "anthropic": _start_mock("anthropic", "anthropic"),
         "gemini": _start_mock("gemini", "gemini"),
-        "ttsA": _start_mock("ttsA", "tts"),
-        "ttsB": _start_mock("ttsB", "tts"),
-        "sttA": _start_mock("sttA", "stt"),
-        "sttB": _start_mock("sttB", "stt"),
+        "tts": _start_mock("tts", "tts"),
     }
     _write_conf(mocks)
     base = _start_server()

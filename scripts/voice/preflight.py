@@ -18,13 +18,13 @@ voice.ps1 后台启动时，这些内容会进入 voice.log。
     - 本地 STT：sherpa-onnx / numpy；SenseVoice 模型是否可用不在启动检测，
       由管理面板 ASR「内置」行的「测试可用」按钮按需真实检测；
     - 本地 TTS：edge-tts / ffmpeg；
-    - 代理模式：上游地址必须是 http(s)，并跳过对应能力的本地依赖检查。
+    - STT / TTS 固定本地实现，只有 LLM 有上游代理。
 
 安装模式（$VOICE_HOME/install-mode，由 install-voice 写入）：
     full       本地 STT + TTS，两者都要检查
     tts-only   只装了 TTS，STT 未安装属于预期，跳过 STT 检查
     stt-only   只装了 STT，TTS 未安装属于预期，跳过 TTS 检查
-    proxy-only 两类都走代理；未配置上游时必须给出明确提示
+    proxy-only 只装基础依赖（供仅用 LLM 代理的场景），STT / TTS 本地依赖缺失时提示
 
 本脚本只使用标准库，缺依赖时也能运行并给出完整提示。
 """
@@ -198,29 +198,20 @@ def local_tts_issues(server) -> tuple[list[str], str | None]:
 
 def check_capability(
     name: str,
-    upstream: str,
     mode: str,
     skipped_mode: str,
     local_issues: list[str],
     local_ready: str,
 ) -> None:
-    """按“上游 > 本地 > 安装模式”的顺序检查一类能力。"""
-    if upstream:
-        check_upstream(name, upstream)
-        line(f"{name:<4}: 代理 {upstream}")
-        return
-
-    # proxy-only 没有装本地依赖；如果用户后来手动补齐了本地环境，也允许继续用本地。
+    """STT / TTS 固定本地实现：按「本地依赖 > 安装模式」检查一类能力。"""
+    # proxy-only 没装本地依赖；STT / TTS 仍需本地实现，缺依赖就明确提示补装。
     if mode == "proxy-only":
         if not local_issues:
-            line(f"{name:<4}: 本地（未配置上游，但本机依赖完整）")
+            line(f"{name:<4}: 本地（本机依赖完整）")
             return
         for issue in local_issues:
             problem(f"{name}: {issue}")
-        hints.append(
-            f"{name}: 代理模式需要配置 {name}_UPSTREAM_BASE_URL 或 "
-            f"VOICE_UPSTREAM_BASE_URL（地址需带 http:// 或 https://）"
-        )
+        hints.append(f"{name}: 固定本地实现，需补装对应的本地依赖（见下方提示）")
         return
 
     # --tts-only / --stt-only 明确表示另一类能力不安装，启动时不应因此失败。
@@ -267,19 +258,9 @@ def check_backends(server) -> None:
     if mode:
         line(f"安装  : {mode}")
 
-    # 上游地址池（多地址 + 账号池）；取第一个用于能力检查展示，并逐个校验格式。
-    stt_entries = server.upstream_pool.load_pool("STT")
-    tts_entries = server.upstream_pool.load_pool("TTS")
-    for e in stt_entries:
-        check_upstream("STT", e["base_url"])
-    for e in tts_entries:
-        check_upstream("TTS", e["base_url"])
-    stt_upstream = stt_entries[0]["base_url"] if stt_entries else ""
-    tts_upstream = tts_entries[0]["base_url"] if tts_entries else ""
-
+    # STT / TTS 都固定走本地实现（SenseVoice / edge-tts），没有上游。
     check_capability(
         "STT",
-        stt_upstream,
         mode,
         "tts-only",
         local_stt_issues(server),
@@ -289,7 +270,6 @@ def check_backends(server) -> None:
     tts_issues, ffmpeg = local_tts_issues(server)
     check_capability(
         "TTS",
-        tts_upstream,
         mode,
         "stt-only",
         tts_issues,
@@ -298,11 +278,10 @@ def check_backends(server) -> None:
 
     check_llm(server)
 
-    if problems and not stt_upstream and not tts_upstream:
+    if problems:
         hints.append(
-            "如果不想在本机安装模型 / ffmpeg，可在 voice.conf 配置 "
-            "VOICE_UPSTREAM_BASE_URL（STT/TTS）和 LLM_UPSTREAM_POOL / "
-            "LLM_UPSTREAM_BASE_URL（LLM）后走代理模式。"
+            "LLM 走代理需配置 LLM_UPSTREAM_POOL / LLM_UPSTREAM_BASE_URL；"
+            "STT / TTS 固定本地，需装 requirements-stt.txt / requirements-tts.txt。"
         )
 
 

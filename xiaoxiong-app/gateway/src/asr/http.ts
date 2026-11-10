@@ -10,7 +10,7 @@ const PARTIAL_MIN_BYTES = 12800
  * 对接本地语音服务（openai-voice，OpenAI 兼容）的 ASR。
  *
  * 实际接口：POST {baseUrl}/v1/audio/transcriptions（multipart/form-data）
- * baseUrl 默认是本地 AI 服务的 /voide。
+ * baseUrl 默认是本地 AI 服务的 /voice。
  *   - file: WAV 音频（SenseVoice 后端要求 RIFF/WAV，纯 PCM 会报 "does not start with RIFF id"）
  *   - model: whisper-1（服务忽略，后端由 STT_BACKEND 决定）
  *   - language: 可选，如 zh

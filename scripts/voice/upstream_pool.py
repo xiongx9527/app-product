@@ -1,9 +1,9 @@
-"""上游地址池（LLM / STT / TTS）：多个地址 + 账号池，健康探测 + 轮询。
+"""上游地址池（仅 LLM）：多个地址 + 账号池，健康探测 + 轮询。
 
 为什么独立成模块：之前每个能力只支持「一个」上游地址（LLM_UPSTREAM_BASE_URL、
 VOICE_UPSTREAM_BASE_URL 等）。用户要求「多个地址代理 + 账号池」，并要健康探测 +
 轮询。把池子的解析、健康状态、调度收口到这里，调用方（chat_completions /
-proxy_transcription / proxy_speech）只调 pick() 拿一个 (base_url, api_key, protocol)，
+chat_completions）只调 pick() 拿一个 (base_url, api_key, protocol)，
 完全不感知后面有几台机器、几个账号、谁挂了。
 
 配置（存进 config_kv，经 config_store 读取），支持三种写法：
@@ -50,9 +50,7 @@ import config_store
 import httpx
 import llm_protocols  # 协议归一化：厂商式协议名 -> 线协议
 
-CAPS = ("LLM", "STT", "TTS")
-# STT 默认提供商的固定值：内置 = 本地 SenseVoice，不进上游池、不受池内容影响。
-STT_BUILTIN_VENDOR = "内置"
+CAPS = ("LLM",)
 _FAIL_THRESHOLD = 3
 _COOLDOWN = 60.0
 _PROBE_INTERVAL = 15.0
@@ -78,45 +76,29 @@ def _pool_config_key(cap: str) -> str:
     return f"{cap}_UPSTREAM_POOL"
 
 
-def _legacy_single(cap: str) -> Optional[dict]:
-    """没有池配置时，用旧的单个地址配置拼一个入口（向后兼容）。"""
+def _legacy_single() -> Optional[dict]:
+    """没有池配置时，用旧的单个地址配置拼一个入口（向后兼容）。仅 LLM 支持单地址写法。"""
     try:
         store = config_store.instance()
     except RuntimeError:
         return None
-    if cap == "LLM":
-        base = (store.get("LLM_UPSTREAM_BASE_URL") or "").strip()
-        if not base:
-            return None
-        model = (store.get("LLM_UPSTREAM_MODEL") or "").strip()
-        # 单地址写法没有显式 vendor 字段，用模型名前缀推导（deepseek-chat -> deepseek），
-        # 让测试界面的「提供商」下拉能列出这一家；推导不出则留空。
-        vendor = (store.get("LLM_UPSTREAM_VENDOR") or "").strip()
-        if not vendor:
-            head = model.split("-", 1)[0].lower()
-            if head in _KNOWN_VENDORS:
-                vendor = head
-        return {
-            "base_url": base,
-            "api_key": (store.get("LLM_UPSTREAM_API_KEY") or "").strip(),
-            "protocol": (store.get("LLM_UPSTREAM_PROTOCOL") or "openai").strip() or "openai",
-            "model": model,
-            "vendor": vendor,
-        }
-    # STT / TTS：能力专属 > 通用 VOICE_UPSTREAM_*
-    base = (store.get(f"{cap}_UPSTREAM_BASE_URL") or "").strip() or (
-        store.get("VOICE_UPSTREAM_BASE_URL") or ""
-    ).strip()
+    base = (store.get("LLM_UPSTREAM_BASE_URL") or "").strip()
     if not base:
         return None
+    model = (store.get("LLM_UPSTREAM_MODEL") or "").strip()
+    # 单地址写法没有显式 vendor 字段，用模型名前缀推导（deepseek-chat -> deepseek），
+    # 让测试界面的「提供商」下拉能列出这一家；推导不出则留空。
+    vendor = (store.get("LLM_UPSTREAM_VENDOR") or "").strip()
+    if not vendor:
+        head = model.split("-", 1)[0].lower()
+        if head in _KNOWN_VENDORS:
+            vendor = head
     return {
         "base_url": base,
-        "api_key": (
-            (store.get(f"{cap}_UPSTREAM_API_KEY") or "").strip()
-            or (store.get("VOICE_UPSTREAM_API_KEY") or "").strip()
-        ),
-        "protocol": "",
-        "model": "",
+        "api_key": (store.get("LLM_UPSTREAM_API_KEY") or "").strip(),
+        "protocol": (store.get("LLM_UPSTREAM_PROTOCOL") or "openai").strip() or "openai",
+        "model": model,
+        "vendor": vendor,
     }
 
 
@@ -211,7 +193,7 @@ def load_pool(cap: str) -> list[dict]:
     except Exception:
         entries = []
     if not entries:
-        single = _legacy_single(cap)
+        single = _legacy_single()
         if single:
             entries.append(single)
     with _lock:
@@ -226,25 +208,6 @@ def has_upstream(cap: str) -> bool:
     和 /health 报告，避免健康检查自己把轮询下标往前推、或误建健康条目。
     """
     return bool(load_pool(cap))
-
-
-def stt_default_vendor() -> str:
-    """STT 默认提供商：显式 STT_UPSTREAM_VENDOR 优先，否则「内置」（本地 SenseVoice）。"""
-    try:
-        v = (config_store.instance().get("STT_UPSTREAM_VENDOR", "") or "").strip()
-    except Exception:
-        v = ""
-    return v or STT_BUILTIN_VENDOR
-
-
-def stt_use_builtin() -> bool:
-    """默认提供商为「内置」时，识别走本地 SenseVoice，忽略所有上游。"""
-    return stt_default_vendor() == STT_BUILTIN_VENDOR
-
-
-def stt_proxy_enabled() -> bool:
-    """是否走上游代理：默认不是内置，且确实配了上游。供 health / models / 路由共用。"""
-    return (not stt_use_builtin()) and has_upstream("STT")
 
 
 def invalidate() -> None:
@@ -428,17 +391,6 @@ def health_snapshot(cap: str) -> list[dict]:
 
 
 # ── 后台健康探测线程 ───────────────────────────────────────────────
-def build_url(base: str, endpoint: str) -> str:
-    base = (base or "").rstrip("/")
-    if base.endswith("/v1"):
-        return base + endpoint
-    return base + "/v1" + endpoint
-
-
-def auth_headers(api_key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
-
-
 def _probe_target(entry: dict) -> tuple[str, dict[str, str]]:
     """构造「验证账号是否有用」的轻量探测目标：各协议取模型列表接口并带鉴权。
 

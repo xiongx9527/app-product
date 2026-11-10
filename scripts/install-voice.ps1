@@ -330,8 +330,8 @@ Write-Host "前台运行：scripts\start-voice.cmd"
 Write-Host "启动前会检查依赖；缺失时终端和日志会打印安装命令，不会自动安装。"
 if ($ProxyOnly) {
     Write-Host ""
-    Write-Host "代理模式：启动前必须在上面的配置文件中填写 VOICE_UPSTREAM_BASE_URL 和"
-    Write-Host "VOICE_UPSTREAM_API_KEY（或 STT_/TTS_ 专属上游配置），否则依赖检查会失败。"
+    Write-Host "仅基础依赖模式：STT / TTS 固定本地实现，仍需各自依赖与模型 / ffmpeg；"
+    Write-Host "本模式适合只用 LLM 上游代理的场景，启动前无需填写任何语音上游地址。"
 }
 Write-Host ""
 Write-Host "网关（xiaoxiong-app/gateway/.env）对应配置："

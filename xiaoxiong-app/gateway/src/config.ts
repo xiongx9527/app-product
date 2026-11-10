@@ -107,7 +107,8 @@ function paramsFromEnv(name: string): VendorParams {
 
 export function loadConfig(): GatewayConfig {
   return {
-    port: Number(process.env.PORT ?? 8787),
+    // 内嵌模式原生层用 GATEWAY_PORT 指定端口（0=系统分配），向后兼容 PORT 与默认 8787。
+    port: Number(process.env.GATEWAY_PORT ?? process.env.PORT ?? 8787),
     apiBase: process.env.API_BASE ?? '/api',
     paramEncrypt: process.env.PARAM_ENCRYPT === 'true',
     rsaBackendPrivateKey: process.env.RSA_BACKEND_PRIVATE_KEY ?? '',
@@ -123,7 +124,7 @@ export function loadConfig(): GatewayConfig {
     },
     asr: {
       provider: oneOf(process.env.ASR_PROVIDER, 'stub'),
-      baseUrl: process.env.ASR_BASE_URL ?? 'http://127.0.0.1:9529/voide',
+      baseUrl: process.env.ASR_BASE_URL ?? 'http://127.0.0.1:9529/voice',
       apiKey: process.env.ASR_API_KEY ?? '',
       // 句末静音判定：停顿超过该值才定稿为一轮。默认 2500ms——给自然思考的停顿留足余地，
       // 避免说话中途一停顿（>endpointMs）就被切断、识别成多段（用户反馈"只识别前一段"）。
@@ -134,7 +135,7 @@ export function loadConfig(): GatewayConfig {
     },
     tts: {
       provider: oneOf(process.env.TTS_PROVIDER, 'stub'),
-      baseUrl: process.env.TTS_BASE_URL ?? 'http://127.0.0.1:9529/voide',
+      baseUrl: process.env.TTS_BASE_URL ?? 'http://127.0.0.1:9529/voice',
       apiKey: process.env.TTS_API_KEY ?? '',
       params: paramsFromEnv('TTS_PARAMS'),
     },

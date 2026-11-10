@@ -214,9 +214,5 @@ function readBody(req: IncomingMessage): Promise<string> {
   })
 }
 
-// 直接运行时启动网关（tsx src/server.ts）
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const gateway = createGateway()
-  gateway.listen()
-  console.log(`[gateway] listening on :${gateway.config.port} (ws ${gateway.config.ws.path}, docs /docs)`)
-}
+// 入口逻辑统一在 src/embedded/entry.ts（桌面 tsx / 移动端 nodejs-mobile 启动均走它）。
+// 本文件只导出 createGateway 等能力，不再含自启动块，避免 bundle 内出现双入口。

@@ -39,21 +39,18 @@ VOICE_SCRIPT = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "voice.sh"
 )
 
-# 由主文件注入：按需真实检测内置（本地 SenseVoice）是否可用。启动阶段不调用，
-# 只在管理面板 ASR「内置」行点「测试可用」时经 /admin/api/stt-builtin-test 触发。
+# 由主文件注入：按需真实检测内置能力是否可用。启动阶段不调用，只在管理面板
+# ASR / TTS「内置」行点「测试可用」时经 /admin/api/*-builtin-test 触发。
 _STT_BUILTIN_CHECK = None
+_TTS_BUILTIN_CHECK = None
 
 # 密钥类配置项：读取时打码，避免明文出现在页面 / 接口里。
-# 地址池（*_UPSTREAM_POOL）是含 api_key 的 JSON，整串打码，编辑时按“整段重填”处理。
+# LLM_UPSTREAM_POOL 是含 api_key 的 JSON，整串打码；STT/TTS 固定本地，无上游密钥/池。
 MASKED_KEYS = {
     "LLM_UPSTREAM_API_KEY",
-    "VOICE_UPSTREAM_API_KEY",
-    "STT_UPSTREAM_API_KEY",
-    "TTS_UPSTREAM_API_KEY",
+    "VOICE_API_KEY",  # 鉴权开启后这里存的是多个真实 Key，绝不回传明文
     "VOICE_API_KEY_FILE",
     "LLM_UPSTREAM_POOL",
-    "STT_UPSTREAM_POOL",
-    "TTS_UPSTREAM_POOL",
 }
 HIDDEN = "********"
 
@@ -219,6 +216,7 @@ def voice_status() -> dict[str, Any]:
         "voiceHome": VOICE_HOME_DIR,
         "script": VOICE_SCRIPT,
         "health": health,
+        "port": voice_port(),
         "statusText": status_text,
         "store": store_status,
     }
@@ -309,14 +307,14 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.cfg-table th, table.cfg-table td { border:1px solid var(--line); padding:5px 6px; text-align:center; vertical-align:middle; font-size:12px; }
   table.cfg-table th { background:#161a22; color:var(--mut); font-weight:600; white-space:nowrap; }
   table.cfg-table input { width:100%; box-sizing:border-box; background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:5px 7px; font-size:12px; }
-  table.cfg-table td.acc-cell { cursor:pointer; max-width:150px; vertical-align:middle; }
+  table.cfg-table td.acc-cell { cursor:pointer; width:120px; max-width:120px; vertical-align:middle; }
   table.cfg-table td.acc-cell:hover { background:#1f2530; }
-  table.cfg-table td.acc-cell .acc-url, table.cfg-table td.acc-cell .acc-key { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  table.cfg-table td.acc-cell .acc-url, table.cfg-table td.acc-cell .acc-key { display:block; max-width:108px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   table.cfg-table .prov-cell { background:#14171f; vertical-align:middle; white-space:nowrap; }
   table.cfg-table .prov-cell b { font-size:13px; }
   table.cfg-table td.row-act { white-space:nowrap; width:1%; text-align:center; vertical-align:middle; padding:5px 4px; }
   table.cfg-table td.row-act input[type=radio]{ margin:0; }
-  table.cfg-table td.prov-cell { white-space:nowrap; }
+  table.cfg-table td.prov-cell { white-space:nowrap; width:1%; }
   table.cfg-table td.prov-cell .mini { margin-left:6px; }
   .modal-mask { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:50; }
   .modal-mask.show { display:flex; }
@@ -333,19 +331,23 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     -webkit-text-fill-color:var(--fg); -webkit-box-shadow:0 0 0 1000px #0f1115 inset; transition:background-color 9999s; }
   .modal .m-out { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:12px; font-size:12px; color:#cdd3de; white-space:pre-wrap; word-break:break-all; min-height:40px; }
   table.cfg-table .prov-models { color:var(--mut); font-size:11px; margin-top:4px; line-height:1.5; }
-  table.cfg-table tr.asr-builtin { background:#141821; }
-  table.cfg-table .asr-builtin td { text-align:center; }
-  table.cfg-table tr.asr-builtin .mini { padding:3px 10px; font-size:12px; }
-  table.cfg-table tr.asr-builtin .badge { margin:0; }
+  table.cfg-table tr.asr-builtin, table.cfg-table tr.tts-builtin { background:#141821; }
+  table.cfg-table .asr-builtin td, table.cfg-table .tts-builtin td { text-align:center; }
+  table.cfg-table tr.asr-builtin .mini, table.cfg-table tr.tts-builtin .mini { padding:3px 10px; font-size:12px; }
+  table.cfg-table tr.asr-builtin .badge, table.cfg-table tr.tts-builtin .badge { margin:0; }
+  table.cfg-table td.env-cell { text-align:left; }
+  table.cfg-table .env-req { color:var(--mut); font-size:11px; margin-top:3px; line-height:1.5; text-align:left; }
   /* 模型子表：提供商拥有哪些模型（多选）、哪个是默认、逐个模型是否可用 */
-  .model-pick { min-width:200px; }
+  .model-pick { min-width:180px; }
   .model-pick .mp-tools { display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; align-items:center; }
   table.model-sub { width:100%; border-collapse:collapse; }
   table.model-sub th, table.model-sub td { border:1px solid var(--line); padding:2px 5px; font-size:11px; text-align:center; vertical-align:middle; white-space:nowrap; }
   table.model-sub th { background:#10141b; color:var(--mut); font-weight:600; }
-  table.model-sub td.mm { color:var(--fg); word-break:break-all; white-space:normal; text-align:left; }
+  table.model-sub td.mm { color:var(--fg); min-width:90px; word-break:normal; overflow-wrap:anywhere; }
   table.model-sub td.avail-cell { padding:2px 3px; }
   table.model-sub .mini { padding:2px 7px; font-size:11px; }
+  /* 勾选/单选去掉浏览器默认外边距，否则在单元格里看着偏左不居中 */
+  table.model-sub input[type=checkbox], table.model-sub input[type=radio] { margin:0; vertical-align:middle; }
   table.hdr-table { width:100%; border-collapse:collapse; margin-top:4px; }
   table.hdr-table th, table.hdr-table td { border:1px solid var(--line); padding:4px 6px; font-size:12px; text-align:left; }
   table.hdr-table th { background:#10141b; color:var(--mut); font-weight:600; }
@@ -374,8 +376,6 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     <label>协议</label>
     <select id="testModalProto"></select>
     <div class="hint" id="testModalProtoDesc" style="margin-top:4px"></div>
-    <label>目标地址 base_url（留空＝按配置池测该模型；填代理地址即可，/llm 前缀自动补）</label>
-    <input id="testModalBaseUrl" type="text" value="" placeholder="留空按配置池，或填 http://host:port" />
     <label>鉴权（若推理接口开启了 API Key）</label>
     <input id="testModalAuthKey" type="password" placeholder="可选：API Key" />
     <div id="testModalExtra"></div>
@@ -442,26 +442,24 @@ function renderLogin(){
   card.querySelector('#p').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
 }
 
-// ── 配置卡片（LLM / ASR / TTS / 其它配置 四个 tab，置于测试之上）──
+// ── 配置卡片（LLM / ASR / TTS / 安全 四个 tab，置于测试之上）──
 const CFG_TABS = {
   llm: ['LLM_ENABLED','LLM_UPSTREAM_BASE_URL','LLM_UPSTREAM_API_KEY','LLM_UPSTREAM_MODEL','LLM_UPSTREAM_PROTOCOL','LLM_UPSTREAM_VENDOR'],
-  asr: ['VOICE_UPSTREAM_BASE_URL','VOICE_UPSTREAM_API_KEY','STT_UPSTREAM_BASE_URL','STT_UPSTREAM_API_KEY','STT_UPSTREAM_MODEL'],
+  asr: ['VOICE_UPSTREAM_BASE_URL','VOICE_UPSTREAM_API_KEY'],
   tts: ['TTS_UPSTREAM_VOICE','TTS_UPSTREAM_MODEL','TTS_UPSTREAM_BASE_URL','TTS_UPSTREAM_API_KEY','TTS_VOICE'],
+  sec: ['VOICE_API_KEY_AUTH','VOICE_API_KEY','VOICE_IP_ALLOW'],
 };
 const CFG_LABEL = {
   LLM_ENABLED:'LLM 启用（auto/on/off）', LLM_UPSTREAM_BASE_URL:'上游地址（OpenAI 兼容）', LLM_UPSTREAM_API_KEY:'API Key（留空=不修改）',
   LLM_UPSTREAM_MODEL:'模型名', LLM_UPSTREAM_PROTOCOL:'协议（openai/ollama/...）', LLM_UPSTREAM_VENDOR:'厂商（ollama/deepseek/...）',
-  VOICE_UPSTREAM_BASE_URL:'共享上游（ASR/TTS 共用）', VOICE_UPSTREAM_API_KEY:'共享 Key（ASR/TTS 共用）',
-  STT_UPSTREAM_BASE_URL:'ASR 专属地址（留空用共享）', STT_UPSTREAM_API_KEY:'ASR 专属 Key（留空用共享）', STT_UPSTREAM_MODEL:'ASR 模型名',
+  VOICE_UPSTREAM_BASE_URL:'TTS 上游地址（留空走内置 edge-tts）', VOICE_UPSTREAM_API_KEY:'TTS 上游 Key（留空用共享）',
   TTS_UPSTREAM_VOICE:'默认音色', TTS_UPSTREAM_MODEL:'TTS 模型名（可选）', TTS_UPSTREAM_BASE_URL:'TTS 专属地址（留空用共享）',
   TTS_UPSTREAM_API_KEY:'TTS 专属 Key（留空用共享）', TTS_VOICE:'TTS 兜底音色',
+  VOICE_API_KEY_AUTH:'是否启用 API-Key 鉴权', VOICE_API_KEY:'API Key 列表（一行一个；填 auto 自动生成）',
+  VOICE_IP_ALLOW:'IP 白名单（一行一个 IP 或 CIDR；留空=不限制）',
 };
-// ASR 已改为表格模式，旧的 STT_/VOICE_UPSTREAM_* 单地址键不再在专属 tab 展示，
-// 放进「其它配置」保留可编辑（TTS 也会回退用 VOICE_UPSTREAM_*，不能藏掉）。
-const CFG_KNOWN = new Set([...CFG_TABS.llm, ...CFG_TABS.tts]);
-const isSecret = k => /API_KEY|PASSWORD|SECRET|DSN/i.test(k);
+const isSecret = k => /API_KEY|PASSWORD|SECRET|DSN|_POOL$/i.test(k);
 let cfgOrig = {};
-let cfgOtherKeys = [];
 
 function buildConfigCard(){
   const fields = (id,keys)=> keys.map(k=>{
@@ -474,14 +472,16 @@ function buildConfigCard(){
       <button class="tab active" data-ctab="llm">LLM</button>
       <button class="tab" data-ctab="asr">ASR</button>
       <button class="tab" data-ctab="tts">TTS</button>
-      <button class="tab" data-ctab="other">其它配置</button>
+      <button class="tab" data-ctab="sec">安全</button>
     </div>
     <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">加载中…</div><div class="row" style="margin-top:12px"><button id="cfgSave_llm">保存</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
     <div id="c-asr" class="cfgpane" hidden>
       <div id="asrTableWrap" class="hint">加载中…</div>
     </div>
-    <div id="c-tts" class="cfgpane" hidden>${fields('tts',CFG_TABS.tts)}</div>
-    <div id="c-other" class="cfgpane" hidden><div id="cfgOther"></div><div class="row" style="margin-top:12px"><button id="cfgSave_other">保存</button><span class="hint" id="cfgStat_other" style="margin-left:10px"></span></div></div>
+    <div id="c-tts" class="cfgpane" hidden>
+      <div id="ttsTableWrap" class="hint">加载中…</div>
+    </div>
+    <div id="c-sec" class="cfgpane" hidden><div id="secWrap"></div><div class="row" style="margin-top:12px"><button id="cfgSave_sec">保存</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div></div>
   </div>`);
 }
 
@@ -491,30 +491,27 @@ async function loadConfig(){
     if(!r.ok) return;
     cfgOrig = await r.json();
     ['llm','asr','tts'].forEach(t=>CFG_TABS[t].forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); }));
-    const other = Object.keys(cfgOrig).filter(k=>!CFG_KNOWN.has(k));
-    cfgOtherKeys = other;
-    const body=document.getElementById('cfgOther'); if(!body) return;
-    body.innerHTML = other.map(k=>`<label>${k}</label><input id="cfg_${k}"${isSecret(k)?' type="password" placeholder="（留空则不修改）"':''} />`).join('');
-    other.forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); });
     renderLlmTable();
     paintAsrTable();
+    paintTtsTable();
+    renderSecTable();
   }catch(_){}
 }
 
 function cfgVal(k){
   const inp=document.getElementById('cfg_'+k); if(!inp) return undefined;
   if(inp.type==='password'){ return inp.value ? inp.value : null; }  // 空=不发送，保留原密钥
+  if(inp.tagName==='TEXTAREA'){ return inp.value.trim() ? inp.value : null; }  // 多值，空=不修改
   return inp.value;
 }
 
 function wireConfig(){
   document.querySelectorAll('#cfgTabs .tab').forEach(t=>{
     t.onclick=()=>{ document.querySelectorAll('#cfgTabs .tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
-      ['llm','asr','tts','other'].forEach(p=>{ const e=document.getElementById('c-'+p); if(e) e.hidden=(t.dataset.ctab!==p); }); };
+      ['llm','asr','tts','sec'].forEach(p=>{ const e=document.getElementById('c-'+p); if(e) e.hidden=(t.dataset.ctab!==p); }); };
   });
-  const save = async (id,keys,statId)=>{
+  const postConfig = async (patch, statId)=>{
     const stat=document.getElementById(statId); stat.className='hint'; stat.textContent='保存中…';
-    const patch={}; keys.forEach(k=>{ const v=cfgVal(k); if(v!==undefined && v!==null) patch[k]=v; });
     try{
       const r=await fetch('/admin/api/config',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
       const d=await r.json().catch(()=>({}));
@@ -523,9 +520,22 @@ function wireConfig(){
       loadConfig();
     }catch(e){ stat.className='err'; stat.textContent='错误：'+e.message; }
   };
+  const save = async (id,keys,statId)=>{
+    const patch={}; keys.forEach(k=>{ const v=cfgVal(k); if(v!==undefined && v!==null) patch[k]=v; });
+    return postConfig(patch, statId);
+  };
+  // 安全 tab：开关总要提交；IP 白名单留空=清空（必须显式发空串）；
+  // API Key 留空=不修改（保留原 Key），只有填了新值才提交。
+  const saveSec = ()=>{
+    const patch={ VOICE_API_KEY_AUTH: document.getElementById('cfg_VOICE_API_KEY_AUTH').value,
+                  VOICE_IP_ALLOW: document.getElementById('cfg_VOICE_IP_ALLOW').value };
+    const k=document.getElementById('cfg_VOICE_API_KEY').value;
+    if(k.trim()) patch.VOICE_API_KEY=k;
+    return postConfig(patch, 'cfgStat_sec');
+  };
   ['tts'].forEach(t=>{ const b=document.getElementById('cfgSave_'+t); if(b) b.onclick=()=>save(t,CFG_TABS[t],'cfgStat_'+t); });
+  const sb=document.getElementById('cfgSave_sec'); if(sb) sb.onclick=saveSec;
   const lb=document.getElementById('cfgSave_llm'); if(lb) lb.onclick=()=>saveLlmTable();
-  const ob=document.getElementById('cfgSave_other'); if(ob) ob.onclick=()=>save('other',cfgOtherKeys,'cfgStat_other');
 }
 
 // ── LLM 上游池表格（按提供商分组；列：默认 | 提供商 | 地址 | API Key | 模型）──
@@ -560,7 +570,7 @@ function buildModelPick(gi){
   if(!g._avail) g._avail={};   // 各模型最近一次测试结果：'ok' / 'err'
   if(g._def===undefined) g._def = (g.vendor===llmDefVendor && llmDefModel && g.models.includes(llmDefModel)) ? llmDefModel : (g.models[0]||'');
   let html='<div class="model-pick">';
-  html+='<table class="model-sub"><thead><tr><th></th><th>模型</th><th>默认</th><th>测</th><th>状态</th></tr></thead><tbody>';
+  html+='<table class="model-sub"><thead><tr><th></th><th>模型</th><th>默认</th><th>操作</th><th>状态</th></tr></thead><tbody>';
   g._cands.forEach(m=>{
     const checked=g._sel.has(m)?'checked':'';
     const isDef=g._def===m?'checked':'';
@@ -660,7 +670,6 @@ function runModalTest(){
   const needThink=document.getElementById('testModalThinkMode') ? document.getElementById('testModalThinkMode').checked : false;
   const protoSel=document.getElementById('testModalProto');
   const proto=protoSel ? protoSel.value : ((g.accounts[0] && g.accounts[0].protocol) || g.protocol);
-  const baseUrl=(document.getElementById('testModalBaseUrl')?.value||'').trim();
   const authKey=(document.getElementById('testModalAuthKey')?.value||'').trim();
   const opts={ vendor:g.vendor, model:m, protocol:proto, stream, think:needThink, bypassCatalog:true, kind:'modal', authKey,
     messages:[{role:'user',content:TEST_PROMPT}],
@@ -671,7 +680,6 @@ function runModalTest(){
       // 记录测试结果到该模型，刷新子表徽标（可用/不可用/未测）
       if(g && m){ g._avail[m] = ok ? 'ok':'err'; if(gi>=0) refreshModelCell(gi); }
     } };
-  if(baseUrl){ opts.baseUrl=baseUrl; opts.apiKey=authKey; }
   runLlmChat(opts);
 }
 
@@ -719,7 +727,7 @@ async function renderLlmTable(){
     llmDefModel  = data.default_model||'';
     if(!llmGroups.length){
       wrap.className='hint';
-      wrap.innerHTML='尚未配置 LLM 上游池，可在「其它配置」填 JSON。';
+      wrap.innerHTML='尚未配置 LLM 上游池。';
       return;
     }
     let html = '<table class="cfg-table"><thead><tr>'
@@ -796,12 +804,13 @@ async function saveLlmTable(){
   }catch(e){ stat.className='err'; stat.textContent='错误：'+e.message; }
 }
 
-// ── ASR 配置（当前固定使用内置模型；只展示内置一行 + 按需「测试可用」）──
+// ── ASR 配置（固定使用内置模型，取决于运行环境；只展示内置一行 + 按需「测试可用」）──
 // 外部上游以后按具体厂商单独接入，暂不在此提供地址/密钥/协议等配置。
 const ASR_BUILTIN = '内置';
-const ASR_BUILTIN_MODEL_LABEL = '内置模型';
 let asrBuiltinAvail = null;   // 内置最近一次按需检测：'ok' / 'err' / null(未测)
 let asrBuiltinDetail = '';    // 内置检测的补充说明（成功/失败原因），在表格下方行内显示
+let ttsBuiltinAvail = null;   // TTS 内置最近一次按需检测：'ok' / 'err' / null(未测)
+let ttsBuiltinDetail = '';    // TTS 内置检测的补充说明，在表格下方行内显示
 
 function paintAsrTable(){
   const wrap=document.getElementById('asrTableWrap');
@@ -810,17 +819,20 @@ function paintAsrTable(){
                : asrBuiltinAvail==='err' ? '<span class="badge b-err">不可用</span>'
                : '<span class="badge b-mut">未测</span>';
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>提供商</th><th>模型</th><th>状态</th><th>操作</th>'
+    + '<th>提供商</th><th>依赖环境</th><th>状态</th><th>操作</th>'
     + '</tr></thead><tbody>';
-  // 固定只展示内置一行：模型写死、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
+  // 固定只展示内置一行：写清依赖环境要求、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
   html += `<tr class="asr-builtin" data-builtin="1">
     <td class="prov-cell"><b>${ASR_BUILTIN}</b></td>
-    <td><span class="muted">${ASR_BUILTIN_MODEL_LABEL}</span><div class="hint">固定，无需刷新</div></td>
+    <td class="env-cell">
+      <span class="muted">内置模型（离线推理，无需外部服务）</span>
+      <div class="env-req">模型文件：model.int8.onnx + tokens.txt（放在 ~/.app-product/voice/models/sensevoice/，约 240MB，由 install-voice 下载）</div>
+    </td>
     <td>${bAvail}</td>
     <td class="row-act"><button class="mini asr-builtin-test" title="真实加载内置模型并跑一次推理">测试可用</button></td>
   </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">当前 ASR 固定使用内置模型；外部上游以后按具体厂商单独接入。</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
+  html += '<div class="row" style="margin-top:8px"><span class="hint">当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.asr-builtin-test'); if(bt) bt.onclick=testAsrBuiltin;
   const bh=document.getElementById('asrTableHint');
@@ -851,10 +863,85 @@ async function testAsrBuiltin(){
   if(h){ h.textContent=asrBuiltinDetail; h.style.color = asrBuiltinAvail==='ok'?'var(--ok)':'var(--err)'; }
 }
 
+function paintTtsTable(){
+  const wrap=document.getElementById('ttsTableWrap');
+  if(!wrap) return;
+  const bAvail = ttsBuiltinAvail==='ok' ? '<span class="badge b-ok">可用</span>'
+               : ttsBuiltinAvail==='err' ? '<span class="badge b-err">不可用</span>'
+               : '<span class="badge b-mut">未测</span>';
+  let html='<table class="cfg-table"><thead><tr>'
+    + '<th>提供商</th><th>依赖环境</th><th>状态</th><th>操作</th>'
+    + '</tr></thead><tbody>';
+  // 固定只展示内置一行：写清依赖环境要求、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
+  html += `<tr class="tts-builtin" data-builtin="1">
+    <td class="prov-cell"><b>内置</b></td>
+    <td class="env-cell">
+      <span class="muted">内置合成（edge-tts 在线服务）</span>
+      <div class="env-req">需联网访问微软语音服务，无需本地模型文件</div>
+      <div class="env-req">ffmpeg：wav 输出需要（由 install-voice 安装）</div>
+    </td>
+    <td>${bAvail}</td>
+    <td class="row-act"><button class="mini tts-builtin-test" title="真实合成一句验证内置 TTS 是否可用">测试可用</button></td>
+  </tr>`;
+  html += '</tbody></table>';
+  html += '<div class="row" style="margin-top:8px"><span class="hint">当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
+  wrap.className=''; wrap.innerHTML=html;
+  const bt=wrap.querySelector('.tts-builtin-test'); if(bt) bt.onclick=testTtsBuiltin;
+  const bh=document.getElementById('ttsTableHint');
+  if(bh && ttsBuiltinDetail){ bh.textContent=ttsBuiltinDetail; bh.style.color = ttsBuiltinAvail==='err'?'var(--err)':(ttsBuiltinAvail==='ok'?'var(--ok)':''); }
+}
+
+// TTS 内置按需检测：真实合成一句，验证 edge-tts 与 ffmpeg 链路，启动阶段不做。
+async function testTtsBuiltin(){
+  const wrap=document.getElementById('ttsTableWrap');
+  const btn=wrap && wrap.querySelector('.tts-builtin-test');
+  const hint=document.getElementById('ttsTableHint');
+  if(btn){ btn.disabled=true; btn.textContent='检测中…'; }
+  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent='正在按配置合成一句…'; }
+  try{
+    const r=await fetch('/admin/api/tts-builtin-test',{method:'POST',credentials:'same-origin'});
+    const d=await r.json().catch(()=>({}));
+    ttsBuiltinAvail = d.ok ? 'ok' : 'err';
+    ttsBuiltinDetail = d.ok ? '可用：合成成功' : '不可用：'+(d.detail||d.reason||'检测失败');
+  }catch(e){
+    ttsBuiltinAvail='err';
+    ttsBuiltinDetail='不可用：请求失败 '+e.message;
+  }
+  paintTtsTable();
+  const h=document.getElementById('ttsTableHint');
+  if(h){ h.textContent=ttsBuiltinDetail; h.style.color = ttsBuiltinAvail==='ok'?'var(--ok)':'var(--err)'; }
+}
+
+// 安全配置：API-Key 鉴权开关 + 多 Key + IP 白名单（多 IP/CIDR）。
+// 默认不开启；开启后可填多个 Key（一行一个）与多个 IP/CIDR（一行一个）。
+function renderSecTable(){
+  const wrap=document.getElementById('secWrap'); if(!wrap) return;
+  const auth = (cfgOrig['VOICE_API_KEY_AUTH']||'off');
+  const keyVal = isSecret('VOICE_API_KEY') ? '' : (cfgOrig['VOICE_API_KEY']||'');
+  const ipVal = (cfgOrig['VOICE_IP_ALLOW']||'');
+  wrap.innerHTML = `
+    <div class="row"><label>${CFG_LABEL['VOICE_API_KEY_AUTH']}</label>
+      <select id="cfg_VOICE_API_KEY_AUTH">
+        <option value="off"${auth==='off'?' selected':''}>关闭（默认）</option>
+        <option value="on"${auth==='on'?' selected':''}>开启</option>
+      </select>
+      <span class="hint">开启后 /llm 与 /voice 数据接口须持有效 Key；/health 与管理面板不受影响</span>
+    </div>
+    <div class="row"><label>${CFG_LABEL['VOICE_API_KEY']}</label>
+      <textarea id="cfg_VOICE_API_KEY" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="一行一个 Key；或填 auto 自动生成并写入文件。留空则不修改">${escapeHtml(keyVal)}</textarea>
+    </div>
+    <div class="row"><label>${CFG_LABEL['VOICE_IP_ALLOW']}</label>
+      <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="一行一个 IP 或 CIDR（如 192.168.1.0/24）。留空=不限制来源">${escapeHtml(ipVal)}</textarea>
+    </div>`;
+}
+
 // ── 可复用的对话测试：测试 tab 与配置表格（提供商/模型）共用，靠 opts 个性化 ──
 // opts: { vendor, model, protocol, stream, messages, statusEl, outEl, thinkEl, thinkWrapEl, onDone }
 //   onDone(success:boolean) 在结束（成功/失败/中断）时回调，供调用方自定义结果呈现（如「是否可用」徽标）
 let llmCtrl = null;
+// 测试固定打本代理 http://127.0.0.1:<配置端口>（端口从 /admin/api/status 取），
+// LLM / ASR / TTS 共用；状态还没回来时为空，等价走相对路径。
+let testOrigin = '';
 
 // 自定义请求头：按 tab 各自独立，每类请求只带自己那张表里的头（当前只启用 LLM）。
 // 表格每行一组 Key/Value -> 普通 HTTP 请求头对象（不持久化，每次请求自己带）。
@@ -950,7 +1037,7 @@ document.addEventListener('keydown',(e)=>{
 });
 
 async function runLlmChat(opts){
-  const { vendor, model, protocol, stream, messages, statusEl, outEl, thinkEl, thinkWrapEl, onDone, bypassCatalog, think, baseUrl, apiKey, kind, authKey } = opts;
+  const { vendor, model, protocol, stream, messages, statusEl, outEl, thinkEl, thinkWrapEl, onDone, bypassCatalog, think, kind, authKey } = opts;
   // kind 决定读哪一套自定义请求头 / body 参数表格：底部测试卡片='llm'，配置里的模型测试弹窗='modal'。
   const hkind = kind || 'llm';
   // 思考模式开关：关掉时坚决不显示「思考过程」框（不依赖上游是否遵守 think=false），
@@ -974,14 +1061,11 @@ async function runLlmChat(opts){
     if(vendor) body.vendor=vendor;          // 显式指定提供商，覆盖模型路由
     if(protocol) body.protocol=protocol;    // 显式指定线协议，覆盖入口配置
     if(bypassCatalog) body.bypass_catalog=true;  // 测试场景：跳过模型目录校验，直接探真实上游
-    // 按 URL 测试：显式下发 base_url（与上游 api_key），让代理绕过配置池直连该端点
-    if(baseUrl) body.base_url=baseUrl;
-    if(apiKey!==undefined && apiKey!==null) body.api_key=apiKey;
     // 思考模式：对外固定一个参数，经请求头 X-Proxy-Think 传（body 里也带一份做双通道），
     // 代理收到后由 apply_think 翻译成上游厂商原生的 body 参数，真正让模型不思考。
     if(think!==undefined && think!==null) body.think = !!think;
     const thinkHdr=(think!==undefined && think!==null)?{'X-Proxy-Think':String(!!think)}:{};
-    const r=await fetch('/llm/v1/chat/completions',{method:'POST',credentials:'same-origin',signal:ctrl.signal,
+    const r=await fetch(testOrigin+'/llm/v1/chat/completions',{method:'POST',credentials:'same-origin',signal:ctrl.signal,
       headers:{'content-type':'application/json',...auth,...thinkHdr,...proxyExtraHeaders(hkind)}, body:JSON.stringify(body)});
     if(!r.ok){
       const txt=await r.text(); let msg='失败 '+r.status;
@@ -1030,8 +1114,6 @@ async function renderDashboard(){
   app.appendChild(buildConfigCard());
 
   app.appendChild(el(`<div class="card"><h2>测试</h2>
-    <label>目标地址 base_url（默认即本代理；填代理地址即可，/llm 前缀自动补；测本代理其它实例填 http://host:port）</label>
-    <input id="llmBaseUrl" type="text" value="http://127.0.0.1:9529" placeholder="http://host:port" />
     <label>鉴权（若推理接口开启了 API Key）</label>
     <input id="testKey" type="password" placeholder="可选：API Key" />
     <div class="tabs">
@@ -1214,11 +1296,12 @@ async function renderDashboard(){
   };
   voiceSel.onchange = ()=>{ VOICE_DESC.textContent = '音色说明：' + voiceDesc(voiceSel.value) + '　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502'; };
   // 从对外接口拉取最新音色目录（接口不可用时回退兜底）
-  fetch('/voide/v1/audio/voices',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(d=>{
+  fetch('/voice/v1/audio/voices',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(d=>{
     if(d && Array.isArray(d.voices) && d.voices.length){ VOICE_CATALOG=d.voices; fillVoices(d.default); }
   }).catch(()=>{});
   api('/admin/api/status').then(r=>r.ok?r.json():null).then(s=>{
     const def = s && s.health && s.health.tts_voice;
+    if(s && s.port) testOrigin='http://127.0.0.1:'+s.port;   // 三个 tab 统一打本代理
     fillVoices(def||undefined);
   }).catch(()=>fillVoices());
 
@@ -1227,7 +1310,7 @@ async function renderDashboard(){
     const msg=document.getElementById('ttsMsg'), audio=document.getElementById('ttsAudio');
     msg.textContent='合成中…'; msg.className='hint'; audio.src='';
     try{
-      const r=await fetch('/voide/v1/audio/speech',{method:'POST',credentials:'same-origin',
+      const r=await fetch(testOrigin+'/voice/v1/audio/speech',{method:'POST',credentials:'same-origin',
         headers:{'content-type':'application/json',...authHdr()},
         body:JSON.stringify({input:document.getElementById('ttsText').value,voice:voiceSel.value,response_format:'wav',speed:1.0})});
       if(!r.ok){ msg.textContent='失败 '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
@@ -1263,8 +1346,6 @@ async function renderDashboard(){
   const llmThinkWrap=document.getElementById('llmThinkWrap'), llmThink=document.getElementById('llmThink');
   document.getElementById('llmGo').onclick = ()=>{
     const needThink=document.getElementById('llmThinkMode') ? document.getElementById('llmThinkMode').checked : false;
-    const baseUrl=document.getElementById('llmBaseUrl').value.trim();
-    const apiKey=(document.getElementById('testKey').value||'').trim();
     const opts={
       vendor: document.getElementById('llmProvider').value.trim(),
       model: document.getElementById('llmModel').value.trim(),
@@ -1274,8 +1355,6 @@ async function renderDashboard(){
       messages: [{role:'user',content:document.getElementById('llmInput').textContent}],
       statusEl: llmStatus, outEl: llmOut, thinkEl: llmThink, thinkWrapEl: llmThinkWrap,
     };
-    // 按 URL 测试：显式带 base_url（与鉴权 Key 一并下发上游），绕过配置池路由
-    if(baseUrl){ opts.baseUrl=baseUrl; opts.apiKey=apiKey; }
     runLlmChat(opts);
   };
   document.getElementById('llmStop').onclick = ()=>{ if(llmCtrl) llmCtrl.abort(); };
@@ -1374,7 +1453,7 @@ async function renderDashboard(){
     msg.textContent='识别中…';
     try{
       const fd=new FormData(); fd.append('file',blob,fname); fd.append('model','whisper-1');
-      const r=await fetch('/voide/v1/audio/transcriptions',{method:'POST',credentials:'same-origin',headers:{...authHdr()},body:fd});
+      const r=await fetch(testOrigin+'/voice/v1/audio/transcriptions',{method:'POST',credentials:'same-origin',headers:{...authHdr()},body:fd});
       if(!r.ok){ msg.textContent='失败 '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
       const d=await r.json(); out.textContent=d.text||'(空)'; msg.textContent='完成'; msg.className='hint';
     }catch(e){ msg.textContent='错误：'+e.message; msg.className='err'; }
@@ -1435,15 +1514,17 @@ ADMIN_HTML = ADMIN_HTML.replace("__ASR_B64__", _ASR_SAMPLE_B64)
 
 
 # ── 路由注册 ───────────────────────────────────────────────────────
-def register_admin_routes(app, stt_builtin_check=None) -> None:
-    global _STT_BUILTIN_CHECK
+def register_admin_routes(app, stt_builtin_check=None, tts_builtin_check=None) -> None:
+    global _STT_BUILTIN_CHECK, _TTS_BUILTIN_CHECK
     _STT_BUILTIN_CHECK = stt_builtin_check
+    _TTS_BUILTIN_CHECK = tts_builtin_check
 
     @app.get("/admin", response_class=HTMLResponse)
     @app.get("/admin/", response_class=HTMLResponse)
     def admin_page():
         # 页面内自行按 /admin/api/me 决定显示登录还是控制台，无需服务端分流。
-        return HTMLResponse(ADMIN_HTML)
+        # 禁缓存：页面逻辑全在这份 HTML 里，浏览器缓存旧版会让人以为改动没生效。
+        return HTMLResponse(ADMIN_HTML, headers={"Cache-Control": "no-store, must-revalidate"})
 
     @app.post("/admin/login")
     def admin_login(user: str = Form(...), password: str = Form(...)):
@@ -1495,6 +1576,9 @@ def register_admin_routes(app, stt_builtin_check=None) -> None:
             raise HTTPException(status_code=400, detail="请求体不是合法 JSON")
         if not isinstance(patch, dict):
             raise HTTPException(status_code=400, detail="请求体必须是对象")
+        # 丢弃客户端回传的脱敏哨兵：UI 把密钥 / 地址池打码成 HIDDEN，若原样写回会
+        # 把真实密钥 / 池 JSON 覆盖成星号。只有非哨兵的值才允许落地。
+        patch = {k: v for k, v in patch.items() if v != HIDDEN}
         err = write_voice_config(patch)
         if err:
             raise HTTPException(status_code=500, detail=err)
@@ -1586,6 +1670,20 @@ def register_admin_routes(app, stt_builtin_check=None) -> None:
             return {"ok": False, "reason": "not_wired", "detail": "检测能力未注入"}
         try:
             return await asyncio.to_thread(_STT_BUILTIN_CHECK)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "reason": "exception", "detail": str(exc)}
+
+    @app.post("/admin/api/tts-builtin-test", dependencies=[Depends(require_admin)])
+    async def admin_tts_builtin_test():
+        """按需真实检测内置 TTS（edge-tts + ffmpeg）是否可用：合成一句短语。
+
+        启动阶段不做：edge-tts 走微软在线服务，联网合成有耗时，且用户可能改用外部上游。
+        检测函数是 async，直接 await，不必再丢线程。
+        """
+        if _TTS_BUILTIN_CHECK is None:
+            return {"ok": False, "reason": "not_wired", "detail": "检测能力未注入"}
+        try:
+            return await _TTS_BUILTIN_CHECK()
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "exception", "detail": str(exc)}
 

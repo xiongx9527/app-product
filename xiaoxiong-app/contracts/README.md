@@ -35,7 +35,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" } }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.end" }
@@ -63,6 +63,17 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 - **`session.end` 才是真正结束会话**：从注册表移除、销毁对话记忆，之后同一 `deviceId` 的 `session.start` 视为全新会话。
 - **未上报 `deviceId`（旧客户端）**：每连接独立会话、不复用，行为同改造前，向后兼容。
 - 范围：仅保证**一次网关进程内**的多轮记忆；网关重启 = 会话自然结束，跨重启持久化需落库，另行规划。
+
+`session.start` 的 `voice` 为客户端本机的语音服务配置（可选；ASR / LLM / TTS 共用一份）：
+
+- `provider`：`builtin`（网关内置，默认）或 `dashscope`（用户自带 DashScope Key）。
+- `url`：服务根地址。`builtin` 默认 `http://127.0.0.1:9529`；`dashscope` 默认 `https://dashscope.aliyuncs.com`，也支持业务空间地址与 `/compatible-mode/v1`、`/api-ws/v1/inference` 写法，由网关归一化。
+- `apiKey`：默认空。`builtin` 通常为空；`dashscope` 必填，三件事共用。
+- **缺省 `voice`**（旧客户端）时，网关完全沿用自身 env 配置，行为不变。
+- 网关按本次会话的 `voice` 生成临时配置：`builtin` 的 LLM 用 OpenAI 兼容 provider + `${url}/llm/v1`、ASR / TTS 用 `${url}/voice`（注意两个前缀不同；不能沿用 env 的 `ollama` 直连模式）；`dashscope` 的 LLM 走 OpenAI 兼容 `${root}/compatible-mode/v1` + `qwen-plus`，ASR / TTS 走 `wss://${host}/api-ws/v1/inference`（`dashscopeWs.ts`）+ `paraformer-realtime-v2` / `cosyvoice-v2`。
+- 同一 `deviceId` 再次 `session.start` 时，`provider | url | apiKey` 不变则复用会话与记忆；变化则关闭旧会话并按新配置重建，下一次连接 / 唤醒生效。
+- API Key 只存在客户端本地并经 WSS 文本帧传输，网关不落库；客户端不得直连 DashScope。
+- 本地 AI 服务的语音接口前缀为 `/voice`（LLM 为 `/llm/v1`）；网关 `ASR_BASE_URL` / `TTS_BASE_URL` 须带上 `/voice`。旧拼写 `/voide` 已废弃，不保留别名。
 
 音乐播放为网关内置能力，**不再由客户端配置**：`session.start` 不含 `music` 字段。网关始终注册音乐工具（`play_music` / `stop_music` / `pause_music` / `resume_music` / `next_music`），按请求类型自动分流——
 - 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台（直接 mp3 流，无需 Key）；

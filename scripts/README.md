@@ -3,7 +3,7 @@
 仓库根目录的开发辅助脚本（与 `xiaoxiong-app` 同级），负责 **macOS / Windows** 上：
 
 - Ollama 的安装与模型下载；
-- 本地 AI 服务（LLM 纯转发代理 + STT / TTS）的安装、启动与后台管理，支持本地推理或代理远程 OpenAI 兼容服务，原生 Python 运行，不使用 Docker；
+- 本地 AI 服务（LLM 纯转发代理 + STT / TTS）的安装、启动与后台管理；STT / TTS 固定本地推理、LLM 走上游代理，原生 Python 运行，不使用 Docker；
 - 本机所有开发服务的统一启停与状态查看（macOS / Linux，见下）。
 
 Linux 也顺带可用（见文末）。
@@ -78,17 +78,17 @@ Linux 也顺带可用（见文末）。
 |---|---|---|---|
 | LLM | `POST /llm/v1/chat/completions` | 不提供（无本地模型） | 任意 OpenAI 兼容 LLM，原样转发 |
 | LLM | `GET /llm/v1/models` | 不提供 | 原样转发上游模型列表 |
-| STT | `POST /voide/v1/audio/transcriptions` | SenseVoice-small（sherpa-onnx，离线） | 任意 OpenAI 兼容 STT |
-| TTS | `POST /voide/v1/audio/speech` | edge-tts（微软在线神经音色） | 任意 OpenAI 兼容 TTS |
-| 健康检查 | `GET /health`、`/llm/health`、`/voide/health` | 返回后端、模型、ffmpeg、鉴权、缓存状态 | 同左 |
+| STT | `POST /voice/v1/audio/transcriptions` | SenseVoice-small（sherpa-onnx，离线） | 任意 OpenAI 兼容 STT |
+| TTS | `POST /voice/v1/audio/speech` | edge-tts（微软在线神经音色） | 任意 OpenAI 兼容 TTS |
+| 健康检查 | `GET /health`、`/llm/health`、`/voice/health` | 返回后端、模型、ffmpeg、鉴权、缓存状态 | 同左 |
 
-> 语音相关接口的前缀是 `/voide`（仓库历史命名），网关的 `ASR_BASE_URL` /
+> 语音相关接口的前缀是 `/voice`，网关的 `ASR_BASE_URL` /
 > `TTS_BASE_URL` 要带上它；LLM 接口前缀是 `/llm/v1`。
 
 服务脚本 `voice/openai_voice_server.py` 参照 Orca 本地语音服务里的
 `openai-voice-server.py` 整理，去掉了 Docker 与 faster-whisper 回退，
-只保留网关实际用到的 SenseVoice 和 edge-tts，并增加了配置文件、可选 API Key
-和远程代理模式。LLM 部分是一个**纯转发代理**，见下节。
+只保留网关实际用到的 SenseVoice 和 edge-tts，并增加了配置文件与可选 API Key。
+STT / TTS 固定本地实现；只有 LLM 部分是**纯转发代理**，见下节。
 
 ### LLM 纯转发代理
 
@@ -138,7 +138,7 @@ STT / TTS。`on` 强制启用但没配上时，启动前的 `preflight.py` 检�
 ```bash
 ./scripts/install-voice.sh --tts-only    # 只装 TTS，不下载模型
 ./scripts/install-voice.sh --stt-only    # 只装 STT，不装 edge-tts / ffmpeg
-./scripts/install-voice.sh --proxy-only  # 只装基础依赖，代理远程 OpenAI 兼容服务
+./scripts/install-voice.sh --proxy-only  # 只装基础依赖（仅用 LLM、不用本地 STT/TTS 时）
 ./scripts/install-voice.sh --skip-model  # 装 STT 依赖但先不下载模型
 ./scripts/install-voice.sh --dry-run     # 只打印步骤，不实际安装或下载
 ```
@@ -212,7 +212,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-voice.ps1 -Port 9531
 [check] 缺少 / 异常：STT: SenseVoice 模型未就绪：.../models/sensevoice
 [check] 启动脚本只检查依赖，不会自动安装；请手动执行下面的命令：
   ./scripts/install-voice.sh                # 本地 STT + TTS（含模型）
-  ./scripts/install-voice.sh --proxy-only   # 只装代理模式基础依赖
+  ./scripts/install-voice.sh --proxy-only   # 仅基础依赖（LLM-only 场景）
 ```
 
 检查内容：
@@ -220,9 +220,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-voice.ps1 -Port 9531
 - 所有模式：Python 3.10+、`fastapi` / `uvicorn` / `python-multipart` / `httpx` / `pydantic`；
 - 本地 STT：`sherpa-onnx`、`numpy`、SenseVoice 的 `model.int8.onnx` / `tokens.txt`；
 - 本地 TTS：`edge-tts`、可执行的 `ffmpeg`；
-- 代理模式：上游地址必须是 `http://` 或 `https://`，并跳过对应能力的本地模型 / ffmpeg 检查；
-- LLM 纯转发代理：启用时 `LLM_UPSTREAM_BASE_URL` 必须是 `http(s)://`；不检查本机 Ollama，也不需要本地模型；
-- `proxy-only` 安装会要求 STT 和 TTS 都能解析出可用的上游地址（或本机依赖已补齐）。
+- STT / TTS 固定本地实现，不再检查任何语音上游地址；
+- LLM 纯转发代理：启用时 `LLM_UPSTREAM_BASE_URL` / `LLM_UPSTREAM_POOL` 里的地址必须是 `http(s)://`；不检查本机 Ollama，也不需要本地模型；
+- `proxy-only` 只装基础依赖；STT / TTS 仍需各自本地依赖，缺了就明确提示补装。
 
 安装脚本会把当前模式写入 `$VOICE_HOME/install-mode`
 （`full` / `tts-only` / `stt-only` / `proxy-only`）。`--tts-only` 或
@@ -257,7 +257,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-voice.ps1 -Port 9531
 | `VOICE_API_KEY` | `off` | 鉴权模式，见下 |
 | `VOICE_API_KEY_FILE` | `$VOICE_HOME/api-key` | Key 文件，`auto` 模式读写 |
 | `LLM_ENABLED` | `auto` | `auto` 配了上游即启用；`on` / `off` 强制开关 |
-| `LLM_UPSTREAM_BASE_URL` | 空 | LLM 纯转发代理的上游；空则只跑 STT / TTS |
+| `LLM_UPSTREAM_BASE_URL` | 空 | LLM 纯转发代理的上游；空则 LLM 关闭，只跑本地 STT / TTS |
 
 配置文件支持 `~` 和 `$VOICE_HOME` 展开，语法就是一行一个 `KEY=VALUE`，
 完整注释见 `scripts/voice/voice.conf.example`。
@@ -281,54 +281,26 @@ ASR_API_KEY=<与 VOICE_API_KEY 相同>
 TTS_API_KEY=<与 VOICE_API_KEY 相同>
 ```
 
-### 代理远程 OpenAI 兼容服务（免本地安装）
+### 上游代理只属于 LLM
 
-不想下载 SenseVoice、也不想装 ffmpeg 时，可以把请求转发到远程 OpenAI
-兼容服务。安装时用：
+**STT / TTS 固定本地实现**（SenseVoice / edge-tts），没有上游概念，不转发到
+任何远程服务；只有 **LLM** 有上游，按 `LLM_UPSTREAM_POOL` 做多地址 / 多账号
+的纯转发代理（见管理面板 LLM 配置）。
+
+因此 `--proxy-only` 安装模式（只装 FastAPI / uvicorn / httpx 等基础依赖，
+不下载 SenseVoice 模型、不装 ffmpeg）只适合「仅用 LLM，不用本地 STT / TTS」
+的场景；本地 STT / TTS 仍需各自依赖：
 
 ```bash
-./scripts/install-voice.sh --proxy-only
+./scripts/install-voice.sh --proxy-only   # 仅基础依赖（LLM-only）
+./scripts/install-voice.sh                # 本地 STT + TTS（含模型 / ffmpeg）
 ```
 
-Windows 用 `scripts\install-voice.cmd -ProxyOnly`。代理模式只安装
-FastAPI / uvicorn / httpx 等基础依赖，不下载模型、不安装 ffmpeg，并把
-`install-mode` 记为 `proxy-only`。
+Windows 用 `scripts\install-voice.cmd -ProxyOnly`。`install-mode` 记录最后一次
+安装模式，启动依赖检查据此判断哪些依赖是预期缺失。
 
-启动前必须在 `voice.conf` 里填上游地址和 Key，否则依赖检查会明确拒绝启动：
-
-```dotenv
-# 通用上游：STT + TTS 都走它
-VOICE_UPSTREAM_BASE_URL=https://api.openai.com/v1
-VOICE_UPSTREAM_API_KEY=sk-...
-
-# 可选：分别覆盖模型 / 音色
-STT_UPSTREAM_MODEL=whisper-1
-TTS_UPSTREAM_MODEL=tts-1
-TTS_UPSTREAM_VOICE=alloy
-```
-
-也可以只代理其中一类能力：
-
-```dotenv
-STT_UPSTREAM_BASE_URL=https://your-stt.example.com/v1
-STT_UPSTREAM_API_KEY=...
-TTS_UPSTREAM_BASE_URL=https://your-tts.example.com/v1
-TTS_UPSTREAM_API_KEY=...
-TTS_UPSTREAM_VOICE=zh-CN-XiaoxiaoNeural
-```
-
-上游地址带不带 `/v1` 都可以；`STT_UPSTREAM_BASE_URL` / `TTS_UPSTREAM_BASE_URL`
-优先于通用的 `VOICE_UPSTREAM_BASE_URL`。本地与远程可以混用：只配置 STT
-上游时，TTS 继续走本地 edge-tts，反过来也一样。
-
-如果网关本来就支持该上游，也可以跳过这个代理，直接把网关的
-`ASR_BASE_URL` / `TTS_BASE_URL` 指向远程地址，并在网关 `.env` 里填
-`ASR_API_KEY` / `TTS_API_KEY`。保留本代理的好处是：客户端和网关始终只连
-一个固定的本机地址，同时可以混用本地与远程、统一管理 Key 和端口。
-
-注意：网关按 **24kHz / 16bit / 单声道 WAV** 解析 TTS 响应，代理的上游
-TTS 也需要返回这种格式；OpenAI 官方 `tts-1` 的 wav 输出符合要求。
-STT 上游返回 OpenAI 风格的 `{"text": "..."}` 即可。
+LLM 上游在管理面板配置，或首次播种写入本地 SQLite（`voice.db`）；`voice.conf`
+只放监听端口 / 数据库 / 日志等基础设施，不再写任何 `*_UPSTREAM_*` 业务配置。
 
 ### 运行目录与依赖
 
@@ -342,7 +314,7 @@ STT 上游返回 OpenAI 风格的 `{"text": "..."}` 即可。
   需要 `ffmpeg`。安装脚本会尝试用 Homebrew / winget 安装；装不上时只影响
   本地 TTS，STT 不受影响。
 - 本地 STT 下载完模型后完全离线，输入只接受 WAV（网关上行会自动补 WAV 头）。
-- 代理模式不加载 sherpa-onnx / edge-tts，也不需要 ffmpeg 和模型。
+- `--proxy-only` 只装基础依赖，不下载 SenseVoice 模型 / ffmpeg；仅适合只用 LLM 的场景，本地 STT / TTS 仍需各自依赖。
 - `运行目录/install-mode` 记录安装脚本最后一次选择的模式，启动检查据此判断
   哪些依赖是预期缺失的；不要手动伪造，除非你清楚当前装了哪些能力。
 - 安装脚本本身只在用户显式执行时安装依赖；`voice.sh` / `voice.cmd` 的启动、
@@ -359,18 +331,18 @@ LLM_MODEL=gpt-4o-mini
 LLM_API_KEY=
 
 ASR_PROVIDER=whisper
-ASR_BASE_URL=http://127.0.0.1:9529/voide
+ASR_BASE_URL=http://127.0.0.1:9529/voice
 ASR_PARAMS={"language":"zh","sampleRate":16000}
 
 TTS_PROVIDER=edge
-TTS_BASE_URL=http://127.0.0.1:9529/voide
+TTS_BASE_URL=http://127.0.0.1:9529/voice
 TTS_PARAMS={"voice":"zh-CN-XiaoxiaoNeural"}
 ```
 
 `LLM_PROVIDER=openai` 走 `/llm/v1` 的纯转发代理；若要用本机 Ollama 原生
 `/api/chat`（保留 thinking），把 `LLM_PROVIDER` 改成 `ollama`、`LLM_BASE_URL`
 直接指向 `http://127.0.0.1:11434`，不经本服务。ASR / TTS 的 `BASE_URL`
-必须带 `/voide` 前缀。
+必须带 `/voice` 前缀。
 
 服务默认监听 `0.0.0.0`，如果跑在另一台机器，把 `127.0.0.1` 换成那台机器的局域网 IP；
 只在本机使用就把 `VOICE_HOST` 改成 `127.0.0.1`。
