@@ -1,4 +1,5 @@
 export { WebSocketTransport, resolveGatewayHttpBase } from './webSocketTransport'
+export { getGatewayWsUrl, isEmbeddedGateway } from './gatewayBootstrap'
 export type { AssistantTransport, ServerEvent } from './types'
 
 import { WebSocketTransport } from './webSocketTransport'

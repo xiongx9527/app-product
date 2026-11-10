@@ -54,6 +54,7 @@ node xiaoxiong-app/uni_app/scripts/package-android-offline.mjs \
 ```
 
 - `--node-lib` 指向 digidem android 包解压目录（结构 `bin/<abi>/libnode.so` + `include/node/`）；脚本递归找 `libnode.so`、按父目录名判 ABI。不提供则只接资产、APK 不含运行库（内嵌网关起不来）。
+- **`libnode.so` 还依赖共享 C++ 运行库 `libc++_shared.so`**：digidem Node 24 以共享 STL 链接，APK 必须把它也打进 `jniLibs/<abi>/`（NDK 路径 `<ndk>/toolchains/llvm/prebuilt/<host>/sysroot/usr/lib/<abi>/libc++_shared.so`）。漏掉会在 `System.loadLibrary("node")` 处 `UnsatisfiedLinkError`，`:gateway` 进程秒崩（见下方排查清单）。
 - `--no-gateway` 可退回纯 uni-app 资源接入；`--gateway-bundle` / `--gateway-cues` 可覆盖默认路径。
 - `assets/gateway/` 布局：`gateway.bundle.mjs`（顶层）+ `static/cues/*.mp3`（子目录，对应 `server.ts` 的 `CUE_DIR=<GATEWAY_HOME>/static/cues`）。`GatewayNodeService.extractAssets` 递归把整个目录拷到 `no_backup`。
 
@@ -67,13 +68,14 @@ node xiaoxiong-app/uni_app/scripts/package-android-offline.mjs \
 2. **Manifest**：`<application>` 内已声明 `<service android:name="com.xiaoxiong.assistant.gateway.GatewayNodeService" android:process=":gateway" android:exported="false"/>`（未碰 `dcloud_appkey`）。
 3. **JNI 桥源码**：`gateway_node_bridge.cpp` + `CMakeLists.txt` → `src/main/cpp/`；digidem `include/node/` 头（132 个）→ `src/main/cpp/include/node/`（编译期用）。
    - `CMakeLists.txt` 自包含：按 `${ANDROID_ABI}` 选 `../jniLibs/${ANDROID_ABI}/libnode.so`，用 IMPORTED target 链接，不依赖脚本注入变量/绝对路径。
-4. **build.gradle 条件式接线**：检测 SDK 是否装了 NDK+CMake 组件，**有才激活** `externalNativeBuild`（编 `libgatewaynode.so`）并设 `ndk.abiFilters` 到 3 个已有 ABI；**没有就跳过**，保证纯 Java/资源 APK 仍可编译。本机当前未装 NDK/CMake → 走跳过分支，`assembleDebug` BUILD SUCCESSFUL。装好组件：
+4. **build.gradle 条件式接线**：检测 SDK 是否装了 NDK+CMake 组件，**有才激活** `externalNativeBuild`（编 `libgatewaynode.so`）并设 `ndk.abiFilters` 到 3 个已有 ABI；**没有就跳过**，保证纯 Java/资源 APK 仍可编译。
    ```sh
-   sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"   # 之后重新 Sync/编译，无需改 build.gradle
+   sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"   # AGP 8.7.3 默认版本；之后重新 Sync/编译，无需改 build.gradle
    ```
-5. **仍待做**：App 启动时 `startService(new Intent(this, GatewayNodeService.class))`（当前没有启动点，属 `app-product-wake` 原生工程）；UI 进程读取 `.gateway_port` 后注入 `ws` URL；真实 appid/AppKey（装机运行必需）。
+5. **CMakeLists 必须 C++20**（`set(CMAKE_CXX_STANDARD 20)`）：digidem Node 24 的 `v8config.h` 硬性检查「C++20 or later required」，C++17 编译会直接失败（本机实测踩过）。
+6. **仍待做**：App 启动时 `startService(new Intent(this, GatewayNodeService.class))`（当前没有启动点，属 `app-product-wake` 原生工程）；UI 进程读取 `.gateway_port` 后注入 `ws` URL；真实 appid/AppKey（装机运行必需）。
 
-**验证（2026-11-10）**：`gradlew :simpleDemo:assembleDebug --offline` → BUILD SUCCESSFUL；产出 127M `simpleDemo-debug.apk`，内含 3 ABI `libnode.so`（arm64 87M / v7a 79M / x86_64 86M）、`assets/gateway/gateway.bundle.mjs`(2.0M)、5 个 cues。`gradlew tasks` 配置阶段打印「未装 NDK/CMake：跳过 JNI 桥编译」，确认条件式接线未误触发。
+**验证（2026-11-10，装 NDK 后）**：`sdkmanager` 装 NDK 27 + CMake 3.22.1 → 条件式接线自动激活 `externalNativeBuild`（`gradlew` 打印「NDK/CMake 就绪：已启用 JNI 桥编译」）。改 C++20 后 `gradlew :simpleDemo:assembleDebug --offline` → **BUILD SUCCESSFUL**，三 ABI `libgatewaynode.so`（arm64 1.9M / v7a 1.4M / x86_64 1.8M）产出。**JNI 链接验证**：`libgatewaynode.so` 的 `DT_NEEDED` 含 `libnode.so`、未决符号 `U _ZN4node5StartEiPPc` 由 libnode.so 以 `T` 导出提供、JNI 入口 `..._nativeStartNode` 三 ABI 均 `T` 导出且与 Java 包名匹配；APK 内 `libgatewaynode.so`(1.1M) + `libnode.so`(87M) + `gateway.bundle.mjs`(2.0M) + 5 cues 全部打包。详见文档 §15。
 
 ## iOS 集成（DCloud 离线 SDK `HBuilder-Hello`，需另行获取）
 
@@ -90,4 +92,5 @@ node xiaoxiong-app/uni_app/scripts/package-android-offline.mjs \
 - **Swift `node_start` 调用约定**：`@_silgen_name` 桥接到 C，argv 内存管理需实机/编译验证（本机无 iOS SDK 可编）。
 - **端口轮询超时/失败**处理：骨架为 60s 轮询，需补「启动失败」上报与客户端降级提示。
 - **node:sqlite 路径**：`config_store` 用 `no_backup` 目录建库（见 `db/client.ts`），首启确保父目录存在（bundle 已处理，勿重复建）。
+- **`libnode.so` 加载报 `UnsatisfiedLinkError: libc++_shared.so not found`**：`:gateway` 进程在 `static { System.loadLibrary("node") }` 处直接崩溃，ActivityManager 反复重启该 Service（logcat 可见 `Process com.xiaoxiong.assistant:gateway has died`）。**原因**：digidem Node 24 的 `libnode.so` 以**共享** C++ STL 链接，APK 未打包 `libc++_shared.so`。**修复**：从 NDK 对应 ABI 目录复制 `libc++_shared.so` 到 `src/main/jniLibs/<abi>/`（映射：arm64-v8a←aarch64-linux-android、armeabi-v7a←arm-linux-androideabi、x86_64←x86_64-linux-android），重新 `installDebug` 即过。**实测**（2026-11-10）：补完后模拟器 `emulator-5554` 上 Node 正常起在 `127.0.0.1:36001`，`GatewayNodeService` 写出 `gateway.url=ws://127.0.0.1:36001/ws`，`nc` 探活端口 OPEN；AppKey 已写入 manifest `dcloud_appkey`，启动即过 DCloud 校验。
 - **HTTPS 外部服务信任**：连外部 LLM/ASR/TTS 默认走 Node 内置 Mozilla 根证书；若需私有 CA 用 `NODE_EXTRA_CA_CERTS` 指 PEM。

@@ -256,7 +256,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>语音助手模型代理管理</title>
+<title data-i18n="语音助手模型代理管理">语音助手模型代理管理</title>
 <style>
   :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --fg:#e6e8ec; --mut:#9aa3b2;
           --acc:#4f8cff; --ok:#3ecf8e; --warn:#f5a623; --err:#ff5c5c; }
@@ -268,12 +268,15 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   header h1 { font-size:16px; margin:0; font-weight:600; }
   .who-wrap { display:flex; align-items:center; gap:12px; }
   main { max-width:920px; margin:0 auto; padding:20px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; transition:padding .15s ease; }
   .card h2 { font-size:14px; margin:0 0 12px; color:var(--mut); font-weight:600; text-transform:uppercase; letter-spacing:.04em; cursor:pointer; user-select:none; display:flex; justify-content:space-between; align-items:center; }
-  .card:not(#login) h2::after { content:'▾'; font-size:16px; line-height:1; color:var(--fg); opacity:.8; }
+  .card h2::after { content:'▾'; font-size:13px; line-height:1; color:var(--fg); opacity:.6; transition:transform .15s ease; }
+  .card#login h2 { cursor:default; }
+  .card#login h2::after { content:''; }
+  .card.collapsed { padding-top:12px; padding-bottom:12px; }
   .card.collapsed > *:not(h2) { display:none; }
   .card.collapsed > h2 { margin-bottom:0; }
-  .card.collapsed > h2::after { content:'▸'; }
+  .card.collapsed > h2::after { content:'▸'; opacity:.45; }
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
   button { background:var(--acc); color:#fff; border:0; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13px; }
   button.sec { background:#2a2f3a; color:var(--fg); }
@@ -337,13 +340,18 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.cfg-table tr.asr-builtin .badge, table.cfg-table tr.tts-builtin .badge { margin:0; }
   table.cfg-table td.env-cell { text-align:left; }
   table.cfg-table .env-req { color:var(--mut); font-size:11px; margin-top:3px; line-height:1.5; text-align:left; }
-  /* 模型子表：提供商拥有哪些模型（多选）、哪个是默认、逐个模型是否可用 */
-  .model-pick { min-width:180px; }
+  /* 模型子表：提供商拥有哪些模型（多选）、哪个是默认、逐个模型是否可用。
+     固定布局 + 定宽列：无论模型名长短，ollama / 自定义 两个子表内部列宽完全一致（已对齐）。 */
+  .model-pick { min-width:200px; }
   .model-pick .mp-tools { display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; align-items:center; }
-  table.model-sub { width:100%; border-collapse:collapse; }
-  table.model-sub th, table.model-sub td { border:1px solid var(--line); padding:2px 5px; font-size:11px; text-align:center; vertical-align:middle; white-space:nowrap; }
+  table.model-sub { width:100%; border-collapse:collapse; table-layout:fixed; }
+  table.model-sub th, table.model-sub td { border:1px solid var(--line); padding:2px 5px; font-size:11px; text-align:center; vertical-align:middle; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   table.model-sub th { background:#10141b; color:var(--mut); font-weight:600; }
-  table.model-sub td.mm { color:var(--fg); min-width:90px; word-break:normal; overflow-wrap:anywhere; }
+  table.model-sub th:nth-child(1) { width:24px; }   /* 勾选 */
+  table.model-sub th:nth-child(3) { width:42px; }   /* 默认 */
+  table.model-sub th:nth-child(4) { width:46px; }   /* 操作 */
+  table.model-sub th:nth-child(5) { width:54px; }   /* 状态 */
+  table.model-sub td.mm { color:var(--fg); }         /* 模型列自适应，过长省略号（与上方定宽列配合，两表列宽一致） */
   table.model-sub td.avail-cell { padding:2px 3px; }
   table.model-sub .mini { padding:2px 7px; font-size:11px; }
   /* 勾选/单选去掉浏览器默认外边距，否则在单元格里看着偏左不居中 */
@@ -364,48 +372,66 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .muted { color:var(--mut); }
   .m-prompt { background:#161b22; border:1px dashed var(--line); color:var(--mut); font-style:italic; }
   a { color:var(--acc); }
+  /* 全局接口调用 loading：全屏遮罩（不阻塞模态框，z-index 低于模态框 50），
+     居中转圈 + 文案；快速请求（<250ms）不闪遮罩。 */
+  #panelLoading { position:fixed; inset:0; z-index:40; display:none; align-items:center; justify-content:center;
+    background:rgba(8,10,14,.55); backdrop-filter:blur(1px); pointer-events:auto; }
+  #panelLoading.show { display:flex; }
+  #panelLoading .loading-box { display:flex; flex-direction:column; align-items:center; gap:12px;
+    background:rgba(20,23,31,.96); border:1px solid var(--line); border-radius:12px; padding:22px 32px;
+    color:var(--fg); font-size:13px; box-shadow:0 10px 40px rgba(0,0,0,.5); }
+  #panelLoading .spinner { width:30px; height:30px; border:3px solid rgba(205,211,222,.2);
+    border-top-color:var(--acc); border-radius:50%; animation:panel-spin .7s linear infinite; }
+  @keyframes panel-spin { to { transform:rotate(360deg); } }
+  /* 语言切换：顶部两个小按钮（中 | EN） */
+  .lang-switch { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .lang-switch .ls { background:#1b1f27; color:var(--mut); border:0; border-radius:0; padding:5px 10px;
+    font-size:12px; cursor:pointer; line-height:1; }
+  .lang-switch .ls + .ls { border-left:1px solid var(--line); }
+  .lang-switch .ls.active { background:var(--acc); color:#0b0d11; font-weight:600; }
 </style>
 </head>
 <body>
-<header><h1>语音助手模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><button class="sec" id="logout">退出登录</button></div></header>
+<header><h1 data-i18n="语音助手模型代理管理">语音助手模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="退出登录">退出登录</button></div></header>
 <main id="app"></main>
+<div id="panelLoading"><div class="loading-box"><span class="spinner"></span><span data-i18n="请求中…">请求中…</span></div></div>
 
 <div class="modal-mask" id="testModal">
   <div class="modal">
-    <h3 id="testModalTitle">模型测试</h3>
-    <label>协议</label>
+    <h3 id="testModalTitle" data-i18n="模型测试">模型测试</h3>
+    <label data-i18n="协议">协议</label>
     <select id="testModalProto"></select>
     <div class="hint" id="testModalProtoDesc" style="margin-top:4px"></div>
-    <label>鉴权（若推理接口开启了 API Key）</label>
-    <input id="testModalAuthKey" type="password" placeholder="可选：API Key" />
+    <label data-i18n="鉴权（若推理接口开启了 API Key）">鉴权（若推理接口开启了 API Key）</label>
+    <input id="testModalAuthKey" type="password" data-i18n-ph="可选：API Key" placeholder="可选：API Key" />
     <div id="testModalExtra"></div>
-    <label class="chk"><input type="checkbox" id="testModalStream" checked /> 流式（SSE）</label>
-    <div class="hint" style="margin-top:2px">开启后逐字返回；关闭则等待完整回复。</div>
-    <label class="chk"><input type="checkbox" id="testModalThinkMode" /> 思考模式（推理链）</label>
-    <div class="hint" style="margin-top:2px">关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。</div>
-    <div class="hint" style="margin-top:10px">提示词（固定，不可编辑）</div>
+    <label class="chk"><input type="checkbox" id="testModalStream" checked /> <span data-i18n="流式（SSE）">流式（SSE）</span></label>
+    <div class="hint" style="margin-top:2px" data-i18n="开启后逐字返回；关闭则等待完整回复。">开启后逐字返回；关闭则等待完整回复。</div>
+    <label class="chk"><input type="checkbox" id="testModalThinkMode" /> <span data-i18n="思考模式（推理链）">思考模式（推理链）</span></label>
+    <div class="hint" style="margin-top:2px" data-i18n="关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。">关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。</div>
+    <div class="hint" style="margin-top:10px" data-i18n="提示词（固定，不可编辑）">提示词（固定，不可编辑）</div>
     <pre class="m-prompt" id="testModalPrompt" style="margin-top:2px">请只回复 ok 两个字。</pre>
     <div id="testModalThinkWrap" hidden style="margin-top:10px">
-      <div class="think-head"><span class="muted">思考过程</span><button class="mini" type="button" id="testModalThinkToggle">折叠</button></div>
+      <div class="think-head"><span class="muted" data-i18n="思考过程">思考过程</span><button class="mini" type="button" id="testModalThinkToggle" data-i18n="折叠">折叠</button></div>
       <pre id="testModalThink" class="think"></pre>
     </div>
-    <div class="hint" style="margin-top:10px">回复</div>
-    <pre class="m-out" id="testModalOut" style="margin-top:2px">点击「测试」开始。</pre>
+    <div class="hint" style="margin-top:10px" data-i18n="回复">回复</div>
+    <pre class="m-out" id="testModalOut" style="margin-top:2px" data-i18n="回复将在这里显示。">回复将在这里显示。</pre>
     <div class="hint" id="testModalStatus" style="margin-top:8px"></div>
-    <div class="row" style="justify-content:flex-end;margin-top:12px; gap:8px"><button id="testModalRun">测试</button><button class="sec" id="testModalClose">关闭</button></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px; gap:8px"><button id="testModalRun" data-i18n="测试">测试</button><button class="sec" id="testModalClose" data-i18n="关闭">关闭</button></div>
   </div>
 </div>
 
 <div class="modal-mask" id="accModal">
   <div class="modal">
-    <h3 id="accModalTitle">编辑地址与密钥</h3>
-    <label>地址</label>
+    <h3 id="accModalTitle" data-i18n="编辑地址与密钥">编辑地址与密钥</h3>
+    <label data-i18n="地址">地址</label>
     <input id="accUrl" type="text" autocomplete="off" placeholder="https://..." />
-    <label>API Key</label>
-    <input id="accKey" type="password" autocomplete="off" placeholder="（留空=清空）" />
+    <label data-i18n="API Key">API Key</label>
+    <input id="accKey" type="password" autocomplete="off" data-i18n-ph="（留空=清空）" placeholder="（留空=清空）" />
     <div class="row" style="justify-content:flex-end;margin-top:16px; gap:8px">
-      <button class="sec" id="accCancel">取消</button>
-      <button id="accSave">保存</button>
+      <button class="sec" id="accCancel" data-i18n="取消">取消</button>
+      <button id="accSave" data-i18n="保存">保存</button>
     </div>
   </div>
 </div>
@@ -415,20 +441,211 @@ const ASR_SAMPLE_B64 = "__ASR_B64__";  // 内嵌的固定测试音频（mp3 base
 const api = (path, opts={}) => fetch(path, {credentials:'same-origin', ...opts});
 function el(html){ const d=document.createElement('div'); d.innerHTML=html; return d.firstElementChild; }
 
+/* ── i18n：只翻译界面文字（标题/按钮/标签/提示/状态），数据值（厂商名/模型名/配置键/音色分组/固定提示词）保持原样。
+   以中文原文为 key，zh-CN 为空（源串兜底），en 为译文。 ── */
+const I18N = {
+  'zh-CN': {},
+  'en': {
+    // ── 头部 / 弹框 / 静态 ──
+    '语音助手模型代理管理': 'Voice Assistant Model Proxy Admin',
+    '退出登录': 'Log out',
+    '模型测试': 'Model Test',
+    '协议': 'Protocol',
+    '鉴权（若推理接口开启了 API Key）': 'Auth (if the inference API requires an API Key)',
+    '可选：API Key': 'Optional: API Key',
+    '流式（SSE）': 'Streaming (SSE)',
+    '开启后逐字返回；关闭则等待完整回复。': 'On: tokens stream in; off: wait for the full reply.',
+    '思考模式（推理链）': 'Thinking mode (reasoning chain)',
+    '关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。': 'Off: the "thinking" box is hidden and the proxy sends vendor-native params via the X-Proxy-Think header (e.g. ollama think=false) to truly disable reasoning; on: the reasoning is shown.',
+    '提示词（固定，不可编辑）': 'Prompt (fixed, not editable)',
+    '思考过程': 'Thinking',
+    '折叠': 'Collapse',
+    '回复': 'Reply',
+    '回复将在这里显示。': 'Reply will appear here.',
+    '测试': 'Test',
+    '关闭': 'Close',
+    '编辑地址与密钥': 'Edit URL & Key',
+    '地址': 'URL',
+    'API Key': 'API Key',
+    '（留空=清空）': '(leave blank to clear)',
+    '取消': 'Cancel',
+    '保存': 'Save',
+    '请求中…': 'Loading…',
+    // ── 登录 ──
+    '登录': 'Login',
+    '账号': 'Account',
+    '账号：': 'Account: ',
+    '密码': 'Password',
+    '登录失败': 'Login failed',
+    // ── 配置卡片 ──
+    '（留空则不修改）': '(blank = no change)',
+    '配置': 'Config',
+    '安全': 'Security',
+    '加载中…': 'Loading…',
+    '保存中…': 'Saving…',
+    '失败：': 'Failed: ',
+    '已保存': 'Saved',
+    '（已同步远端）': '(synced to remote)',
+    '错误：': 'Error: ',
+    // ── LLM 表格 ──
+    '模型': 'Model',
+    '默认': 'Default',
+    '操作': 'Action',
+    '状态': 'Status',
+    '可用': 'Available',
+    '不可用': 'Unavailable',
+    '未测': 'Not tested',
+    '选入提供商': 'Include in provider',
+    '默认模型': 'Default model',
+    '测可用性': 'Test availability',
+    '测': 'Test',
+    '；是否流式由下方「流式」勾选框单独控制，与协议无关。': '; streaming is controlled separately by the "Streaming" checkbox below and is independent of the protocol.',
+    '模型测试：': 'Model Test: ',
+    '编辑：': 'Edit: ',
+    '（空）': '(empty)',
+    '加载失败 ': 'Load failed ',
+    '提供商': 'Provider',
+    '默认供应商': 'Default provider',
+    '刷新该提供商的模型列表': 'Refresh this provider\'s model list',
+    '刷新中…': 'Refreshing…',
+    // ── ASR / TTS 内置表格 ──
+    '依赖环境': 'Dependencies',
+    '内置模型（离线推理，无需外部服务）': 'Built-in model (offline inference, no external service)',
+    '模型文件：model.int8.onnx + tokens.txt（放在 ~/.app-product/voice/models/sensevoice/，约 240MB，由 install-voice 下载）': 'Model files: model.int8.onnx + tokens.txt (place under ~/.app-product/voice/models/sensevoice/, ~240MB, downloaded by install-voice)',
+    '测试可用': 'Test availability',
+    '当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。': 'ASR is fixed to the built-in model; whether it works depends on the runtime (click "Test availability" to verify on demand); external upstreams will be added per vendor later.',
+    '正在真实加载内置模型并跑一次推理…': 'Loading the built-in model and running one inference…',
+    '模型文件缺失': 'Model file missing',
+    '依赖缺失': 'Dependency missing',
+    '模型加载或推理失败': 'Model load or inference failed',
+    '检测能力未注入': 'Detection capability not injected',
+    '检测异常': 'Detection exception',
+    '内置可用：模型加载与推理均正常': 'Built-in OK: model loads and infers normally',
+    '内置不可用：': 'Built-in unavailable: ',
+    '检测失败': 'detection failed',
+    '内置不可用：请求失败 ': 'Built-in unavailable: request failed ',
+    '内置合成（edge-tts 在线服务）': 'Built-in synthesis (edge-tts online service)',
+    '需联网访问微软语音服务，无需本地模型文件': 'Requires network access to Microsoft\'s speech service; no local model file needed',
+    'ffmpeg：wav 输出需要（由 install-voice 安装）': 'ffmpeg: required for wav output (installed by install-voice)',
+    '当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。': 'TTS is fixed to built-in edge-tts; whether it works depends on the runtime (click "Test availability" to verify on demand); external upstreams will be added per vendor later.',
+    '正在按配置合成一句…': 'Synthesizing one sentence per config…',
+    '可用：合成成功': 'Available: synthesis succeeded',
+    '不可用：': 'Unavailable: ',
+    '关闭（默认）': 'Off (default)',
+    '开启': 'On',
+    '开启后 /llm 与 /voice 数据接口须持有效 Key；/health 与管理面板不受影响': 'On: /llm and /voice data APIs require a valid Key; /health and the admin panel are unaffected',
+    '一行一个 Key；或填 auto 自动生成并写入文件。留空则不修改': 'One Key per line; or fill "auto" to auto-generate and write to file. Blank = no change',
+    '一行一个 IP 或 CIDR（如 192.168.1.0/24）。留空=不限制来源': 'One IP or CIDR per line (e.g. 192.168.1.0/24). Blank = no source restriction',
+    // ── 自定义请求头 / body ──
+    '自定义请求头（仅 LLM 对话请求透传到上游；不保存，本次填写本次生效）': 'Custom request headers (forwarded to upstream only for LLM chat; not saved, applies to this session)',
+    'Header 名': 'Header name',
+    '值': 'Value',
+    '+ 添加': '+ Add',
+    '删除': 'Delete',
+    '自定义 body 参数（作为额外字段透传到上游；不保存，本次填写本次生效）': 'Custom body params (forwarded to upstream as extra fields; not saved, applies to this session)',
+    '字段名': 'Field name',
+    // ── 对话测试 / 状态 ──
+    '请求中…': 'Loading…',
+    '失败 ': 'Failed ',
+    '完成': 'Done',
+    '已停止': 'Stopped',
+    // ── 测试卡片 ──
+    '对话 LLM': 'Chat LLM',
+    '语音识别 ASR': 'Speech Recognition ASR',
+    '语音合成 TTS': 'Speech Synthesis TTS',
+    '（默认路由）': '(default route)',
+    '模型（先选提供商，再选该提供商下的模型）': 'Model (pick a provider first, then a model under it)',
+    '（请先选提供商）': '(pick a provider first)',
+    '回复将在这里流式显示。': 'Reply will stream here.',
+    '发送': 'Send',
+    '停止': 'Stop',
+    '点录音可把上面的试听音频替换成你录的，识别也用替换后的；「还原」恢复内置样本。': 'Tap record to replace the sample audio with yours; recognition uses the replaced clip; "Restore" reverts to the built-in sample.',
+    '录音': 'Record',
+    '还原': 'Restore',
+    '识别结果将显示在这里。': 'Recognition result will appear here.',
+    '识别': 'Recognize',
+    '文本': 'Text',
+    '音色': 'Voice',
+    '合成': 'Synthesize',
+    // ── 日志 ──
+    '日志（voice.log）': 'Logs (voice.log)',
+    '刷新日志': 'Refresh logs',
+    '最近 200 行': 'Last 200 lines',
+    '展开': 'Expand',
+    '音色说明：': 'Voice note: ',
+    '　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502': ' · Params: voice language must match the text (incl. dialects: Taiwanese/Cantonese need matching text), otherwise upstream returns 502',
+    '合成中…': 'Synthesizing…',
+    '（沿用上游默认）': '(use upstream default)',
+    '已替换试听音频（识别将用这段）': 'Sample audio replaced (recognition will use this clip)',
+    '录音中…': 'Recording…',
+    '无法录音：': 'Cannot record: ',
+    '已还原内置样本': 'Reverted to built-in sample',
+    '未内嵌音频': 'No embedded audio',
+    '识别中…': 'Recognizing…',
+    '(空)': '(empty)',
+    '加载失败': 'Load failed',
+    // ── 配置标签（CFG_LABEL，经 t() 解析）──
+    'LLM 启用（auto/on/off）': 'LLM enabled (auto/on/off)',
+    '上游地址（OpenAI 兼容）': 'Upstream URL (OpenAI-compatible)',
+    'API Key（留空=不修改）': 'API Key (blank = no change)',
+    '模型名': 'Model name',
+    '协议（openai/ollama/...）': 'Protocol (openai/ollama/...)',
+    '厂商（ollama/deepseek/...）': 'Vendor (ollama/deepseek/...)',
+    'TTS 上游地址（留空走内置 edge-tts）': 'TTS upstream URL (blank = built-in edge-tts)',
+    'TTS 上游 Key（留空用共享）': 'TTS upstream Key (blank = shared)',
+    '默认音色': 'Default voice',
+    'TTS 模型名（可选）': 'TTS model name (optional)',
+    'TTS 专属地址（留空用共享）': 'TTS dedicated URL (blank = shared)',
+    'TTS 专属 Key（留空用共享）': 'TTS dedicated Key (blank = shared)',
+    'TTS 兜底音色': 'TTS fallback voice',
+    '是否启用 API-Key 鉴权': 'Enable API-Key auth',
+    'API Key 列表（一行一个；填 auto 自动生成）': 'API Key list (one per line; fill "auto" to auto-generate)',
+    'IP 白名单（一行一个 IP 或 CIDR；留空=不限制）': 'IP allowlist (one IP or CIDR per line; blank = no restriction)',
+    // ── 线协议说明（PROTOCOL_DESC，经 t() 解析）──
+    'OpenAI Chat Completions 线协议（/v1/chat/completions，deepseek / 通义等大多兼容）': 'OpenAI Chat Completions wire protocol (/v1/chat/completions, compatible with deepseek / Qwen etc.)',
+    'Azure OpenAI（路径带 /openai/deployments/{model}，需 api-version）': 'Azure OpenAI (path includes /openai/deployments/{model}, requires api-version)',
+    'OpenAI Responses API（/v1/responses）': 'OpenAI Responses API (/v1/responses)',
+    'Anthropic Messages（/v1/messages，请求与流式响应双向翻译）': 'Anthropic Messages (/v1/messages, request and streamed response are bidirectionally translated)',
+    'Google Gemini（generateContent / streamGenerateContent，alt=sse）': 'Google Gemini (generateContent / streamGenerateContent, alt=sse)',
+  }
+};
+let curLang = localStorage.getItem('admin_lang') || 'zh-CN';
+const t = (zh) => (I18N[curLang] && I18N[curLang][zh]) || zh;
+function applyStaticI18n(){
+  document.querySelectorAll('[data-i18n]').forEach(e=>{ e.textContent = t(e.getAttribute('data-i18n')); });
+  document.querySelectorAll('[data-i18n-ph]').forEach(e=>{ e.placeholder = t(e.getAttribute('data-i18n-ph')); });
+}
+function setLang(l){
+  curLang = (l==='en') ? 'en' : 'zh-CN';
+  localStorage.setItem('admin_lang', curLang);
+  document.documentElement.lang = curLang;
+  document.querySelectorAll('.lang-switch .ls').forEach(b=> b.classList.toggle('active', b.dataset.lang===curLang));
+  applyStaticI18n();
+  // 动态卡片（renderDashboard 内）经 t() 渲染，切换后整体重建即可刷新
+  const app=document.getElementById('app');
+  if(app && app.children.length) renderDashboard();
+}
+document.documentElement.lang = curLang;
+document.querySelectorAll('.lang-switch .ls').forEach(b=>{
+  b.classList.toggle('active', b.dataset.lang===curLang);
+  b.addEventListener('click', ()=> setLang(b.dataset.lang));
+});
+applyStaticI18n();
+
 async function boot(){
   const me = await api('/admin/api/me').then(r=>r.ok?r.json():null);
   if(!me || !me.authenticated){ renderLogin(); document.getElementById('logout').style.display='none'; }
-  else { document.getElementById('who').textContent = '账号：'+me.user; document.getElementById('logout').style.display=''; renderDashboard(); }
+  else { document.getElementById('who').textContent = t('账号：')+me.user; document.getElementById('logout').style.display=''; renderDashboard(); }
 }
 
 function renderLogin(){
   document.getElementById('app').innerHTML = '';
   const card = el(`<div class="card" id="login">
-    <h2>登录</h2>
-    <label>账号</label><input type="text" id="u" autocomplete="username" />
-    <label>密码</label><input type="password" id="p" autocomplete="current-password" />
+    <h2>${t('登录')}</h2>
+    <label>${t('账号')}</label><input type="text" id="u" autocomplete="username" />
+    <label>${t('密码')}</label><input type="password" id="p" autocomplete="current-password" />
     <div class="err" id="e"></div>
-    <div class="row" style="margin-top:12px"><button id="go">登录</button></div>
+    <div class="row" style="margin-top:12px"><button id="go">${t('登录')}</button></div>
   </div>`);
   document.getElementById('app').appendChild(card);
   const submit = async ()=>{
@@ -436,7 +653,7 @@ function renderLogin(){
       headers:{'content-type':'application/x-www-form-urlencoded'},
       body:`user=${encodeURIComponent(document.getElementById('u').value)}&password=${encodeURIComponent(document.getElementById('p').value)}`});
     if(r.ok){ boot(); }
-    else { document.getElementById('e').textContent = (await r.json()).detail || '登录失败'; }
+    else { document.getElementById('e').textContent = (await r.json()).detail || t('登录失败'); }
   };
   card.querySelector('#go').onclick = submit;
   card.querySelector('#p').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
@@ -463,25 +680,25 @@ let cfgOrig = {};
 
 function buildConfigCard(){
   const fields = (id,keys)=> keys.map(k=>{
-    if(k==='LLM_ENABLED') return `<label>${CFG_LABEL[k]}</label><select id="cfg_${k}"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select>`;
+    if(k==='LLM_ENABLED') return `<label>${t(CFG_LABEL[k]||k)}</label><select id="cfg_${k}"><option value="auto">auto</option><option value="on">on</option><option value="off">off</option></select>`;
     const secret = isSecret(k);
-    return `<label>${CFG_LABEL[k]||k}</label><input id="cfg_${k}"${secret?' type="password" placeholder="（留空则不修改）"':''} />`;
-  }).join('') + `<div class="row" style="margin-top:12px"><button id="cfgSave_${id}">保存</button><span class="hint" id="cfgStat_${id}" style="margin-left:10px"></span></div>`;
-  return el(`<div class="card"><h2>配置</h2>
+    return `<label>${t(CFG_LABEL[k]||k)}</label><input id="cfg_${k}"${secret?` type="password" placeholder="${t('（留空则不修改）')}"`:''} />`;
+  }).join('') + `<div class="row" style="margin-top:12px"><button id="cfgSave_${id}">${t('保存')}</button><span class="hint" id="cfgStat_${id}" style="margin-left:10px"></span></div>`;
+  return el(`<div class="card collapsed" id="cfgCard"><h2>${t('配置')}</h2>
     <div class="tabs" id="cfgTabs">
       <button class="tab active" data-ctab="llm">LLM</button>
       <button class="tab" data-ctab="asr">ASR</button>
       <button class="tab" data-ctab="tts">TTS</button>
-      <button class="tab" data-ctab="sec">安全</button>
+      <button class="tab" data-ctab="sec">${t('安全')}</button>
     </div>
-    <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">加载中…</div><div class="row" style="margin-top:12px"><button id="cfgSave_llm">保存</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
+    <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">${t('加载中…')}</div><div class="row" style="margin-top:12px"><button id="cfgSave_llm">${t('保存')}</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
     <div id="c-asr" class="cfgpane" hidden>
-      <div id="asrTableWrap" class="hint">加载中…</div>
+      <div id="asrTableWrap" class="hint">${t('加载中…')}</div>
     </div>
     <div id="c-tts" class="cfgpane" hidden>
-      <div id="ttsTableWrap" class="hint">加载中…</div>
+      <div id="ttsTableWrap" class="hint">${t('加载中…')}</div>
     </div>
-    <div id="c-sec" class="cfgpane" hidden><div id="secWrap"></div><div class="row" style="margin-top:12px"><button id="cfgSave_sec">保存</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div></div>
+    <div id="c-sec" class="cfgpane" hidden><div id="secWrap"></div><div class="row" style="margin-top:12px"><button id="cfgSave_sec">${t('保存')}</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div></div>
   </div>`);
 }
 
@@ -511,14 +728,14 @@ function wireConfig(){
       ['llm','asr','tts','sec'].forEach(p=>{ const e=document.getElementById('c-'+p); if(e) e.hidden=(t.dataset.ctab!==p); }); };
   });
   const postConfig = async (patch, statId)=>{
-    const stat=document.getElementById(statId); stat.className='hint'; stat.textContent='保存中…';
+    const stat=document.getElementById(statId); stat.className='hint'; stat.textContent=t('保存中…');
     try{
       const r=await fetch('/admin/api/config',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
       const d=await r.json().catch(()=>({}));
-      if(!r.ok){ stat.className='err'; stat.textContent='失败：'+(d.detail||r.status); return; }
-      stat.className='hint'; stat.textContent='已保存'+(d.remote_push&&d.remote_push.ok?'（已同步远端）':'');
+      if(!r.ok){ stat.className='err'; stat.textContent=t('失败：')+(d.detail||r.status); return; }
+      stat.className='hint'; stat.textContent=t('已保存')+(d.remote_push&&d.remote_push.ok?t('（已同步远端）'):'');
       loadConfig();
-    }catch(e){ stat.className='err'; stat.textContent='错误：'+e.message; }
+    }catch(e){ stat.className='err'; stat.textContent=t('错误：')+e.message; }
   };
   const save = async (id,keys,statId)=>{
     const patch={}; keys.forEach(k=>{ const v=cfgVal(k); if(v!==undefined && v!==null) patch[k]=v; });
@@ -570,19 +787,19 @@ function buildModelPick(gi){
   if(!g._avail) g._avail={};   // 各模型最近一次测试结果：'ok' / 'err'
   if(g._def===undefined) g._def = (g.vendor===llmDefVendor && llmDefModel && g.models.includes(llmDefModel)) ? llmDefModel : (g.models[0]||'');
   let html='<div class="model-pick">';
-  html+='<table class="model-sub"><thead><tr><th></th><th>模型</th><th>默认</th><th>操作</th><th>状态</th></tr></thead><tbody>';
+  html+='<table class="model-sub"><thead><tr><th></th><th>'+t('模型')+'</th><th>'+t('默认')+'</th><th>'+t('操作')+'</th><th>'+t('状态')+'</th></tr></thead><tbody>';
   g._cands.forEach(m=>{
     const checked=g._sel.has(m)?'checked':'';
     const isDef=g._def===m?'checked':'';
     const av=g._avail[m];
-    const badge = av==='ok' ? '<span class="b-ok">可用</span>'
-                : av==='err' ? '<span class="b-err">不可用</span>'
-                : '<span class="b-mut">未测</span>';
+    const badge = av==='ok' ? '<span class="b-ok">'+t('可用')+'</span>'
+                : av==='err' ? '<span class="b-err">'+t('不可用')+'</span>'
+                : '<span class="b-mut">'+t('未测')+'</span>';
     html+=`<tr>`
-      +`<td><input type="checkbox" class="lp-model" data-g="${gi}" data-m="${escapeAttr(m)}" title="选入提供商" ${checked}/></td>`
-      +`<td class="mm">${escapeHtml(m)}</td>`
-      +`<td><input type="radio" name="lpDef_${gi}" value="${escapeAttr(m)}" title="默认模型" ${isDef}/></td>`
-      +`<td><button class="mini" data-test="${gi}" data-m="${escapeAttr(m)}" title="测可用性">测</button></td>`
+      +`<td><input type="checkbox" class="lp-model" data-g="${gi}" data-m="${escapeAttr(m)}" title="${t('选入提供商')}" ${checked}/></td>`
+      +`<td class="mm" title="${escapeAttr(m)}">${escapeHtml(m)}</td>`
+      +`<td><input type="radio" name="lpDef_${gi}" value="${escapeAttr(m)}" title="${t('默认模型')}" ${isDef}/></td>`
+      +`<td><button class="mini" data-test="${gi}" data-m="${escapeAttr(m)}" title="${t('测可用性')}">${t('测')}</button></td>`
       +`<td class="avail-cell">${badge}</td>`
       +`</tr>`;
   });
@@ -634,7 +851,7 @@ const PROTOCOL_DESC = {
   'anthropic_messages': 'Anthropic Messages（/v1/messages，请求与流式响应双向翻译）',
   'gemini': 'Google Gemini（generateContent / streamGenerateContent，alt=sse）',
 };
-const protoDescText = (v)=> (PROTOCOL_DESC[v]||'') + '；是否流式由下方「流式」勾选框单独控制，与协议无关。';
+const protoDescText = (v)=> t(PROTOCOL_DESC[v]||'') + t('；是否流式由下方「流式」勾选框单独控制，与协议无关。');
 let testModalG=null, testModalM=null, testModalGi=-1;
 function openTestModal(gi, m){
   const g=llmGroups[gi];
@@ -644,7 +861,7 @@ function openTestModal(gi, m){
   const stat=document.getElementById('testModalStatus');
   if(!mask||!title||!out||!stat||!g) return;
   testModalG=g; testModalM=m; testModalGi=gi;
-  title.textContent = `模型测试：${g.vendor} / ${m}`;
+  title.textContent = t('模型测试：') + g.vendor + ' / ' + m;
   const defProto=(g.accounts[0] && g.accounts[0].protocol) || g.protocol || '';
   const protoSel=document.getElementById('testModalProto');
   protoSel.innerHTML = LLM_PROTOCOLS.map(p=>`<option value="${p}"${p===defProto?' selected':''}>${p}</option>`).join('');
@@ -655,10 +872,10 @@ function openTestModal(gi, m){
   stat.textContent=''; stat.className='hint';
   const tw=document.getElementById('testModalThinkWrap');
   if(tw){ tw.hidden=true; tw.classList.remove('collapsed'); }
-  const tToggle=document.getElementById('testModalThinkToggle'); if(tToggle) tToggle.textContent='折叠';
+  const tToggle=document.getElementById('testModalThinkToggle'); if(tToggle) tToggle.textContent=t('折叠');
   const tk=document.getElementById('testModalThink'); if(tk) tk.textContent='';
   const pm=document.getElementById('testModalPrompt'); if(pm) pm.textContent=TEST_PROMPT;  // 提示词框固定显示
-  out.textContent='点击「测试」开始。';  // 回复框每次打开重置
+  out.textContent=t('回复将在这里显示。');  // 回复框每次打开重置（占位提示，不显示为回复内容）
   mask.classList.add('show');
 }
 function runModalTest(){
@@ -676,7 +893,7 @@ function runModalTest(){
     statusEl: stat, outEl: out,
     thinkEl: document.getElementById('testModalThink'), thinkWrapEl: document.getElementById('testModalThinkWrap'),
     onDone:(ok)=>{
-      stat.textContent = ok ? '可用' : '不可用'; stat.className = ok ? 'hint' : 'err';
+      stat.textContent = ok ? t('可用') : t('不可用'); stat.className = ok ? 'hint' : 'err';
       // 记录测试结果到该模型，刷新子表徽标（可用/不可用/未测）
       if(g && m){ g._avail[m] = ok ? 'ok':'err'; if(gi>=0) refreshModelCell(gi); }
     } };
@@ -689,7 +906,7 @@ function openAccModal(gi, ai){
   const g=llmGroups[gi], a=g && g.accounts[ai];
   if(!a) return;
   editAccGi=gi; editAccAi=ai;
-  document.getElementById('accModalTitle').textContent = `编辑：${g.vendor}（账号 ${ai+1}）`;
+  document.getElementById('accModalTitle').textContent = t('编辑：') + g.vendor + '（' + t('账号') + ' ' + (ai+1) + '）';
   document.getElementById('accUrl').value = a.base_url||'';
   document.getElementById('accKey').value = a.api_key||'';
   document.getElementById('accModal').classList.add('show');
@@ -698,7 +915,7 @@ function refreshAccCells(gi, ai){
   const a=llmGroups[gi] && llmGroups[gi].accounts[ai]; if(!a) return;
   document.querySelectorAll(`#llmTableWrap .acc-cell[data-g="${gi}"][data-a="${ai}"]`).forEach(td=>{
     const key=td.querySelector('.acc-key');
-    if(key) key.textContent = a.api_key ? '••••••' : '（空）';
+    if(key) key.textContent = a.api_key ? '••••••' : t('（空）');
     else { const u=td.querySelector('.acc-url'); if(u) u.textContent = a.base_url||''; }
   });
 }
@@ -715,23 +932,28 @@ function saveAccModal(){
 async function renderLlmTable(){
   const wrap = document.getElementById('llmTableWrap');
   if(!wrap) return;
-  wrap.className='hint'; wrap.textContent='加载中…';
+  wrap.className='hint'; wrap.textContent=t('加载中…');
   try{
     const r = await fetch('/admin/api/llm-pool',{credentials:'same-origin'});
-    if(!r.ok){ wrap.className='err'; wrap.textContent='加载失败 '+r.status; return; }
+    if(!r.ok){ wrap.className='err'; wrap.textContent=t('加载失败 ')+r.status; return; }
     const data = await r.json();
-    llmGroups = data.groups||[];
+    // LLM 固定两个提供商：ollama（预填本机地址）+ 自定义（留空由用户填写）。
+    // 池里已有的数据按 vendor 合并进这两行；没有就给默认行。其余 vendor 不展示、保存时不再写回。
+    const FIXED_VENDORS = ['ollama', '自定义'];
+    const byV = {};
+    (data.groups||[]).forEach(g => { byV[g.vendor] = g; });
+    llmGroups = FIXED_VENDORS.map(v => {
+      const g = byV[v];
+      if (g) return { vendor: v, protocol: g.protocol||'', models: g.models||[], accounts: g.accounts||[] };
+      if (v === 'ollama') return { vendor:'ollama', protocol:'openai_chat_completions', models:[], accounts:[{ base_url:'http://127.0.0.1:11434', api_key:'' }] };
+      return { vendor:'自定义', protocol:'openai_chat_completions', models:[], accounts:[{ base_url:'', api_key:'' }] };
+    });
     // 每个账号补上协议字段（后端只给组级 protocol），默认沿用组协议
     llmGroups.forEach(g=> g.accounts.forEach(a=>{ if(!('protocol' in a)) a.protocol = g.protocol; }));
     llmDefVendor = data.default_vendor||'';
     llmDefModel  = data.default_model||'';
-    if(!llmGroups.length){
-      wrap.className='hint';
-      wrap.innerHTML='尚未配置 LLM 上游池。';
-      return;
-    }
     let html = '<table class="cfg-table"><thead><tr>'
-      + '<th>默认</th><th>提供商</th><th>地址</th><th>API Key</th><th>模型</th>'
+      + '<th>'+t('默认')+'</th><th>'+t('提供商')+'</th><th>'+t('地址')+'</th><th>API Key</th><th>'+t('模型')+'</th>'
       + '</tr></thead><tbody>';
     llmGroups.forEach((g, gi)=>{
       const n = g.accounts.length;
@@ -739,11 +961,11 @@ async function renderLlmTable(){
         const first = ai===0;
         html += '<tr>';
         if(first){
-          html += `<td rowspan="${n}" class="row-act"><input type="radio" name="lpDefault" value="${escapeAttr(g.vendor)}" ${g.vendor===llmDefVendor?'checked':''} title="默认供应商" /></td>`;
-          html += `<td class="prov-cell" rowspan="${n}"><b>${escapeHtml(g.vendor)}</b> <button class="mini" id="lpRefreshAll" title="刷新所有提供商的模型列表">↻</button></td>`;
+          html += `<td rowspan="${n}" class="row-act"><input type="radio" name="lpDefault" value="${escapeAttr(g.vendor)}" ${g.vendor===llmDefVendor?'checked':''} title="${t('默认供应商')}" /></td>`;
+          html += `<td class="prov-cell" rowspan="${n}"><b>${escapeHtml(g.vendor)}</b> <button class="mini lp-refresh" data-g="${gi}" title="${t('刷新该提供商的模型列表')}">↻</button></td>`;
         }
         html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-url">${escapeHtml(a.base_url||'')}</span></td>`;
-        html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-key">${a.api_key?'••••••':'（空）'}</span></td>`;
+        html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-key">${a.api_key?'••••••':t('（空）')}</span></td>`;
         if(first){
           html += `<td class="lp-modelcell" rowspan="${n}" data-g="${gi}">${buildModelPick(gi)}</td>`;
         }
@@ -754,26 +976,28 @@ async function renderLlmTable(){
     wrap.className=''; wrap.innerHTML = html;
     llmGroups.forEach((g, gi)=> bindModelCell(gi));
     wrap.querySelectorAll('.acc-cell').forEach(td=> td.onclick=()=> openAccModal(+td.dataset.g, +td.dataset.a));
-    const rb=document.getElementById('lpRefreshAll'); if(rb) rb.onclick=refreshAllModels;
-  }catch(e){ wrap.className='err'; wrap.textContent='错误：'+e.message; }
+    wrap.querySelectorAll('.lp-refresh').forEach(b=> b.onclick=()=> refreshProviderModels(+b.dataset.g));
+  }catch(e){ wrap.className='err'; wrap.textContent=t('错误：')+e.message; }
 }
 
-// 刷新所有提供商的模型列表（保留默认模型状态），按钮仅用图标
-async function refreshAllModels(){
-  const btn=document.getElementById('lpRefreshAll');
-  if(btn){ btn.disabled=true; btn.textContent='刷新中…'; }
-  await Promise.all(llmGroups.map(async (g,gi)=>{
+// 只刷新指定提供商（gi）的模型列表；不刷新其它行，避免误刷无关上游
+async function refreshProviderModels(gi){
+  const btn=document.querySelector(`.lp-refresh[data-g="${gi}"]`);
+  if(btn){ btn.disabled=true; btn.textContent=t('刷新中…'); }
+  try{
+    const g=llmGroups[gi];
+    if(!g){ return; }
     const models=await probeProviderModels(gi);
-    if(models){ models.forEach(m=>{ if(!g._cands.includes(m)) g._cands.push(m); }); }
-  }));
-  llmGroups.forEach((g, gi)=> refreshModelCell(gi));
-  if(btn){ btn.disabled=false; btn.textContent='↻'; }
+    if(models){ models.forEach(m=>{ if(!g._cands.includes(m)) g._cands.push(m); }); refreshModelCell(gi); }
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='↻'; }
+  }
 }
 
 async function saveLlmTable(){
   const wrap=document.getElementById('llmTableWrap');
   const stat=document.getElementById('cfgStat_llm'); if(!stat) return;
-  stat.className='hint'; stat.textContent='保存中…';
+  stat.className='hint'; stat.textContent=t('保存中…');
   try{
     const defRadio=document.querySelector('input[name=lpDefault]:checked');
     const defaultVendor = defRadio ? defRadio.value : '';
@@ -784,9 +1008,14 @@ async function saveLlmTable(){
       g.accounts.forEach((a, ai)=>{
         const base_url = a.base_url||'';
         const api_key  = a.api_key||'';
-        sel.forEach(m=>{
-          pool.push({ vendor:g.vendor, protocol:a.protocol||g.protocol||undefined, model:m, base_url, api_key });
-        });
+        if(sel.length){
+          sel.forEach(m=>{
+            pool.push({ vendor:g.vendor, protocol:a.protocol||g.protocol||undefined, model:m, base_url, api_key });
+          });
+        } else if(base_url){
+          // 没勾选模型也要把地址/Key 落库，否则刷新后地址丢失（模型留空，下次刷新再补）
+          pool.push({ vendor:g.vendor, protocol:a.protocol||g.protocol||undefined, model:'', base_url, api_key });
+        }
       });
     });
     const patch={ LLM_UPSTREAM_POOL: JSON.stringify(pool) };
@@ -798,10 +1027,10 @@ async function saveLlmTable(){
     }
     const r=await fetch('/admin/api/config',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
     const d=await r.json().catch(()=>({}));
-    if(!r.ok){ stat.className='err'; stat.textContent='失败：'+(d.detail||r.status); return; }
-    stat.className='hint'; stat.textContent='已保存'+(d.remote_push&&d.remote_push.ok?'（已同步远端）':'');
+    if(!r.ok){ stat.className='err'; stat.textContent=t('失败：')+(d.detail||r.status); return; }
+    stat.className='hint'; stat.textContent=t('已保存')+(d.remote_push&&d.remote_push.ok?t('（已同步远端）'):'');
     renderLlmTable();
-  }catch(e){ stat.className='err'; stat.textContent='错误：'+e.message; }
+  }catch(e){ stat.className='err'; stat.textContent=t('错误：')+e.message; }
 }
 
 // ── ASR 配置（固定使用内置模型，取决于运行环境；只展示内置一行 + 按需「测试可用」）──
@@ -815,24 +1044,24 @@ let ttsBuiltinDetail = '';    // TTS 内置检测的补充说明，在表格下�
 function paintAsrTable(){
   const wrap=document.getElementById('asrTableWrap');
   if(!wrap) return;
-  const bAvail = asrBuiltinAvail==='ok' ? '<span class="badge b-ok">可用</span>'
-               : asrBuiltinAvail==='err' ? '<span class="badge b-err">不可用</span>'
-               : '<span class="badge b-mut">未测</span>';
+  const bAvail = asrBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('可用')+'</span>'
+               : asrBuiltinAvail==='err' ? '<span class="badge b-err">'+t('不可用')+'</span>'
+               : '<span class="badge b-mut">'+t('未测')+'</span>';
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>提供商</th><th>依赖环境</th><th>状态</th><th>操作</th>'
+    + '<th>'+t('提供商')+'</th><th>'+t('依赖环境')+'</th><th>'+t('状态')+'</th><th>'+t('操作')+'</th>'
     + '</tr></thead><tbody>';
   // 固定只展示内置一行：写清依赖环境要求、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
   html += `<tr class="asr-builtin" data-builtin="1">
-    <td class="prov-cell"><b>${ASR_BUILTIN}</b></td>
+    <td class="prov-cell"><b>${t(ASR_BUILTIN)}</b></td>
     <td class="env-cell">
-      <span class="muted">内置模型（离线推理，无需外部服务）</span>
-      <div class="env-req">模型文件：model.int8.onnx + tokens.txt（放在 ~/.app-product/voice/models/sensevoice/，约 240MB，由 install-voice 下载）</div>
+      <span class="muted">${t('内置模型（离线推理，无需外部服务）')}</span>
+      <div class="env-req">${t('模型文件：model.int8.onnx + tokens.txt（放在 ~/.app-product/voice/models/sensevoice/，约 240MB，由 install-voice 下载）')}</div>
     </td>
     <td>${bAvail}</td>
-    <td class="row-act"><button class="mini asr-builtin-test" title="真实加载内置模型并跑一次推理">测试可用</button></td>
+    <td class="row-act"><button class="mini asr-builtin-test" title="${t('真实加载内置模型并跑一次推理')}">${t('测试可用')}</button></td>
   </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
+  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。')+'</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.asr-builtin-test'); if(bt) bt.onclick=testAsrBuiltin;
   const bh=document.getElementById('asrTableHint');
@@ -844,19 +1073,19 @@ async function testAsrBuiltin(){
   const wrap=document.getElementById('asrTableWrap');
   const btn=wrap && wrap.querySelector('.asr-builtin-test');
   const hint=document.getElementById('asrTableHint');
-  if(btn){ btn.disabled=true; btn.textContent='检测中…'; }
-  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent='正在真实加载内置模型并跑一次推理…'; }
-  const REASON={ model_missing:'模型文件缺失', dep_missing:'依赖缺失', infer_failed:'模型加载或推理失败', not_wired:'检测能力未注入', exception:'检测异常' };
+  if(btn){ btn.disabled=true; btn.textContent=t('检测中…'); }
+  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent=t('正在真实加载内置模型并跑一次推理…'); }
+  const REASON={ model_missing:t('模型文件缺失'), dep_missing:t('依赖缺失'), infer_failed:t('模型加载或推理失败'), not_wired:t('检测能力未注入'), exception:t('检测异常') };
   try{
     const r=await fetch('/admin/api/stt-builtin-test',{method:'POST',credentials:'same-origin'});
     const d=await r.json().catch(()=>({}));
     asrBuiltinAvail = d.ok ? 'ok' : 'err';
     asrBuiltinDetail = d.ok
-      ? '内置可用：模型加载与推理均正常'
-      : '内置不可用：' + (REASON[d.reason]||'检测失败') + (d.detail?('（'+d.detail+'）'):'');
+      ? t('内置可用：模型加载与推理均正常')
+      : t('内置不可用：') + (REASON[d.reason]||t('检测失败')) + (d.detail?('（'+d.detail+'）'):'');
   }catch(e){
     asrBuiltinAvail='err';
-    asrBuiltinDetail='内置不可用：请求失败 '+e.message;
+    asrBuiltinDetail=t('内置不可用：请求失败 ')+e.message;
   }
   paintAsrTable();
   const h=document.getElementById('asrTableHint');
@@ -866,25 +1095,25 @@ async function testAsrBuiltin(){
 function paintTtsTable(){
   const wrap=document.getElementById('ttsTableWrap');
   if(!wrap) return;
-  const bAvail = ttsBuiltinAvail==='ok' ? '<span class="badge b-ok">可用</span>'
-               : ttsBuiltinAvail==='err' ? '<span class="badge b-err">不可用</span>'
-               : '<span class="badge b-mut">未测</span>';
+  const bAvail = ttsBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('可用')+'</span>'
+               : ttsBuiltinAvail==='err' ? '<span class="badge b-err">'+t('不可用')+'</span>'
+               : '<span class="badge b-mut">'+t('未测')+'</span>';
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>提供商</th><th>依赖环境</th><th>状态</th><th>操作</th>'
+    + '<th>'+t('提供商')+'</th><th>'+t('依赖环境')+'</th><th>'+t('状态')+'</th><th>'+t('操作')+'</th>'
     + '</tr></thead><tbody>';
   // 固定只展示内置一行：写清依赖环境要求、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
   html += `<tr class="tts-builtin" data-builtin="1">
-    <td class="prov-cell"><b>内置</b></td>
+    <td class="prov-cell"><b>${t('内置')}</b></td>
     <td class="env-cell">
-      <span class="muted">内置合成（edge-tts 在线服务）</span>
-      <div class="env-req">需联网访问微软语音服务，无需本地模型文件</div>
-      <div class="env-req">ffmpeg：wav 输出需要（由 install-voice 安装）</div>
+      <span class="muted">${t('内置合成（edge-tts 在线服务）')}</span>
+      <div class="env-req">${t('需联网访问微软语音服务，无需本地模型文件')}</div>
+      <div class="env-req">${t('ffmpeg：wav 输出需要（由 install-voice 安装）')}</div>
     </td>
     <td>${bAvail}</td>
-    <td class="row-act"><button class="mini tts-builtin-test" title="真实合成一句验证内置 TTS 是否可用">测试可用</button></td>
+    <td class="row-act"><button class="mini tts-builtin-test" title="${t('真实合成一句验证内置 TTS 是否可用')}">${t('测试可用')}</button></td>
   </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
+  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。')+'</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.tts-builtin-test'); if(bt) bt.onclick=testTtsBuiltin;
   const bh=document.getElementById('ttsTableHint');
@@ -896,16 +1125,16 @@ async function testTtsBuiltin(){
   const wrap=document.getElementById('ttsTableWrap');
   const btn=wrap && wrap.querySelector('.tts-builtin-test');
   const hint=document.getElementById('ttsTableHint');
-  if(btn){ btn.disabled=true; btn.textContent='检测中…'; }
-  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent='正在按配置合成一句…'; }
+  if(btn){ btn.disabled=true; btn.textContent=t('检测中…'); }
+  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent=t('正在按配置合成一句…'); }
   try{
     const r=await fetch('/admin/api/tts-builtin-test',{method:'POST',credentials:'same-origin'});
     const d=await r.json().catch(()=>({}));
     ttsBuiltinAvail = d.ok ? 'ok' : 'err';
-    ttsBuiltinDetail = d.ok ? '可用：合成成功' : '不可用：'+(d.detail||d.reason||'检测失败');
+    ttsBuiltinDetail = d.ok ? t('可用：合成成功') : t('不可用：')+(d.detail||d.reason||t('检测失败'));
   }catch(e){
     ttsBuiltinAvail='err';
-    ttsBuiltinDetail='不可用：请求失败 '+e.message;
+    ttsBuiltinDetail=t('不可用：请求失败 ')+e.message;
   }
   paintTtsTable();
   const h=document.getElementById('ttsTableHint');
@@ -920,18 +1149,18 @@ function renderSecTable(){
   const keyVal = isSecret('VOICE_API_KEY') ? '' : (cfgOrig['VOICE_API_KEY']||'');
   const ipVal = (cfgOrig['VOICE_IP_ALLOW']||'');
   wrap.innerHTML = `
-    <div class="row"><label>${CFG_LABEL['VOICE_API_KEY_AUTH']}</label>
+    <div class="row"><label>${t(CFG_LABEL['VOICE_API_KEY_AUTH'])}</label>
       <select id="cfg_VOICE_API_KEY_AUTH">
-        <option value="off"${auth==='off'?' selected':''}>关闭（默认）</option>
-        <option value="on"${auth==='on'?' selected':''}>开启</option>
+        <option value="off"${auth==='off'?' selected':''}>${t('关闭（默认）')}</option>
+        <option value="on"${auth==='on'?' selected':''}>${t('开启')}</option>
       </select>
-      <span class="hint">开启后 /llm 与 /voice 数据接口须持有效 Key；/health 与管理面板不受影响</span>
+      <span class="hint">${t('开启后 /llm 与 /voice 数据接口须持有效 Key；/health 与管理面板不受影响')}</span>
     </div>
-    <div class="row"><label>${CFG_LABEL['VOICE_API_KEY']}</label>
-      <textarea id="cfg_VOICE_API_KEY" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="一行一个 Key；或填 auto 自动生成并写入文件。留空则不修改">${escapeHtml(keyVal)}</textarea>
+    <div class="row"><label>${t(CFG_LABEL['VOICE_API_KEY'])}</label>
+      <textarea id="cfg_VOICE_API_KEY" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('一行一个 Key；或填 auto 自动生成并写入文件。留空则不修改')}">${escapeHtml(keyVal)}</textarea>
     </div>
-    <div class="row"><label>${CFG_LABEL['VOICE_IP_ALLOW']}</label>
-      <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="一行一个 IP 或 CIDR（如 192.168.1.0/24）。留空=不限制来源">${escapeHtml(ipVal)}</textarea>
+    <div class="row"><label>${t(CFG_LABEL['VOICE_IP_ALLOW'])}</label>
+      <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('一行一个 IP 或 CIDR（如 192.168.1.0/24）。留空=不限制来源')}">${escapeHtml(ipVal)}</textarea>
     </div>`;
 }
 
@@ -947,9 +1176,9 @@ let testOrigin = '';
 // 表格每行一组 Key/Value -> 普通 HTTP 请求头对象（不持久化，每次请求自己带）。
 // 客户端填什么头，请求里就是什么头；代理原样透传给上游，无需特殊协议。
 function hdrTableHtml(kind){
-  return `<label>自定义请求头（仅 LLM 对话请求透传到上游；不保存，本次填写本次生效）</label>
+  return `<label>${t('自定义请求头（仅 LLM 对话请求透传到上游；不保存，本次填写本次生效）')}</label>
     <table class="hdr-table">
-      <thead><tr><th>Header 名</th><th>值</th><th><button class="mini" type="button" data-add-hdr="${kind}">+ 添加</button></th></tr></thead>
+      <thead><tr><th>${t('Header 名')}</th><th>${t('值')}</th><th><button class="mini" type="button" data-add-hdr="${kind}">${t('+ 添加')}</button></th></tr></thead>
       <tbody data-hdr-body="${kind}"></tbody>
     </table>`;
 }
@@ -958,8 +1187,8 @@ function addHeaderRow(kind, k, v){
   if(!tb) return;
   const tr=document.createElement('tr');
   tr.innerHTML='<td><input type="text" class="h-k" placeholder="X-Tenant-Id" /></td>'
-             + '<td><input type="text" class="h-v" placeholder="值" /></td>'
-             + '<td><button class="mini danger" type="button" data-del-hdr>删除</button></td>';
+             + '<td><input type="text" class="h-v" placeholder="'+t('值')+'" /></td>'
+             + '<td><button class="mini danger" type="button" data-del-hdr>'+t('删除')+'</button></td>';
   tr.querySelector('.h-k').value=k||'';
   tr.querySelector('.h-v').value=v||'';
   tb.appendChild(tr);
@@ -980,9 +1209,9 @@ function proxyExtraHeaders(kind){
 // 同样按 tab 隔离、不持久化（当前只启用 LLM）。因各线协议 payload 结构不同，
 // 用单独字段 extra_body 承载，由代理统一合并到上游 payload，不覆盖协议自身字段。
 function bodyTableHtml(kind){
-  return `<label>自定义 body 参数（作为额外字段透传到上游；不保存，本次填写本次生效）</label>
+  return `<label>${t('自定义 body 参数（作为额外字段透传到上游；不保存，本次填写本次生效）')}</label>
     <table class="hdr-table">
-      <thead><tr><th>字段名</th><th>值</th><th><button class="mini" type="button" data-add-body="${kind}">+ 添加</button></th></tr></thead>
+      <thead><tr><th>${t('字段名')}</th><th>${t('值')}</th><th><button class="mini" type="button" data-add-body="${kind}">${t('+ 添加')}</button></th></tr></thead>
       <tbody data-extra-body="${kind}"></tbody>
     </table>`;
 }
@@ -991,8 +1220,8 @@ function addBodyRow(kind, k, v){
   if(!tb) return;
   const tr=document.createElement('tr');
   tr.innerHTML='<td><input type="text" class="h-k" placeholder="custom_field" /></td>'
-             + '<td><input type="text" class="h-v" placeholder="值" /></td>'
-             + '<td><button class="mini danger" type="button" data-del-body>删除</button></td>';
+             + '<td><input type="text" class="h-v" placeholder="'+t('值')+'" /></td>'
+             + '<td><button class="mini danger" type="button" data-del-body>'+t('删除')+'</button></td>';
   tr.querySelector('.h-k').value=k||'';
   tr.querySelector('.h-v').value=v||'';
   tb.appendChild(tr);
@@ -1047,7 +1276,7 @@ async function runLlmChat(opts){
   const setStatus = (t,c)=>{ statusEl.textContent=t; statusEl.className=c; };
   if(outEl) outEl.textContent='';
   if(thinkEl){ thinkEl.textContent=''; if(thinkWrapEl) thinkWrapEl.hidden=true; }
-  setStatus('请求中…','hint');
+  setStatus(t('请求中…'),'hint');
   const ctrl = new AbortController();
   llmCtrl = ctrl;
   let done=false;
@@ -1068,7 +1297,7 @@ async function runLlmChat(opts){
     const r=await fetch(testOrigin+'/llm/v1/chat/completions',{method:'POST',credentials:'same-origin',signal:ctrl.signal,
       headers:{'content-type':'application/json',...auth,...thinkHdr,...proxyExtraHeaders(hkind)}, body:JSON.stringify(body)});
     if(!r.ok){
-      const txt=await r.text(); let msg='失败 '+r.status;
+      const txt=await r.text(); let msg=t('失败 ')+r.status;
       try{ const d=JSON.parse(txt);
         if(d&&d.error&&d.error.message) msg+=': '+d.error.message;
         else if(d&&d.detail) msg+=': '+d.detail;
@@ -1101,8 +1330,8 @@ async function runLlmChat(opts){
       if(wantThink && thinkEl && reasoning && thinkWrapEl){ thinkEl.textContent=reasoning; thinkWrapEl.hidden=false; }
       if(outEl) outEl.textContent=text;
     }
-    setStatus('完成','hint'); done=true;
-  }catch(e){ if(e.name==='AbortError'){ setStatus('已停止','hint'); } else { setStatus('错误：'+e.message,'err'); } }
+    setStatus(t('完成'),'hint'); done=true;
+  }catch(e){ if(e.name==='AbortError'){ setStatus(t('已停止'),'hint'); } else { setStatus(t('错误：')+e.message,'err'); } }
   if(onDone) onDone(done);
 }
 
@@ -1113,23 +1342,23 @@ async function renderDashboard(){
 
   app.appendChild(buildConfigCard());
 
-  app.appendChild(el(`<div class="card"><h2>测试</h2>
-    <label>鉴权（若推理接口开启了 API Key）</label>
-    <input id="testKey" type="password" placeholder="可选：API Key" />
+  app.appendChild(el(`<div class="card collapsed" id="testCard"><h2>${t('测试')}</h2>
+    <label>${t('鉴权（若推理接口开启了 API Key）')}</label>
+    <input id="testKey" type="password" placeholder="${t('可选：API Key')}" />
     <div class="tabs">
-      <button class="tab active" data-tab="llm">对话 LLM</button>
-      <button class="tab" data-tab="asr">语音识别 ASR</button>
-      <button class="tab" data-tab="tts">语音合成 TTS</button>
+      <button class="tab active" data-tab="llm">${t('对话 LLM')}</button>
+      <button class="tab" data-tab="asr">${t('语音识别 ASR')}</button>
+      <button class="tab" data-tab="tts">${t('语音合成 TTS')}</button>
     </div>
 
     <div id="t-llm" class="tabpane">
-      <label>提供商</label>
-      <select id="llmProvider"><option value="">（默认路由）</option></select>
-      <label>模型（先选提供商，再选该提供商下的模型）</label>
+      <label>${t('提供商')}</label>
+      <select id="llmProvider"><option value="">${t('（默认路由）')}</option></select>
+      <label>${t('模型（先选提供商，再选该提供商下的模型）')}</label>
       <select id="llmModel" disabled>
-        <option value="">（请先选提供商）</option>
+        <option value="">${t('（请先选提供商）')}</option>
       </select>
-      <label>协议</label>
+      <label>${t('协议')}</label>
       <select id="llmProtocol">
         <option value="openai_chat_completions">openai_chat_completions（OpenAI 对话）</option>
         <option value="azure_openai_chat_completions">azure_openai_chat_completions（Azure OpenAI）</option>
@@ -1140,47 +1369,47 @@ async function renderDashboard(){
       <div class="hint" id="llmProtoDesc" style="margin-top:4px"></div>
       ${hdrTableHtml('llm')}
       ${bodyTableHtml('llm')}
-      <label class="chk"><input type="checkbox" id="llmStream" checked /> 流式（SSE）</label>
-      <div class="hint" style="margin-top:2px">开启后逐字返回；关闭则等待完整回复。</div>
-      <label class="chk"><input type="checkbox" id="llmThinkMode" /> 思考模式（推理链）</label>
-      <div class="hint" style="margin-top:2px">关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。</div>
-      <label>提示词（固定，不可编辑）</label>
+      <label class="chk"><input type="checkbox" id="llmStream" checked /> <span>${t('流式（SSE）')}</span></label>
+      <div class="hint" style="margin-top:2px">${t('开启后逐字返回；关闭则等待完整回复。')}</div>
+      <label class="chk"><input type="checkbox" id="llmThinkMode" /> <span>${t('思考模式（推理链）')}</span></label>
+      <div class="hint" style="margin-top:2px">${t('关闭：界面不显示「思考过程」，并经 X-Proxy-Think 头让代理下发厂商原生参数（如 ollama think=false）真正不推理；开启才显示推理过程。')}</div>
+      <label>${t('提示词（固定，不可编辑）')}</label>
       <div id="llmInput" class="fixed-prompt">请只回复 ok 两个字。</div>
       <div id="llmThinkWrap" hidden style="margin-top:10px">
-        <div class="think-head"><span class="muted">思考过程</span><button class="mini" type="button" id="llmThinkToggle">折叠</button></div>
+        <div class="think-head"><span class="muted">${t('思考过程')}</span><button class="mini" type="button" id="llmThinkToggle">${t('折叠')}</button></div>
         <pre id="llmThink" class="think"></pre>
       </div>
-      <div class="muted" style="margin-top:10px">回复</div>
-      <pre id="llmOut" class="muted">回复将在这里流式显示。</pre>
+      <div class="muted" style="margin-top:10px">${t('回复')}</div>
+      <pre id="llmOut" class="muted">${t('回复将在这里流式显示。')}</pre>
       <div class="row" style="margin-top:12px">
-        <button id="llmGo" style="flex:1">发送</button>
-        <button class="sec" id="llmStop" style="flex:1">停止</button>
+        <button id="llmGo" style="flex:1">${t('发送')}</button>
+        <button class="sec" id="llmStop" style="flex:1">${t('停止')}</button>
       </div>
       <span class="hint" id="llmStatus" style="display:block; margin-top:6px"></span>
     </div>
 
     <div id="t-asr" class="tabpane" hidden>
-      <div class="muted" style="margin-bottom:8px">点录音可把上面的试听音频替换成你录的，识别也用替换后的；「还原」恢复内置样本。</div>
+      <div class="muted" style="margin-bottom:8px">${t('点录音可把上面的试听音频替换成你录的，识别也用替换后的；「还原」恢复内置样本。')}</div>
       <audio id="asrPlayer" controls style="width:100%;margin:6px 0 12px"></audio>
       <div class="row">
-        <button id="asrRec">录音</button>
-        <button id="asrRecStop" class="danger" disabled>停止</button>
-        <button id="asrRevert" class="sec" style="display:none">还原</button>
+        <button id="asrRec">${t('录音')}</button>
+        <button id="asrRecStop" class="danger" disabled>${t('停止')}</button>
+        <button id="asrRevert" class="sec" style="display:none">${t('还原')}</button>
         <span class="hint" id="asrRecMsg"></span>
       </div>
-      <pre id="asrOut" class="muted">识别结果将显示在这里。</pre>
-      <button id="asrGo" class="full" style="margin-top:12px">识别</button>
+      <pre id="asrOut" class="muted">${t('识别结果将显示在这里。')}</pre>
+      <button id="asrGo" class="full" style="margin-top:12px">${t('识别')}</button>
       <span class="hint" id="asrMsg" style="display:block; margin-top:6px"></span>
     </div>
 
     <div id="t-tts" class="tabpane" hidden>
-      <label>文本</label>
+      <label>${t('文本')}</label>
       <textarea id="ttsText" rows="2">你好。</textarea>
-      <label>音色</label>
+      <label>${t('音色')}</label>
       <select id="ttsVoice"></select>
       <div class="hint" id="ttsVoiceDesc" style="margin-top:4px"></div>
       <audio id="ttsAudio" controls style="margin-top:10px; width:100%"></audio>
-      <button id="ttsGo" class="full" style="margin-top:12px">合成</button>
+      <button id="ttsGo" class="full" style="margin-top:12px">${t('合成')}</button>
       <span class="hint" id="ttsMsg" style="display:block; margin-top:6px"></span>
     </div>
   </div>`));
@@ -1196,11 +1425,11 @@ async function renderDashboard(){
     addHeaderRow('modal'); addBodyRow('modal');
   }
 
-  app.appendChild(el(`<div class="card"><h2>日志（voice.log）</h2>
+  app.appendChild(el(`<div class="card"><h2>${t('日志（voice.log）')}</h2>
     <div class="row" style="margin-bottom:10px">
-      <button class="sec" id="logRefresh">刷新日志</button>
-      <span class="muted">最近 200 行</span></div>
-    <pre id="logs">加载中…</pre>
+      <button class="sec" id="logRefresh">${t('刷新日志')}</button>
+      <span class="muted">${t('最近 200 行')}</span></div>
+    <pre id="logs">${t('加载中…')}</pre>
   </div>`));
 
   document.getElementById('logout').onclick = async ()=>{
@@ -1210,8 +1439,11 @@ async function renderDashboard(){
 
   wireConfig(); loadConfig();
 
-  // 卡片可折叠：点击标题（配置 / 测试 / 日志）展开或收起
-  app.querySelectorAll('.card > h2').forEach(h=>{ h.onclick=()=>h.parentElement.classList.toggle('collapsed'); });
+  // 卡片可折叠：点击标题（配置 / 测试 / 日志）展开或收起；登录卡片不可折叠
+  app.querySelectorAll('.card > h2').forEach(h=>{
+    if(h.parentElement.id==='login') return;
+    h.onclick=()=>h.parentElement.classList.toggle('collapsed');
+  });
 
   // ---- 测试面板逻辑 ----
   const authHdr = ()=>{ const k=(document.getElementById('testKey').value||'').trim(); return k?{'Authorization':'Bearer '+k}:{}; };
@@ -1232,7 +1464,7 @@ async function renderDashboard(){
     tToggle.onclick=()=>{
       const w=document.getElementById('testModalThinkWrap'); if(!w) return;
       const collapsed=w.classList.toggle('collapsed');
-      tToggle.textContent=collapsed?'展开':'折叠';
+      tToggle.textContent=collapsed?t('展开'):t('折叠');
     };
   }
   // 思考模式开关：关闭时立即隐藏「思考过程」区域（不再展示推理链）
@@ -1242,7 +1474,7 @@ async function renderDashboard(){
       const w=document.getElementById('testModalThinkWrap'); if(!w) return;
       if(!tMode.checked){
         w.hidden=true; w.classList.remove('collapsed');
-        if(tToggle) tToggle.textContent='折叠';
+        if(tToggle) tToggle.textContent=t('折叠');
       }
     };
   }
@@ -1290,11 +1522,11 @@ async function renderDashboard(){
       items.forEach(v=>{ const o=document.createElement('option'); o.value=v.id; o.textContent=v.id+'　'+v.desc; og.appendChild(o); });
       voiceSel.appendChild(og);
     });
-    if(def){ const o=document.createElement('option'); o.value=def; o.textContent=def+'（默认）'; voiceSel.appendChild(o); }
+    if(def){ const o=document.createElement('option'); o.value=def; o.textContent=def+t('（默认）'); voiceSel.appendChild(o); }
     voiceSel.value = def || VOICE_CATALOG[0].id;
-    VOICE_DESC.textContent = '音色说明：' + voiceDesc(voiceSel.value) + '　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502';
+    VOICE_DESC.textContent = t('音色说明：') + voiceDesc(voiceSel.value) + t('　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502');
   };
-  voiceSel.onchange = ()=>{ VOICE_DESC.textContent = '音色说明：' + voiceDesc(voiceSel.value) + '　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502'; };
+  voiceSel.onchange = ()=>{ VOICE_DESC.textContent = t('音色说明：') + voiceDesc(voiceSel.value) + t('　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502'); };
   // 从对外接口拉取最新音色目录（接口不可用时回退兜底）
   fetch('/voice/v1/audio/voices',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(d=>{
     if(d && Array.isArray(d.voices) && d.voices.length){ VOICE_CATALOG=d.voices; fillVoices(d.default); }
@@ -1308,15 +1540,15 @@ async function renderDashboard(){
   // TTS 合成
   document.getElementById('ttsGo').onclick = async ()=>{
     const msg=document.getElementById('ttsMsg'), audio=document.getElementById('ttsAudio');
-    msg.textContent='合成中…'; msg.className='hint'; audio.src='';
+    msg.textContent=t('合成中…'); msg.className='hint'; audio.src='';
     try{
       const r=await fetch(testOrigin+'/voice/v1/audio/speech',{method:'POST',credentials:'same-origin',
         headers:{'content-type':'application/json',...authHdr()},
         body:JSON.stringify({input:document.getElementById('ttsText').value,voice:voiceSel.value,response_format:'wav',speed:1.0})});
-      if(!r.ok){ msg.textContent='失败 '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
+      if(!r.ok){ msg.textContent=t('失败')+' '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
       const blob=await r.blob(); audio.src=URL.createObjectURL(blob);
-      msg.textContent='完成（'+(blob.size/1024).toFixed(1)+' KB）'; msg.className='hint';
-    }catch(e){ msg.textContent='错误：'+e.message; msg.className='err'; }
+      msg.textContent=t('完成')+'（'+(blob.size/1024).toFixed(1)+' KB）'; msg.className='hint';
+    }catch(e){ msg.textContent=t('错误：')+e.message; msg.className='err'; }
   };
 
   // 模型下拉按所选提供商联动：没选提供商时禁用；选了才列出该提供商下的模型。
@@ -1329,7 +1561,7 @@ async function renderDashboard(){
     const models=llmProviderModels[v]||[];
     sel.innerHTML='';
     const head=document.createElement('option');
-    head.value=''; head.textContent = v ? '（沿用上游默认）' : '（请先选提供商）';
+    head.value=''; head.textContent = v ? t('（沿用上游默认）') : t('（请先选提供商）');
     sel.appendChild(head);
     models.forEach(m=>{ const o=document.createElement('option'); o.value=m; o.textContent=m; sel.appendChild(o); });
     sel.disabled = !v;
@@ -1364,7 +1596,7 @@ async function renderDashboard(){
     llmThinkTog.onclick=()=>{
       const w=document.getElementById('llmThinkWrap'); if(!w) return;
       const collapsed=w.classList.toggle('collapsed');
-      llmThinkTog.textContent=collapsed?'展开':'折叠';
+      llmThinkTog.textContent=collapsed?t('展开'):t('折叠');
     };
   }
   const llmThinkMode=document.getElementById('llmThinkMode');
@@ -1373,7 +1605,7 @@ async function renderDashboard(){
       const w=document.getElementById('llmThinkWrap'); if(!w) return;
       if(!llmThinkMode.checked){
         w.hidden=true; w.classList.remove('collapsed');
-        if(llmThinkTog) llmThinkTog.textContent='折叠';
+        if(llmThinkTog) llmThinkTog.textContent=t('折叠');
       }
     };
   }
@@ -1398,7 +1630,7 @@ async function renderDashboard(){
     }catch(_){}
     llmProviderModels=map;
     if(sel){
-      sel.innerHTML='<option value="">（默认路由）</option>';
+      sel.innerHTML='<option value="">'+t('（默认路由）')+'</option>';
       Object.keys(map).forEach(v=>{
         const o=document.createElement('option'); o.value=v;
         o.textContent=v+(hosts[v]?('　('+hosts[v]+')'):''); sel.appendChild(o);
@@ -1422,13 +1654,13 @@ async function renderDashboard(){
         catch(_){ asrBlob=raw; }
         document.getElementById('asrPlayer').src=URL.createObjectURL(asrBlob);
         document.getElementById('asrRevert').style.display='';
-        document.getElementById('asrRecMsg').textContent='已替换试听音频（识别将用这段）';
+        document.getElementById('asrRecMsg').textContent=t('已替换试听音频（识别将用这段）');
         mediaStream.getTracks().forEach(t=>t.stop());
       };
       mediaRec.start();
       document.getElementById('asrRec').disabled=true; document.getElementById('asrRecStop').disabled=false;
-      document.getElementById('asrRecMsg').textContent='录音中…';
-    }catch(e){ document.getElementById('asrRecMsg').textContent='无法录音：'+e.message; }
+      document.getElementById('asrRecMsg').textContent=t('录音中…');
+    }catch(e){ document.getElementById('asrRecMsg').textContent=t('无法录音：')+e.message; }
   };
   document.getElementById('asrRecStop').onclick = ()=>{
     if(mediaRec&&mediaRec.state!=='inactive') mediaRec.stop();
@@ -1438,25 +1670,25 @@ async function renderDashboard(){
     asrBlob=null;
     if(ASR_SAMPLE_B64) document.getElementById('asrPlayer').src='data:audio/wav;base64,'+ASR_SAMPLE_B64;
     document.getElementById('asrRevert').style.display='none';
-    document.getElementById('asrRecMsg').textContent='已还原内置样本';
+    document.getElementById('asrRecMsg').textContent=t('已还原内置样本');
   };
   document.getElementById('asrGo').onclick = async ()=>{
     const msg=document.getElementById('asrMsg'), out=document.getElementById('asrOut');
     msg.className='hint';
     let blob=asrBlob, fname='record.wav';
     if(!blob){
-      if(!ASR_SAMPLE_B64){ msg.textContent='未内嵌音频'; return; }
+      if(!ASR_SAMPLE_B64){ msg.textContent=t('未内嵌音频'); return; }
       const bin=atob(ASR_SAMPLE_B64); const bytes=new Uint8Array(bin.length);
       for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
       blob=new Blob([bytes],{type:'audio/wav'}); fname='sample.wav';
     }
-    msg.textContent='识别中…';
+    msg.textContent=t('识别中…');
     try{
       const fd=new FormData(); fd.append('file',blob,fname); fd.append('model','whisper-1');
       const r=await fetch(testOrigin+'/voice/v1/audio/transcriptions',{method:'POST',credentials:'same-origin',headers:{...authHdr()},body:fd});
-      if(!r.ok){ msg.textContent='失败 '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
-      const d=await r.json(); out.textContent=d.text||'(空)'; msg.textContent='完成'; msg.className='hint';
-    }catch(e){ msg.textContent='错误：'+e.message; msg.className='err'; }
+      if(!r.ok){ msg.textContent=t('失败')+' '+r.status+'：'+(await r.text()).slice(0,200); msg.className='err'; return; }
+      const d=await r.json(); out.textContent=d.text||t('(空)'); msg.textContent=t('完成'); msg.className='hint';
+    }catch(e){ msg.textContent=t('错误：')+e.message; msg.className='err'; }
   };
   // 固定音频可直接在页面播放试听
   if(ASR_SAMPLE_B64) document.getElementById('asrPlayer').src='data:audio/wav;base64,'+ASR_SAMPLE_B64;
@@ -1490,12 +1722,37 @@ async function toWav(blob){
 async function loadLogs(){
   const r = await api('/admin/api/logs');
   const pre = document.getElementById('logs');
-  if(!r.ok){ pre.textContent='加载失败'; return; }
+  if(!r.ok){ pre.textContent=t('加载失败'); return; }
   pre.textContent = await r.text();
 }
 
 function escapeHtml(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
+
+// 全局接口 loading：拦截 fetch，任意 /admin 接口进行中时显示全屏遮罩（居中转圈），
+// 全部请求结束才隐藏（计数防止并发请求互相抵消）。遮罩 z-index 低于模态框，
+// 所以弹框内的流式测试仍能在遮罩之上正常显示进度。快速请求（<250ms）延迟显示，避免闪烁。
+(function(){
+  let _pending = 0;
+  let _timer = null;
+  const _el = () => document.getElementById('panelLoading');
+  const _show = () => { const e = _el(); if (e) e.classList.add('show'); };
+  const _hide = () => { const e = _el(); if (e) e.classList.remove('show'); };
+  const _orig = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    _pending++;
+    if (_timer === null) _timer = setTimeout(_show, 250);
+    try { return await _orig(...args); }
+    finally {
+      _pending--;
+      if (_pending <= 0) {
+        _pending = 0;
+        if (_timer !== null) { clearTimeout(_timer); _timer = null; }
+        _hide();
+      }
+    }
+  };
+})();
 
 boot();
 </script>

@@ -1,12 +1,12 @@
-"""上游地址池（仅 LLM）：多个地址 + 账号池，健康探测 + 轮询。
+"""上游地址池（仅 LLM）：健康探测 + 轮询。
 
-为什么独立成模块：之前每个能力只支持「一个」上游地址（LLM_UPSTREAM_BASE_URL、
-VOICE_UPSTREAM_BASE_URL 等）。用户要求「多个地址代理 + 账号池」，并要健康探测 +
-轮询。把池子的解析、健康状态、调度收口到这里，调用方（chat_completions /
-chat_completions）只调 pick() 拿一个 (base_url, api_key, protocol)，
-完全不感知后面有几台机器、几个账号、谁挂了。
+为什么独立成模块：上游只有 LLM 有（STT / TTS 固定本地实现）。管理面板把 LLM 配置成
+固定两个提供商（ollama / 自定义），各一条入口写进 LLM_UPSTREAM_POOL。把池子的解析、
+健康状态、调度收口到这里，调用方（chat_completions）只调 pick() 拿一个
+(base_url, api_key, protocol)，完全不感知后面有几台机器、谁挂了。
 
-配置（存进 config_kv，经 config_store 读取），支持三种写法：
+配置（存进 config_kv，经 config_store 读取）。面板写出扁平数组（每个固定提供商一条），
+load_pool 也向后兼容以下三种写法：
 
 1) 按提供商分组 + 整组固定模型（推荐；一个分组模型类型是定的）：
     LLM_UPSTREAM_POOL = {
@@ -26,10 +26,9 @@ chat_completions）只调 pick() 拿一个 (base_url, api_key, protocol)，
       {"base_url": "...", "api_key": "sk-...", "protocol": "deepseek", "model": "deepseek-chat"},
       {"base_url": "...", "api_key": "sk-...", "protocol": "openai", "model": "gpt-4o-mini"}
     ]
-STT_UPSTREAM_POOL / TTS_UPSTREAM_POOL 同理（protocol 留空表示 OpenAI 兼容扁平 /v1）。
 model 优先级：入口自己的 model > 分组级 model > 全局 LLM_UPSTREAM_MODEL >
 客户端请求里的 model。整组固定 model 让「一个分组一个模型类型」时只写一次。
-向后兼容：没配 *_UPSTREAM_POOL 时，退回单个 *_UPSTREAM_BASE_URL(+KEY+PROTOCOL)。
+向后兼容：没配 LLM_UPSTREAM_POOL 时，退回单个 LLM_UPSTREAM_BASE_URL(+KEY+PROTOCOL)。
 
 调度：在「健康」的入口里轮询；全部不健康时退化为全量（避免全 outage 时彻底不可用）。
 健康：后台线程定期探测。健康账号只做轻量存活探测；被运行时失败累计 3 次摘掉的账号

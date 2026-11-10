@@ -183,14 +183,14 @@ onGatewayExit(cb) -> void        // 退出/崩溃通知，避免白屏
 
 ## 8. 客户端改造清单
 
-| # | 文件 | 改动 |
-|---|---|---|
-| 1 | `core/transport/webSocketTransport.ts` | `VITE_GATEWAY_WS_URL` 在 embedded 模式下改为 `ws://127.0.0.1:<port>`，端口由 `onGatewayReady` 注入；external 模式保持原样 |
-| 2 | `core/transport/` | 新增 `gatewayBootstrap.ts`：等 `onGatewayReady` → 拿端口 → 再 `connect()` |
-| 3 | `features/assistant/useAssistant.ts` | `enable()` 之前先 await 网关就绪；网关未就绪时显示 i18n 提示，不静默 |
-| 4 | `pages/settings/` | 新增「AI 服务来源」切换（外部 LAN / 云端 API）+ 云端 Key 输入（加密存储） |
-| 5 | `core/i18n/messages.ts` | 新增网关启动/就绪/失败文案（zh/en） |
-| 6 | `AGENTS.md` / `contracts/README.md` | 补回环地址、随机端口、`onGatewayReady` 契约 |
+| # | 文件 | 改动 | 状态 |
+|---|---|---|---|
+| 1 | `core/transport/webSocketTransport.ts` | embedded 模式建连前 `await getGatewayWsUrl()` 拿动态端口地址；external 模式保持 `VITE_GATEWAY_WS_URL` | ✅ ① 已做（2026-11-10） |
+| 2 | `core/transport/gatewayBootstrap.ts` | 新增 `getGatewayWsUrl()` / `isEmbeddedGateway()`：APP-PLUS 下经 `plus.io` 读 `gateway.url`、否则回退 `VITE_GATEWAY_WS_URL` | ✅ ① 已做（2026-11-10） |
+| 3 | `features/assistant/useAssistant.ts` | `enable()` 之前先 await 网关就绪；网关未就绪时显示 i18n 提示，不静默 | ✅ ① 已做（2026-11-10） |
+| 4 | `pages/settings/` | 新增「AI 服务来源」切换（外部 LAN / 云端 API）+ 云端 Key 输入（加密存储） | ⬜ 未做 |
+| 5 | `core/i18n/messages.ts` | 新增网关启动/就绪/失败文案（zh/en）：`gateway.preparing` / `gateway.notReady`（启动中 / 未就绪重试），就绪态沿用 `test.gatewayReady` | ✅ ① 已做（2026-11-10） |
+| 6 | `AGENTS.md` / `contracts/README.md` | 补回环地址、随机端口、`onGatewayReady` 契约 | ✅ 已补（见 `contracts/README.md`「嵌入式 / 同包模式（loopback）」节） |
 
 ## 9. 打包与首启流程
 
@@ -248,6 +248,7 @@ onGatewayExit(cb) -> void        // 退出/崩溃通知，避免白屏
 7. **「先不用 HBuilderX」与资源导出的冲突**（§2.7）：官方要求 CLI 项目导出本地打包资源需经 HBuilderX。**需决策**：接受「仅导出时用一次 HBuilderX」，还是手工对齐 `appid` 与 SDK 版本硬闯（有版本不一致弹窗风险）。
 8. **端侧 TTS 音色与延迟**（§2.5）：与网关 `edge`/XiaoxiaoNeural 音色不统一、非流式延迟偏高。**需决策**：端侧作为离线兜底是否接受音质回退，或限定只用 Piper 中文音色。
 9. **两端 Node 大版本不一致（2026-11-09 末，已决议）**：原 §12 #1 定 Android=OpenFlun v22.23.2，与 iOS 必用的 digidem Node 24 分叉。经运行时权衡（16KB 对齐、单一运行时、32 位覆盖、维护面），**用户拍板选 (a) 统一到 digidem Node 24.20.0**，Android 也改用 digidem 的 `android` 包。§12 #1 已据此修订，本条目闭环。
+10. **`libnode.so` 加载报 `UnsatisfiedLinkError: libc++_shared.so not found`（2026-11-10 实测 + 修复）**：`:gateway` 进程在 `static { System.loadLibrary("node") }` 处**直接崩溃**，ActivityManager 反复重启该 Service（logcat 可见 `Process com.xiaoxiong.assistant:gateway has died`）。**原因**：digidem Node 24 的 `libnode.so` 以**共享** C++ STL 链接，APK 未打包 `libc++_shared.so`。**修复**：从 NDK 对应 ABI 目录复制 `libc++_shared.so` 到 `src/main/jniLibs/<abi>/`（映射：arm64-v8a←aarch64-linux-android、armeabi-v7a←arm-linux-androideabi、x86_64←x86_64-linux-android），重新 `installDebug` 即过。**实测**（2026-11-10）：补完后模拟器 `emulator-5554` 上 Node 正常起在 `127.0.0.1:36001`，`GatewayNodeService` 写出 `gateway.url=ws://127.0.0.1:36001/ws`，`nc` 探活端口 OPEN；AppKey 已写入 manifest `dcloud_appkey`，启动即过 DCloud 校验。详细排查见 `native/README.md` 已知风险段。
 
 ## 13. P1 实施记录（2026-11-09，已验证）
 
@@ -368,3 +369,48 @@ xcodebuild -version                      # 应显 26.3
 | `bin/armeabi-v7a/libnode.so` | ELF32 | 4×`0x4000` | ✅ |
 
 → 三 ABI 全部 16KB 对齐，§2 #5 与 §12 #1 的「16KB 未证实」风险**实测闭环**，升 targetSdk 35+/上架无需自编重编。完整包另以 8 段并发下载供 `--node-lib` 实际接入（sha256/`zip -t` 校验）。
+
+**NDK 安装 + JNI 桥编译/链接验证（2026-11-10）**：`sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"`（AGP 8.7.3 默认版本）装好后，`build.gradle` 的条件式接线自动激活 `externalNativeBuild`。**首次编译暴露真实问题**：`v8config.h: "C++20 or later required."` —— digidem Node 24 的 V8 头硬性要求 C++20，原 CMakeLists 设的 C++17 → 把两处 `CMAKE_CXX_STANDARD` 改 **20** 后重编通过。
+- `gradlew :simpleDemo:assembleDebug --offline` → **BUILD SUCCESSFUL**，三 ABI `libgatewaynode.so`（arm64 1.9M / v7a 1.4M / x86_64 1.8M）产出。
+- **链接验证**：`libgatewaynode.so` 的 `DT_NEEDED` = `libnode.so`+`liblog.so`+…；唯一未决符号 `U _ZN4node5StartEiPPc` 由 `libnode.so` 以 `T` 导出提供；JNI 入口 `Java_com_xiaoxiong_assistant_gateway_GatewayNodeService_nativeStartNode` 三 ABI 均为 `T` 导出、与 Java 包名匹配；APK 内 `libgatewaynode.so`(1.1M) + `libnode.so`(87M) 都在。
+- 关键结论：`node::Start(int,char**)` 纯 C 签名、不跨 STL 边界，用 NDK 27 的 libc++ 可正确链接 digidem 的 libnode.so（其 STL 为 `std::__ndk1`）。
+- 注意：JNI 桥与网关 Java 层已可编译链接，但 `GatewayNodeService` 仍**无启动点**（`startService` 属 app-product-wake）、装机运行仍需真实 appid/AppKey。
+
+**① 已闭环（2026-11-10 末）**：新增 `App.java`（`com.xiaoxiong.assistant.App extends DCloudApplication`，离线 SDK 要求继承 `DCloudApplication` 否则 uni-app 运行时初始化缺失 + manifest merger 冲突），`onCreate` 仅**主进程** `startService(GatewayNodeService)`、`:gateway` 进程跳过（防 Node 重复初始化）；`AndroidManifest` 注册 `android:name`。`GatewayNodeService.pollPort` 替换 TODO 桩：端口就绪后写 `ws://127.0.0.1:<port>/ws` 到 `getFilesDir()/gateway.url` 并发 `LocalBroadcast(READY, port)`。客户端新增 `core/transport/gatewayBootstrap.ts`（`getGatewayWsUrl()` 在 APP-PLUS 下用 `plus.io` 探测 `gateway.url`、否则回退 `VITE_GATEWAY_WS_URL`），`webSocketTransport.ts` 内嵌模式建连前 `await` 该地址；H5/dev/单测跳过、行为不变。验证：`assembleDebug` BUILD SUCCESSFUL、`vue-tsc` 零报错、`vitest` 144 用例全绿。**待真机验证**：原生写 `/data/data/<pkg>/files/gateway.url` 与 `plus.io` 各 root（PRIVATE_DOC/APPLICATION/…）的精确映射随系统/SDK 版本走，开发机无法确诊，当前 best-effort 探测 + 兜底，若某机型不在探测项内需补或改原生写确定的 plus.io root。
+
+## 16. 无屏设备：配网、发现与端口回传（2026-11-10 末讨论定稿）
+
+无屏设备（智能音箱 / 车机 / 安卓盒子 / 树莓派类）**没有屏幕**，无法走系统 Wi-Fi 设置页与 uni-app 设置页。原则：**把「填 Wi-Fi / 填 AI 配置」的入口从设备屏挪到离屏端**（手机 companion 或网页），配置 schema（`core/config` 的 `运行模式→厂商→参数`、`app-product.config.v1` 本机存储、Key 不进包）本身 UI 无关、无需重写。
+
+### 16.1 配网（让设备联网）
+- **SoftAP + 网关 setup 网页（首推）**：设备首次开机自建热点（如 `Xiaoxiong-Setup`），手机连上后打开网关在 setup 模式下吐出的配置页（`http://192.168.4.1/setup`）填入 Wi-Fi 凭证 + AI 服务来源 + Key，提交后设备重启连真网。**网关本是 Node HTTP 服务，setup 页直接由它吐，配网与设置一次搞定**；同时天然解决「设置入口」问题（见 §8 #4）。
+- **BLE 配网（量产体验最佳）**：设备进 BLE 广播，手机 App（`app-product-wake` 扩展 BLE 能力）经蓝牙推 SSID/密码。需原生插件新增 BLE。
+- **有线 / 配置文件（DIY 最省事）**：树莓派类写 `wpa_supplicant.conf` 或插网线；或首次启动读 SD 卡/环境变量里的 config。
+- 注：**有屏设备（手机/平板）走系统正常 Wi-Fi，上述全部不需要**。
+
+### 16.2 发现（联网后怎么找到它）
+分两层，首连其实**不用 mDNS**：
+1. **首连**：SoftAP 配网时设备联网成功后，在提交响应里把自己的新 IP 回传手机 → 手机已知 IP，零额外依赖。
+2. **重连兜底**：设备 reboot / DHCP 重分 IP / 手机换网时，靠 **mDNS（ZeroConf）** 重新解析。网关（`src/embedded/entry.ts`，即写 `.gateway_port` 的入口）顺手起 `multicast-dns` 广播服务名 `xiaoxiong.local`、类型 `_xiaoxiong._tcp`，**动态端口写进 TXT 记录**——与 §7「`GATEWAY_PORT=0` 动态端口 + `onGatewayReady` 回传」对齐，一次解决「IP 在哪 + 端口多少」。
+3. **退路**：账号绑定（平台模式，设备上线报到云端、手机按账号查通道，需后端，P3 之后）或路由器给设备留固定 IP。
+
+### 16.3 原生侧 mDNS 缺口（重要）
+uni-app（5+）**无内置 mDNS/服务发现 JS API**：网关侧广播容易（Node `multicast-dns`），但**手机 companion 侧「解析 mDNS」纯 JS 做不了，需原生插件**——`app-product-wake` 扩展 `NsdManager`(安卓) / `NetService`(iOS) 经 `plus.bridge` 抛给 JS。这是无屏方案目前未着落的 native 缺口；因首连靠 SoftAP 回传 IP，该缺口不阻塞首连，只影响「重连健壮性」，可后置。
+
+### 16.4 端口回传落点（同 §15 ①，无屏同样依赖）
+无屏客户端连网关 WS 也走 `gatewayBootstrap.getGatewayWsUrl()`：原生写 `getFilesDir()/gateway.url` + `LocalBroadcast`，JS 经 `plus.io` 读。**跨边界文件落点映射**是有屏/无屏都面临的同类问题，待真机验证（见 §15 ① 验证段）。
+
+### 16.5 无屏原生能力清单与优先级（均落在 `app-product-wake` 插件）
+| 能力 | 用途 | 优先级 | 状态 |
+|---|---|---|---|
+| `startService` 启动点 + 端口回传 | App 启动拉起 `:gateway`、回传 WS 地址 | **P0（已完成 ①）** | ✅ 2026-11-10 |
+| SoftAP 配网 + setup 网页 | 无屏首连联网 + 填 AI 配置 | **P1（首通必需）** | ⬜ 未做（网关侧 setup 模式 + 原生开热点） |
+| 首连 IP 回传 | SoftAP 提交响应带设备新 IP | **P1（随 SoftAP 同做）** | ⬜ 未做 |
+| mDNS 广播（网关侧） | 重连兜底，TXT 带动态端口 | P2 | ⬜ 未做（entry.ts 加 multicast-dns） |
+| mDNS 发现（companion 原生侧） | 手机解析 `xiaoxiong.local` | P2（依赖原生插件） | ⬜ 未做（NsdManager/NetService + plus.bridge） |
+| BLE 配网 | 量产体验替代 SoftAP | P3（可选） | ⬜ 未做 |
+
+### 16.6 落到设备形态
+- **安卓系无屏**（车机/安卓音箱/盒子）：直接装咱们 uni-app App，语音链路（唤醒→采集→网关→TTS）全原生、不依赖屏幕；UI 页休眠。配网走 SoftAP/BLE。
+- **裸 Linux 单板机**（树莓派）：不跑 uni-app、原生跑网关（`node gateway.bundle.mjs`）+ 轻量音频客户端；配网走 `wpa_supplicant`/网线，发现走 mDNS 或固定 IP。
+- **裸 MCU**：跑不了 Node，只能做瘦客户端连别处托管的网关（外部 LAN 模式）。

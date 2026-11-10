@@ -11,6 +11,20 @@
 - 断线重连指数退避：1s / 2s / 4s / 8s，上限 30s。
 - 一次连接可承载多轮会话。
 
+## 嵌入式 / 同包模式（loopback）
+
+当网关以「同包」方式内嵌在 App 内运行（Android `:gateway` 独立进程、iOS App 进程内后台线程，见 `docs/mobile-embedded-gateway.md`），客户端与网关走**回环 TCP/WS**，不出网：
+
+- **地址**：`ws://127.0.0.1:<port>`，仅绑回环（`GATEWAY_MODE=embedded` 时 `listen` 只绑 `127.0.0.1`）；WS 路径为 `/ws`。
+- **动态端口**：为避开「划掉 App 重开残留 Node 占端口」冲突，启动用 `GATEWAY_PORT=0` 让系统分配，实际端口由网关 `src/embedded/entry.ts` 写入 `GATEWAY_HOME/.gateway_port`。客户端**不得**把端口写死。
+- **端口回传（Android 已实现，2026-11-10）**：原生 `GatewayNodeService` 轮询端口文件，就绪后
+  - 写 `ws://127.0.0.1:<port>/ws` 到 `getFilesDir()/gateway.url`；
+  - 发 `LocalBroadcast` action=`com.xiaoxiong.assistant.gateway.READY`、extra `port`；
+  - 客户端 `core/transport/gatewayBootstrap.getGatewayWsUrl()` 在 APP-PLUS 下经 `plus.io` 读取该文件（best-effort 探测 root + 回退 `VITE_GATEWAY_WS_URL`），内嵌模式建连前 `await` 此地址。
+- **`onGatewayReady` 契约（待 `app-product-wake` 原生插件落地）**：更稳的回传是经原生插件桥 `onGatewayReady(cb)` 回调实际端口后再放行 UI 建连（`docs/mobile-embedded-gateway.md §6/§7`），替代文件轮询；当前文件+广播为过渡实现。
+- 回环地址不暴露到局域网，天然隔离；有屏/无屏设备同包运行时均走此通道。外部 LAN 模式（网关在别机 `192.168.x.x:9529`）仍按 `session.start.voice.url` 配置，不受影响。
+- **待真机验证**：原生写 `/data/data/<pkg>/files/gateway.url` 与 `plus.io` 各 root（PRIVATE_DOC/APPLICATION/…）的精确映射随系统/SDK 版本走，开发机无法确诊；当前 best-effort 探测 + 兜底，若某机型不在探测项内需补或改原生写确定的 plus.io root。
+
 ## 音频
 
 | 项 | 值 |

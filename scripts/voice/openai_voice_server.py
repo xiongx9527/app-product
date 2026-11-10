@@ -81,6 +81,8 @@ import subprocess
 import urllib.parse
 import urllib.request
 import wave
+import gzip
+import zlib
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -1278,7 +1280,38 @@ async def chat_completions(request: Request):
             "vendor": "",
         }
     else:
-        entry = upstream_pool.pick_by_vendor("LLM", req_vendor) if req_vendor else upstream_pool.pick_by_model("LLM", req_model)
+        # 池内路由（未显式带 base_url）。四种情况：
+        # 1) 提供商+模型都传：按提供商路由，模型原样下发；
+        # 2) 只传模型：按模型定位提供商，命中多个提供商时取默认提供商，未配置默认或
+        #    默认不含该模型则报错；
+        # 3) 只传提供商：在该提供商的模型池内取默认模型；
+        # 4) 都没传：优先默认提供商，在其模型池内取默认模型，没配默认提供商则退回全局轮询。
+        if req_vendor:
+            entry = upstream_pool.pick_by_vendor("LLM", req_vendor)
+        elif req_model:
+            matched = [e for e in upstream_pool.load_pool("LLM") if e.get("model") == req_model]
+            if not matched:
+                return error_response(
+                    400,
+                    f"模型 {req_model} 未在已配置的提供商中找到（请检查模型名或刷新模型列表）",
+                )
+            vendors = sorted({e.get("vendor") for e in matched})
+            if len(vendors) > 1:
+                default_vendor = (config_value("LLM_UPSTREAM_VENDOR", "") or "").strip().lower()
+                if not default_vendor or default_vendor not in vendors:
+                    return error_response(
+                        400,
+                        f"模型 {req_model} 命中多个提供商 {vendors}，"
+                        f"但未配置默认提供商或默认提供商不含该模型（LLM_UPSTREAM_VENDOR）",
+                    )
+                target_vendor = default_vendor
+            else:
+                target_vendor = vendors[0]
+            entry = upstream_pool.pick_by_vendor("LLM", target_vendor)
+        else:
+            default_vendor = (config_value("LLM_UPSTREAM_VENDOR", "") or "").strip().lower()
+            entry = (upstream_pool.pick_by_vendor("LLM", default_vendor)
+                     if default_vendor else upstream_pool.pick_by_model("LLM", None))
     if entry is None:
         return llm_disabled_response()
     # 模型存在性校验（对外接口侧，基于上游模型列表缓存，非每次实时探测）：
@@ -1300,20 +1333,33 @@ async def chat_completions(request: Request):
                 404,
                 f"模型不存在：{req_model}（该提供商未提供此模型，请检查名称或刷新模型列表）",
             )
-    routed_by_model = bool(req_model) and entry.get("model") == req_model
-    if req_model and body.get("bypass_catalog"):
-        # 测试场景：显式带的模型就是要探的真模型，必须原样下发，不要再被全局默认模型替换（否则测的是别的模型）
+    # 模型名确定（对外统一规则）：
+    # - 显式带了模型就原样下发（用户/测试指定了要跑哪个模型，绝不偷偷替换）；
+    # - 没带模型（只传提供商 / 都没传）：在所选提供商的模型池内取默认模型——
+    #   优先全局默认模型（LLM_UPSTREAM_MODEL），若它属于该提供商；否则退回该提供商
+    #   的入口模型，保证模型在该提供商模型池里消化，不串到别的提供商。
+    override_model = llm_model_override()
+    if req_model:
         effective_model = req_model
     else:
+        vendor_models = [
+            e.get("model") for e in upstream_pool.load_pool("LLM")
+            if e.get("vendor") == entry.get("vendor") and e.get("model")
+        ]
         effective_model = (
-            entry["model"] if routed_by_model else ""
-        ) or llm_model_override()
+            override_model if (override_model and override_model in vendor_models) else
+            (entry.get("model") or next(iter(vendor_models), "") or override_model)
+        )
     req, stream_cls, resp_transform = llm_protocols.prepare(
         req_protocol or entry["protocol"] or "openai_chat_completions", entry["base_url"], entry["api_key"],
         effective_model, llm_api_version(), body, entry.get("vendor"),
     )
     # 客户端自带的自定义请求头透传到上游（不落存储，每次请求各带各的）
     req.headers.update(extra_upstream_headers(request))
+    # 强制上游返回明文（不压缩）：流式响应 httpx 不会自动解压，若上游 gzip
+    # 压缩后原样透传给浏览器，浏览器又收不到 Content-Encoding 头，会把压缩字节
+    # 当 UTF-8 解码 → SSE 解析不出任何 data 行，前端测试/对话一片空白。
+    req.headers["Accept-Encoding"] = "identity"
 
     if not body.get("stream"):
         try:
@@ -1363,10 +1409,33 @@ async def chat_completions(request: Request):
     model = effective_model or body.get("model", "")
     translator = stream_cls(model)
 
+    # 兜底：即便上游忽略了 Accept-Encoding: identity 仍返回压缩流，这里按
+    # Content-Encoding 解压后再喂给翻译器，保证下发给浏览器的是明文 SSE。
+    upstream_encoding = (response.headers.get("content-encoding") or "").lower()
+    _decomp = None
+    if upstream_encoding == "gzip":
+        _decomp = gzip.decompress
+    elif upstream_encoding in ("deflate", "zlib"):
+        _decomp = zlib.decompress
+    elif upstream_encoding == "br":
+        try:
+            import brotli
+            _decomp = brotli.decompress
+        except Exception:
+            _decomp = None  # 无 brotli 依赖时不强制，交给浏览器（极少数上游）
+
+    def _decode(raw: bytes) -> bytes:
+        if _decomp is not None:
+            try:
+                return _decomp(raw)
+            except Exception:
+                return raw
+        return raw
+
     async def body_gen():
         try:
             async for chunk in response.aiter_raw():
-                out = translator.feed(chunk)
+                out = translator.feed(_decode(chunk))
                 if out:
                     yield out
         finally:

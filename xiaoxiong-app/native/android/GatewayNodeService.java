@@ -15,6 +15,8 @@ import android.content.Intent;
 import android.os.IBinder;
 import android.util.Log;
 
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -28,6 +30,11 @@ public class GatewayNodeService extends Service {
     private static final String TAG = "GatewayNode";
     private static final String BUNDLE_NAME = "gateway.bundle.mjs";
     private static final String PORT_FILE = ".gateway_port";
+    /** 端口就绪后写出的 WS URL 文件名（落 getFilesDir()，主进程可读，客户端 plus.io 读取）。 */
+    private static final String URL_FILE = "gateway.url";
+    /** 网关就绪广播 action；extra "port" 带实际端口（:gateway 进程 → UI 进程）。 */
+    private static final String ACTION_GATEWAY_READY = "com.xiaoxiong.assistant.gateway.READY";
+    private static final String EXTRA_PORT = "port";
 
     static {
         // libnode.so（digidem v24.20.0）已在 jniLibs/<abi>/；先显式加载，保证 libgatewaynode.so
@@ -87,25 +94,45 @@ public class GatewayNodeService extends Service {
         }
     }
 
-    // 轮询端口文件，出现后通知客户端（此处用广播 + 持久化文件双通道，UI 进程读取后注入 ws URL）。
-    // 用 java.io 而非 java.nio.file：后者在 Android API 26+ 才有，而本工程 minSdk 21。
+    // 轮询端口文件，出现后通知客户端（双通道：① 写 ws URL 文件到 getFilesDir() 供主进程 plus.io 读取；
+    // ② 发 LocalBroadcast 带实际端口）。用 java.io 而非 java.nio.file：后者 Android API 26+ 才有，minSdk 21。
     private void pollPort(File home) {
         final File portFile = new File(home, PORT_FILE);
         new Thread(() -> {
+            String port = null;
             for (int i = 0; i < 300; i++) { // 最多 ~60s
                 if (portFile.exists()) {
-                    String port = readFirstLine(portFile);
-                    if (port != null && !port.isEmpty()) {
-                        Log.i(TAG, "gateway ready on port " + port);
-                        // TODO: LocalBroadcastManager.sendBroadcast(new Intent(ACTION_GATEWAY_READY).putExtra("port", port));
-                        // TODO: 客户端 core/transport 读取本端口拼 ws://127.0.0.1:<port>
-                        return;
+                    final String p = readFirstLine(portFile);
+                    if (p != null && !p.isEmpty()) {
+                        port = p;
+                        break;
                     }
                 }
                 try { Thread.sleep(200); } catch (InterruptedException e) { return; }
             }
-            Log.e(TAG, "gateway port file not found within timeout");
+            if (port == null) {
+                Log.e(TAG, "gateway port file not found within timeout");
+                return;
+            }
+            Log.i(TAG, "gateway ready on port " + port);
+            // ① 写 ws URL 文件（getFilesDir() 与主进程同 UID 共享，客户端 plus.io 读）。
+            writeGatewayUrlFile(port);
+            // ② 广播给 UI 进程（action + port extra）；客户端当前走文件通道，广播作为冗余。
+            final Intent ready = new Intent(ACTION_GATEWAY_READY);
+            ready.putExtra(EXTRA_PORT, port);
+            LocalBroadcastManager.getInstance(this).sendBroadcast(ready);
         }, "gateway-port-poll").start();
+    }
+
+    /** 把 ws://127.0.0.1:<port>/ws 写到 getFilesDir()/gateway.url，供客户端读取并注入 WS 地址。 */
+    private void writeGatewayUrlFile(String port) {
+        final File urlFile = new File(getFilesDir(), URL_FILE);
+        try (FileOutputStream fos = new FileOutputStream(urlFile)) {
+            fos.write(("ws://127.0.0.1:" + port + "/ws").getBytes(StandardCharsets.UTF_8));
+            Log.i(TAG, "gateway url written to " + urlFile.getAbsolutePath());
+        } catch (IOException e) {
+            Log.e(TAG, "write gateway.url failed", e);
+        }
     }
 
     private String readFirstLine(File f) {

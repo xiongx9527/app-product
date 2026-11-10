@@ -1,6 +1,7 @@
 import { appConfig } from '@/core/config'
 import { DEFAULT_GATEWAY_WS_URL } from '@/core/config/constants'
 import { getDeviceId } from '@/core/config/deviceId'
+import { getGatewayWsUrl, isEmbeddedGateway } from './gatewayBootstrap'
 import type { AssistantTransport, ServerEvent, SessionMode } from './types'
 
 /** 客户端上报给网关的位置快照（经纬度必填，address 为反向地理编码结果）。 */
@@ -54,10 +55,15 @@ export class WebSocketTransport implements AssistantTransport {
   private connecting = false
   private readonly connectingListeners = new Set<(value: boolean) => void>()
   private readonly url: string
+  /** 内嵌网关（APP-PLUS）下由原生回传的动态端口 WS 地址；每次 connect 重新解析（不缓存，
+   * 见 connectInternal 注释：应对首启端口文件竞态与重连自愈）。 */
+  private resolvedEmbeddedUrl: string | null = null
   private readonly lang: 'zh-CN'
-  /** 构造时显式传入地址则固定使用；否则每次连接按 resolveGatewayUrl() 动态解析 */
+  /** 构造时显式传入地址则固定使用；内嵌网关已解析到动态端口则优先；否则回退构建期/默认地址。 */
   private get activeUrl(): string {
-    return this.url || resolveGatewayUrl()
+    if (this.url) return this.url
+    if (this.resolvedEmbeddedUrl) return this.resolvedEmbeddedUrl
+    return resolveGatewayUrl()
   }
   /** 在 WS 地址上附带本机稳定 deviceId，供网关按设备复用会话（重连/重唤醒不丢记忆）。 */
   private get deviceWsUrl(): string {
@@ -94,13 +100,20 @@ export class WebSocketTransport implements AssistantTransport {
   }
 
   /** 真正的建连逻辑；外部 connect 与内部自动重连共用，外部调用前已清零重连预算。 */
-  private connectInternal(mode: SessionMode): Promise<void> {
+  private async connectInternal(mode: SessionMode): Promise<void> {
     if (typeof WebSocket === 'undefined') {
       return Promise.reject(new Error('当前环境不支持 WebSocket'))
     }
     this.pendingMode = mode
     this.intentionalClose = false
     this.reconnectExhausted = false
+    // 内嵌网关（APP-PLUS）：建连前先拿原生回传的动态端口地址（best-effort，失败回退默认）。
+    // 每次 connect 都重新解析而非缓存：首启时 :gateway 进程可能尚未把 gateway.url 写好，
+    // 若缓存一次失败结果会永远连不上；重连时端口若变化也能自愈。
+    // H5 / 开发 / 单测环境 isEmbeddedGateway() 为 false，跳过，行为与之前完全一致。
+    if (!this.url && isEmbeddedGateway()) {
+      this.resolvedEmbeddedUrl = await getGatewayWsUrl()
+    }
     // 建连开始：通知界面显示「连接中…」
     this.setConnecting(true)
     // 外部主动连接时取消待执行的重连，避免同时建两条 socket
@@ -264,6 +277,9 @@ export class WebSocketTransport implements AssistantTransport {
       sessionId: this.sessionId,
       lang: this.lang,
       timezone: appConfig.timezone,
+      // 语音服务配置（ASR / LLM / TTS 共用一份）：网关按 provider 展开成三套地址；
+      // 旧客户端不带 voice → 网关完全沿用自身 env，行为不变
+      voice: appConfig.voice,
       // 音乐为网关内置能力，无需客户端上报配置
       location: this.lastLocation ?? undefined,
       mode,
