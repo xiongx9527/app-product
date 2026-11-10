@@ -17,7 +17,7 @@ import {
   type MediaDirective,
 } from './musicTool'
 import { createMusicSearchTool } from './musicSearchTool'
-import { createLyricsTool } from './lyricsTool'
+import { createSubtitleTool } from './subtitleTool'
 import type { MusicSource } from '../music/types'
 import {
   createRememberTool,
@@ -57,7 +57,7 @@ export {
   type MediaDirective,
 } from './musicTool'
 export { createMusicSearchTool, MUSIC_SEARCH_TOOL_NAME } from './musicSearchTool'
-export { createLyricsTool, LYRICS_TOOL_NAME } from './lyricsTool'
+export { createSubtitleTool, SUBTITLE_TOOL_NAME } from './subtitleTool'
 export {
   createRememberTool,
   createRecallTool,
@@ -72,7 +72,7 @@ export {
  * 新增工具：在 tools/ 下加一个文件实现 createXxxTool，然后在这里登记即可。
  * timezone 缺省为东八区（Asia/Shanghai），由网关配置覆盖；
  * locationProvider 实时读取会话最近一次上报的设备位置（位置/天气工具共用）；
- * musicSource + emit 同时具备时才注册音乐类工具（播放/停止/搜索/歌词）：
+ * musicSource + emit 同时具备时才注册音乐类工具（播放/停止/搜索/字幕）：
  * 前者决定「播什么源」，后者决定「下发给客户端」；缺一（离线测试/未配置音乐源）则不注册。
  */
 export function createToolkit(
@@ -103,7 +103,7 @@ export function createToolkit(
         createResumeMusicTool(lang, emit),
         createNextMusicTool(lang, getMusicSource, emit),
         createMusicSearchTool(lang),
-        createLyricsTool(lang, emit),
+        createSubtitleTool(lang, getMusicSource, emit),
       ]
     : []
   // 长期记忆工具：仅当本设备有记忆存储时注册（无 deviceId 的旧客户端不注册）。

@@ -1,7 +1,9 @@
 import type { MusicFetcher, MusicSource } from '../types'
+import type { SubtitleLine } from '../../../protocol'
 import { genreToKeyword, isGenreRequest } from '../types'
 import { createSomaSource } from './somaSource'
-import { createBilibiliSearchSource } from './bilibiliSearchSource'
+import { createBilibiliSearchSource, searchOrdered, type BiliResult } from './bilibiliSearchSource'
+import { getBilibiliSubtitle } from './bilibiliAudio'
 
 /**
  * 百度播放源：风格/氛围请求走 SomaFM 免费电台，具体歌名/歌手走 B 站搜索兜底抽音轨；
@@ -41,6 +43,25 @@ export function createBaiduMusicSource(fetcher: MusicFetcher): MusicSource {
       const source = isGenreRequest(keyword) ? soma : bili
       lastSource = source
       return source.next ? source.next(keyword) : source.resolve(keyword)
+    },
+    /**
+     * 字幕同源取自 B 站：按「歌手 歌名」搜候选视频，逐个取 AI 字幕/官方字幕，
+     * 命中即返回带时间的逐行字幕（供客户端跟随播放进度高亮）；都取不到返回 null（上层回退「暂无字幕」）。
+     * 不跨源去调独立字幕服务。
+     */
+    async getSubtitle(artist: string, title: string): Promise<SubtitleLine[] | null> {
+      const keyword = `${artist} ${title}`.trim()
+      let ranked: BiliResult[] = []
+      try {
+        ranked = await searchOrdered(keyword, fetcher)
+      } catch {
+        return null
+      }
+      for (const r of ranked.slice(0, 5)) {
+        const lines = await getBilibiliSubtitle(r.bvid, fetcher)
+        if (lines && lines.length) return lines
+      }
+      return null
     },
   }
 }

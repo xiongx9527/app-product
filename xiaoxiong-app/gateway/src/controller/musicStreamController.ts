@@ -3,8 +3,10 @@ import { Readable } from 'node:stream'
 
 /**
  * B 站音轨直链带防盗链（必须带 Referer），而客户端 InnerAudioContext 无法自定义请求头，
- * 因此由网关 /music/stream 代拉并转发给客户端。
- * 仅放行 B 站 CDN 域名白名单，逐跳校验重定向，避免被当作任意 URL 代理（SSRF）。
+ * 因此由网关 /music/stream 代拉并转发给客户端。SomaFM 的 Icecast 还会拒绝非浏览器 UA，
+ * 原生 App 播放器借网关的浏览器 UA 代拉才能播放。
+ * 仅放行白名单域名后缀，逐跳校验重定向，避免被当作任意 URL 代理（SSRF）。
+ * 与 service/music 里 needsProxy 的 PROXY_HOST_SUFFIXES 需保持同步。
  */
 
 const UA =
@@ -12,10 +14,11 @@ const UA =
 const REFERER = 'https://www.bilibili.com/'
 
 /**
- * 允许代理的上游 CDN 域名后缀（B 站音轨只落在这些域）。
- * 后缀匹配，子域自动覆盖：upos-sz-mirrorali.bilivideo.com、xy.mcdn.bilivideo.cn、
- * nqyu06l.edge.mountaintoys.cn 等都能命中。mountaintoys.cn / biliapi.com 是 B 站
- * 新版 mcdn 边缘节点域名，缺了会让「播放失败」（直链域名不在白名单被代理 400 拒绝）。
+ * 允许代理的上游 CDN 域名后缀。后缀匹配，子域自动覆盖。
+ * B 站音轨只落在这些域（upos-sz-mirrorali.bilivideo.com、xy.mcdn.bilivideo.cn、
+ * nqyu06l.edge.mountaintoys.cn 等都能命中；mountaintoys.cn / biliapi.com 是 B 站
+ * 新版 mcdn 边缘节点，缺了会让「播放失败」）。somafm.com 是风格电台源，原生 App
+ * 播放器 UA 被拒，需网关代拉。
  */
 const ALLOWED_HOST_SUFFIXES = [
   'bilivideo.com',
@@ -26,6 +29,7 @@ const ALLOWED_HOST_SUFFIXES = [
   'szbdyd.com',
   'mountaintoys.cn',
   'biliapi.com',
+  'somafm.com',
 ]
 
 /** 上游地址是否安全可代理：http(s) 协议 + host 命中白名单。导出便于单测。 */

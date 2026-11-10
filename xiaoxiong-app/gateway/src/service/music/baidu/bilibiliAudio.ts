@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { MusicFetcher } from '../types'
+import type { SubtitleLine } from '../../../protocol'
 
 /**
  * 从 B 站视频抽取可播放音轨（免费、无需登录）：
@@ -114,4 +115,112 @@ export function extractBvidFromUrl(url: string): string | null {
 export function extractBvidsFromHtml(html: string): string[] {
   const found = html.match(/bilibili\.com\/video\/(BV[0-9A-Za-z]+)/g) ?? []
   return [...new Set(found.map((m) => m.slice(m.lastIndexOf('/') + 1)))]
+}
+
+/**
+ * 从 B 站视频取字幕（同源：与音乐同一平台，不跨源）。
+ * 优先用视频的 AI 字幕/官方字幕字段（音乐视频的 AI 字幕往往就是字幕），
+ * 抽不到再退回普通字幕。保留每行起始时间（秒），用于客户端跟随播放进度高亮；
+ * 同时合并连续重复行（B 站 AI 字幕常把同一句重复多遍）。
+ * 任意环节失败都返回 null，由上层回退「暂无字幕」。
+ */
+export async function getBilibiliSubtitle(
+  bvid: string,
+  fetcher: MusicFetcher = nativeFetch
+): Promise<SubtitleLine[] | null> {
+  let data: {
+    lyric?: string
+    subtitle?: { list?: Array<{ lan?: string; lan_doc?: string; subtitle_url?: string }> }
+  }
+  try {
+    const key = await getWbiKey(fetcher)
+    const wts = String(Math.floor(Date.now() / 1000))
+    const url =
+      `https://api.bilibili.com/x/player/wbi/v2?bvid=${bvid}` +
+      `&wts=${wts}&w_rid=${wbiSign({ bvid, wts }, key)}`
+    const resp = await fetcher(url, { headers: BILI_HEADERS })
+    if (!resp.ok) return null
+    const json = (await resp.json()) as { data?: typeof data }
+    data = json.data ?? {}
+  } catch {
+    return null
+  }
+
+  // 官方字幕字段（部分音乐视频直接带）：本身是 [mm:ss.xxx] 时间轴文本
+  const pinned = (data.lyric ?? '').toString().trim()
+  if (pinned) {
+    const lines = normalizeSubtitleLines(parseLyricLines(pinned))
+    return lines.length ? lines : null
+  }
+
+  const list = data.subtitle?.list ?? []
+  if (!list.length) return null
+  // AI 字幕（lan 含 ai / lan_doc 含 AI）通常是字幕；没有就退第一个字幕
+  const sub =
+    list.find((s) => (s.lan ?? '').includes('ai') || (s.lan_doc ?? '').includes('AI')) ?? list[0]
+  const subUrl = sub?.subtitle_url
+  if (!subUrl) return null
+
+  try {
+    const full = subUrl.startsWith('//') ? `https:${subUrl}` : subUrl
+    const sResp = await fetcher(full, { headers: BILI_HEADERS })
+    if (!sResp.ok) return null
+    const items = (await sResp.json()) as Array<{ from?: number; content?: string }>
+    const lines = items.map(captionItemToLine).filter((l): l is SubtitleLine => l !== null)
+    const norm = normalizeSubtitleLines(lines)
+    return norm.length ? norm : null
+  } catch {
+    return null
+  }
+}
+
+/** 解析 [mm:ss.xxx] 时间轴 → 秒；非法返回 NaN。 */
+function parseTimecode(tc: string): number {
+  const m = /(\d+):(\d{1,2})(?:\.(\d{1,3}))?/.exec(tc)
+  if (!m) return NaN
+  const mins = Number(m[1])
+  const secs = Number(m[2])
+  const frac = m[3] ? Number(`0.${m[3]}`) : 0
+  return mins * 60 + secs + frac
+}
+
+/** 把官方歌词文本（[mm:ss.xxx] 句子）解析成带时间的字幕行数组。 */
+function parseLyricLines(raw: string): SubtitleLine[] {
+  const out: SubtitleLine[] = []
+  for (const rawLine of raw.split('\n')) {
+    const idx = rawLine.indexOf(']')
+    if (idx > 0 && rawLine[0] === '[') {
+      const time = parseTimecode(rawLine.slice(1, idx))
+      const text = rawLine.slice(idx + 1).trim()
+      if (Number.isFinite(time) && text) out.push({ time, text })
+    } else {
+      const text = rawLine.trim()
+      if (text) out.push({ time: 0, text })
+    }
+  }
+  return out
+}
+
+/** 单条字幕 JSON（AI 字幕/普通字幕）：优先用 from 字段的时间，content 里若带 [mm:ss] 也解析，否则时间记 0。 */
+function captionItemToLine(item: { from?: number; content?: string }): SubtitleLine | null {
+  const raw = (item.content ?? '').trim()
+  if (!raw) return null
+  const idx = raw.indexOf(']')
+  if (raw[0] === '[' && idx > 0) {
+    const tc = parseTimecode(raw.slice(1, idx))
+    const text = raw.slice(idx + 1).trim()
+    if (!text) return null
+    return { time: Number.isFinite(tc) ? tc : (item.from ?? 0), text }
+  }
+  return { time: typeof item.from === 'number' ? item.from : 0, text: raw }
+}
+
+/** 合并连续重复行（B 站 AI 字幕常把同一句重复多遍），保留首条的时间。 */
+function normalizeSubtitleLines(lines: SubtitleLine[]): SubtitleLine[] {
+  const out: SubtitleLine[] = []
+  for (const l of lines) {
+    const prev = out[out.length - 1]
+    if (!prev || l.text !== prev.text) out.push(l)
+  }
+  return out
 }

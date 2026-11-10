@@ -335,7 +335,7 @@ export class VoiceSessionService {
       url: track.url,
       title: track.title,
       channel: track.channel,
-      proxy: needsProxy(track.channel),
+      proxy: needsProxy(track.channel, track.url),
     })
   }
 
@@ -359,7 +359,7 @@ export class VoiceSessionService {
       url: track.url,
       title: track.title,
       channel: track.channel,
-      proxy: needsProxy(track.channel),
+      proxy: needsProxy(track.channel, track.url),
       ...(loop && loop > 1 ? { loop } : {}),
     })
     await this.speakReply(confirm)

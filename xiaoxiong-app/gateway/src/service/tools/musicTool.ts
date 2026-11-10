@@ -8,7 +8,7 @@ import { isSpokenContentRequest, MusicSourceNotImplementedError } from '../music
 /** 媒体指令：直接透传给客户端；客户端据此播放/停止/暂停/恢复/展示。 */
 export type MediaDirective = Extract<
   ServerEvent,
-  { type: 'media.play' | 'media.stop' | 'media.lyrics' | 'media.pause' | 'media.resume' }
+  { type: 'media.play' | 'media.stop' | 'media.subtitle' | 'media.pause' | 'media.resume' }
 >
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
@@ -52,7 +52,7 @@ export function createMusicTool(
           url: track.url,
           title: track.title,
           channel: track.channel,
-          proxy: needsProxy(track.channel),
+          proxy: needsProxy(track.channel, track.url),
           ...(loop && loop > 1 ? { loop } : {}),
         })
         return prefix === 'en'
@@ -157,7 +157,7 @@ export function createNextMusicTool(
         const source = getSource()
         if (!source) throw new Error('music source unavailable')
         const track = await (source.next ? source.next(args?.genre) : source.resolve(args?.genre))
-        emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel, proxy: needsProxy(track.channel) })
+        emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel, proxy: needsProxy(track.channel, track.url) })
         return prefix === 'en'
           ? `Now playing: ${track.title}. (${track.url})`
           : `已为你切换到：${track.title}。`

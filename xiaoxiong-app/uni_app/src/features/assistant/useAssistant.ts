@@ -93,8 +93,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const gatewayPreparing = ref(false)
   /** 队列已满（排队数超上限）的专用话术，显示在页面顶部横幅，不进「你说」卡片 */
   const queueFullMsg = ref('')
-  /** 歌词面板：网关下发 media.lyrics 后展示 */
-  const lyrics = ref<{ title: string; artist?: string; lyrics: string } | null>(null)
+  /** 字幕面板：网关下发 media.subtitle 后展示（lines 带每行起始时间，用于跟随播放高亮） */
+  const subtitle = ref<{ title: string; artist?: string; lines: { time: number; text: string }[] } | null>(null)
+  /** 字幕已复制：行内短暂提示（不弹浮层），复制成功后显示 1.5s */
+  const copied = ref(false)
 
   /** 同一轮掉线自动重连（及手动重试）的次数上限；耗尽后停自动重连，改由页面「重试连接」按钮处理 */
   const MAX_RETRY = 5
@@ -339,8 +341,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'media.stop':
         stopMusic()
         break
-      case 'media.lyrics':
-        lyrics.value = { title: event.title, artist: event.artist, lyrics: event.lyrics }
+      case 'media.subtitle':
+        subtitle.value = { title: event.title, artist: event.artist, lines: event.lines ?? [] }
         break
       case 'media.volume':
         // 网关语音「音量 30% / 调大 / 调小」下发，直接设到本地播放器与滑块显示；
@@ -528,7 +530,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
     stopPlayback()
     stopMusic()
-    lyrics.value = null
+    subtitle.value = null
     transport.close()
   }
 
@@ -652,10 +654,44 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     phase.value = 'listening'
   }
 
-  /** 关闭歌词面板 */
-  function closeLyrics(): void {
-    lyrics.value = null
+  /** 关闭字幕面板 */
+  function closeSubtitle(): void {
+    subtitle.value = null
+    copied.value = false
   }
+
+  /**
+   * 复制字幕：把逐行文本拼成纯文本写入剪贴板。用行内「已复制」提示代替 toast（不弹浮层）。
+   * 仅当确有字幕时才复制，空字幕不动作。
+   */
+  function copySubtitle(): void {
+    if (!subtitle.value?.lines.length) return
+    const text = subtitle.value.lines.map((l) => l.text).join('\n')
+    uni.setClipboardData({
+      data: text,
+      showToast: false,
+      success: () => {
+        copied.value = true
+        setTimeout(() => (copied.value = false), 1500)
+      },
+    })
+  }
+
+  /**
+   * 当前应高亮的字幕行下标：按播放进度（秒）匹配最后一行 time <= currentTime 的行。
+   * 字幕时间相对音轨开头，而 MusicSource 抽的是同一视频音轨，进度大致对齐；无字幕/未播放时为 -1。
+   */
+  const activeSubtitleIndex = computed(() => {
+    const lines = subtitle.value?.lines
+    if (!lines?.length) return -1
+    const cur = musicState.currentTime.value
+    let idx = -1
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].time <= cur) idx = i
+      else break
+    }
+    return idx
+  })
 
   onUnmounted(() => {
     clearT1()
@@ -714,7 +750,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     musicCurrent: musicState.currentTime,
     musicDuration: musicState.duration,
     musicLive: musicState.live,
-    lyrics,
+    subtitle,
+    copySubtitle,
+    copied,
+    activeSubtitleIndex,
     stopMusic,
     pauseMusic,
     resumeMusic,
@@ -723,6 +762,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     nextMusic,
     reportVolume,
     seekMusic,
-    closeLyrics,
+    closeSubtitle,
   }
 }

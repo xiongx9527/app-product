@@ -1,3 +1,5 @@
+import type { SubtitleLine } from '../../protocol'
+
 /** 解析出的可播放曲目：客户端据此用独立播放器播放，不与 TTS 冲突。 */
 export interface ResolvedTrack {
   /** 可直接交给播放器的音频流地址（mp3 / m3u8 / 直链） */
@@ -17,6 +19,12 @@ export interface MusicSource {
    * 可选——没有「下一首」概念的源可不实现，调用方据此回退到 resolve。
    */
   next?(genre?: string): ResolvedTrack | Promise<ResolvedTrack>
+  /**
+   * 取某首歌的字幕（带每行起始时间的行数组）。可选——源不提供字幕时留空，
+   * 上层据此回退到「暂无字幕」。字幕与音乐同源：由音乐源自己从其平台取，
+   * 不跨源去调独立的字幕服务（如 lyrics.ovh）。失败/取不到返回 null。
+   */
+  getSubtitle?(artist: string, title: string): Promise<SubtitleLine[] | null>
 }
 
 /**
@@ -59,7 +67,7 @@ const GENRE_KEYWORDS: Array<{ match: RegExp; keyword: string }> = [
 ]
 
 /**
- * 泛化点歌词：用户只说「放首歌/播放个/随便放点」，没有点名歌名/歌手/风格。
+ * 泛化点字幕：用户只说「放首歌/播放个/随便放点」，没有点名歌名/歌手/风格。
  * 这类词拿去视频搜索「歌 视频 在线听」几乎抽不到音轨，会白报「操作失败」，
  * 应回落到空串、由上层（isGenreRequest 把空串判为风格请求）路由到轻音乐电台（SomaFM）。
  * 回落空串而非「轻音乐」字面值：空串语义更干净——「没给具体点歌信息」，

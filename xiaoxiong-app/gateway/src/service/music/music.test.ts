@@ -656,8 +656,13 @@ describe('needsProxy（频道 → 网关代理判定，源特有知识留在网�
   it('好看直链需代理（百度源下游提供方，防御性保留）', () => {
     expect(needsProxy('haokan')).toBe(true)
   })
-  it('SomaFM 等公共流与未知频道不代理', () => {
+  it('SomaFM 直链需代理（原生 App 播放器 UA 被 Icecast 拒）', () => {
+    expect(needsProxy(undefined, 'https://ice6.somafm.com/groovesalad-128-mp3')).toBe(true)
+    expect(needsProxy('sonicuniverse', 'https://ice6.somafm.com/sonicuniverse-128-mp3')).toBe(true)
+  })
+  it('频道名缺省时按 host 兜底，未知公共流不代理', () => {
     expect(needsProxy('groovesalad')).toBe(false)
     expect(needsProxy(undefined)).toBe(false)
+    expect(needsProxy(undefined, 'https://example.com/a.mp3')).toBe(false)
   })
 })

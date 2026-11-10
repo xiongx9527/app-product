@@ -7,6 +7,12 @@
 
 import type { VoiceConfig } from './voiceConfig'
 
+/** 字幕行：time 为该行起始时间（秒，相对音轨开头），用于客户端跟随播放进度高亮。 */
+export interface SubtitleLine {
+  time: number
+  text: string
+}
+
 export type Lang = 'zh-CN'
 
 /** 设备上报的位置：经纬度必填，address 为系统定位回调附带的可读地址（城市/街道），可选。 */
@@ -37,7 +43,7 @@ export type ClientMessage =
        * 播放设置（音乐播放源等），来自客户端设置页。网关据此决定点歌走哪个来源；
        * 缺省按百度（B 站音轨 + 百度搜索兜底）。新增播放源时在此扩展 source 取值。
        */
-      playback?: { source?: string }
+      playback?: { source?: string; autoSubtitle?: boolean }
       /**
        * 设备稳定标识：客户端持久化生成（一次），连接时随 WS URL query 与 payload 上报。
        * 网关据此把会话与连接解耦——同一设备的重连/重唤醒走「重新武装」复用会话，
@@ -79,8 +85,10 @@ export type ServerEvent =
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
   /** 让客户端播放一段音频流（如 SomaFM 网络电台）；客户端用独立播放器，不与 TTS 冲突。
    *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。
-   *  proxy 标记该直链带防盗链、需经网关 /music/stream 代理（客户端 InnerAudioContext 无法自定义 Referer）；
-   *  频道→代理的判定由网关持有（源特有知识），客户端只认此标记，不再写死频道名。 */
+   *  proxy 标记该直链需经网关 /music/stream 代理：要么带防盗链（如 B 站，需 Referer），
+   *  要么拒绝非浏览器 UA（如 SomaFM，原生 App 播放器会被 403）。客户端 InnerAudioContext
+   *  无法自定义请求头，统一由网关带浏览器 UA/Referer 代拉。频道/直链→代理的判定由网关持有
+   *  （源特有知识），客户端只认此标记，不再写死频道名 / host。 */
   | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
@@ -88,8 +96,9 @@ export type ServerEvent =
   | { type: 'media.pause' }
   /** 让客户端恢复（继续）被暂停的播放 */
   | { type: 'media.resume' }
-  /** 让客户端展示某首歌的歌词 */
-  | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
+  /** 让客户端展示某首歌/视频的字幕（同源：来自当前播放源）。
+   *  lines 为带每行起始时间的逐行字幕，客户端据此跟随播放进度高亮并支持复制。 */
+  | { type: 'media.subtitle'; title: string; artist?: string; lines: SubtitleLine[] }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置（位置/天气类工具被调用但会话尚无位置）时才下发，

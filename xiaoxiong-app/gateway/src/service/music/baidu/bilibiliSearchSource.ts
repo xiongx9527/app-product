@@ -190,7 +190,7 @@ function relevanceScore(title: string, keyword = ''): number {
   return s
 }
 
-interface BiliResult {
+export interface BiliResult {
   bvid: string
   title: string
 }
@@ -218,7 +218,7 @@ function collectResults(node: unknown, out: Map<string, BiliResult> = new Map())
 }
 
 /** 一次搜索：WBI 签名后拉结果，过滤+排序，返回按相关性排好的候选视频列表。 */
-async function searchOrdered(keyword: string, fetcher: MusicFetcher): Promise<BiliResult[]> {
+export async function searchOrdered(keyword: string, fetcher: MusicFetcher): Promise<BiliResult[]> {
   const key = await getWbiKey(fetcher)
   const wts = String(Math.floor(Date.now() / 1000))
   const wrid = wbiSign({ keyword, wts }, key)

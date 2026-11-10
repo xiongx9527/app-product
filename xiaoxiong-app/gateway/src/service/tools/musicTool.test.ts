@@ -67,6 +67,18 @@ describe('音乐控制工具', () => {
     expect(msg).toContain('没找到这首歌')
   })
 
+  it('play_music 下发 SomaFM 风格电台时标记 proxy（原生 App UA 被拒需网关代拉）', async () => {
+    const somaTrack: ResolvedTrack = {
+      url: 'https://ice6.somafm.com/groovesalad-128-mp3',
+      title: 'Groove Salad',
+      channel: 'groovesalad',
+    }
+    const source: MusicSource = { resolve: async () => somaTrack }
+    const { directives, emit } = collect()
+    await createMusicTool('zh-CN', () => source, emit).call({ genre: '轻音乐' })
+    expect(directives).toEqual([{ type: 'media.play', ...somaTrack, proxy: true }])
+  })
+
   it('next_music 搜不到时也告知找不到且不下发 media.play', async () => {
     const source: MusicSource = {
       resolve: async () => sample,

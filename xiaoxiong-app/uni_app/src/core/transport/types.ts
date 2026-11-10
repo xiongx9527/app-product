@@ -1,3 +1,9 @@
+/** 字幕行：time 为该行起始时间（秒，相对音轨开头），用于跟随播放进度高亮。 */
+export interface SubtitleLine {
+  time: number
+  text: string
+}
+
 /** 服务端下行事件（与 contracts/README.md 保持一致） */
 export type ServerEvent =
   | { type: 'asr.partial'; text: string }
@@ -24,8 +30,8 @@ export type ServerEvent =
   | { type: 'media.pause' }
   /** 让客户端恢复（继续）播放 */
   | { type: 'media.resume' }
-  /** 让客户端展示某首歌的歌词 */
-  | { type: 'media.lyrics'; title: string; artist?: string; lyrics: string }
+  /** 让客户端展示某首歌/视频的字幕（同源：来自当前播放源）。lines 为带起始时间的逐行字幕，客户端据此跟随播放进度高亮并支持复制。 */
+  | { type: 'media.subtitle'; title: string; artist?: string; lines: SubtitleLine[] }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置时才下发，客户端据此请求定位授权并上报 session.location；不在建连时主动要 */

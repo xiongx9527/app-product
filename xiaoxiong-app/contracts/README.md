@@ -117,13 +117,13 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "media.play", "url": "https://ice6.somafm.com/groovesalad-128-mp3", "title": "Groove Salad（轻电子/氛围）", "channel": "groovesalad" }
 { "type": "media.play", "url": "https://.../track.m4s", "title": "稻香", "channel": "bilibili", "loop": 3 }
 { "type": "media.stop" }
-{ "type": "media.lyrics", "title": "七里香", "artist": "周杰伦", "lyrics": "窗外的麻雀…" }
+{ "type": "media.subtitle", "title": "七里香", "artist": "周杰伦", "lines": [{ "time": 1, "text": "窗外的麻雀" }, { "time": 9, "text": "在电线杆上多嘴" }] }
 { "type": "client.location.request" }
 { "type": "client.cue", "cue": "asr-down" }
 { "type": "error", "code": "ASR_TIMEOUT", "message": "识别超时" }
 ```
 
-`media.play` 让客户端用**独立播放器**播放一段音频流（电台/歌曲），与 TTS 的音频播放互不冲突；`media.stop` 停止当前播放。客户端在 TTS 播报期间应压低（duck）音乐音量，播完恢复。`media.lyrics` 携带歌词文本供客户端在页面展示。音乐只在用户要求时播放，不做预约/定时播放。
+`media.play` 让客户端用**独立播放器**播放一段音频流（电台/歌曲），与 TTS 的音频播放互不冲突；`media.stop` 停止当前播放。客户端在 TTS 播报期间应压低（duck）音乐音量，播完恢复。`media.subtitle` 携带逐行字幕（同源：来自当前播放源，音乐视频的字幕即歌词），每行含起始时间 `time`（秒，相对音轨开头），供客户端在页面展示并跟随播放进度高亮；字幕只展示、不朗读。音乐只在用户要求时播放，不做预约/定时播放。
 
 `media.play` 可带可选字段 `loop`（正整数，缺省/1 表示不循环）：客户端播完最后一遍后自动重播同一首直到达到总遍数；播完最后一遍进入「已播放完毕」态（暂停按钮变为「继续播放」按钮）。`loop>1` 时客户端在自己内部循环，不回服务端重新检索。
 

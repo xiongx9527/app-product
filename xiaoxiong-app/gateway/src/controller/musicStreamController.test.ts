@@ -10,6 +10,8 @@ describe('isAllowedUpstreamUrl（代理白名单 / 防 SSRF）', () => {
     // 新版 mcdn 边缘节点域名（「周杰伦的歌」实际落在 mountaintoys.cn，曾因不在白名单被代理 400 拒绝）
     expect(isAllowedUpstreamUrl('https://nqyu06l.edge.mountaintoys.cn:4483/upgcxcode/x.m4s?e=xxx')).toBe(true)
     expect(isAllowedUpstreamUrl('https://xy.mcdn.biliapi.com/x.m4s')).toBe(true)
+    expect(isAllowedUpstreamUrl('https://ice6.somafm.com/groovesalad-128-mp3')).toBe(true)
+    expect(isAllowedUpstreamUrl('http://i0.somafm.com/x.mp3')).toBe(true)
   })
 
   it('拒绝非白名单域名（含伪造后缀、内网、本机）', () => {

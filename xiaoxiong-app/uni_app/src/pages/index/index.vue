@@ -58,7 +58,10 @@ const {
   musicCurrent,
   musicDuration,
   musicLive,
-  lyrics,
+  subtitle,
+  copySubtitle,
+  copied,
+  activeSubtitleIndex,
   stopMusic,
   pauseMusic,
   resumeMusic,
@@ -66,7 +69,7 @@ const {
   cycleLoop,
   nextMusic,
   seekMusic,
-  closeLyrics,
+  closeSubtitle,
 } = useAssistant()
 
 // 网关能力健康度：连上 WS 后轮询 /api/health，把 LLM / ASR / TTS / 外网状态展示出来，
@@ -533,13 +536,27 @@ function onConnTap(): void {
       </view>
     </view>
 
-    <view v-if="lyrics" class="lyrics">
-      <view class="lyrics-head">
-        <text class="lyrics-title">{{ t('music.lyrics') }} · {{ lyrics.title }}</text>
-        <text class="lyrics-close" @tap="closeLyrics">{{ t('music.close') }}</text>
+    <view v-if="subtitle" class="subtitle">
+      <view class="subtitle-head">
+        <text class="subtitle-title">{{ t('music.subtitle') }} · {{ subtitle.title }}</text>
+        <view class="subtitle-actions">
+          <text v-if="subtitle.lines.length" class="subtitle-copy" @tap="copySubtitle">
+            {{ copied ? t('music.copied') : t('music.copySubtitle') }}
+          </text>
+          <text class="subtitle-close" @tap="closeSubtitle">{{ t('music.close') }}</text>
+        </view>
       </view>
-      <text v-if="lyrics.artist" class="lyrics-artist">{{ lyrics.artist }}</text>
-      <text class="lyrics-body">{{ lyrics.lyrics || t('music.noLyrics') }}</text>
+      <text v-if="subtitle.artist" class="subtitle-artist">{{ subtitle.artist }}</text>
+      <scroll-view v-if="subtitle.lines.length" scroll-y class="subtitle-body" :scroll-into-view="activeSubtitleIndex >= 0 ? 'sub-' + activeSubtitleIndex : ''" scroll-with-animation>
+        <view
+          v-for="(line, i) in subtitle.lines"
+          :key="i"
+          :id="'sub-' + i"
+          class="subtitle-line"
+          :class="{ 'subtitle-line--active': i === activeSubtitleIndex }"
+        >{{ line.text }}</view>
+      </scroll-view>
+      <text v-else class="subtitle-body">{{ t('music.noSubtitle') }}</text>
     </view>
 
     <view class="controls">
@@ -1300,7 +1317,7 @@ function onConnTap(): void {
   word-break: break-word;
 }
 
-.lyrics {
+.subtitle {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1310,37 +1327,61 @@ function onConnTap(): void {
   border: 1px solid rgba(108, 140, 255, 0.22);
 }
 
-.lyrics-head {
+.subtitle-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.lyrics-title {
+.subtitle-title {
   font-size: 12px;
   color: #cfd8ff;
   word-break: break-word;
 }
 
-.lyrics-close {
+.subtitle-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.subtitle-close {
   font-size: 12px;
   color: #8b91ab;
 }
 
-.lyrics-artist {
+.subtitle-copy {
+  font-size: 12px;
+  color: #6c8cff;
+}
+
+.subtitle-artist {
   font-size: 11px;
   color: #8b91ab;
 }
 
-.lyrics-body {
-  font-size: 13px;
-  line-height: 1.7;
-  color: #dfe5ff;
-  white-space: pre-wrap;
-  word-break: break-word;
+.subtitle-body {
   max-height: 240px;
-  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.subtitle-line {
+  font-size: 13px;
+  line-height: 1.9;
+  color: #aeb6d8;
+  white-space: normal;
+  word-break: break-word;
+  padding: 2px 8px;
+  border-radius: 8px;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.subtitle-line--active {
+  color: #ffffff;
+  background: rgba(108, 140, 255, 0.18);
+  font-weight: 600;
 }
 
 /* 平板与折叠屏展开态：内容限宽，布局更舒展 */

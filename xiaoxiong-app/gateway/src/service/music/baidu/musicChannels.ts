@@ -4,8 +4,8 @@
  *
  * 频道 id 与流地址取自 SomaFM 官方 channels.json / *.pls（2026-11 核对）：
  * - 直链格式为 `https://ice6.somafm.com/<id>-128-mp3`，ice6 是官方 .pls 里的首选主机；
- * - 注意 SomaFM 的 Icecast 会拒绝非浏览器 User-Agent（返回 403），H5 的 <audio> 用浏览器 UA 正常；
- *   原生 App 播放器若 UA 被拒，需要网关代理转发（后续处理）。
+ * - 注意 SomaFM 的 Icecast 会拒绝非浏览器 User-Agent（返回 403），原生 App 播放器无法自定义 UA，
+ *   故风格电台经网关 /music/stream 代理（网关带浏览器 UA 代拉）转发，客户端据此把 proxy 标为真。
  */
 
 export interface SomaChannel {
