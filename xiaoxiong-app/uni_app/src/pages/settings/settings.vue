@@ -5,6 +5,7 @@ import {
   TIMEZONE_OPTIONS,
   appConfig,
   persistConfig,
+  resetPlayback,
   resetVoice,
   setVoiceProvider,
 } from '@/core/config'
@@ -57,6 +58,11 @@ async function onSave(): Promise<void> {
 
 function onResetVoice(): void {
   resetVoice()
+}
+
+/** 播放设置恢复默认：清空为百度源、关闭自动收藏、开启自动字幕、关闭自动循环、默认循环 3 次、默认音量 50%。 */
+function onResetPlayback(): void {
+  resetPlayback()
 }
 
 /** 进入「我的收藏」页：查看/播放/移除已收藏的歌。 */
@@ -539,6 +545,8 @@ watch(
           <text class="entry-label">{{ t('settings.playback.favorites') }}</text>
           <text class="entry-arrow">›</text>
         </view>
+
+        <button class="reset" @tap="onResetPlayback">{{ t('settings.reset') }}</button>
       </template>
     </view>
 

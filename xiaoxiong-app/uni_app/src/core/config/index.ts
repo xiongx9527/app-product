@@ -10,6 +10,7 @@ import {
 } from './constants'
 import {
   createDefaultConfig,
+  createDefaultPlayback,
   createDefaultVoice,
   loadConfig,
   saveConfig,
@@ -95,4 +96,9 @@ export function activeVoiceConfig(): {
 /** 语音服务恢复默认（内置 / 本地 9529 / 无密钥） */
 export function resetVoice(): void {
   appConfig.voice = createDefaultVoice()
+}
+
+/** 播放设置恢复默认（百度源 / 关闭自动收藏 / 开启自动字幕 / 关闭自动循环 / 默认循环 3 次 / 默认音量 50%） */
+export function resetPlayback(): void {
+  appConfig.playback = createDefaultPlayback()
 }
