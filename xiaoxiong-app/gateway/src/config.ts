@@ -81,6 +81,10 @@ export interface GatewayConfig {
   rsaFrontendPublicKey: string
   /** 时区：时间工具据此返回本地时间，默认东八区（Asia/Shanghai） */
   timeZone: string
+  /** 内置语音服务默认根地址（可经 VOICE_BUILTIN_URL 覆盖，例如 LAN 里的本地 AI 服务地址） */
+  voiceBuiltinUrl: string
+  /** DashScope 默认根地址（可经 VOICE_DASHSCOPE_URL 覆盖，例如业务空间地址） */
+  voiceDashscopeUrl: string
   /** 各能力对象 */
   ws: WsConfig
   llm: LlmConfig
@@ -114,6 +118,8 @@ export function loadConfig(): GatewayConfig {
     rsaBackendPrivateKey: process.env.RSA_BACKEND_PRIVATE_KEY ?? '',
     rsaFrontendPublicKey: process.env.RSA_FRONTEND_PUBLIC_KEY ?? '',
     timeZone: process.env.TIME_ZONE ?? 'Asia/Shanghai',
+    voiceBuiltinUrl: process.env.VOICE_BUILTIN_URL ?? 'http://127.0.0.1:9529',
+    voiceDashscopeUrl: process.env.VOICE_DASHSCOPE_URL ?? 'https://dashscope.aliyuncs.com',
     ws: { path: process.env.WS_PATH ?? '/ws' },
     llm: {
       provider: oneOf(process.env.LLM_PROVIDER, 'stub'),

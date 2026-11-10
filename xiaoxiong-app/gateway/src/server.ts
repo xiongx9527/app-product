@@ -30,13 +30,26 @@ export interface Gateway {
  */
 export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
   const db = createDb(config.db.path)
-  const data = createDataService(db, config.db.publicKey, config.db.privateKey)
+  const data = createDataService(db, config.db.publicKey, config.db.privateKey, config)
   const api = createApiController(data)
   const docs = createDocsController()
 
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
     try {
+      // 跨域预检（CORS preflight）：浏览器对 DELETE 或带自定义头的请求会先发 OPTIONS。
+      // H5 页面（与网关不同端口）调用 /api/* 需要这部分，否则浏览器直接拦截实际请求。
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+          'access-control-allow-headers': req.headers['access-control-request-headers'] ?? 'content-type',
+          'content-length': '0',
+        })
+        res.end()
+        return
+      }
+
       // 健康检查：汇总 LLM / ASR / TTS 就绪状态（是否真接入引擎 + 地址是否可达）。
       // 允许跨域，便于 H5（与网关不同端口）直接拉取展示；不做鉴权——仅暴露能力状态，不含密钥。
       if (url.pathname === '/api/health' || url.pathname === '/health') {
@@ -61,10 +74,16 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
         if (config.paramEncrypt && url.pathname !== '/api/openapi.json') {
           // 响应方向：用前端公钥加密，前端用前端私钥解密。
           const data = encryptWithPublicKey(config.rsaFrontendPublicKey, JSON.stringify(result.body ?? null))
-          res.writeHead(result.status, { 'content-type': 'application/json; charset=utf-8' })
+          res.writeHead(result.status, {
+            'content-type': 'application/json; charset=utf-8',
+            'access-control-allow-origin': '*',
+          })
           res.end(JSON.stringify({ encrypted: true, data }))
         } else {
-          writeJson(res, result.status, result.body ?? null)
+          // 允许跨域，便于 H5（与网关不同端口）直接调用 /api/*。
+          writeJson(res, result.status, result.body ?? null, {
+            'access-control-allow-origin': '*',
+          })
         }
         return
       }
@@ -157,8 +176,13 @@ function parseBody(raw: string | undefined, config: GatewayConfig): unknown {
   }
 }
 
-function writeJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+function writeJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders: Record<string, string> = {}
+): void {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...extraHeaders })
   res.end(JSON.stringify(body))
 }
 

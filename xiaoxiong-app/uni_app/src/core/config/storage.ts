@@ -1,18 +1,5 @@
-import {
-  DEFAULT_LANGUAGE,
-  DEFAULT_TIMEZONE,
-  normalizeTimezone,
-} from './constants'
-import { PROVIDERS, findProvider } from './providers'
-import type {
-  AppConfig,
-  Capability,
-  CapabilityConfig,
-  ConfigValue,
-  ProviderField,
-  ProviderTemplate,
-  ServiceMode,
-} from './types'
+import { DEFAULT_LANGUAGE, DEFAULT_TIMEZONE, normalizeTimezone } from './constants'
+import type { AppConfig, ServiceMode, VoiceProviderKind, VoiceServiceConfig } from './types'
 
 export const CONFIG_STORAGE_KEY = 'app-product.config.v1'
 
@@ -20,13 +7,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-export function createDefaultCapability(capability: Capability): CapabilityConfig {
-  const templates = PROVIDERS[capability]
-  const byProvider: Record<string, Record<string, ConfigValue>> = {}
-  for (const template of templates) {
-    byProvider[template.id] = { ...template.defaults }
-  }
-  return { provider: templates[0].id, byProvider }
+const DEFAULT_VOICE: VoiceServiceConfig = {
+  provider: 'builtin',
+  url: 'http://127.0.0.1:9529',
+  apiKey: '',
+}
+
+/** 默认语音服务：内置、本地 9529、无需密钥 */
+export function createDefaultVoice(): VoiceServiceConfig {
+  return { ...DEFAULT_VOICE }
 }
 
 export function createDefaultConfig(): AppConfig {
@@ -35,80 +24,30 @@ export function createDefaultConfig(): AppConfig {
     mode: 'byok',
     language: DEFAULT_LANGUAGE,
     timezone: DEFAULT_TIMEZONE,
-    asr: createDefaultCapability('asr'),
-    llm: createDefaultCapability('llm'),
-    tts: createDefaultCapability('tts'),
+    voice: createDefaultVoice(),
   }
 }
 
 /**
- * 把界面/存储里来的原始值收敛成字段声明的类型。
- * 数字夹在 min/max 内，单选必须是合法项，避免脏配置把运行时搞崩。
+ * 归一化一份语音服务配置：provider 只接受 builtin / dashscope，其余落回 builtin；
+ * url / apiKey 收敛成字符串并去空格。内置缺地址时补默认根地址，避免空串连到奇怪的地方。
  */
-export function coerceFieldValue(
-  field: ProviderField,
-  raw: unknown,
-  fallback: ConfigValue
-): ConfigValue {
-  switch (field.type) {
-    case 'switch':
-      if (typeof raw === 'boolean') return raw
-      if (raw === 'true') return true
-      if (raw === 'false') return false
-      return fallback === true
-
-    case 'number': {
-      const value =
-        typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? '').trim())
-      if (!Number.isFinite(value)) return fallback
-      const min = field.min ?? Number.NEGATIVE_INFINITY
-      const max = field.max ?? Number.POSITIVE_INFINITY
-      return Math.min(max, Math.max(min, value))
-    }
-
-    case 'select': {
-      const value = String(raw ?? '')
-      return field.options?.some((option) => option.value === value)
-        ? value
-        : fallback
-    }
-
-    default:
-      return String(raw ?? '')
-  }
-}
-
-function normalizeCapability(
-  capability: Capability,
-  raw: unknown,
-  fallback: CapabilityConfig
-): CapabilityConfig {
+function normalizeVoice(raw: unknown): VoiceServiceConfig {
   const source = isRecord(raw) ? raw : {}
-  const savedProviders = isRecord(source.byProvider) ? source.byProvider : {}
-  const templates = PROVIDERS[capability]
-  const byProvider: Record<string, Record<string, ConfigValue>> = {}
-
-  for (const template of templates) {
-    const saved = isRecord(savedProviders[template.id])
-      ? (savedProviders[template.id] as Record<string, unknown>)
-      : {}
-    const values: Record<string, ConfigValue> = {}
-    for (const field of template.fields) {
-      const defaultValue = template.defaults[field.key] ?? ''
-      values[field.key] =
-        field.key in saved
-          ? coerceFieldValue(field, saved[field.key], defaultValue)
-          : defaultValue
-    }
-    byProvider[template.id] = values
+  const provider: VoiceProviderKind =
+    source.provider === 'dashscope' || source.provider === 'builtin'
+      ? (source.provider as VoiceProviderKind)
+      : 'builtin'
+  const url = typeof source.url === 'string' ? source.url.trim() : ''
+  const apiKey = typeof source.apiKey === 'string' ? source.apiKey : ''
+  return {
+    provider,
+    url:
+      provider === 'builtin' && !url
+        ? DEFAULT_VOICE.url
+        : url,
+    apiKey,
   }
-
-  const provider =
-    typeof source.provider === 'string' && findProvider(capability, source.provider)
-      ? source.provider
-      : fallback.provider
-
-  return { provider, byProvider }
 }
 
 /** 读取任意输入并补齐缺失项；存档损坏时也能得到一份可用配置 */
@@ -122,18 +61,12 @@ export function normalizeConfig(
     typeof source.language === 'string' && source.language.trim()
       ? source.language
       : base.language
-
   const timezone = normalizeTimezone(source.timezone ?? base.timezone)
 
-  return {
-    version: 1,
-    mode,
-    language,
-    timezone,
-    asr: normalizeCapability('asr', source.asr, base.asr),
-    llm: normalizeCapability('llm', source.llm, base.llm),
-    tts: normalizeCapability('tts', source.tts, base.tts),
-  }
+  // 旧的 asr / llm / tts 字段直接丢弃，不迁移、不兼容；voice 缺失补默认
+  const voice = normalizeVoice(source.voice ?? base.voice)
+
+  return { version: 1, mode, language, timezone, voice }
 }
 
 function hasStorage(): boolean {
@@ -158,13 +91,4 @@ export function saveConfig(config: AppConfig): void {
   } catch {
     // 本地存储不可用时保留内存配置，不阻断会话
   }
-}
-
-export function providerOf(
-  config: AppConfig,
-  capability: Capability
-): ProviderTemplate {
-  return (
-    findProvider(capability, config[capability].provider) ?? PROVIDERS[capability][0]
-  )
 }

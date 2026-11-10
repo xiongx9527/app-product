@@ -34,6 +34,7 @@ const {
   queueFullMsg,
   liveText,
   errorMessage,
+  gatewayPreparing,
   wakeSupported,
   wakeProviderName,
   wsConnected,
@@ -427,6 +428,7 @@ function onConnTap(): void {
       <text class="hint">{{ hint }}</text>
       <text class="phase" :class="phase">{{ phaseLabel }}</text>
       <text v-if="liveText" class="live-text">{{ liveText }}</text>
+      <text v-if="gatewayPreparing" class="hint">{{ t('gateway.preparing') }}</text>
       <text v-if="errorMessage" class="error">{{ errorMessage }}</text>
     </view>
 

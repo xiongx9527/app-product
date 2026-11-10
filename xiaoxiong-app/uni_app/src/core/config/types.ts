@@ -1,57 +1,32 @@
-/** 三类能力（音乐为网关内置能力，不再由客户端配置） */
-export type Capability = 'asr' | 'llm' | 'tts'
-
-/** 配置值只有这三种，方便存本地 JSON 与做类型收敛 */
-export type ConfigValue = string | number | boolean
-
 /**
  * 运行模式：
- * - byok：自带服务，用户自己填厂商、地址、Key（当前唯一可用）
+ * - byok：自带服务，用户自己选语音服务来源（内置 / DashScope）并填地址、Key（当前唯一可用）
  * - platform：平台托管，登录后付费用户直接使用平台 ASR / LLM / TTS，不需要任何配置
  */
 export type ServiceMode = 'byok' | 'platform'
 
-export interface ProviderField {
-  key: string
-  label: string
-  type: 'text' | 'password' | 'number' | 'select' | 'switch' | 'textarea'
-  placeholder?: string
-  hint?: string
-  options?: Array<{ label: string; value: string }>
-  min?: number
-  max?: number
-  step?: number
-}
+/** 语音服务来源：内置（本地 / 局域网 AI 服务）或 DashScope 云端 */
+export type VoiceProviderKind = 'builtin' | 'dashscope'
 
 /**
- * 一个厂商方案 = 厂商 + 默认参数 + 参数字段声明。
- * 配置页完全由 fields 渲染，新增厂商只加一份模板，不改页面代码。
+ * 一份语音服务配置同时覆盖 ASR / LLM / TTS，切换只改 provider。
+ * 模型、音色不在这里填，由网关按 provider 用默认值（见 dashscope-ws-voice.md §5）。
  */
-export interface ProviderTemplate {
-  id: string
-  /** 厂商名，选择器上显示 */
-  vendor: string
-  /** 具体方案，选中后在厂商名下方显示 */
-  name: string
-  description?: string
-  defaults: Record<string, ConfigValue>
-  fields: ProviderField[]
-}
-
-/** 每类能力一份配置：当前选中厂商 + 各厂商各自保存的参数 */
-export interface CapabilityConfig {
-  provider: string
-  byProvider: Record<string, Record<string, ConfigValue>>
+export interface VoiceServiceConfig {
+  provider: VoiceProviderKind
+  /** 服务根地址；内置默认 http://127.0.0.1:9529，DashScope 默认 https://dashscope.aliyuncs.com */
+  url: string
+  /** 内置通常为空；DashScope 必填 */
+  apiKey: string
 }
 
 export interface AppConfig {
   version: 1
   mode: ServiceMode
-  /** 全局语言，ASR / TTS 没单独填时用它；唤醒识别也用 */
+  /** 全局语言，ASR / TTS / 唤醒识别跟随；默认中文 zh-CN */
   language: string
   /** 全局时区（IANA，如 Asia/Shanghai）；时间类工具按它返回用户所在时区的时间，默认东 8 区 */
   timezone: string
-  asr: CapabilityConfig
-  llm: CapabilityConfig
-  tts: CapabilityConfig
+  /** 语音服务（ASR / LLM / TTS 共用一份）：取代旧的三份 asr / llm / tts 子配置 */
+  voice: VoiceServiceConfig
 }

@@ -11,6 +11,9 @@ const zhCN: Messages = {
   'conn.disconnected': '网关未连接',
   'conn.connecting': '连接中…',
 
+  'gateway.preparing': '网关启动中…',
+  'gateway.notReady': '网关未就绪，请稍后重试',
+
   'health.checking': '能力检测中…',
   'health.llm': 'LLM',
   'health.asr': 'ASR',
@@ -69,7 +72,6 @@ const zhCN: Messages = {
   'cue.stillThere': '还在吗？',
   'cue.farewell': '那我先退下了，需要时再叫我。',
 
-  'settings.title': '语音配置',
   'settings.notice.title': '当前模式：自带服务（BYOK）',
   'settings.notice.text':
     '登录与计费上线后，付费用户可切换到平台托管，无需配置下面的三项。',
@@ -79,14 +81,20 @@ const zhCN: Messages = {
   'settings.timezone.title': '时区',
   'settings.timezone.sub': '时间类回答按此时区返回，默认东 8 区',
   'settings.timezone.hint': '问“现在几点”等时间问题时，按所选时区给出。',
-  'settings.provider.label': '厂商',
-  'settings.test': '测试连接',
-  'settings.testing': '测试中…',
   'settings.reset': '恢复默认',
   'settings.save': '保存配置',
   'settings.foot': '配置只保存在本机。切换厂商会保留各自参数，换回来不用重填。',
-  'settings.saved': '已保存，重开语音助手生效',
-  'settings.resetDone': '已恢复默认',
+
+  'settings.voice.title': '语音配置',
+  'settings.voice.provider': '服务来源',
+  'settings.voice.builtin': '内置（本地 / 局域网 AI 服务）',
+  'settings.voice.dashscope': '阿里云 DashScope（云端）',
+  'settings.voice.url': '服务地址',
+  'settings.voice.urlBuiltinHint': '默认 http://127.0.0.1:9529，只填根地址；可改成本机或局域网里的本地 AI 服务',
+  'settings.voice.urlDashscopeHint': '默认 https://dashscope.aliyuncs.com，也可填业务空间地址',
+  'settings.voice.apiKey': 'API Key',
+  'settings.voice.apiKeyHint': '只保存在本机',
+  'settings.savedNext': '已保存，下次连接生效',
 
   'settings.memory.title': '长期记忆',
   'settings.memory.sub': '小熊记住的你的习惯与偏好，只存在本机',
@@ -101,81 +109,6 @@ const zhCN: Messages = {
   'settings.memory.loadFailed': '读取记忆失败，请检查网关连接',
   'settings.memory.key': '话题',
   'settings.memory.value': '内容',
-
-  'capability.asr.title': '语音识别 ASR',
-  'capability.asr.sub': '把麦克风音频转成文字',
-  'capability.llm.title': '大模型 LLM',
-  'capability.llm.sub': '生成回复；复杂任务可走 AgentScope 网关',
-  'capability.tts.title': '语音合成 TTS',
-  'capability.tts.sub': '把回复文字转成语音',
-
-  'field.baseUrl': '服务地址',
-  'field.apiKey': 'API Key',
-  'field.model': '模型',
-  'field.language': '语言',
-  'field.responseFormat': '返回格式',
-  'field.temperature': 'Temperature',
-  'field.timeoutMs': '超时（毫秒）',
-  'field.sampleRate': '采样率',
-  'field.mode': '接入方式',
-  'field.vadModel': 'VAD 模型',
-  'field.puncModel': '标点模型',
-  'field.maxTokens': '最大输出 Token',
-  'field.systemPrompt': 'System Prompt',
-  'field.stream': '流式输出',
-  'field.numCtx': '上下文长度 num_ctx',
-  'field.agentName': 'Agent 名称',
-  'field.sessionMode': '会话模式',
-  'field.voice': '音色',
-  'field.format': '格式',
-  'field.speed': '语速',
-
-  'hint.apiKey': '只保存本机；填写后会带 Authorization: Bearer',
-  'hint.timeoutMs': '本地大模型首次加载可能较慢',
-  'hint.language': '留空时使用全局语言',
-  'hint.systemPrompt': '语音场景建议限长，回答会被直接朗读',
-  'hint.voice': '中文常用 zf_ / zm_ 前缀；完整列表见 /health',
-  'hint.temperature': '越高越随机，语音场景建议 0.3–0.8',
-
-  'vendor.openai': 'OpenAI 兼容',
-  'vendor.dashscope': '阿里云 DashScope',
-  'vendor.funasr': 'FunASR 自建',
-  'vendor.ollama': 'Ollama',
-  'vendor.deepseek': 'DeepSeek',
-  'vendor.agentscope': 'AgentScope 网关',
-  'vendor.kokoro': 'Kokoro',
-
-  'provider.asr.openai.desc':
-    'POST /audio/transcriptions。本地 9529 端口的 openai-voice（SenseVoice / Whisper）即属于这一类。',
-  'provider.asr.dashscope.desc': '阿里云百炼语音识别，需要 API Key，按量计费。',
-  'provider.asr.funasr.desc': '自建 FunASR 服务，离线可用，不需要云账号。',
-  'provider.llm.openai.desc':
-    '任意 /v1/chat/completions 服务：本地 Ollama 兼容端点、vLLM、云厂商兼容模式都走这里。',
-  'provider.llm.ollama.desc': '走 Ollama 原生 /api/chat，支持 num_ctx 等本地参数。',
-  'provider.llm.dashscope.desc': '通义千问 OpenAI 兼容端点，模型可换 qwen 系列。',
-  'provider.llm.deepseek.desc': 'DeepSeek 官方 API，OpenAI 兼容。',
-  'provider.llm.agentscope.desc':
-    '复杂 Agent 操作走自建 Node 网关：工具调用、多步任务、MCP。客户端只连这一个地址。',
-  'provider.tts.openai.desc':
-    'POST /audio/speech。本地 9529 端口同时提供 edge-tts 与 kokoro，可切换格式与采样率。',
-  'provider.tts.kokoro.desc':
-    '本机 kokoro-voice 容器，100 个音色，支持 pcm / wav 流式，无外部依赖。',
-  'provider.tts.dashscope.desc': '阿里云 CosyVoice，音色多、音质好，按量计费。',
-
-  'test.noBaseUrl': '请先填写服务地址',
-  'test.authFailed': '鉴权失败（HTTP {status}），请检查 API Key',
-  'test.httpError': '服务返回 HTTP {status}{detail}',
-  'test.asrModels': '连接成功，服务提供 {count} 个模型',
-  'test.connected': '连接成功',
-  'test.llmReply': '连接成功，模型回复：{text}',
-  'test.ollamaModels': '连接成功，本地有 {count} 个模型',
-  'test.gatewayReady': '网关已就绪',
-  'test.ttsBytes': '连接成功，返回 {size} 音频',
-  'test.ttsEmpty': '接口返回了空音频',
-  'test.kokoroVoices': '连接成功，可用音色 {count} 个',
-  'test.funasrReady': 'FunASR 服务已就绪',
-  'test.reachable': '服务可达（HTTP {status}），该厂商没有轻量探测接口',
-  'test.failed': '连接失败：{message}',
 
   'card.thinking': '思考',
   'card.done': '已完成',
@@ -220,6 +153,9 @@ const enUS: Messages = {
   'conn.connected': 'Gateway connected',
   'conn.disconnected': 'Gateway disconnected',
   'conn.connecting': 'Connecting…',
+
+  'gateway.preparing': 'Starting gateway…',
+  'gateway.notReady': 'Gateway is not ready yet. Try again later.',
 
   'health.checking': 'Checking capabilities…',
   'health.llm': 'LLM',
@@ -279,7 +215,6 @@ const enUS: Messages = {
   'cue.stillThere': 'Still there?',
   'cue.farewell': 'I will step away. Call me when you need me.',
 
-  'settings.title': 'Voice settings',
   'settings.notice.title': 'Mode: bring your own services (BYOK)',
   'settings.notice.text':
     'After login and billing launch, paid users can switch to platform hosting and skip these three sections.',
@@ -291,15 +226,23 @@ const enUS: Messages = {
   'settings.timezone.sub': 'Time-related answers use this zone; default UTC+8',
   'settings.timezone.hint':
     'When asked “what time is it”, the answer follows the selected zone.',
-  'settings.provider.label': 'Vendor',
-  'settings.test': 'Test connection',
-  'settings.testing': 'Testing…',
   'settings.reset': 'Reset',
   'settings.save': 'Save',
   'settings.foot':
     'Settings are stored on this device only. Each vendor keeps its own values.',
-  'settings.saved': 'Saved. Reopen the assistant to apply',
-  'settings.resetDone': 'Reset to defaults',
+
+  'settings.voice.title': 'Voice configuration',
+  'settings.voice.provider': 'Service source',
+  'settings.voice.builtin': 'Built-in (local / LAN AI service)',
+  'settings.voice.dashscope': 'Alibaba Cloud DashScope (cloud)',
+  'settings.voice.url': 'Service URL',
+  'settings.voice.urlBuiltinHint':
+    'Default http://127.0.0.1:9529, root address only; can be a local or LAN AI service',
+  'settings.voice.urlDashscopeHint':
+    'Default https://dashscope.aliyuncs.com, or a workspace address',
+  'settings.voice.apiKey': 'API Key',
+  'settings.voice.apiKeyHint': 'Stored on this device only',
+  'settings.savedNext': 'Saved. Takes effect on next connection',
 
   'settings.memory.title': 'Long-term memory',
   'settings.memory.sub': "What Xiong remembers about your habits and preferences, stored on this device only",
@@ -314,86 +257,6 @@ const enUS: Messages = {
   'settings.memory.loadFailed': 'Failed to load memories; check gateway connection',
   'settings.memory.key': 'Topic',
   'settings.memory.value': 'Value',
-
-  'capability.asr.title': 'Speech recognition (ASR)',
-  'capability.asr.sub': 'Turn microphone audio into text',
-  'capability.llm.title': 'Large language model (LLM)',
-  'capability.llm.sub': 'Generate replies; complex tasks can use the AgentScope gateway',
-  'capability.tts.title': 'Speech synthesis (TTS)',
-  'capability.tts.sub': 'Turn reply text into speech',
-
-  'field.baseUrl': 'Base URL',
-  'field.apiKey': 'API key',
-  'field.model': 'Model',
-  'field.language': 'Language',
-  'field.responseFormat': 'Response format',
-  'field.temperature': 'Temperature',
-  'field.timeoutMs': 'Timeout (ms)',
-  'field.sampleRate': 'Sample rate',
-  'field.mode': 'Transport',
-  'field.vadModel': 'VAD model',
-  'field.puncModel': 'Punctuation model',
-  'field.maxTokens': 'Max output tokens',
-  'field.systemPrompt': 'System prompt',
-  'field.stream': 'Streaming',
-  'field.numCtx': 'Context length (num_ctx)',
-  'field.agentName': 'Agent name',
-  'field.sessionMode': 'Session mode',
-  'field.voice': 'Voice',
-  'field.format': 'Format',
-  'field.speed': 'Speed',
-
-  'hint.apiKey': 'Stored locally only. Sent as Authorization: Bearer when filled',
-  'hint.timeoutMs': 'Local models may be slow on first load',
-  'hint.language': 'Leave empty to use the global language',
-  'hint.systemPrompt': 'Keep answers short; they will be read aloud',
-  'hint.voice': 'Chinese voices usually start with zf_ / zm_; see /health for all',
-  'hint.temperature': 'Higher is more random. 0.3–0.8 works well for voice',
-
-  'vendor.openai': 'OpenAI compatible',
-  'vendor.dashscope': 'Alibaba Cloud DashScope',
-  'vendor.funasr': 'Self-hosted FunASR',
-  'vendor.ollama': 'Ollama',
-  'vendor.deepseek': 'DeepSeek',
-  'vendor.agentscope': 'AgentScope gateway',
-  'vendor.kokoro': 'Kokoro',
-
-  'provider.asr.openai.desc':
-    'POST /audio/transcriptions. The local openai-voice on port 9529 (SenseVoice / Whisper) fits here.',
-  'provider.asr.dashscope.desc':
-    'Alibaba Cloud speech recognition. Requires an API key and is billed per use.',
-  'provider.asr.funasr.desc':
-    'Self-hosted FunASR. Works offline and needs no cloud account.',
-  'provider.llm.openai.desc':
-    'Any /v1/chat/completions service: local Ollama compatible endpoint, vLLM, or cloud compatible modes.',
-  'provider.llm.ollama.desc':
-    'Native Ollama /api/chat, with local options such as num_ctx.',
-  'provider.llm.dashscope.desc':
-    'Qwen through the OpenAI-compatible DashScope endpoint.',
-  'provider.llm.deepseek.desc': 'Official DeepSeek API, OpenAI compatible.',
-  'provider.llm.agentscope.desc':
-    'Complex agent work runs on a self-hosted Node gateway: tools, multi-step tasks, MCP. The client only talks to this address.',
-  'provider.tts.openai.desc':
-    'POST /audio/speech. Local openai-voice on 9529 offers edge-tts and Kokoro with selectable format and sample rate.',
-  'provider.tts.kokoro.desc':
-    'Local kokoro-voice container with 100 voices, pcm / wav streaming, no external dependency.',
-  'provider.tts.dashscope.desc':
-    'Alibaba Cloud CosyVoice. Many voices, good quality, billed per use.',
-
-  'test.noBaseUrl': 'Please fill in the base URL first',
-  'test.authFailed': 'Authentication failed (HTTP {status}). Check the API key',
-  'test.httpError': 'Service returned HTTP {status}{detail}',
-  'test.asrModels': 'Connected. The service offers {count} models',
-  'test.connected': 'Connected',
-  'test.llmReply': 'Connected. Model replied: {text}',
-  'test.ollamaModels': 'Connected. {count} local models found',
-  'test.gatewayReady': 'Gateway is ready',
-  'test.ttsBytes': 'Connected. Received {size} of audio',
-  'test.ttsEmpty': 'The endpoint returned empty audio',
-  'test.kokoroVoices': 'Connected. {count} voices available',
-  'test.funasrReady': 'FunASR service is ready',
-  'test.reachable': 'Service reachable (HTTP {status}); no lightweight probe available',
-  'test.failed': 'Connection failed: {message}',
 
   'card.thinking': 'Thinking',
   'card.done': 'Done',

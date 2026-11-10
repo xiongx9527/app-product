@@ -34,6 +34,12 @@ export const DEFAULT_GATEWAY_HOST = '127.0.0.1'
 export const DEFAULT_GATEWAY_PORT = 8787
 export const DEFAULT_GATEWAY_WS_URL = `ws://${DEFAULT_GATEWAY_HOST}:${DEFAULT_GATEWAY_PORT}/ws`
 
+/**
+ * DashScope 默认地址：仅用于客户端展示（DashScope 地址由网关固定、用户不填写）。
+ * 与网关 config.ts 的 VOICE_DASHSCOPE_URL 默认保持一致；真实生效地址以网关返回为准。
+ */
+export const DEFAULT_DASHSCOPE_URL = 'https://dashscope.aliyuncs.com'
+
 export const SUPPORTED_LANGUAGES = ['zh-CN', 'en-US'] as const
 export type AppLanguage = (typeof SUPPORTED_LANGUAGES)[number]
 

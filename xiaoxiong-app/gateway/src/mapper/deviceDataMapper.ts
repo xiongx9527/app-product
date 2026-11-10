@@ -3,9 +3,9 @@ import type { AppDb } from '../db/client'
 import { deviceData } from '../db/schema'
 import { encryptWithPublicKey, decryptWithPrivateKey } from '../crypto'
 
-/** 设备数据 Mapper。type === 'api-key' 的记录其 payload 在落库时加密、读取时解密。 */
+/** 设备数据 Mapper。type === 'api-key' / 'voice-config' 的记录其 payload 在落库时加密、读取时解密。 */
 export function deviceDataMapper(db: AppDb, dbPublicKey: string, dbPrivateKey: string) {
-  const isSecret = (type: string): boolean => type === 'api-key'
+  const isSecret = (type: string): boolean => type === 'api-key' || type === 'voice-config'
 
   // 解密失败（如历史明文数据）时回退原文，避免整个列表读不出。
   const safeDecrypt = (value: string, type: string): string => {

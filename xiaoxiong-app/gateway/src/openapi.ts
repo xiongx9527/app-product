@@ -96,7 +96,7 @@ export const openApiSpec = {
         responses: { '201': { description: '已写入' } },
       },
     },
-    '/api/memories': {
+    '/api/assistant/memories': {
       get: {
         summary: '列出该设备的长期记忆',
         parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
@@ -113,6 +113,38 @@ export const openApiSpec = {
           },
         },
         responses: { '200': { description: '{ deleted: 删除条数 }' }, '400': { description: '缺 deviceId' } },
+      },
+    },
+    '/api/assistant/voice-config': {
+      get: {
+        summary: '读取该设备的语音服务配置（内置 / DashScope）',
+        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: '当前配置（provider/url/apiKey）' }, '400': { description: '缺 deviceId' } },
+      },
+      post: {
+        summary: '保存该设备的语音服务配置（内置 / DashScope）',
+        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  provider: { type: 'string', enum: ['builtin', 'dashscope'], description: '语音服务来源' },
+                  url: { type: 'string', description: '服务地址；内置可编辑，DashScope 有默认值' },
+                  apiKey: { type: 'string', description: 'API 密钥（落库加密）' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: '{ id, voice }' }, '400': { description: '缺 deviceId' } },
+      },
+      put: {
+        summary: '更新该设备的语音服务配置（与 POST 语义一致，幂等覆盖）',
+        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
+        requestBody: { $ref: '#/paths/~1api~1assistant~1voice-config/post/requestBody' },
+        responses: { '200': { description: '{ id, voice }' }, '400': { description: '缺 deviceId' } },
       },
     },
     '/music/stream': {

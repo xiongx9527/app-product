@@ -90,6 +90,7 @@ xiaoxiong-app/uni_app/src/
 - 数据库只在 Node 端落地（SQLite via `node:sqlite`）；客户端经 REST 读写，不再直接写业务数据到 `plus.sqlite`（`core/database` 仅作离线缓存/降级）。
 - 所有后端接口需提供 Swagger / OpenAPI 文档（网关 `/docs`），新增或修改接口先更文档。
 - 后端文案按 `lang` 本地化（见「语言与国际化」）。
+- **设置接口免登录**：`/api/assistant/*`（长期记忆、语音服务配置）是语音助手自身使用的接口，**永远不需要登录、不做任何鉴权**。不要为这些端点加登录开关或 Bearer 拦截——它们面向本机设置页，登录只属于未来的平台托管模式（届时由不同入口承载）。详见 `xiaoxiong-app/contracts/README.md` 的「设置接口」小节与 `gateway/src/controller/apiController.ts`。
 
 ### 音频与唤醒
 

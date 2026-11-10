@@ -1,5 +1,6 @@
 import type { DataService } from '../service/dataService'
 import { openApiSpec } from '../openapi'
+import { normalizeVoiceConfig } from '../voiceConfig'
 
 export interface ApiRequest {
   method: string
@@ -16,6 +17,9 @@ export interface ApiResult {
 /**
  * 对外 REST 接口 controller：集中处理所有 /api/* 请求（含 OpenAPI 文档与数据接口），
  * 只负责解析请求、调用 service、组装响应；参数加密在 server 传输层统一处理。
+ *
+ * 设置相关接口（长期记忆、语音服务配置）统一挂在 /api/assistant 下，与通用数据接口（sessions /
+ * device-data / command-logs）区分开。这是语音助手自己使用的接口，不需要登录。
  *
  * 注意：DataService 的各方法都是异步（Drizzle 查询返回 Promise），这里统一 await，
  * 否则会把 pending Promise 直接 JSON 序列化成了 {}。
@@ -55,18 +59,28 @@ export function createApiController(data: DataService) {
       return { status: 200, body: await data.listCommandLogs(deviceId) }
     }
 
-    // 长期记忆（按设备维度）：设置页查看 / 删除。deviceId 必填，否则无法归属设备。
-    if (pathname === '/api/memories' && method === 'GET') {
+    // 设置接口（/api/assistant）：语音助手自己使用，长期记忆 + 语音服务配置，按设备维度，不需要登录。
+    if (pathname === '/api/assistant/memories' && method === 'GET') {
       if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
       return { status: 200, body: await data.getMemories(deviceId) }
     }
-    if (pathname === '/api/memories' && method === 'DELETE') {
+    if (pathname === '/api/assistant/memories' && method === 'DELETE') {
       if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
       const b = (body ?? {}) as { key?: string }
       // key 优先取请求体，其次取 query（清空记忆时不传 key）；空串表示清空全部。
       const key = b.key ?? query.get('key') ?? ''
       const n = await data.forgetMemory(deviceId, key)
       return { status: 200, body: { deleted: n } }
+    }
+    if (pathname === '/api/assistant/voice-config' && method === 'GET') {
+      if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
+      return { status: 200, body: await data.getVoiceConfig(deviceId) }
+    }
+    if (pathname === '/api/assistant/voice-config' && (method === 'POST' || method === 'PUT')) {
+      if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
+      const voice = normalizeVoiceConfig(body)
+      const id = await data.saveVoiceConfig(deviceId, voice)
+      return { status: 200, body: { id, voice } }
     }
 
     return { status: 404, body: { error: 'not found' } }

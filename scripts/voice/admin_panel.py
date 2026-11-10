@@ -570,6 +570,8 @@ const I18N = {
     "login.failed": "登录失败",
     "login.login": "登录",
     "login.password": "密码",
+    "login.badCreds": "账号或密码错误",
+    "login.emptyCreds": "请输入账号和密码",
     "modal.editPrefix": "编辑：",
     "modal.editTitle": "编辑地址与密钥",
     "modal.keyClearHint": "（留空=清空）",
@@ -601,6 +603,7 @@ const I18N = {
     "tts.synthesize": "合成",
     "tts.voiceNote": "音色说明：",
     "tts.voiceParam": "　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502",
+    "vendor.custom": "自定义",
   },
   'en': {
     "app.logout": "Log out",
@@ -728,6 +731,8 @@ const I18N = {
     "login.failed": "Login failed",
     "login.login": "Login",
     "login.password": "Password",
+    "login.badCreds": "Incorrect account or password",
+    "login.emptyCreds": "Please enter your account and password",
     "modal.editPrefix": "Edit: ",
     "modal.editTitle": "Edit URL & Key",
     "modal.keyClearHint": "(leave blank to clear)",
@@ -759,13 +764,36 @@ const I18N = {
     "tts.synthesize": "Synthesize",
     "tts.voiceNote": "Voice note: ",
     "tts.voiceParam": " · Params: voice language must match the text (incl. dialects: Taiwanese/Cantonese need matching text), otherwise upstream returns 502",
+    "vendor.custom": "Custom",
   }
 };
 let curLang = localStorage.getItem('admin_lang') || 'zh-CN';
 const t = (zh) => (I18N[curLang] && I18N[curLang][zh]) || zh;
+// 仅翻译「自定义」供应商的展示文案；底层存储值 '自定义' 保持不变，避免破坏配置落盘
+function vendorLabel(v){ return v==='自定义' ? t('vendor.custom') : v; }
+// 服务端返回的中文错误文案按当前语言转译（已知项），未知项原样显示
+const SERVER_MSG = { '账号或密码错误':'login.badCreds', '请输入账号和密码':'login.emptyCreds' };
+// 把后端 detail（可能是字符串 / 对象数组 / 对象）渲染成可读文案，杜绝 [object Object]
+function fmtErr(detail){
+  let msg;
+  if(!detail) msg = t('login.failed');
+  else if(typeof detail === 'string') msg = detail;
+  else if(Array.isArray(detail)) msg = detail.map(x=> x && x.msg ? x.msg : (typeof x==='string'?x:'')).filter(Boolean).join('；') || t('login.failed');
+  else if(typeof detail === 'object') msg = detail.msg || t('login.failed');
+  else msg = String(detail);
+  if(SERVER_MSG[msg]) msg = t(SERVER_MSG[msg]);
+  return msg;
+}
 function applyStaticI18n(){
   document.querySelectorAll('[data-i18n]').forEach(e=>{ e.textContent = t(e.getAttribute('data-i18n')); });
   document.querySelectorAll('[data-i18n-ph]').forEach(e=>{ e.placeholder = t(e.getAttribute('data-i18n-ph')); });
+}
+function rerenderActiveView(){
+  const app=document.getElementById('app');
+  if(!app || !app.children.length) return;
+  // 登录卡片与控制台用同一套 t() 渲染，按当前实际展示的视图重建即可刷新文案
+  if(document.getElementById('login')) renderLogin();
+  else renderDashboard();
 }
 function setLang(l){
   curLang = (l==='en') ? 'en' : 'zh-CN';
@@ -773,9 +801,7 @@ function setLang(l){
   document.documentElement.lang = curLang;
   document.querySelectorAll('.lang-switch .ls').forEach(b=> b.classList.toggle('active', b.dataset.lang===curLang));
   applyStaticI18n();
-  // 动态卡片（renderDashboard 内）经 t() 渲染，切换后整体重建即可刷新
-  const app=document.getElementById('app');
-  if(app && app.children.length) renderDashboard();
+  rerenderActiveView();
 }
 document.documentElement.lang = curLang;
 document.querySelectorAll('.lang-switch .ls').forEach(b=>{
@@ -791,21 +817,27 @@ async function boot(){
 }
 
 function renderLogin(){
-  document.getElementById('app').innerHTML = '';
+  const app=document.getElementById('app');
+  // 切换语言会重建登录卡片，保留已输入的账号/密码，避免清空后空提交触发校验错误
+  const prevU = app.querySelector('#u') ? app.querySelector('#u').value : '';
+  const prevP = app.querySelector('#p') ? app.querySelector('#p').value : '';
+  app.innerHTML = '';
   const card = el(`<div class="card" id="login">
     <h2>${t('login.login')}</h2>
     <label>${t('login.account')}</label><input type="text" id="u" autocomplete="username" />
     <label>${t('login.password')}</label><input type="password" id="p" autocomplete="current-password" />
     <div class="err" id="e"></div>
-    <div class="row" style="margin-top:12px"><button id="go">${t('login.login')}</button></div>
+    <div class="row" style="margin-top:12px; justify-content:center"><button id="go">${t('login.login')}</button></div>
   </div>`);
-  document.getElementById('app').appendChild(card);
+  card.querySelector('#u').value = prevU;
+  card.querySelector('#p').value = prevP;
+  app.appendChild(card);
   const submit = async ()=>{
     const r = await api('/admin/login', {method:'POST',
       headers:{'content-type':'application/x-www-form-urlencoded'},
       body:`user=${encodeURIComponent(document.getElementById('u').value)}&password=${encodeURIComponent(document.getElementById('p').value)}`});
     if(r.ok){ boot(); }
-    else { document.getElementById('e').textContent = (await r.json()).detail || t('login.failed'); }
+    else { document.getElementById('e').textContent = fmtErr((await r.json()).detail); }
   };
   card.querySelector('#go').onclick = submit;
   card.querySelector('#p').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
@@ -1013,7 +1045,7 @@ function openTestModal(gi, m){
   const stat=document.getElementById('testModalStatus');
   if(!mask||!title||!out||!stat||!g) return;
   testModalG=g; testModalM=m; testModalGi=gi;
-  title.textContent = t('llm.testPrefix') + g.vendor + ' / ' + m;
+  title.textContent = t('llm.testPrefix') + vendorLabel(g.vendor) + ' / ' + m;
   const defProto=(g.accounts[0] && g.accounts[0].protocol) || g.protocol || '';
   const protoSel=document.getElementById('testModalProto');
   protoSel.innerHTML = LLM_PROTOCOLS.map(p=>`<option value="${p}"${p===defProto?' selected':''}>${p}</option>`).join('');
@@ -1058,7 +1090,7 @@ function openAccModal(gi, ai){
   const g=llmGroups[gi], a=g && g.accounts[ai];
   if(!a) return;
   editAccGi=gi; editAccAi=ai;
-  document.getElementById('accModalTitle').textContent = t('modal.editPrefix') + g.vendor + '（' + t('login.account') + ' ' + (ai+1) + '）';
+  document.getElementById('accModalTitle').textContent = t('modal.editPrefix') + vendorLabel(g.vendor) + '（' + t('login.account') + ' ' + (ai+1) + '）';
   document.getElementById('accUrl').value = a.base_url||'';
   document.getElementById('accKey').value = a.api_key||'';
   document.getElementById('accModal').classList.add('show');
@@ -1114,7 +1146,7 @@ async function renderLlmTable(){
         html += '<tr>';
         if(first){
           html += `<td rowspan="${n}" class="row-act"><input type="radio" name="lpDefault" value="${escapeAttr(g.vendor)}" ${g.vendor===llmDefVendor?'checked':''} title="${t('llm.defaultProvider')}" /></td>`;
-          html += `<td class="prov-cell" rowspan="${n}"><b>${escapeHtml(g.vendor)}</b> <button class="mini lp-refresh" data-g="${gi}" title="${t('llm.refreshModels')}">↻</button></td>`;
+          html += `<td class="prov-cell" rowspan="${n}"><b>${escapeHtml(vendorLabel(g.vendor))}</b> <button class="mini lp-refresh" data-g="${gi}" title="${t('llm.refreshModels')}">↻</button></td>`;
         }
         html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-url">${escapeHtml(a.base_url||'')}</span></td>`;
         html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-key">${a.api_key?'••••••':t('common.empty')}</span></td>`;
@@ -1785,7 +1817,7 @@ async function renderDashboard(){
       sel.innerHTML='<option value="">'+t('llm.defaultRoute')+'</option>';
       Object.keys(map).forEach(v=>{
         const o=document.createElement('option'); o.value=v;
-        o.textContent=v+(hosts[v]?('　('+hosts[v]+')'):''); sel.appendChild(o);
+        o.textContent=vendorLabel(v)+(hosts[v]?('　('+hosts[v]+')'):''); sel.appendChild(o);
       });
       sel.value = Object.prototype.hasOwnProperty.call(map,cur) ? cur : '';
       sel.onchange = refreshLlmModels;
@@ -1936,7 +1968,10 @@ def register_admin_routes(app, stt_builtin_check=None, tts_builtin_check=None) -
         return HTMLResponse(ADMIN_HTML, headers={"Cache-Control": "no-store, must-revalidate"})
 
     @app.post("/admin/login")
-    def admin_login(user: str = Form(...), password: str = Form(...)):
+    def admin_login(user: str | None = Form(None), password: str | None = Form(None)):
+        # 表单缺字段时显式返回可读字符串，避免 FastAPI 默认 422 把 detail 写成对象数组
+        if not user or not password:
+            raise HTTPException(status_code=400, detail="请输入账号和密码")
         cfg = load_admin_config()
         ok = hmac.compare_digest(user, cfg["user"]) and hmac.compare_digest(
             password, cfg["password"]

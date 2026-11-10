@@ -37,6 +37,7 @@ import {
   type AssistantEffect,
 } from '@/core/assistant/types'
 import { createTransport, resolveGatewayHttpBase } from '@/core/transport'
+import { waitForEmbeddedGateway } from '@/core/transport/gatewayBootstrap'
 import {
   useHealth,
   toHealthItems,
@@ -87,6 +88,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 网关判定回声兜底中：播报期间不拾音，只能点「打断」
   const halfDuplex = ref(false)
   const errorMessage = ref('')
+  /** 内嵌网关启动中（enable 时轮询 gateway.url 直到原生进程写出），用于界面显示「启动中…」而非假死 */
+  const gatewayPreparing = ref(false)
   /** 队列已满（排队数超上限）的专用话术，显示在页面顶部横幅，不进「你说」卡片 */
   const queueFullMsg = ref('')
   /** 歌词面板：网关下发 media.lyrics 后展示 */
@@ -579,7 +582,21 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     if (permissions.value.mic !== 'granted') playPromptCue('micDenied')
   }
 
-  function enable(): void {
+  /**
+   * 开启助手：先等内嵌网关就绪（原生 :gateway 进程写出 gateway.url）再进入待唤醒。
+   * 未就绪（超时）时显示 i18n 提示并出声，不静默、不继续连默认回退地址。
+   * 非内嵌（H5 / 外部网关）下 waitForEmbeddedGateway 立即返回 true，行为不变。
+   */
+  async function enable(): Promise<void> {
+    gatewayPreparing.value = true
+    errorMessage.value = ''
+    const ready = await waitForEmbeddedGateway()
+    gatewayPreparing.value = false
+    if (!ready) {
+      errorMessage.value = t('gateway.notReady')
+      playPromptCue('gatewayDown')
+      return
+    }
     dispatch({ type: 'ENABLE' })
   }
 
@@ -665,6 +682,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     queueFullMsg,
     liveText,
     errorMessage,
+    gatewayPreparing,
     wakeSupported,
     wakeProviderName,
     wsConnected,
