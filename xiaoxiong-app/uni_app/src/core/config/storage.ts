@@ -27,16 +27,18 @@ const DEFAULT_PLAYBACK: PlaybackConfig = {
   autoSave: false,
   autoSubtitle: true,
   defaultLoop: 3,
+  autoLoop: false,
   defaultVolume: 0.5,
 }
 
-/** 默认播放设置：播放源百度，关闭自动收藏，自动字幕开启，默认循环 3 次、默认音量 50% */
+/** 默认播放设置：播放源百度，关闭自动收藏，自动字幕开启，关闭自动循环，默认循环 3 次、默认音量 50% */
 export function createDefaultPlayback(): PlaybackConfig {
   return {
     source: DEFAULT_PLAYBACK.source,
     autoSave: DEFAULT_PLAYBACK.autoSave,
     autoSubtitle: DEFAULT_PLAYBACK.autoSubtitle,
     defaultLoop: DEFAULT_PLAYBACK.defaultLoop,
+    autoLoop: DEFAULT_PLAYBACK.autoLoop,
     defaultVolume: DEFAULT_PLAYBACK.defaultVolume,
   }
 }
@@ -108,6 +110,8 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
   const autoSave = typeof source.autoSave === 'boolean' ? source.autoSave : false
   // 自动字幕：boolean，缺省开启（播放音乐时同源自动拉取并展示字幕）。
   const autoSubtitle = typeof source.autoSubtitle === 'boolean' ? source.autoSubtitle : true
+  // 自动循环：boolean，缺省关闭（普通播放只播一遍，循环仅在开关开启或显式指令/手动时生效）。
+  const autoLoop = typeof source.autoLoop === 'boolean' ? source.autoLoop : false
   // 默认循环次数：非负整数，缺省/非法回退 3。
   const rawLoop = Number(source.defaultLoop)
   const defaultLoop = Number.isFinite(rawLoop) && rawLoop >= 0 ? Math.floor(rawLoop) : 3
@@ -119,6 +123,7 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
     autoSave,
     autoSubtitle,
     defaultLoop,
+    autoLoop,
     defaultVolume,
   }
 }

@@ -249,9 +249,16 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendJson({ type: 'session.playback_done' })
   }
 
-  /** 播放设置实时变更：设置页改了播放源/自动字幕后推送，网关据此立即重建音乐源或刷新开关，无需重连/重唤醒 */
-  notifyPlaybackSource(source: string, autoSubtitle?: boolean): void {
-    this.sendJson({ type: 'session.playback', source, ...(typeof autoSubtitle === 'boolean' ? { autoSubtitle } : {}) })
+  /** 播放设置实时变更：设置页改了播放源/自动字幕/默认循环/默认音量/自动循环后推送，网关据此立即重建音乐源或刷新开关，无需重连/重唤醒 */
+  notifyPlaybackSource(source: string, autoSubtitle?: boolean, defaultLoop?: number, defaultVolume?: number, autoLoop?: boolean): void {
+    this.sendJson({
+      type: 'session.playback',
+      source,
+      ...(typeof autoSubtitle === 'boolean' ? { autoSubtitle } : {}),
+      ...(typeof defaultLoop === 'number' ? { defaultLoop } : {}),
+      ...(typeof defaultVolume === 'number' ? { defaultVolume } : {}),
+      ...(typeof autoLoop === 'boolean' ? { autoLoop } : {}),
+    })
   }
 
   close(): void {
@@ -288,7 +295,14 @@ export class WebSocketTransport implements AssistantTransport {
       voice: activeVoiceConfig(),
       // 播放设置（音乐播放源等）：来自客户端设置页，网关据此决定点歌走哪个来源；缺省百度。
       // autoSubtitle 一并下发：网关据此在每次播放时自动拉取并展示同源字幕（缺省开启）。
-      playback: { source: appConfig.playback.source, autoSubtitle: appConfig.playback.autoSubtitle ?? true },
+      // defaultLoop / defaultVolume 一并下发：网关据此在每次新播放时带入 loop / media.volume（缺省 3 / 0.5）。
+      playback: {
+        source: appConfig.playback.source,
+        autoSubtitle: appConfig.playback.autoSubtitle ?? true,
+        defaultLoop: appConfig.playback.defaultLoop,
+        defaultVolume: appConfig.playback.defaultVolume,
+        autoLoop: appConfig.playback.autoLoop ?? false,
+      },
       location: this.lastLocation ?? undefined,
       mode,
       // 本机稳定设备标识：网关据此复用会话（重连/重唤醒保留记忆）；URL query 也带一份作主路径

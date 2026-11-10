@@ -47,7 +47,10 @@ export interface VoiceSessionDeps {
     memoryStore?: MemoryStore,
     memoryContext?: string,
     requestLocation?: RequestLocation,
-    autoSubtitle?: boolean
+    autoSubtitle?: boolean,
+    defaultLoop?: number,
+    defaultVolume?: number,
+    autoLoop?: boolean
   ) => AgentService
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
   createAsr: (cfg: AsrConfig) => AsrProvider
@@ -122,6 +125,12 @@ export class VoiceSessionService {
   private lastTrack: { url: string; title: string; channel?: string; artist?: string } | null = null
   /** 自动字幕开关：播放音乐时同源字幕是否自动拉取并展示；来自客户端设置（缺省开启）。 */
   private autoSubtitle = true
+  /** 默认循环播放次数（含当前这一遍）；0/1 表示不循环，缺省 3。每次新播放经 media.play 的 loop 带入。 */
+  private defaultLoop = 3
+  /** 默认播放音量（0–1），缺省 0.5；每次新播放开始时经 media.volume 下发，供「调大/调小」相对增减。 */
+  private defaultVolume = 0.5
+  /** 是否自动循环播放：开启后每次新播放默认按 defaultLoop 遍数循环；关闭（缺省）则只在显式「循环 N 遍」或手动循环时才循环。 */
+  private autoLoop = false
   /** 当前是否正在播放（播放/切歌/循环置真，停止置假）。决定「点歌按当前歌手优先」是否生效：
    *  仅当用户正处于某个歌手的播放会话时才自动选同歌手版本；已停止则老老实实列选项让用户选。 */
   private musicActive = false
@@ -205,6 +214,14 @@ export class VoiceSessionService {
           : createMusicSource({ source: msg.playback?.source })
         // 自动字幕开关：来自客户端设置页（session.start.playback.autoSubtitle），缺省开启。
         this.autoSubtitle = msg.playback?.autoSubtitle ?? true
+        // 默认循环次数 / 默认音量：来自客户端设置页（session.start.playback），缺省 3 / 0.5；
+        // 不合法值归一到安全默认：循环次数取非负整数（0/1 均表示不循环），音量收敛到 [0,1]。
+        // 音量状态以默认值为起点，后续语音「调大/调小」在其上相对增减。
+        const pb = msg.playback
+        this.defaultLoop = typeof pb?.defaultLoop === 'number' ? Math.max(0, Math.floor(pb.defaultLoop)) : 3
+        this.defaultVolume = typeof pb?.defaultVolume === 'number' ? Math.min(1, Math.max(0, pb.defaultVolume)) : 0.5
+        this.autoLoop = typeof pb?.autoLoop === 'boolean' ? pb.autoLoop : false
+        this.musicVolume = this.defaultVolume
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, msg.voice)
         // ASR/TTS/LLM 未就绪时，网关没法用语音播报，改为下发预录提示音，让用户「听得见地」知道；
         // 探测有 15s 缓存，连重连/重唤醒都便宜，不每次真打服务。不下发具体文案（提示音已含人声）。
@@ -229,6 +246,10 @@ export class VoiceSessionService {
           : createMusicSource({ source: msg.source })
         // 自动字幕开关也可实时切换：设置页打开/关闭后由客户端随本消息推来。
         if (typeof msg.autoSubtitle === 'boolean') this.autoSubtitle = msg.autoSubtitle
+        // 默认循环次数 / 默认音量同样可随设置页实时刷新，下次新播放（点歌/换一首）即生效。
+        if (typeof msg.defaultLoop === 'number') this.defaultLoop = Math.max(0, Math.floor(msg.defaultLoop))
+        if (typeof msg.defaultVolume === 'number') this.defaultVolume = Math.min(1, Math.max(0, msg.defaultVolume))
+        if (typeof msg.autoLoop === 'boolean') this.autoLoop = msg.autoLoop
         break
       case 'session.cancel':
         this.cancel()
@@ -337,12 +358,17 @@ export class VoiceSessionService {
       artist: this.lastTrack?.artist,
     }
     this.musicActive = true
+    // 音量以默认值为起点：每次新播放下发 media.volume，供后续「调大/调小」相对增减。
+    this.musicVolume = this.defaultVolume
+    this.deps.send({ type: 'media.volume', volume: this.defaultVolume })
+    // 默认循环次数带入：仅当「自动循环播放」开启时换歌也默认循环，>1 才下发 loop。
     this.deps.send({
       type: 'media.play',
       url: track.url,
       title: track.title,
       channel: track.channel,
       proxy: needsProxy(track.channel, track.url),
+      ...(this.autoLoop && this.defaultLoop > 1 ? { loop: this.defaultLoop } : {}),
     })
     // 自动字幕：开关开启时，「换一首」同样是一次播放，同源尽力拉取字幕下发，与 playTrack 一致。
     void this.emitAutoSubtitle(track.title, this.lastTrack?.artist)
@@ -363,13 +389,19 @@ export class VoiceSessionService {
     // 记下当前曲目，供「循环播放」指令复用（不必重新检索就能把同一首再播 N 遍）；
     // 同时记下歌手，供后续「点一首歌」时按当前歌手优先（避免正在听周杰伦却让我选）。
     this.lastTrack = { url: track.url, title: track.title, channel: track.channel, artist }
+    // 音量以默认值为起点：每次新播放下发 media.volume，供后续「调大/调小」相对增减。
+    this.musicVolume = this.defaultVolume
+    this.deps.send({ type: 'media.volume', volume: this.defaultVolume })
+    // 有效循环次数：语音「循环 N 遍」显式指定优先；否则仅当「自动循环播放」开启时用默认循环次数；>1 才下发 loop。
+    const effectiveLoop =
+      typeof loop === 'number' && loop > 1 ? loop : this.autoLoop ? this.defaultLoop : undefined
     this.deps.send({
       type: 'media.play',
       url: track.url,
       title: track.title,
       channel: track.channel,
       proxy: needsProxy(track.channel, track.url),
-      ...(loop && loop > 1 ? { loop } : {}),
+      ...(effectiveLoop && effectiveLoop > 1 ? { loop: effectiveLoop } : {}),
     })
     // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示，不弹面板）。
     void this.emitAutoSubtitle(track.title, artist)
@@ -554,12 +586,13 @@ export class VoiceSessionService {
         }
         case 'loop': {
           // 循环播放：把最近一次下发的曲目按指定遍数重播（不重新检索）。
-          // 没指定遍数默认 2（再播一遍）；没在播的曲子则友好提示。
+          // 没指定遍数时用「默认循环次数」（即设置里的 defaultLoop）；没在播的曲子则友好提示。
           if (!this.lastTrack) {
             await this.speakReply(m.loopNothing())
             break
           }
-          const loop = parseLoopCount(text)
+          const explicitLoop = parseLoopCount(text)
+          const loop = explicitLoop > 1 ? explicitLoop : this.defaultLoop
           await this.playTrack(this.lastTrack, m.looping(loop), loop > 1 ? loop : undefined)
           this.musicActive = true
           break
@@ -1126,7 +1159,10 @@ export class VoiceSessionService {
             memoryStore,
             memoryContext,
             () => this.requestClientLocation(),
-            this.autoSubtitle
+            this.autoSubtitle,
+            this.defaultLoop,
+            this.defaultVolume,
+            this.autoLoop
           )
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }

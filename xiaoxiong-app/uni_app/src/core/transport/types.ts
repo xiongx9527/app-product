@@ -62,7 +62,7 @@ export interface AssistantTransport {
   /** 客户端点「换一首 / 换个风格」：下发 music.next 让网关解析下一首 */
   requestMusicNext(genre?: string): void
   /** 设置页保存后实时通知网关切换播放源/自动字幕开关，立即可用（无需重连） */
-  notifyPlaybackSource(source: string, autoSubtitle?: boolean): void
+  notifyPlaybackSource(source: string, autoSubtitle?: boolean, defaultLoop?: number, defaultVolume?: number, autoLoop?: boolean): void
   /** 本地播放队列真正清空后回执，网关据此才消费排队的下一句 */
   notifyPlaybackDone(): void
   /** 客户端点「换一首 / 换个风格」：请网关用当前音乐源解析下一首 */

@@ -5,10 +5,10 @@ import type { MusicSource } from '../music/types'
 import { needsProxy } from '../music'
 import { isSpokenContentRequest, MusicSourceNotImplementedError } from '../music/types'
 
-/** 媒体指令：直接透传给客户端；客户端据此播放/停止/暂停/恢复/展示。 */
+/** 媒体指令：直接透传给客户端；客户端据此播放/停止/暂停/恢复/设音量/展示。 */
 export type MediaDirective = Extract<
   ServerEvent,
-  { type: 'media.play' | 'media.stop' | 'media.subtitle' | 'media.pause' | 'media.resume' }
+  { type: 'media.play' | 'media.stop' | 'media.subtitle' | 'media.pause' | 'media.resume' | 'media.volume' }
 >
 
 /**
@@ -55,7 +55,10 @@ export function createMusicTool(
   lang: Lang | string,
   getSource: () => MusicSource | undefined,
   emit?: (m: MediaDirective) => void,
-  autoSubtitle = true
+  autoSubtitle = true,
+  defaultLoop = 3,
+  defaultVolume = 0.5,
+  autoLoop = false
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   return {
@@ -70,7 +73,10 @@ export function createMusicTool(
         const source = getSource()
         if (!source) throw new Error('music source unavailable')
         const track = await source.resolve(args?.genre)
-        const loop = args?.loop
+        // 有效循环次数：LLM 显式传 loop 优先；否则仅当「自动循环播放」开启时用默认循环次数；>1 才下发 loop。
+        const loop = typeof args?.loop === 'number' && args.loop > 1 ? args.loop : autoLoop ? defaultLoop : undefined
+        // 音量以默认值为起点：每次新播放下发 media.volume，供客户端按此设音量。
+        emit?.({ type: 'media.volume', volume: defaultVolume })
         emit?.({
           type: 'media.play',
           url: track.url,
@@ -170,7 +176,10 @@ export function createNextMusicTool(
   lang: Lang | string,
   getSource: () => MusicSource | undefined,
   emit?: (m: MediaDirective) => void,
-  autoSubtitle = true
+  autoSubtitle = true,
+  defaultLoop = 3,
+  defaultVolume = 0.5,
+  autoLoop = false
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   return {
@@ -184,7 +193,16 @@ export function createNextMusicTool(
         const source = getSource()
         if (!source) throw new Error('music source unavailable')
         const track = await (source.next ? source.next(args?.genre) : source.resolve(args?.genre))
-        emit?.({ type: 'media.play', url: track.url, title: track.title, channel: track.channel, proxy: needsProxy(track.channel, track.url) })
+        // 音量以默认值为起点：每次新播放下发 media.volume。循环仅当「自动循环播放」开启时带入默认次数。
+        emit?.({ type: 'media.volume', volume: defaultVolume })
+        emit?.({
+          type: 'media.play',
+          url: track.url,
+          title: track.title,
+          channel: track.channel,
+          proxy: needsProxy(track.channel, track.url),
+          ...(autoLoop && defaultLoop > 1 ? { loop: defaultLoop } : {}),
+        })
         // 自动字幕：开关开启时，换歌后尽力同源拉取字幕并下发（无字幕则不显示）。
         void emitAutoSubtitles(getSource, emit, track.title, undefined, autoSubtitle)
         return prefix === 'en'

@@ -55,7 +55,10 @@ describe('音乐控制工具', () => {
     const source: MusicSource = { resolve: async () => sample }
     const { directives, emit } = collect()
     const msg = await createMusicTool('zh-CN', () => source, emit).call({ genre: '轻音乐' })
-    expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 3 },
+    ])
     expect(msg).toContain('歌A')
   })
 
@@ -76,7 +79,10 @@ describe('音乐控制工具', () => {
     const source: MusicSource = { resolve: async () => somaTrack }
     const { directives, emit } = collect()
     await createMusicTool('zh-CN', () => source, emit).call({ genre: '轻音乐' })
-    expect(directives).toEqual([{ type: 'media.play', ...somaTrack, proxy: true }])
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...somaTrack, proxy: true, loop: 3 },
+    ])
   })
 
   it('next_music 搜不到时也告知找不到且不下发 media.play', async () => {
@@ -98,7 +104,10 @@ describe('音乐控制工具', () => {
     }
     const { directives, emit } = collect()
     const msg = await createNextMusicTool('zh-CN', () => source, emit).call({ genre: '爵士' })
-    expect(directives).toEqual([{ type: 'media.play', ...nextTrack, proxy: needsProxy(nextTrack.channel) }])
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...nextTrack, proxy: needsProxy(nextTrack.channel), loop: 3 },
+    ])
     expect(msg).toContain('切换到')
   })
 
@@ -106,7 +115,10 @@ describe('音乐控制工具', () => {
     const source: MusicSource = { resolve: async () => sample }
     const { directives, emit } = collect()
     await createNextMusicTool('zh-CN', () => source, emit).call({})
-    expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 3 },
+    ])
   })
 
   it('自动字幕开启：play_music 播放后同源拉取字幕并下发 media.subtitle', async () => {
@@ -118,7 +130,8 @@ describe('音乐控制工具', () => {
     const { directives, emit } = collect()
     await createMusicTool('zh-CN', () => source, emit, true).call({ genre: '稻香' })
     expect(directives).toEqual([
-      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel) },
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 3 },
       { type: 'media.subtitle', title: sample.title, lines: subtitleLines },
     ])
   })
@@ -127,14 +140,20 @@ describe('音乐控制工具', () => {
     const source: MusicSource = { resolve: async () => sample, getSubtitle: async () => [{ time: 1, text: '字幕' }] }
     const { directives, emit } = collect()
     await createMusicTool('zh-CN', () => source, emit, false).call({ genre: '稻香' })
-    expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 3 },
+    ])
   })
 
   it('自动字幕开启（源无 getSubtitle）：play_music 只下发 media.play，不下发空字幕', async () => {
     const source: MusicSource = { resolve: async () => sample }
     const { directives, emit } = collect()
     await createMusicTool('zh-CN', () => source, emit, true).call({ genre: '稻香' })
-    expect(directives).toEqual([{ type: 'media.play', ...sample, proxy: needsProxy(sample.channel) }])
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 3 },
+    ])
   })
 
   it('next_music 自动字幕开启：换歌后也同源拉取字幕并下发 media.subtitle', async () => {
@@ -148,7 +167,8 @@ describe('音乐控制工具', () => {
     const { directives, emit } = collect()
     await createNextMusicTool('zh-CN', () => source, emit, true).call({ genre: '爵士' })
     expect(directives).toEqual([
-      { type: 'media.play', ...nextTrack, proxy: needsProxy(nextTrack.channel) },
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...nextTrack, proxy: needsProxy(nextTrack.channel), loop: 3 },
       { type: 'media.subtitle', title: nextTrack.title, lines: subtitleLines },
     ])
   })
@@ -157,5 +177,35 @@ describe('音乐控制工具', () => {
     const { emit } = collect()
     const pauseEn = await createPauseMusicTool('en-US', emit).call()
     expect(pauseEn).toBe('Music paused.')
+  })
+
+  it('play_music 尊重传入的 defaultLoop / defaultVolume：带入 loop 与 media.volume', async () => {
+    const source: MusicSource = { resolve: async () => sample }
+    const { directives, emit } = collect()
+    await createMusicTool('zh-CN', () => source, emit, true, 2, 0.4).call({ genre: '轻音乐' })
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.4 },
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 2 },
+    ])
+  })
+
+  it('next_music 尊重传入的 defaultLoop / defaultVolume', async () => {
+    const source: MusicSource = { resolve: async () => sample }
+    const { directives, emit } = collect()
+    await createNextMusicTool('zh-CN', () => source, emit, true, 5, 0.7).call({})
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.7 },
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel), loop: 5 },
+    ])
+  })
+
+  it('播放源不循环（defaultLoop=1）：play_music 不下发 loop 字段', async () => {
+    const source: MusicSource = { resolve: async () => sample }
+    const { directives, emit } = collect()
+    await createMusicTool('zh-CN', () => source, emit, true, 1, 0.5).call({ genre: '轻音乐' })
+    expect(directives).toEqual([
+      { type: 'media.volume', volume: 0.5 },
+      { type: 'media.play', ...sample, proxy: needsProxy(sample.channel) },
+    ])
   })
 })

@@ -400,6 +400,109 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(h.events.some((e) => e.type === 'media.subtitle')).toBe(false)
   })
 
+  it('默认循环/默认音量：网关侧生效，每次新播放带入 loop 与 media.volume', async () => {
+    const h = createHarness({
+      finalizeText: '播放周杰伦的稻香',
+      musicSourceFactory: () => ({
+        resolve: async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }),
+      }),
+    })
+    // 显式下发带 defaultLoop / defaultVolume 的 session.start
+    h.service.handleText(
+      JSON.stringify({
+        type: 'session.start',
+        sessionId: 's1',
+        lang: 'zh-CN',
+        playback: { source: 'baidu', autoSubtitle: false, defaultLoop: 2, defaultVolume: 0.3 },
+      })
+    )
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ loop?: number }>
+    expect(plays).toHaveLength(1)
+    // 默认循环次数带入：总共播放 2 遍
+    expect(plays[0].loop).toBe(2)
+    // 默认音量经 media.volume 下发到客户端（网关侧生效，而非仅存于客户端设置）
+    const vol = h.events.find((e) => e.type === 'media.volume') as
+      | { type: 'media.volume'; volume: number }
+      | undefined
+    expect(vol?.volume).toBe(0.3)
+    // media.volume 在 media.play 之前下发，保证播放起点即用默认音量
+    const volIdx = h.events.findIndex((e) => e.type === 'media.volume')
+    const playIdx = h.events.findIndex((e) => e.type === 'media.play')
+    expect(volIdx).toBeGreaterThanOrEqual(0)
+    expect(volIdx).toBeLessThan(playIdx)
+  })
+
+  it('默认循环为 0 / 1：不下发 loop（只播一遍）；默认音量仍经 media.volume 下发', async () => {
+    const h = createHarness({
+      finalizeText: '播放周杰伦的稻香',
+      musicSourceFactory: () => ({
+        resolve: async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }),
+      }),
+    })
+    h.service.handleText(
+      JSON.stringify({
+        type: 'session.start',
+        sessionId: 's1',
+        lang: 'zh-CN',
+        playback: { source: 'baidu', autoSubtitle: false, defaultLoop: 0, defaultVolume: 0.8 },
+      })
+    )
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ loop?: number }>
+    expect(plays).toHaveLength(1)
+    expect(plays[0].loop).toBeUndefined() // 0 表示不循环，不下发 loop
+    const vol = h.events.find((e) => e.type === 'media.volume') as
+      | { type: 'media.volume'; volume: number }
+      | undefined
+    expect(vol?.volume).toBe(0.8)
+  })
+
+  it('默认循环/音量可经 session.playback 实时刷新：下次播放才生效', async () => {
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '换一首'],
+      musicSourceFactory: () => ({
+        resolve: async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }),
+        next: async () => ({ url: 'https://bili/b.m4s', title: '七里香', channel: 'bilibili' }),
+      }),
+    })
+    h.service.handleText(
+      JSON.stringify({
+        type: 'session.start',
+        sessionId: 's1',
+        lang: 'zh-CN',
+        playback: { source: 'baidu', autoSubtitle: false, defaultLoop: 1, defaultVolume: 0.5 },
+      })
+    )
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    // 播放中途（换一首前）刷新默认循环为 4、默认音量为 0.2
+    h.service.handleText(
+      JSON.stringify({ type: 'session.playback', source: 'baidu', autoSubtitle: false, defaultLoop: 4, defaultVolume: 0.2 })
+    )
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+
+    // 第一次播放：defaultLoop=1（不循环），defaultVolume=0.5
+    const firstVol = h.events.filter((e) => e.type === 'media.volume') as Array<{ volume: number }>
+    expect(firstVol[0].volume).toBe(0.5)
+    // 换一首：应用刷新后的默认（loop=4，volume=0.2）
+    const secondPlay = h.events.filter((e) => e.type === 'media.play') as Array<{ loop?: number; title: string }>
+    expect(secondPlay).toHaveLength(2)
+    expect(secondPlay[1].loop).toBe(4)
+    expect(firstVol[1].volume).toBe(0.2)
+  })
+
   it('暂停播放：下发 media.pause（不是 media.stop），不进 LLM', async () => {
     // 用户反馈：说「暂停播放」结果被关掉（误判成 stop）。这条端到端用例走真实
     // finalizeUtterance 路径（带音乐源），验证命中 pause 后下发 media.pause、

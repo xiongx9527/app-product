@@ -40,7 +40,13 @@ async function onSave(): Promise<void> {
     // 未连接时退化为「下一次唤醒随 session.start 生效」，不强行发（发了也没人收）。
     const transport = getActiveTransport()
     if (transport?.isConnected()) {
-      transport.notifyPlaybackSource(appConfig.playback.source, appConfig.playback.autoSubtitle ?? true)
+      transport.notifyPlaybackSource(
+        appConfig.playback.source,
+        appConfig.playback.autoSubtitle ?? true,
+        appConfig.playback.defaultLoop,
+        appConfig.playback.defaultVolume,
+        appConfig.playback.autoLoop ?? false
+      )
     }
     // 本地落盘是同步的，加一个最短可见时长让加载遮罩有反馈，而不是一闪而过。
     await new Promise((r) => setTimeout(r, 400))
@@ -485,6 +491,19 @@ watch(
             :checked="appConfig.playback.autoSubtitle"
             color="#6c8cff"
             @change="(e: any) => (appConfig.playback.autoSubtitle = e.detail.value)"
+          />
+        </view>
+
+        <!-- 自动循环播放：全局开关；开启后每次新播放默认按默认循环次数循环 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.playback.autoLoop') }}</text>
+            <text class="hint">{{ t('settings.playback.autoLoopHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.playback.autoLoop"
+            color="#6c8cff"
+            @change="(e: any) => (appConfig.playback.autoLoop = e.detail.value)"
           />
         </view>
 

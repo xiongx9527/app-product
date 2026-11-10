@@ -49,13 +49,13 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu" } }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.end" }
 { "type": "session.location", "latitude": 31.23, "longitude": 121.47, "address": "上海市" }
 { "type": "session.playback_done" }
-{ "type": "session.playback", "source": "baidu" }
+{ "type": "session.playback", "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }
 ```
 
 音频二进制帧与 `audio.chunk` 二选一，最终以实现为准。
@@ -64,7 +64,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 `session.playback` 是播放源**实时变更**消息：设置页改了播放源后由客户端在已建立的会话里推送，
 网关据此立即按 `source` 重建音乐源，**无需重连/重唤醒即可生效**（下次点歌/换一首即用新源）；
 未连接时客户端退化为「下一次 `session.start` 随 `playback.source` 生效」，不强行发送。
-`source` 取值与 `session.start.playback.source` 一致（`baidu` / `netease` / `tencent` / `kugou`）。
+`source` 取值与 `session.start.playback.source` 一致（`baidu` / `netease` / `tencent` / `kugou`）。`autoSubtitle` / `defaultLoop` / `defaultVolume` 同样可随本消息实时刷新（取值与 `session.start.playback` 一致），下次新播放（点歌/换一首）即生效。
 `tts.end` 只代表服务端音频帧下发完毕，不代表播完；**队列还有下一句时**网关必须等
 这个回执才消费，否则新一轮 `tts.start` 会掐掉上一轮还没播完的音频。
 队列为空时不等回执，立刻释放，避免用户下一句被误排队。
@@ -125,7 +125,9 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `media.play` 让客户端用**独立播放器**播放一段音频流（电台/歌曲），与 TTS 的音频播放互不冲突；`media.stop` 停止当前播放。客户端在 TTS 播报期间应压低（duck）音乐音量，播完恢复。`media.subtitle` 携带逐行字幕（同源：来自当前播放源，音乐视频的字幕即歌词），每行含起始时间 `time`（秒，相对音轨开头），供客户端在页面展示并跟随播放进度高亮；字幕只展示、不朗读。音乐只在用户要求时播放，不做预约/定时播放。
 
-`media.play` 可带可选字段 `loop`（正整数，缺省/1 表示不循环）：客户端播完最后一遍后自动重播同一首直到达到总遍数；播完最后一遍进入「已播放完毕」态（暂停按钮变为「继续播放」按钮）。`loop>1` 时客户端在自己内部循环，不回服务端重新检索。
+`media.play` 可带可选字段 `loop`（正整数，缺省/1 表示不循环）：客户端播完最后一遍后自动重播同一首直到达到总遍数；播完最后一遍进入「已播放完毕」态（暂停按钮变为「继续播放」按钮）。`loop>1` 时客户端在自己内部循环，不回服务端重新检索。`loop` 的默认值（来自 `session.start.playback.defaultLoop` / `session.playback.defaultLoop`，缺省 3）由网关在每次新播放的 `media.play` 里带入；语音「循环 N 遍」显式指定时优先于默认值。
+
+`media.play` 下发前，网关先下发一条 `media.volume`（取值来自 `session.start.playback.defaultVolume` / `session.playback.defaultVolume`，缺省 0.5，收敛到 [0,1]），客户端据此把本次播放音量设到默认值；后续语音「音量 30% / 调大 / 调小」在该值上相对增减。这样「默认音量」在网关侧真正生效，而非仅存于客户端设置。
 
 `media.play` 可带可选字段 `proxy`（布尔）：为 `true` 表示该直链带防盗链、需经服务端 `/music/stream` 代理转发（客户端 `InnerAudioContext` 无法自定义 Referer）。**频道→是否代理的判定在服务端完成**（属于「百度」播放源的源特有知识），服务端在 `media.play` 里直接给 `proxy` 标记，客户端只认此标记、按 `httpBase` 拼 `/music/stream.m4a?url=<encoded>` 即可，**客户端不再写死任何频道名**（如 `bilibili` / `haokan`）。
 
