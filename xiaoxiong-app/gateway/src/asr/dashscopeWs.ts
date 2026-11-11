@@ -13,6 +13,8 @@ const FINISH_TIMEOUT_MS = 8000
 const RECONNECT_COOLDOWN_MS = 3000
 /** 网关上行固定是 16kHz/16bit 单声道 PCM，不能交给厂商参数覆盖。 */
 const SAMPLE_RATE = 16000
+/** DashScope 实时识别默认模型；设置页没有 ASR 模型选择，缺省用它。 */
+const DEFAULT_ASR_MODEL = 'paraformer-realtime-v2'
 /** 连不上时最多缓存最近 30 秒 16kHz/16bit 单声道音频，防止内存无限涨。 */
 const MAX_BUFFERED_BYTES = SAMPLE_RATE * 2 * 30
 
@@ -81,7 +83,18 @@ export class DashScopeWsAsr implements AsrProvider {
   ) {
     this.url = normalizeWsUrl(baseUrl)
     this.apiKey = apiKey.trim()
-    this.model = stringParam(params.model, 'paraformer-realtime-v2')
+    // params 是 ASR/LLM/TTS 共用通道，可能误带 TTS 音色的所属模型（cosyvoice-*）。
+    // 直接当识别模型会让云端回 ModelNotFound、整句识别失败（表现为「唤醒不了」）；
+    // 精准识别这一族并回退默认，不误伤任何合法的 ASR 模型名。
+    const requestedModel = stringParam(params.model, DEFAULT_ASR_MODEL)
+    if (/^cosyvoice/i.test(requestedModel)) {
+      console.warn(
+        `[asr] 收到 TTS 模型 ${requestedModel} 作为识别模型，忽略并回退 ${DEFAULT_ASR_MODEL}`,
+      )
+      this.model = DEFAULT_ASR_MODEL
+    } else {
+      this.model = requestedModel
+    }
     this.workspace = stringParam(params.workspace, '')
     this.parameters = buildParameters(params)
   }
@@ -496,6 +509,8 @@ function buildParameters(params: VendorParams): Record<string, unknown> {
     if (value === undefined || value === null) continue
     if (
       key === 'model' ||
+      // voice 是 TTS 音色，混进 ASR 的 run-task parameters 会触发 InvalidParameter。
+      key === 'voice' ||
       key === 'workspace' ||
       key === 'apiKey' ||
       key === 'baseUrl' ||

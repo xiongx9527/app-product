@@ -1,6 +1,7 @@
 import type { GatewayConfig } from '../config'
 import { resolveCapabilityConfig } from '../voiceConfig'
 import type { VoiceConfig } from '../voiceConfig'
+import { DashScopeWsTts } from '../tts/dashscopeWs'
 
 /** 单个能力（ASR / LLM / TTS）的就绪状态，供界面直接展示 */
 export interface ProviderStatus {
@@ -201,13 +202,52 @@ async function probeAsr(baseUrl: string, provider: string, apiKey?: string): Pro
 }
 
 /** 功能性探测 TTS：真发一句文本到 /v1/audio/speech，能回非空音频才算通。
- *  DashScope TTS 同样是 WebSocket，退化为「已配密钥 + 主机可达」判断。 */
-async function probeTts(baseUrl: string, provider: string, apiKey?: string): Promise<boolean> {
+ *  DashScope TTS 是 WebSocket：
+ *  - deep（一键检测）时真跑一次合成（DashScopeWsTts.probe），收到真实音频帧才算可用，
+ *    云端错误（如 418 音色/模型不匹配）原样带回界面——不再「主机通就报绿」；
+ *  - 普通轮询（deep=false）避免每 30s 都打一次 WS 合成烧额度，退化为「已配密钥 + 主机可达」判断。 */
+async function probeTts(
+  baseUrl: string,
+  provider: string,
+  apiKey: string | undefined,
+  endpoint: string,
+  deep: boolean,
+): Promise<ProviderStatus> {
   if (provider === 'dashscope') {
-    if (!apiKey) return false
-    return probeHost(baseUrl)
+    if (!apiKey) {
+      return {
+        provider,
+        configured: true,
+        reachable: false,
+        endpoint,
+        message: '已配置但缺少 api-key，无法合成',
+      }
+    }
+    if (!deep) {
+      // 轻量轮询：只确认主机可达，不真合成（省额度）。
+      const up = await probeHost(baseUrl)
+      return {
+        provider,
+        configured: true,
+        reachable: up,
+        endpoint,
+        message: up
+          ? `已配置（${endpoint}）；点「一键检测」可验证真实合成`
+          : `已配置但地址不可达（${endpoint}）`,
+      }
+    }
+    // 真实合成探测：用默认模型（cosyvoice-v3-flash）跑一句，结果反映真实可用性。
+    const tts = new DashScopeWsTts(baseUrl, {}, apiKey)
+    const result = await tts.probe()
+    return {
+      provider,
+      configured: true,
+      reachable: result.ok,
+      endpoint,
+      message: result.ok ? `已接入（真实合成成功，${endpoint}）` : result.message,
+    }
   }
-  return cachedProbe(`tts:${baseUrl}`, async () => {
+  const ok = await cachedProbe(`tts:${baseUrl}`, async () => {
     try {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 4000)
@@ -232,22 +272,23 @@ async function probeTts(baseUrl: string, provider: string, apiKey?: string): Pro
       return false
     }
   })
+  return summarizeProvider(provider, ok, endpoint)
 }
 
 async function buildStatus(
   provider: string,
   baseUrl: string,
   kind: 'asr' | 'tts' | 'llm',
-  apiKey?: string,
+  apiKey: string | undefined,
+  deep: boolean,
 ): Promise<ProviderStatus> {
   if (provider === 'stub') return summarizeProvider('stub', false)
   const endpoint = hostOf(baseUrl)
+  // TTS 直接返回 ProviderStatus（deep 时走真实合成探测，需带上具体失败原因）；
+  // ASR / LLM 仍是布尔可达性，由 summarizeProvider 收敛成状态。
+  if (kind === 'tts') return probeTts(baseUrl, provider, apiKey, endpoint, deep)
   const reachable =
-    kind === 'asr'
-      ? await probeAsr(baseUrl, provider, apiKey)
-      : kind === 'tts'
-        ? await probeTts(baseUrl, provider, apiKey)
-        : await probe(baseUrl, apiKey)
+    kind === 'asr' ? await probeAsr(baseUrl, provider, apiKey) : await probe(baseUrl, apiKey)
   return summarizeProvider(provider, reachable, endpoint)
 }
 
@@ -354,13 +395,13 @@ export async function buildHealth(
   deep = false,
 ): Promise<HealthReport> {
   const resolved = resolveCapabilityConfig(voice, config)
-  const asr = await buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey)
-  const tts = await buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey)
+  const asr = await buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, deep)
+  const tts = await buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey, deep)
   const network = await probeExternal()
   // LLM：deep（一键检测）走真正调用模型，能暴露欠费 / 模型名 / 密钥这类「连通但不可用」故障；
   // 其余（30s 轮询）只做连通探测，避免每次轮询都真打模型烧额度。
   const llm = deep
     ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, resolved.llm.model)
-    : await buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey)
+    : await buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey, deep)
   return { asr, llm, tts, network }
 }

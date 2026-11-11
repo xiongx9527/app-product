@@ -9,7 +9,10 @@ import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
 import { createMusicSource, needsProxy, type MusicSource } from './music'
 import { MusicSourceNotImplementedError } from './music/types'
 import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest, detectContentType } from './music/types'
-import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
+import { formatMemories, formatDeals, type MemoryStore, type RequestLocation } from './tools'
+import { createDealsTool } from './tools/dealsTool'
+import { createSmzdmSource } from './deals'
+import { detectDealsCommand } from './dealsControl'
 import {
   searchCandidates,
   needsCandidateList,
@@ -68,6 +71,8 @@ export interface VoiceSessionDeps {
   musicSourceFactory?: () => MusicSource
   /** 检索候选歌曲（MusicBrainz）；测试可注入桩避免联网 */
   candidateFetcher?: CandidateFetcher
+  /** 查询商品/好价：测试可注入桩避免联网，缺省用 createDealsTool 真实查询 */
+  dealsQuery?: (keyword?: string) => Promise<string>
   /**
    * 设备稳定标识（来自客户端上报的 deviceId）；用于命令日志/会话落库归属设备。
    * 缺省空：旧客户端未上报，会话不进注册表、不复用。
@@ -741,7 +746,36 @@ export class VoiceSessionService {
       await this.runMusicCommand(effectiveAction, text)
       return true
     }
+    // 商品/好价查询放最后：不抢记忆/音量/字幕/播放模式/音乐等既有直连命令。
+    // 高置信泛查询（有什么折扣、便宜的东西、查询商品…）绕开 LLM 直接查；
+    // 单独「东西/商品/买卖」等泛词不在此拦，交给 LLM 结合上下文判断，避免误触发。
+    if (detectDealsCommand(text)) {
+      await this.runDealsCommand()
+      return true
+    }
     return false
+  }
+
+  /**
+   * 处理「查商品 / 找好价」直接指令（绕开 LLM）：直接调 dealsTool 拿本地化文本并播报。
+   * 工具内部对抓取失败 / 空结果已有本地化兜底文案（含「暂时查不到」），这里不改写、不编造，
+   * 保证「没有好价」时也如实播报；dealsQuery 可由测试注入桩，避免联网。
+   */
+  private async runDealsCommand(): Promise<void> {
+    const query =
+      this.deps.dealsQuery ??
+      (async (): Promise<string> => {
+        // DealsOptions.source 必需（数据源由调用方注入，工具本身不绑定站点），
+        // 这里用默认 smzdm 源；组合根若已注入 dealsQuery 则走注入的那个。
+        const tool = createDealsTool(this.lang, { source: createSmzdmSource() })
+        return tool.call({})
+      })
+    try {
+      const text = await query()
+      await this.speakReply(text?.trim() || formatDeals(this.lang, []))
+    } catch {
+      await this.speakReply(formatDeals(this.lang, []))
+    }
   }
 
   /**

@@ -70,6 +70,8 @@ function createHarness(
     locationRequestTimeoutMs?: number
     /** 注入能力探测桩：返回各能力 reachable 与否；缺省「全部就绪」，不下发 client.cue */
     capabilityProbe?: () => Promise<HealthReport | null>
+    /** 注入商品/好价查询桩，避免直连用例真的联网抓页面 */
+    dealsQuery?: (keyword?: string) => Promise<string>
     /** 智能体口播文本（经 ChannelSplitter 下发）；默认「好的，我来说一句。」。可注入泄漏标记验证兜底 */
     replyText?: string,
     /** 覆盖 resolveVoice：默认忽略 voice 返回空配置；需要验证「切来源重建 agent」时注入，
@@ -163,6 +165,7 @@ function createHarness(
     asrEndpointMs: opts.asrEndpointMs ?? 10,
     musicSourceFactory: opts.musicSourceFactory,
     candidateFetcher: opts.candidateFetcher,
+    dealsQuery: opts.dealsQuery,
     locationRequestTimeoutMs: opts.locationRequestTimeoutMs ?? 50,
     deviceId: opts.deviceId === undefined ? 'test-device' : opts.deviceId,
     // 默认「全部就绪」，避免每个用例都下发 client.cue；需要验证不可用时由调用方注入 capabilityProbe
@@ -350,6 +353,56 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     // 直连绕开 LLM：不应调用 agent
     expect(h.agentCalls()).toBe(0)
     expect(texts(h)).toContain('正在为你播放')
+  })
+
+  it('「有什么折扣」直连查商品/好价：绕开 LLM + 如实播报工具文本', async () => {
+    let queried = 0
+    const h = createHarness({
+      finalizeText: '有什么折扣',
+      dealsQuery: async () => {
+        queried += 1
+        return '查到 2 件最新好价：1. 示例商品，现价9.9元'
+      },
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(queried).toBe(1)
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('查到 2 件最新好价')
+  })
+
+  it('没查到好价也照常播报兜底文案，且不进 LLM', async () => {
+    const h = createHarness({
+      finalizeText: '查询商品',
+      dealsQuery: async () => '暂时没有查到好价。',
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('暂时没有查到好价')
+  })
+
+  it('泛词「东西」不直连，交 LLM（不劫持正常对话、不查商品）', async () => {
+    let queried = 0
+    const h = createHarness({
+      // 长句：不会被「裸歌名」音乐直连误判，能真正走到 LLM
+      finalizeText: '把这个东西拿过来给我看看',
+      dealsQuery: async () => {
+        queried += 1
+        return '不该被调用'
+      },
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    // 核心断言：泛词不得触发商品查询（其余直连链怎么处理是既有行为，不在此断言）
+    expect(queried).toBe(0)
+    expect(texts(h)).not.toContain('不该被调用')
   })
 
   it('自动字幕开启：播放后同源自动拉取并下发 media.subtitle，字幕不进 LLM', async () => {

@@ -5,6 +5,8 @@ import { t } from '@/core/i18n'
 interface Option {
   value: string
   label: string
+  /** 选填：右对齐的次要信息（如音色的「所属模型」），与 label 区隔显示 */
+  subtitle?: string
 }
 
 const props = defineProps<{
@@ -85,7 +87,10 @@ function onSearch(e: Event): void {
         @tap="choose(opt.value)"
       >
         <text class="option-label">{{ opt.label }}</text>
-        <text v-if="opt.value === modelValue" class="check">✓</text>
+        <view class="option-right">
+          <text v-if="opt.subtitle" class="option-sub">{{ opt.subtitle }}</text>
+          <text v-if="opt.value === modelValue" class="check">✓</text>
+        </view>
       </view>
       <text v-if="searchable && filteredOptions.length === 0" class="hint search-empty">
         {{ t('settings.voice.llmModelEmpty') }}
@@ -194,6 +199,29 @@ function onSearch(e: Event): void {
 .option-label {
   font-size: 13px;
   color: #e8eaf6;
+  flex: 1;
+  min-width: 0;
+}
+
+.option-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 音色所属模型等次要信息：弱化的等宽标签，与文案区分 */
+.option-sub {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #8b91ab;
+  background: rgba(108, 140, 255, 0.1);
+  border-radius: 6px;
+  padding: 1px 6px;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .check {

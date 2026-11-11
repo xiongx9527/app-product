@@ -177,6 +177,16 @@ describe('looksLikeBareMusicQuery（裸歌手/歌名判定）', () => {
     expect(looksLikeBareMusicQuery('打开灯')).toBe(false)
   })
 
+  it('编号选择语 / 开源工具话题短语 → false（不劫持成点歌/推荐歌曲）', () => {
+    // 讨论带编号的开源工具列表时，用户会说「第2个」选择；这些绝不能当成裸歌名去点歌
+    for (const t of [
+      '第2个', '第二个', '第一个', '第3个', '来第一个', '第一首',
+      '2', '二', '开源数据库', '推荐个开源工具', '开源项目', '开源软件',
+    ]) {
+      expect(looksLikeBareMusicQuery(t)).toBe(false)
+    }
+  })
+
   it('太长 / 太短 → false', () => {
     expect(looksLikeBareMusicQuery('a')).toBe(false)
     expect(looksLikeBareMusicQuery('周杰伦的非常好听的歌')).toBe(false)

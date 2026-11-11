@@ -18,8 +18,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const DEFAULT_VOICE: VoiceServiceConfig = {
   provider: 'builtin',
-  builtin: { url: 'http://127.0.0.1:9529', apiKey: '', model: '' },
-  dashscope: { url: '', apiKey: '', model: '' },
+  builtin: { url: 'http://127.0.0.1:9529', apiKey: '', model: '', voice: '', voiceModel: '' },
+  dashscope: { url: '', apiKey: '', model: '', voice: '', voiceModel: '' },
 }
 
 /** 默认语音服务：内置、本地 9529、无需密钥 */
@@ -77,27 +77,30 @@ function createDefaultGeneral(): GeneralConfig {
   return { autoConnect: true }
 }
 
-/** 归一化通用设置：autoWake 只认 boolean，缺省/非法回退 false。 */
+/** 归一化通用设置：autoConnect 只认 boolean，缺省/非法回退默认（开）。 */
 function normalizeGeneral(raw: unknown): GeneralConfig {
   const source = isRecord(raw) ? raw : {}
-  const autoWake = typeof source.autoWake === 'boolean' ? source.autoWake : false
-  return { autoWake }
+  const autoConnect =
+    typeof source.autoConnect === 'boolean' ? source.autoConnect : createDefaultGeneral().autoConnect
+  return { autoConnect }
 }
 
 function normalizeProviderSettings(
   raw: unknown,
-  fallback: { url: string; apiKey: string; model?: string; voice?: string }
+  fallback: { url: string; apiKey: string; model?: string; voice?: string; voiceModel?: string }
 ): VoiceProviderSettings {
   const source = isRecord(raw) ? raw : {}
   const url = typeof source.url === 'string' ? source.url.trim() : ''
   const apiKey = typeof source.apiKey === 'string' ? source.apiKey : ''
   const model = typeof source.model === 'string' ? source.model.trim() : ''
   const voice = typeof source.voice === 'string' ? source.voice.trim() : ''
+  const voiceModel = typeof source.voiceModel === 'string' ? source.voiceModel.trim() : ''
   return {
     url: url || fallback.url,
     apiKey: apiKey || fallback.apiKey,
     model: model || fallback.model || '',
     voice: voice || fallback.voice || '',
+    voiceModel: voiceModel || fallback.voiceModel || '',
   }
 }
 

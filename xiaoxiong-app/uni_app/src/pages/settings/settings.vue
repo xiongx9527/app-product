@@ -175,12 +175,16 @@ async function runDetection(): Promise<void> {
   }
 }
 
-/** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用；百炼=官方 CosyVoice 标准），不实时拉取以便国际化。 */
-const ttsVoices = ref<{ value: string; label: string }[]>([])
+/** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用；百炼=官方 CosyVoice 标准），不实时拉取以便国际化。
+ *  每条带 model（所属模型），渲染成下拉里的次要列，并随选择下发网关决定真正请求的 TTS 模型。 */
+const ttsVoices = ref<{ value: string; label: string; subtitle?: string }[]>([])
+/** value -> 所属模型 的映射，选中时把对应模型写进配置，随 params.model 下发。 */
+const voiceModelMap = new Map<string, string>()
 const ttsVoiceHint = ref('')
 
 async function loadTtsVoices(): Promise<void> {
   ttsVoiceHint.value = ''
+  voiceModelMap.clear()
   const provider = appConfig.voice.provider
   // 前端只与网关通信：把 provider 与当前语言带给网关，由网关按 lang 拼出本地化标签。
   const qs = new URLSearchParams({ provider, lang: appConfig.language })
@@ -189,13 +193,22 @@ async function loadTtsVoices(): Promise<void> {
       url: `${resolveGatewayHttpBase()}/api/admin/tts-voices?${qs.toString()}`,
       method: 'GET',
     })
-    const data = res.data as { defaultVoice?: string; voices?: { value: string; label: string }[] } | null
+    const data = res.data as {
+      defaultVoice?: string
+      defaultModel?: string
+      voices?: { value: string; label: string; model?: string }[]
+    } | null
     if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.voices) && data.voices.length) {
-      ttsVoices.value = data.voices.map((m) => ({ value: m.value, label: m.label }))
+      ttsVoices.value = data.voices.map((m) => {
+        voiceModelMap.set(m.value, m.model ?? '')
+        return { value: m.value, label: m.label, subtitle: m.model || undefined }
+      })
       // 当前没选或选中的已不在列表里：自动选默认（来源配置），保证开箱即连得上。
       const s = currentProviderSettings()
       if (!s.voice || !data.voices.some((v) => v.value === s.voice)) {
-        s.voice = data.defaultVoice || data.voices[0].value
+        const dv = data.defaultVoice || data.voices[0].value
+        s.voice = dv
+        s.voiceModel = voiceModelMap.get(dv) || data.defaultModel || ''
       }
     } else {
       ttsVoices.value = []
@@ -205,6 +218,13 @@ async function loadTtsVoices(): Promise<void> {
     ttsVoices.value = []
     ttsVoiceHint.value = t('settings.voice.ttsVoiceFailed')
   }
+}
+
+/** 选中某个音色：同步写 voice 与它的所属模型（voiceModel），随 params 下发网关。 */
+function onSelectVoice(value: string): void {
+  const s = currentProviderSettings()
+  s.voice = value
+  s.voiceModel = voiceModelMap.get(value) || ''
 }
 
 /** 长期记忆：从网关按本机 deviceId 拉取，可单条删除或清空。分页加载，避免记忆多时一次拉全。 */
@@ -474,7 +494,7 @@ watch(
           :model-value="appConfig.voice.builtin.voice ?? ''"
           :disabled="ttsVoices.length === 0"
           :searchable="ttsVoices.length > 0"
-          @update:model-value="(v: string) => (appConfig.voice.builtin.voice = v)"
+          @update:model-value="onSelectVoice"
         />
         <text v-if="ttsVoiceHint" class="hint" @tap="loadTtsVoices">{{ ttsVoiceHint }}</text>
       </view>
@@ -518,7 +538,7 @@ watch(
           :model-value="appConfig.voice.dashscope.voice ?? ''"
           :disabled="ttsVoices.length === 0"
           :searchable="ttsVoices.length > 0"
-          @update:model-value="(v: string) => (appConfig.voice.dashscope.voice = v)"
+          @update:model-value="onSelectVoice"
         />
         <text v-if="ttsVoiceHint" class="hint" @tap="loadTtsVoices">{{ ttsVoiceHint }}</text>
       </template>

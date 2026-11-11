@@ -18,6 +18,10 @@ import {
 } from './musicTool'
 import { createMusicSearchTool } from './musicSearchTool'
 import { createSubtitleTool } from './subtitleTool'
+import { createDealsTool } from './dealsTool'
+import { createSmzdmSource, type DealsSource } from '../deals'
+import { createOpenSourceTool } from './opensourceTool'
+import { createOschinaSource, type OpenSourceSource } from '../opensource'
 import type { MusicSource } from '../music/types'
 import {
   createRememberTool,
@@ -58,6 +62,10 @@ export {
 } from './musicTool'
 export { createMusicSearchTool, MUSIC_SEARCH_TOOL_NAME } from './musicSearchTool'
 export { createSubtitleTool, SUBTITLE_TOOL_NAME } from './subtitleTool'
+export { createDealsTool, DEALS_TOOL_NAME } from './dealsTool'
+export { createSmzdmSource, parseDeals, formatDeals, filterDeals, type Deal, type DealsSource, type DealsFetcher, type DealsOptions } from '../deals'
+export { createOpenSourceTool, OPENSOURCE_TOOL_NAME } from './opensourceTool'
+export { createOschinaSource, parseOschina, formatProjects, filterProjects, type OpenSourceProject, type OpenSourceSource, type OpenSourceFetcher, type OpenSourceOptions } from '../opensource'
 export {
   createRememberTool,
   createRecallTool,
@@ -74,6 +82,8 @@ export {
  * locationProvider 实时读取会话最近一次上报的设备位置（位置/天气工具共用）；
  * musicSource + emit 同时具备时才注册音乐类工具（播放/停止/搜索/字幕）：
  * 前者决定「播什么源」，后者决定「下发给客户端」；缺一（离线测试/未配置音乐源）则不注册。
+ * dealsSource 为好价数据源，由组合根注入，缺省用 smzdm 源；后续接新源只换这里。
+ * opensourceSource 为开源工具/软件数据源，缺省用 oschina 源；后续接新源只换这里。
  */
 export function createToolkit(
   lang: Lang | string,
@@ -86,7 +96,9 @@ export function createToolkit(
   autoSubtitle?: boolean,
   defaultLoop?: number,
   defaultVolume?: number,
-  autoLoop?: boolean
+  autoLoop?: boolean,
+  dealsSource: DealsSource = createSmzdmSource(),
+  opensourceSource: OpenSourceSource = createOschinaSource()
 ): Toolkit {
   // 网关既有工具（时间/位置/天气）都用空 inputSchema + 0 参 call，与 AgentScope 的 Toolkit 类型一致；
   // 音乐类工具需要入参（genre/minutes 等），zod 泛型在此边界不兼容，故整体按 Tool[] 断言。
@@ -95,6 +107,8 @@ export function createToolkit(
     createCurrentTimeTool(lang, timeZone),
     createCurrentLocationTool(lang, locationProvider, requestLocation),
     createWeatherTool(lang, locationProvider, undefined, requestLocation),
+    createDealsTool(lang, { source: dealsSource }),
+    createOpenSourceTool(lang, { source: opensourceSource }),
   ]
   // 媒体指令需要 emit 把指令下发给客户端，且需要 musicSource 决定播什么；
   // 两者都齐才注册音乐工具，否则（离线测试 / 客户端未配置音乐源）不注册，避免空转。

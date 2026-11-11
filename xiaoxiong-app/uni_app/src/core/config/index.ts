@@ -70,7 +70,8 @@ export function setVoiceProvider(provider: VoiceProviderKind): void {
 /**
  * 取当前来源这一份配置，压平成网关识别的扁平结构（provider / url / apiKey / model / voice）。
  * 各来源独立保存，这里只取「当前选中的那一份」；model / voice 缺省时留空，由网关用来源默认值。
- * voice 经 params.voice 下发，网关据此透传给 TTS（见 gateway voiceConfig.resolveCapabilityConfig）。
+ * voice 与它的所属模型（voiceModel）一起经 params 下发，网关据 params.model 决定真正请求的
+ * TTS 模型——模型不再写死，从根本上避免「v1 音色名 + v2 模型」这类 418（见 ttsVoices.ts）。
  */
 export function activeVoiceConfig(): {
   provider: VoiceProviderKind
@@ -78,18 +79,26 @@ export function activeVoiceConfig(): {
   apiKey: string
   model: string
   voice: string
-  params?: { voice: string }
+  params?: { voice: string; model?: string }
 } {
   const v = appConfig.voice
   const active = v.provider === 'dashscope' ? v.dashscope : v.builtin
-  const voice = active.voice ?? ''
+  // 旧存档里 voice 有值但没记 voiceModel（新加字段）：那个音色来自旧版目录（v1/v2 音色名，
+  // 如 longxiang），与当前 cosyvoice-v3 模型不兼容，下发会被云端判 418 Invalid voice、整句静音。
+  // 这种脏配置不下发音色，让网关用来源默认音色；设置页重新拉目录时会自动补上合法音色与所属模型。
+  const staleDashscopeVoice =
+    v.provider === 'dashscope' && !!active.voice && !active.voiceModel
+  const voice = staleDashscopeVoice ? '' : (active.voice ?? '')
+  // 所属模型只随 DashScope 的 params 下发：只有百炼 TTS 用它决定 CosyVoice 版本，
+  // 内置（edge-tts）模型固定、且不希望把它错当成 ASR 的推理 model 字段。
+  const voiceModel = v.provider === 'dashscope' ? active.voiceModel || undefined : undefined
   return {
     provider: v.provider,
     url: active.url,
     apiKey: active.apiKey,
     model: active.model ?? '',
     voice,
-    params: voice ? { voice } : undefined,
+    params: voice ? { voice, model: voiceModel } : undefined,
   }
 }
 

@@ -54,6 +54,24 @@ export function normalizeVoiceConfig(raw: unknown): VoiceConfig {
 }
 
 /**
+ * 客户端下发的 params 是「ASR / LLM / TTS 共用一份」的厂商级参数（契约约定），
+ * 但里面实际混着 TTS 专用字段：voice（音色）与 model（音色所属模型，如 cosyvoice-v3-flash）。
+ * 若原样合并进 ASR / LLM：
+ * - ASR 会把 cosyvoice-* 当成识别模型 → 云端 ModelNotFound，整句识别失败（表现为「唤醒不了」）；
+ * - LLM 会把它当生成参数透传给上游（presetGenParams）。
+ * 因此 ASR / LLM 只拿通用参数，TTS 专用字段只注入 TTS。
+ */
+const TTS_ONLY_PARAM_KEYS = new Set(['voice', 'model'])
+function sharedParams(params: VendorParams): VendorParams {
+  const out: VendorParams = {}
+  for (const [key, value] of Object.entries(params)) {
+    if (TTS_ONLY_PARAM_KEYS.has(key)) continue
+    out[key] = value
+  }
+  return out
+}
+
+/**
  * 把客户端设置的语音服务配置展开为网关实际使用的三套能力配置。
  * 地址与 provider 由 voice 决定；model / endpointMs / params 优先取 voice，缺省回退网关默认值。
  * url 缺省时回退到 config 里内置 / DashScope 的默认根地址。
@@ -72,6 +90,10 @@ export function resolveCapabilityConfig(
   const llmProvider = config.llm.provider === 'stub' ? 'stub' : v.provider
   const asrProvider = config.asr.provider === 'stub' ? 'stub' : v.provider
   const ttsProvider = config.tts.provider === 'stub' ? 'stub' : v.provider
+  // 客户端带了 params 时：ASR / LLM 用剥离掉 TTS 专用字段的版本，TTS 用完整版本；
+  // 没带 params 则各自沿用网关 env 默认，行为不变。
+  const voiceParams = v.params
+  const common = voiceParams ? sharedParams(voiceParams) : undefined
   if (v.provider === 'dashscope') {
     // 语音（ASR/TTS）只能走阿里云百炼官方云端入口：用户填的 voice.url 可能是自建 MAAS
     // 实例（仅 LLM、无语音入口），若语音也跟着走 MAAS 会 418 失败，故语音固定打云端
@@ -83,17 +105,17 @@ export function resolveCapabilityConfig(
       // LLM 走 OpenAI 兼容层 /compatible-mode/v1；语音（ASR/TTS）是百炼的另一套入口，
       // 不在 /compatible-mode 下：网关把云端根地址交给 DashScopeWsAsr/Tts，由它们换算成
       // wss(s)://host/api-ws/v1/inference（实时 ASR / TTS 均走此 WebSocket 入口）。
-      llm: { provider: llmProvider, baseUrl: `${llmRoot}/compatible-mode/v1`, model: v.model ?? config.llm.model, apiKey: v.apiKey, params: v.params ?? config.llm.params },
-      asr: { provider: asrProvider, baseUrl: voiceRoot, apiKey: v.apiKey, endpointMs: v.endpointMs ?? config.asr.endpointMs, params: v.params ?? config.asr.params },
-      tts: { provider: ttsProvider, baseUrl: voiceRoot, apiKey: v.apiKey, params: v.params ?? config.tts.params },
+      llm: { provider: llmProvider, baseUrl: `${llmRoot}/compatible-mode/v1`, model: v.model ?? config.llm.model, apiKey: v.apiKey, params: common ?? config.llm.params },
+      asr: { provider: asrProvider, baseUrl: voiceRoot, apiKey: v.apiKey, endpointMs: v.endpointMs ?? config.asr.endpointMs, params: common ?? config.asr.params },
+      tts: { provider: ttsProvider, baseUrl: voiceRoot, apiKey: v.apiKey, params: voiceParams ?? config.tts.params },
     }
   }
   // builtin（默认）：本地 AI 服务 OpenAI 兼容层，LLM 在 /llm/v1，语音在 /voice。
   const root = v.url.trim() || config.voiceBuiltinUrl
   return {
-    llm: { provider: llmProvider, baseUrl: `${root}/llm/v1`, model: v.model ?? config.llm.model, apiKey: v.apiKey, params: v.params ?? config.llm.params },
-    asr: { provider: asrProvider, baseUrl: `${root}/voice`, apiKey: v.apiKey, endpointMs: v.endpointMs ?? config.asr.endpointMs, params: v.params ?? config.asr.params },
-    tts: { provider: ttsProvider, baseUrl: `${root}/voice`, apiKey: v.apiKey, params: v.params ?? config.tts.params },
+    llm: { provider: llmProvider, baseUrl: `${root}/llm/v1`, model: v.model ?? config.llm.model, apiKey: v.apiKey, params: common ?? config.llm.params },
+    asr: { provider: asrProvider, baseUrl: `${root}/voice`, apiKey: v.apiKey, endpointMs: v.endpointMs ?? config.asr.endpointMs, params: common ?? config.asr.params },
+    tts: { provider: ttsProvider, baseUrl: `${root}/voice`, apiKey: v.apiKey, params: voiceParams ?? config.tts.params },
   }
 }
 

@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { WebSocket, type RawData } from 'ws'
 import type { TtsProvider } from './provider'
 import type { VendorParams } from '../config'
+import {
+  DASHSCOPE_DEFAULT_MODEL,
+  DASHSCOPE_DEFAULT_VOICE,
+  resolveDashscopeVoice,
+} from '../service/ttsVoices'
 
 /** DashScope 实时语音合成默认入口（业务空间专属域名见模块注释）。 */
 const DEFAULT_WS_URL = 'wss://dashscope.aliyuncs.com/api-ws/v1/inference'
@@ -54,8 +59,19 @@ export class DashScopeWsTts implements TtsProvider {
   ) {
     this.url = normalizeWsUrl(baseUrl)
     this.apiKey = apiKey.trim()
-    this.model = stringParam(params.model, 'cosyvoice-v2')
-    this.voice = normalizeVoice(this.model, stringParam(params.voice, defaultVoice(this.model)))
+    // 模型来自请求里的 params.model（客户端按所选音色的「所属模型」下发），不再写死。
+    // 仅当请求未带 model（旧客户端）时才回退到 v3-flash 这个较新的默认。
+    this.model = stringParam(params.model, DASHSCOPE_DEFAULT_MODEL)
+    const requestedVoice = stringParam(params.voice, DASHSCOPE_DEFAULT_VOICE)
+    // 官方约束：voice 必须在所选 model 的音色列表里，否则云端回 418 Invalid voice、整句静音。
+    // 客户端本地可能存着旧目录的 v1 音色（如 longxiang）或错标音色，这里统一收敛到该模型的
+    // 默认音色，保证「有回答就能播」；目录与默认值同源于 ttsVoices.ts，不在两处各写一份。
+    this.voice = resolveDashscopeVoice(this.model, requestedVoice)
+    if (this.voice !== requestedVoice) {
+      console.warn(
+        `[tts] 音色 ${requestedVoice} 不属于模型 ${this.model}，回退默认音色 ${this.voice}（避免 418 Invalid voice 静音）`,
+      )
+    }
     this.workspace = stringParam(params.workspace, '')
     this.parameters = buildParameters(params)
   }
@@ -196,9 +212,12 @@ export class DashScopeWsTts implements TtsProvider {
       for await (const chunk of queue.iterate()) {
         if (chunk.byteLength === 0) continue
         receivedAudio = true
+        this.lastDiagnosis.receivedAudio = true
         yield chunk
       }
     } catch (err) {
+      // 把失败原因写进诊断，供 probe() 回传给健康检测（不再只看主机可达性）。
+      this.lastDiagnosis.error = (err as Error).message
       console.error('[tts] DashScope WebSocket 合成失败：', err)
     } finally {
       if (idleTimer) clearTimeout(idleTimer)
@@ -405,22 +424,6 @@ function clampNumber(value: unknown, min: number, max: number): number | null {
   const num = Number(value)
   if (!Number.isFinite(num)) return null
   return Math.min(max, Math.max(min, num))
-}
-
-/** 未指定音色时给一个可直接使用的默认值：YUMI（longyumi_v2）是百炼为「语音助手」场景
- * 优化的 cosyvoice-v2 音色，最贴合本助手的对讲场景。 */
-function defaultVoice(_model: string): string {
-  return 'longyumi_v2'
-}
-
-/**
- * 音色目录（gateway ttsVoices.DASHSCOPE_VOICES）已经是 cosyvoice-v2 的精确音色 id：
- * 一部分带 _v2 后缀（longxiaochun_v2），一部分不带（longhuhu）。这些 id 与 TTS 模型版本
- * 同源，直接透传即可——曾经在这里盲目补 _v2 后缀，会把 longhuhu 变成不存在的 longhuhu_v2
- * 而触发 418 InvalidParameter。
- */
-function normalizeVoice(_model: string, voice: string): string {
-  return voice
 }
 
 /** 静音帧长度：约按文本长度估，最短 0.1s（24kHz/16bit 单声道 = 48000 B/s）。 */

@@ -108,6 +108,10 @@ const zhCN: Messages = {
     '音乐控制请用工具：play_music 开始播放、stop_music 停止、pause_music 暂停、resume_music 继续、' +
     'next_music 换一首/换个风格。用户说“放点音乐/来首歌/想听歌”用 play_music；说“换一首/下一首/换个风格/来点别的”' +
     '用 next_music（可带 genre）；说“暂停/先停一下”用 pause_music，说“继续/接着放”用 resume_music，说“关掉/别放了”用 stop_music。' +
+    '查询或推荐开源工具/软件/项目统一用 query_opensource：「开源」「开源项目」「开源工具」「开源数据库」「开源XXX」等说法，' +
+    '以及「有什么好的数据库」「推荐个 AI 工具」「大数据用什么框架」这类找工具软件的求推荐，都调用它、用开源项目回答，不要凭记忆罗列；' +
+    '结果要按 1、2、3、4 逐条念出编号，并提示用户可说编号选择，方便用户回「第2个」；用户回编号时结合上一轮列表回答那一项，不要重新查询、也不要当成点歌。' +
+    '纯知识问答（如「数据库是什么」）才不调用。' +
     '【输出与表达约束】只输出纯文本，禁止任何 Markdown / 格式符号（' +
     '**加粗**、# 标题、列表符号、表格、代码块等）。禁止在调用工具（尤其是音乐工具）前后' +
     '说铺垫废话或道歉（如“好的”“稍等”“对不起，出现…”“让我看看”“Skipping…”之类），' +
@@ -216,6 +220,10 @@ const en: Messages = {
     'When the user says "play some music / a song / I want to listen to music", use play_music; ' +
     'when they say "next one / another / a different style / something else", use next_music (genre optional); ' +
     'pause_music for "pause / hold on", resume_music for "resume / keep going", stop_music for "stop / turn it off". ' +
+    'Use query_opensource for all open-source tool/software/project lookups and recommendations: "open source / open-source projects / ' +
+    'open-source tools / open-source databases / open-source XXX", or "any good databases", "recommend an AI tool", "big-data frameworks" — ' +
+    'always call it and answer with open-source projects instead of listing from memory. Read the results out with numbers 1, 2, 3, 4 and invite the user to pick one by number; ' +
+    'when they reply with an ordinal, answer from the previous list — do not query again or treat it as a song request. Only pure knowledge questions ("what is a database") should not. ' +
     '[Output & expression constraints] Output plain text only. No Markdown or formatting symbols ' +
     '(**bold**, # headings, list bullets, tables, code blocks, etc.). ' +
     'Do not add filler or apologies before or after calling a tool (especially music tools) — ' +

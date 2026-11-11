@@ -26,6 +26,12 @@ export interface VoiceProviderSettings {
    * 下拉选项由设置页「音色」从来源配置实时拉取（内置=语音服务接口；百炼=官方标准目录）。
    */
   voice?: string
+  /**
+   * 当前选中音色的「所属模型」（如 cosyvoice-v3-flash / edge-tts）。
+   * 与 voice 配套下发，网关据它决定实际请求的 TTS 模型——模型不再写死在网关，
+   * 从根本上避免「v1 音色名 + v2 模型」这类 418 InvalidParameter。
+   */
+  voiceModel?: string
 }
 
 /**
