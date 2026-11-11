@@ -744,6 +744,26 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     return lines[idx].text
   })
 
+  /**
+   * 近似逐字高亮：把当前行切成「已唱 / 未唱」两段文本。来源只给行级时间，故按字数平分该行时长，
+   * 再按播放进度算出已唱字数。中文每字时长较均匀，歌曲观感好；评书/口语语速不均会略有偏移（属近似）。
+   * 用 Array.from 切分以兼容代理对（emoji 等），避免 String.slice 按码元计数错位。最后一行用整曲时长作结束。
+   */
+  const activeSubtitleSplit = computed(() => {
+    const lines = subtitle.value?.lines
+    const idx = activeSubtitleIndex.value
+    if (!lines || idx < 0 || !lines[idx]) return { sung: '', rest: '' }
+    const chars = Array.from(lines[idx].text)
+    if (chars.length === 0) return { sung: '', rest: '' }
+    const start = lines[idx].time
+    const end = idx + 1 < lines.length ? lines[idx + 1].time : (musicState.duration.value || start + 4)
+    const span = Math.max(end - start, 0.1)
+    const cur = musicState.currentTime.value + SUBTITLE_LEAD_SEC
+    const prog = Math.min(Math.max((cur - start) / span, 0), 1)
+    const n = Math.min(Math.round(prog * chars.length), chars.length)
+    return { sung: chars.slice(0, n).join(''), rest: chars.slice(n).join('') }
+  })
+
   onUnmounted(() => {
     clearT1()
     clearT2()
@@ -807,6 +827,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     copied,
     activeSubtitleIndex,
     currentSubtitleText,
+    activeSubtitleSplit,
     stopMusic,
     pauseMusic,
     resumeMusic,

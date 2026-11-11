@@ -68,6 +68,7 @@ const {
   copied,
   activeSubtitleIndex,
   currentSubtitleText,
+  activeSubtitleSplit,
   stopMusic,
   pauseMusic,
   resumeMusic,
@@ -620,7 +621,7 @@ function onConnTap(): void {
           class="subtitle-line"
           :class="{ 'subtitle-line--active': i === activeSubtitleIndex }"
           :style="i === activeSubtitleIndex ? { fontSize: subtitleActiveFontSize + 'px', color: subtitleActiveColor } : {}"
-        >{{ line.text }}</view>
+        ><block v-if="i === activeSubtitleIndex">{{ activeSubtitleSplit.sung }}<text class="subtitle-line--rest">{{ activeSubtitleSplit.rest }}</text></block><block v-else>{{ line.text }}</block></view>
       </scroll-view>
       <text v-else class="subtitle-empty">{{ t('music.noSubtitle') }}</text>
     </view>
@@ -647,7 +648,7 @@ function onConnTap(): void {
           v-if="currentSubtitleText"
           class="disc-lyric"
           :style="{ fontSize: lyricFontSize + 'px', color: subtitleActiveColor }"
-        >{{ currentSubtitleText }}</text>
+        >{{ activeSubtitleSplit.sung }}<text class="disc-lyric--rest">{{ activeSubtitleSplit.rest }}</text></text>
       </view>
     </FloatLayer>
 
@@ -1802,12 +1803,20 @@ function onConnTap(): void {
   overflow: visible;
 }
 
+/* 卡拉OK未唱到的部分：暗一档，与已唱高亮形成逐字递进 */
+.disc-lyric--rest {
+  white-space: nowrap;
+  color: rgba(243, 230, 200, 0.4);
+}
+
 .subtitle-line {
   font-size: 13px;
   line-height: 1.9;
   color: #aeb6d8;
-  white-space: normal;
-  word-break: break-word;
+  /* 每行歌词保持单行，超长截断而非换行 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 2px 8px;
   border-radius: 8px;
   transition: color 0.18s ease, background 0.18s ease;
@@ -1820,6 +1829,14 @@ function onConnTap(): void {
   line-height: 1.6;
   padding: 6px 10px;
   box-shadow: inset 3px 0 0 #6c8cff;
+}
+
+/* 卡拉OK未唱到的部分：暗一档，与已唱高亮形成逐字递进 */
+.subtitle-line--rest {
+  /* uni-app 的 <text> 编译成 .uni-text，其全局样式可能重置 white-space，
+     这里显式 nowrap，确保整行（含未唱段 span）都不换行 */
+  white-space: nowrap;
+  color: rgba(231, 230, 245, 0.4);
 }
 
 /* 平板与折叠屏展开态：内容限宽，布局更舒展 */
