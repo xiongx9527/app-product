@@ -59,6 +59,8 @@ export function createAgentService(
   defaultLoop?: number,
   defaultVolume?: number,
   autoLoop?: boolean,
+  dealsCount?: number,
+  opensourceCount?: number,
   getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null
 ): AgentService {
   if (config.llm.provider === 'stub') return new StubAgentService()
@@ -71,7 +73,7 @@ export function createAgentService(
     name: 'Xiong',
     sysPrompt: baseSysPrompt,
     model,
-    toolkit: createToolkit(lang, config.timeZone, locationProvider, getMusicSource, emit, memoryStore, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop),
+    toolkit: createToolkit(lang, config.timeZone, locationProvider, getMusicSource, emit, memoryStore, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, opensourceCount),
   })
   // 当前播放曲目动态拼进系统提示：每轮 reply 前按最新曲目刷新，让助手能回答
   // 「现在播的什么歌 / 谁唱的」，而不必回「不知道」。Agent 只在 reply 时读 this.sysPrompt，

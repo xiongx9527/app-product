@@ -54,6 +54,8 @@ export interface OpenSourceOptions {
   cacheTtlMs?: number
   /** 关键词查询最多抓几页。缺省读 OPENSOURCE_KEYWORD_PAGES 或 3。 */
   keywordPages?: number
+  /** 默认推荐条数：LLM 未显式指定 limit 时使用的条数，缺省 3，范围 1–10（由客户端设置页下发）。 */
+  defaultLimit?: number
   /** 注入抓取器（默认全局 fetch）。 */
   fetcher?: OpenSourceFetcher
   /** 结构化结果回调：拿到筛选后的条目时调用，由组合根转成 media.detail 下发给客户端。 */
@@ -122,7 +124,7 @@ export function normalizeKeyword(keyword?: string): string {
 
 /**
  * 按关键词过滤并截断条数。关键词匹配项目名/定位/简介/语言/系统（不区分大小写）。
- * limit 收敛到 1–5（缺省 4）；空结果返回空数组，由调用方决定文案。
+ * limit 收敛到 1–10（缺省 3）；空结果返回空数组，由调用方决定文案。
  */
 export function filterProjects(
   projects: OpenSourceProject[],
@@ -141,6 +143,6 @@ export function filterProjects(
         p.os.toLowerCase().includes(kw)
     )
   }
-  const lim = Math.min(Math.max(1, Math.floor(limit)), 5)
+  const lim = Math.min(Math.max(1, Math.floor(limit)), 10)
   return list.slice(0, lim)
 }

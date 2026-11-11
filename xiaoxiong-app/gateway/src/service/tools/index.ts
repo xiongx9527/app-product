@@ -98,6 +98,8 @@ export function createToolkit(
   defaultLoop?: number,
   defaultVolume?: number,
   autoLoop?: boolean,
+  dealsCount?: number,
+  opensourceCount?: number,
   dealsSource: DealsSource = createSmzdmSource(),
   opensourceSource: OpenSourceSource = createOschinaSource()
 ): Toolkit {
@@ -108,9 +110,10 @@ export function createToolkit(
     createCurrentTimeTool(lang, timeZone),
     createCurrentLocationTool(lang, locationProvider, requestLocation),
     createWeatherTool(lang, locationProvider, undefined, requestLocation),
-    createDealsTool(lang, { source: dealsSource }),
+    createDealsTool(lang, { source: dealsSource, defaultLimit: dealsCount }),
     createOpenSourceTool(lang, {
       source: opensourceSource,
+      defaultLimit: opensourceCount,
       // 结构化结果经同一条 emit 通道下发成 media.detail(kind: project) 卡片
       onResults: emit ? (items) => emit({ type: 'media.detail', kind: 'project', items }) : undefined,
       // 泛推荐结合长期记忆：与商品同一套偏好关键词，读失败就当作没有记忆

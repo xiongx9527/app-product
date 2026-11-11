@@ -35,6 +35,8 @@ export function createOpenSourceTool(
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   const { source } = options
+  // 默认推荐条数：来自客户端设置页（session.start.recommend.opensourceCount），缺省 3，范围 1–10。
+  const defaultLimit = Math.min(10, Math.max(1, Math.floor(options.defaultLimit ?? 3)))
   const ttlEnv = Number(process.env.OPENSOURCE_CACHE_TTL_MS)
   const cacheTtlMs =
     options.cacheTtlMs ?? (Number.isFinite(ttlEnv) && ttlEnv > 0 ? ttlEnv : 60000)
@@ -88,13 +90,13 @@ export function createOpenSourceTool(
         .number()
         .int()
         .min(1)
-        .max(5)
+        .max(10)
         .optional()
-        .describe('返回条数，1–5，默认 4'),
+        .describe('返回条数，1–10，默认 3'),
     }),
     call: async (args: { keyword?: string; limit?: number } = {}) => {
       const keyword = args?.keyword?.trim() || undefined
-      const limit = typeof args?.limit === 'number' ? args.limit : 4
+      const limit = typeof args?.limit === 'number' ? args.limit : defaultLimit
       const pages = keyword ? keywordPages : 1
       const urls = Array.from({ length: pages }, (_, i) => source.pageUrl(i + 1))
       const settled = await Promise.allSettled(urls.map(fetchPage))

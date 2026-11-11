@@ -76,6 +76,11 @@ export type ClientMessage =
        */
       playback?: { source?: string; autoSubtitle?: boolean; defaultLoop?: number; defaultVolume?: number; autoLoop?: boolean }
       /**
+       * 推荐设置：好价商品 / 开源工具每次推荐的条数，来自客户端设置页，缺省各 3。
+       * 网关据此作为好价/开源工具未显式指定条数时的默认（工具上限 1–10）。
+       */
+      recommend?: { dealsCount?: number; opensourceCount?: number }
+      /**
        * 设备稳定标识：客户端持久化生成（一次），连接时随 WS URL query 与 payload 上报。
        * 网关据此把会话与连接解耦——同一设备的重连/重唤醒走「重新武装」复用会话，
        * 保留 LLM 对话记忆与待选歌单，不再因断线重连而失忆。缺省（旧客户端未上报）时

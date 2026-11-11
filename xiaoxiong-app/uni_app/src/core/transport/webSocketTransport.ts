@@ -314,6 +314,11 @@ export class WebSocketTransport implements AssistantTransport {
         defaultVolume: appConfig.playback.defaultVolume,
         autoLoop: appConfig.playback.autoLoop ?? false,
       },
+      // 推荐条数（好价商品 / 开源工具）：来自客户端设置页，网关据此作为工具默认条数（缺省 3、范围 1–10）。
+      recommend: {
+        dealsCount: appConfig.recommend.dealsCount,
+        opensourceCount: appConfig.recommend.opensourceCount,
+      },
       location: this.lastLocation ?? undefined,
       mode,
       // 本机稳定设备标识：网关据此复用会话（重连/重唤醒保留记忆）；URL query 也带一份作主路径

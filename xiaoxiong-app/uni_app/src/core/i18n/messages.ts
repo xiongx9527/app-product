@@ -187,11 +187,33 @@ const zhCN: Messages = {
   'settings.playback.defaultVolume': '默认音量',
   'settings.playback.defaultVolumeHint': '新播放的默认音量（0–100%）',
 
+  'settings.recommend.title': '推荐设置',
+  'settings.recommend.dealsCount': '好价商品推荐数量',
+  'settings.recommend.dealsCountHint': '每次推荐好价商品展示几条，1–10，默认 3',
+  'settings.recommend.opensourceCount': '开源工具推荐数量',
+  'settings.recommend.opensourceCountHint': '每次推荐开源工具展示几个，1–10，默认 3',
+  'settings.recommend.deals': '好价商品收藏',
+  'settings.recommend.opensource': '开源工具收藏',
+
   'favorites.title': '我的收藏',
   'favorites.empty': '还没有收藏。开启「播放完自动收藏」后，播完的歌会出现在这里',
   'favorites.play': '播放',
   'favorites.remove': '移除',
   'favorites.addedAt': '收藏于 {time}',
+
+  'deals.title': '好价商品收藏',
+  'deals.empty': '还没有推荐记录。让助手「推荐好价商品」后，推荐过的会保存在这里',
+  'deals.open': '打开',
+  'deals.remove': '移除',
+  'deals.addedAt': '推荐于 {time}',
+  'deals.cleared': '已清空',
+
+  'opensource.title': '开源工具收藏',
+  'opensource.empty': '还没有推荐记录。让助手「推荐开源工具」后，推荐过的会保存在这里',
+  'opensource.open': '打开',
+  'opensource.remove': '移除',
+  'opensource.addedAt': '推荐于 {time}',
+  'opensource.cleared': '已清空',
 
   'card.thinking': '思考',
   'card.done': '已完成',

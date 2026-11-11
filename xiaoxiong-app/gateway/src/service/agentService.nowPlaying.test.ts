@@ -60,6 +60,8 @@ describe('当前播放曲目注入 LLM 上下文', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined,
       // getNowPlaying：模拟「正在播放 周杰伦《稻香》」
       () => ({ title: '稻香', artist: '周杰伦' })
     )
@@ -84,6 +86,8 @@ describe('当前播放曲目注入 LLM 上下文', () => {
       { llm: { provider: 'builtin', baseUrl: baseURL, model: 'test', apiKey: 'x', params: {} }, timeZone: 'Asia/Shanghai' },
       'zh-CN',
       () => null,
+      undefined,
+      undefined,
       undefined,
       undefined,
       undefined,

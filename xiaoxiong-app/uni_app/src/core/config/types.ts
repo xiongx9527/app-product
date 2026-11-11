@@ -56,8 +56,24 @@ export interface AppConfig {
   voice: VoiceServiceConfig
   /** 播放设置（音乐播放源等），独立于语音服务 */
   playback: PlaybackConfig
+  /** 推荐设置：好价商品 / 开源工具每次推荐的条数，独立于语音服务 */
+  recommend: RecommendConfig
   /** 通用设置：与具体能力无关、偏行为开关的项统一放这里 */
   general: GeneralConfig
+}
+
+/** 推荐设置：好价商品 / 开源工具每次推荐的条数，独立于语音服务 */
+export interface RecommendConfig {
+  /**
+   * 好价商品推荐条数：每次「推荐好价商品」展示几条，默认 3，范围 1–10。
+   * 经 session.start.recommend 下发网关，作为好价工具未显式指定条数时的默认。
+   */
+  dealsCount: number
+  /**
+   * 开源工具推荐条数：每次「推荐开源工具」展示几个，默认 3，范围 1–10。
+   * 经 session.start.recommend 下发网关，作为开源工具未显式指定条数时的默认。
+   */
+  opensourceCount: number
 }
 
 /** 通用设置 */

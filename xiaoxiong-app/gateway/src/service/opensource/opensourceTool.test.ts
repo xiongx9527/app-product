@@ -117,12 +117,15 @@ describe('filterProjects', () => {
     expect(filterProjects(list, '数据库').map((p) => p.name)).toEqual(['DBmind'])
   })
 
-  it('limit 收敛到 1–5 并截断，缺省 4', () => {
+  it('limit 收敛到 1–10 并截断，缺省 3', () => {
     expect(filterProjects(list, undefined, 1)).toHaveLength(1)
     expect(filterProjects(list, undefined, 99)).toHaveLength(3)
     expect(filterProjects(list, undefined, 0)).toHaveLength(1)
-    // 缺省最多 4 条；样本只有 3 条，故返回 3，不会超过 4
+    // 缺省最多 3 条；样本只有 3 条，故返回 3
     expect(filterProjects(list)).toHaveLength(3)
+    // 超过上限（10）按上限截断；用 12 个合成项验证收敛
+    const big = Array.from({ length: 12 }, (_, i) => ({ ...list[0], name: `p${i}`, link: `https://example.com/${i}` }))
+    expect(filterProjects(big, undefined, 99)).toHaveLength(10)
   })
 
   it('空结果返回空数组', () => {

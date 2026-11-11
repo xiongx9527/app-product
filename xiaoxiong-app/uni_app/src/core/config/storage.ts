@@ -8,7 +8,7 @@ import {
   DEFAULT_SUBTITLE_COLOR,
 } from './constants'
 import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
-import type { AppConfig, GeneralConfig, PlaybackConfig, PlaybackSource, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
+import type { AppConfig, GeneralConfig, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
 
 export const CONFIG_STORAGE_KEY = 'app-product.config.v1'
 
@@ -60,6 +60,16 @@ export function createDefaultPlayback(): PlaybackConfig {
   }
 }
 
+const DEFAULT_RECOMMEND: RecommendConfig = {
+  dealsCount: 3,
+  opensourceCount: 3,
+}
+
+/** 默认推荐设置：好价商品 / 开源工具均推荐 3 条，范围 1–10。 */
+export function createDefaultRecommend(): RecommendConfig {
+  return { dealsCount: DEFAULT_RECOMMEND.dealsCount, opensourceCount: DEFAULT_RECOMMEND.opensourceCount }
+}
+
 export function createDefaultConfig(): AppConfig {
   return {
     version: 1,
@@ -68,6 +78,7 @@ export function createDefaultConfig(): AppConfig {
     timezone: DEFAULT_TIMEZONE,
     voice: createDefaultVoice(),
     playback: createDefaultPlayback(),
+    recommend: createDefaultRecommend(),
     general: createDefaultGeneral(),
   }
 }
@@ -181,6 +192,23 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
   }
 }
 
+/**
+ * 归一化推荐设置：dealsCount / opensourceCount 只接受 1–10 的整数，缺省/非法回退 3。
+ * 与网关工具上限一致（好价/开源工具收敛到 1–10），避免下发网关不认识的条数。
+ */
+function normalizeRecommend(raw: unknown): RecommendConfig {
+  const source = isRecord(raw) ? raw : {}
+  const toCount = (v: unknown, fallback: number): number => {
+    const n = Number(v)
+    if (!Number.isFinite(n)) return fallback
+    return Math.min(10, Math.max(1, Math.floor(n)))
+  }
+  return {
+    dealsCount: toCount(source.dealsCount, DEFAULT_RECOMMEND.dealsCount),
+    opensourceCount: toCount(source.opensourceCount, DEFAULT_RECOMMEND.opensourceCount),
+  }
+}
+
 /** 读取任意输入并补齐缺失项；存档损坏时也能得到一份可用配置 */
 export function normalizeConfig(
   input: unknown,
@@ -197,9 +225,10 @@ export function normalizeConfig(
   // 旧的 asr / llm / tts 字段直接丢弃，不迁移、不兼容；voice 缺失补默认
   const voice = normalizeVoice(source.voice ?? base.voice)
   const playback = normalizePlayback(source.playback ?? base.playback)
+  const recommend = normalizeRecommend(source.recommend ?? base.recommend)
   const general = normalizeGeneral(source.general ?? base.general)
 
-  return { version: 1, mode, language, timezone, voice, playback, general }
+  return { version: 1, mode, language, timezone, voice, playback, recommend, general }
 }
 
 function hasStorage(): boolean {

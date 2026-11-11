@@ -82,6 +82,8 @@ export function createDealsTool(
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   const { source } = options
+  // 默认推荐条数：来自客户端设置页（session.start.recommend.dealsCount），缺省 3，范围 1–10。
+  const defaultLimit = Math.min(10, Math.max(1, Math.floor(options.defaultLimit ?? 3)))
   const ttlEnv = Number(process.env.DEALS_CACHE_TTL_MS)
   const cacheTtlMs =
     options.cacheTtlMs ?? (Number.isFinite(ttlEnv) && ttlEnv > 0 ? ttlEnv : 60000)
@@ -122,7 +124,8 @@ export function createDealsTool(
     args: { keyword?: string; limit?: number } = {},
   ): Promise<DealsSnapshot> {
     const keyword = args.keyword?.trim() || undefined
-    const { deals, anyOk } = await collectDeals(ctx, args)
+    const resolved = { ...args, limit: typeof args.limit === 'number' ? args.limit : defaultLimit }
+    const { deals, anyOk } = await collectDeals(ctx, resolved)
     const text =
       !deals.length && !anyOk
         ? prefix === 'en'
@@ -149,9 +152,9 @@ export function createDealsTool(
         .number()
         .int()
         .min(1)
-        .max(5)
+        .max(10)
         .optional()
-        .describe('返回条数，1–5，默认 3'),
+        .describe('返回条数，1–10，默认 3'),
     }),
     /** LLM function-call 入口：只返回本地化文本（契约不变）。 */
     call: async (args: { keyword?: string; limit?: number } = {}) =>

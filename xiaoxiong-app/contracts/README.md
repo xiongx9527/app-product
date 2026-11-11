@@ -49,7 +49,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 } }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }, "recommend": { "dealsCount": 3, "opensourceCount": 3 } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.end" }
@@ -65,6 +65,8 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 网关据此立即按 `source` 重建音乐源，**无需重连/重唤醒即可生效**（下次点歌/换一首即用新源）；
 未连接时客户端退化为「下一次 `session.start` 随 `playback.source` 生效」，不强行发送。
 `source` 取值与 `session.start.playback.source` 一致（`baidu` / `netease` / `tencent` / `kugou`）。`autoSubtitle` / `defaultLoop` / `defaultVolume` 同样可随本消息实时刷新（取值与 `session.start.playback` 一致），下次新播放（点歌/换一首）即生效。
+
+`recommend` 为推荐设置（好价商品 / 开源工具的推荐条数），来自客户端设置页，缺省各 3、范围 1–10。网关据此作为好价/开源工具未显式指定条数时的默认（工具上限 1–10）；客户端改了经下一次 `session.start`（重连/重唤醒）生效。
 `tts.end` 只代表服务端音频帧下发完毕，不代表播完；**队列还有下一句时**网关必须等
 这个回执才消费，否则新一轮 `tts.start` 会掐掉上一轮还没播完的音频。
 队列为空时不等回执，立刻释放，避免用户下一句被误排队。

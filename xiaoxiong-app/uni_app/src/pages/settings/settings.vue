@@ -96,6 +96,35 @@ function openFavorites(): void {
   uni.navigateTo({ url: '/pages/favorites/favorites' })
 }
 
+/** 推荐设置默认折叠，展开后调整推荐条数与查看列表。 */
+const recommendCollapsed = ref(true)
+function toggleRecommend(): void {
+  recommendCollapsed.value = !recommendCollapsed.value
+}
+
+/** 推荐条数夹紧到 1–10 整数，非法/越界回退 3；与网关工具上限一致。 */
+function clampCount(v: number): number {
+  const n = Math.floor(Number(v))
+  if (!Number.isFinite(n)) return 3
+  return Math.min(10, Math.max(1, n))
+}
+function setDealsCount(e: any): void {
+  appConfig.recommend.dealsCount = clampCount(e.detail.value)
+}
+function setOpensourceCount(e: any): void {
+  appConfig.recommend.opensourceCount = clampCount(e.detail.value)
+}
+
+/** 进入好价商品列表页：查看助手推荐过的商品。 */
+function openDeals(): void {
+  uni.navigateTo({ url: '/pages/deals/deals' })
+}
+
+/** 进入开源工具列表页：查看助手推荐过的开源工具/软件。 */
+function openOpenSource(): void {
+  uni.navigateTo({ url: '/pages/opensource/opensource' })
+}
+
 /** LLM 模型下拉：选项来自来源配置（内置=已配置上游模型；百炼=带 key 拉真实目录）。 */
 const llmModels = ref<{ value: string; label: string }[]>([])
 const llmModelHint = ref('')
@@ -684,6 +713,53 @@ watch(
         </view>
 
         <button class="reset" @tap="onResetPlayback">{{ t('settings.reset') }}</button>
+      </template>
+    </view>
+
+    <!-- 推荐设置（好价商品 / 开源工具推荐条数），默认折叠，位于播放设置之后 -->
+    <view class="group">
+      <view class="group-head">
+        <view class="group-title-row" @tap="toggleRecommend">
+          <text class="group-chevron">{{ recommendCollapsed ? '▸' : '▾' }}</text>
+          <text class="group-title">{{ t('settings.recommend.title') }}</text>
+        </view>
+      </view>
+      <template v-if="!recommendCollapsed">
+        <!-- 好价商品推荐条数：1–10，默认 3；经 session.start.recommend 下发网关作为工具默认条数 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.recommend.dealsCount') }}</text>
+          <input
+            class="input"
+            type="number"
+            :value="appConfig.recommend.dealsCount"
+            @change="setDealsCount"
+          />
+          <text class="hint">{{ t('settings.recommend.dealsCountHint') }}</text>
+        </view>
+
+        <!-- 开源工具推荐条数：1–10，默认 3；同上 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.recommend.opensourceCount') }}</text>
+          <input
+            class="input"
+            type="number"
+            :value="appConfig.recommend.opensourceCount"
+            @change="setOpensourceCount"
+          />
+          <text class="hint">{{ t('settings.recommend.opensourceCountHint') }}</text>
+        </view>
+
+        <!-- 好价商品列表入口：查看助手推荐过的商品（持久化，仿收藏） -->
+        <view class="entry" @tap="openDeals">
+          <text class="entry-label">{{ t('settings.recommend.deals') }}</text>
+          <text class="entry-arrow">›</text>
+        </view>
+
+        <!-- 开源工具列表入口：查看助手推荐过的开源工具/软件 -->
+        <view class="entry" @tap="openOpenSource">
+          <text class="entry-label">{{ t('settings.recommend.opensource') }}</text>
+          <text class="entry-arrow">›</text>
+        </view>
       </template>
     </view>
 

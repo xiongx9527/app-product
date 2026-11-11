@@ -58,6 +58,8 @@ export interface VoiceSessionDeps {
     defaultLoop?: number,
     defaultVolume?: number,
     autoLoop?: boolean,
+    dealsCount?: number,
+    opensourceCount?: number,
     getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null
   ) => AgentService
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
@@ -165,6 +167,10 @@ export class VoiceSessionService {
   private defaultVolume = 0.5
   /** 是否自动循环播放：开启后每次新播放默认按 defaultLoop 遍数循环；关闭（缺省）则只在显式「循环 N 遍」或手动循环时才循环。 */
   private autoLoop = false
+  /** 好价商品推荐条数：来自客户端设置页 session.start.recommend.dealsCount，缺省 3，范围 1–10。 */
+  private dealsCount = 3
+  /** 开源工具推荐条数：来自客户端设置页 session.start.recommend.opensourceCount，缺省 3，范围 1–10。 */
+  private opensourceCount = 3
   /** 当前是否正在播放（播放/切歌/循环置真，停止置假）。决定「点歌按当前歌手优先」是否生效：
    *  仅当用户正处于某个歌手的播放会话时才自动选同歌手版本；已停止则老老实实列选项让用户选。 */
   private musicActive = false
@@ -265,6 +271,14 @@ export class VoiceSessionService {
         this.defaultVolume = typeof pb?.defaultVolume === 'number' ? Math.min(1, Math.max(0, pb.defaultVolume)) : 0.5
         this.autoLoop = typeof pb?.autoLoop === 'boolean' ? pb.autoLoop : false
         this.musicVolume = this.defaultVolume
+        // 推荐条数：来自客户端设置页（session.start.recommend），缺省各 3，收敛到 1–10 整数。
+        const rc = msg.recommend
+        const toCount = (v: unknown, fallback: number): number => {
+          const n = Number(v)
+          return Number.isFinite(n) ? Math.min(10, Math.max(1, Math.floor(n))) : fallback
+        }
+        this.dealsCount = toCount(rc?.dealsCount, 3)
+        this.opensourceCount = toCount(rc?.opensourceCount, 3)
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, msg.voice)
         // ASR/TTS/LLM 未就绪时，网关没法用语音播报，改为下发预录提示音，让用户「听得见地」知道；
         // 探测有 15s 缓存，连重连/重唤醒都便宜，不每次真打服务。不下发具体文案（提示音已含人声）。
@@ -1480,6 +1494,8 @@ export class VoiceSessionService {
             this.defaultLoop,
             this.defaultVolume,
             this.autoLoop,
+            this.dealsCount,
+            this.opensourceCount,
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
           )
       this.lastLlmKey = llmKey
@@ -1524,6 +1540,8 @@ export class VoiceSessionService {
             this.defaultLoop,
             this.defaultVolume,
             this.autoLoop,
+            this.dealsCount,
+            this.opensourceCount,
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null)
           )
     this.lastLlmKey = llmKey

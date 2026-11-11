@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { readScreenInfo, type ScreenInfo } from '@/core/adaptation/screen'
 import { FLOAT_POSITION_PRESETS } from '@/core/adaptation/floatLayer'
-import { appConfig } from '@/core/config'
+import { appConfig, persistConfig } from '@/core/config'
 import { DEFAULT_SUBTITLE_FONT_SIZE, DEFAULT_SUBTITLE_COLOR } from '@/core/config/constants'
 import FloatLayer from '@/components/FloatLayer.vue'
 import DetailRenderer from '@/components/DetailRenderer.vue'
 import { useAssistant } from '@/features/assistant/useAssistant'
+import { captureRecommendation } from '@/features/recommend/recommendStore'
 import { toDisplayText } from '@/core/text/displayText'
 import { toReplyHtml } from '@/core/text/replyHtml'
 import {
@@ -81,9 +82,32 @@ const {
   closeDetailCard,
 } = useAssistant()
 
+/**
+ * 助手推荐结果（好价商品 / 开源工具）按 media.detail.kind 自动收进本地列表，
+ * 让「推荐设置」里的列表入口能回看历史推荐。只在列表形态（未选中单条）时收，避免重复写。
+ */
+watch(detailCard, (d) => {
+  if (d) captureRecommendation(d)
+})
+
 /** 悬浮小圆是否显示：开关打开 + 有内容在播放即可；无封面时显示占位唱片，所有播放内容同等对待 */
 const floatDiscVisible = computed(
   () => appConfig.playback.floatPlayer === true && musicVisible.value,
+)
+
+/**
+ * 切换播放模式（悬浮小圆 ↔ 普通播放条）：与语音「切换播放模式」共用同一份状态
+ * appConfig.playback.floatPlayer，并落盘。这样手动切与语音切指向同一个真相源，
+ * 不会像「临时收起标记」那样让语音再也切不回来。
+ */
+function onTogglePlayMode(): void {
+  appConfig.playback.floatPlayer = !appConfig.playback.floatPlayer
+  persistConfig()
+}
+
+/** 切换按钮上的图标：指向「将要切到的模式」——悬浮态显示「切到播放条」，播放条态显示「切到悬浮小圆」 */
+const floatPlayerIcon = computed(() =>
+  appConfig.playback.floatPlayer ? '/static/icons/mode-bar.svg' : '/static/icons/mode-disc.svg',
 )
 
 /** 位置从设置读取（通用 FloatPosition 参数），非法值回退顶部居中 */
@@ -542,6 +566,9 @@ function onConnTap(): void {
           <view class="music-ctrl" :aria-label="t('music.stop')" @tap="onStopMusic">
             <image class="music-icon" src="/static/icons/stop.svg" mode="aspectFit" />
           </view>
+          <view class="music-ctrl" :aria-label="t('music.playModeToggle')" @tap="onTogglePlayMode">
+            <image class="music-icon" :src="floatPlayerIcon" mode="aspectFit" />
+          </view>
           <!-- 喇叭提升到顶行：面板作为喇叭的兄弟节点（避免点击面板冒泡到开关而缩回），
                喇叭已在上方，面板改为向下弹出，盖住下方进度行而非飞出屏幕顶部。 -->
           <view class="vol-group">
@@ -644,6 +671,11 @@ function onConnTap(): void {
       <!-- 固定宽度内容层：歌词再长也不撑宽容器，FloatLayer 的 translateX(-50%) 基准恒定，
            位置不会左右移动；小圆与歌词都在此层内居中，整体严格顶部居中 -->
       <view class="float-disc-body">
+        <!-- 切换播放模式（悬浮小圆 ↔ 普通播放条）：与语音「切换播放模式」共用 floatPlayer 状态并落盘；
+             @tap.stop 避免误触小圆本身的暂停/继续；不是单纯关闭，故与语音切换互相可逆 -->
+        <view class="disc-mode-toggle" :aria-label="t('music.playModeToggle')" @tap.stop="onTogglePlayMode">
+          <image class="disc-mode-icon" :src="floatPlayerIcon" mode="aspectFit" />
+        </view>
         <view class="disc" :class="{ 'disc--paused': musicPaused || musicEnded, 'disc--playing': !musicPaused && !musicEnded }" @tap="onTogglePause">
           <view class="disc__glow" />
           <view class="disc__progress" :style="discProgressStyle" />
@@ -1780,10 +1812,37 @@ function onConnTap(): void {
 
 /* 固定宽度内容层：FloatLayer 宽度恒定 → 居中稳定，不随歌词长度左右移动 */
 .float-disc-body {
+  position: relative;
   width: 200px;
   display: flex;
   flex-direction: column;
   align-items: center;
+}
+
+/* 悬浮小圆上的播放模式切换按钮：位于内容层右上角，点一下在「悬浮小圆 ↔ 普通播放条」间切换 */
+.disc-mode-toggle {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(4px);
+  border: none;
+  transition: background 0.15s ease;
+}
+
+.disc-mode-toggle:active {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.disc-mode-icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* 当前正在唱的那句：单行显示整句，不换行/不省略/不滚动；字号按句长微缩（由 :style 注入） */
