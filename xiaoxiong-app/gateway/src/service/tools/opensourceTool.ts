@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { rankByPreference } from '../dealsPreference'
 import type { Lang } from '../../protocol'
 import {
   filterProjects,
@@ -119,7 +120,25 @@ export function createOpenSourceTool(
         }
         return formatProjects(lang, [], keyword)
       }
-      const picked = filterProjects(merged, keyword, limit)
+      // 泛推荐（用户没指定品类）按长期记忆偏好排序；带品类时用户已指定，保持关键词过滤结果。
+      // 与商品共用同一套确定性排序，不调 LLM。
+      let prefKeywords: string[] = []
+      if (!keyword) {
+        try {
+          prefKeywords = (await options.getPreferenceKeywords?.()) ?? []
+        } catch {
+          // 记忆读失败不阻断推荐：退回「取最新」的普通结果
+          prefKeywords = []
+        }
+      }
+      const picked = prefKeywords.length
+        ? rankByPreference(
+            merged,
+            prefKeywords,
+            (p) => `${p.name} ${p.title} ${p.detail} ${p.language} ${p.os}`,
+            limit,
+          )
+        : filterProjects(merged, keyword, limit)
       // 与口播同一份结果：客户端卡片与语音编号一一对应，用户说「第2个」看到的正是第 2 张卡。
       // 结构是统一的 DetailItem，客户端不知道数据来自哪个源。
       if (picked.length) {

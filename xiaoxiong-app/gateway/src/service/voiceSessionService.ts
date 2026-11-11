@@ -18,6 +18,7 @@ import {
   needsCandidateList,
   candidateQuery,
   parseSelection,
+  looksLikeSelectionAttempt,
   looksLikeBareMusicQuery,
   contentWords,
   filterByCurrentArtist,
@@ -602,8 +603,15 @@ export class VoiceSessionService {
     if (!pending) return false
     const idx = parseSelection(text, pending.items)
     if (idx === null) {
-      // 不是选择（可能用户换了话题）：清掉待选，交回常规流程处理这句
-      this.pendingCandidates = null
+      // 与商品/开源选号同一套：候选歌单还在，不能因为一句没说清的话就清掉，
+      // 用户回头再说「第二首」必须还能选中。
+      // 像在报编号却没对上（含糊/听错/越界）时就地重问并消费这句，
+      // 不放行到 LLM / 音乐直连，避免被答成「推荐歌曲」或再列一次歌单。
+      if (looksLikeSelectionAttempt(text)) {
+        this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+        await this.speakReply(messages(this.lang).music.chooseAgain())
+        return true
+      }
       return false
     }
     this.pendingCandidates = null
@@ -831,8 +839,14 @@ export class VoiceSessionService {
       pending.items.map((d) => ({ title: d.title, artist: '' })),
     )
     if (idx === null) {
-      // 不是选择（可能换了话题）：清掉待选，交回常规流程处理这句
-      this.pendingDeals = null
+      // 卡片还在屏幕上，选号状态就不该丢：一句没说清的话不清列表，用户回头再说「第三件」仍要能选中。
+      // 但「像是在报编号」却没对上（含糊 / 听错 / 越界）时，就地口播重问并消费这句，
+      // 绝不放行到 LLM / 音乐直连，否则会被当成点歌或推荐歌曲，用户就再也选不回来了。
+      if (looksLikeSelectionAttempt(text)) {
+        this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+        await this.speakReply(messages(this.lang).deals.chooseAgain())
+        return true
+      }
       return false
     }
     this.pendingDeals = null
@@ -895,7 +909,12 @@ export class VoiceSessionService {
       pending.items.map((it) => ({ title: it.title, artist: '' })),
     )
     if (idx === null) {
-      this.pendingProjects = null
+      // 同商品：列表保留；像在报编号就重问，不放行到音乐/LLM 分支
+      if (looksLikeSelectionAttempt(text)) {
+        this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+        await this.speakReply(messages(this.lang).opensource.chooseAgain())
+        return true
+      }
       return false
     }
     this.pendingProjects = null

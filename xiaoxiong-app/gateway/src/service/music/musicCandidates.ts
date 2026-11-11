@@ -153,9 +153,13 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')
 }
 
+/** 编号量词：音乐说「首/个」，商品说「件」，开源项目说「个/项」，统一在这里认。 */
+const ORDINAL_UNIT = '首个件条项款'
+
 /**
  * 把用户下一句话解析成候选列表里的选择，返回 0-based 索引；不是选择返回 null。
- * 支持「第一首 / 第二个 / 2 / 就第3首」等序号，以及直接说歌名（如「就听晴天」）。
+ * 音乐 / 商品 / 开源项目共用：只读候选的 .title，不认识业务类型。
+ * 支持「第一首 / 第二个 / 第三件 / 2 / 就第3首」等序号，以及直接说名字。
  * 注意：「再来一首 / 换一首」里的「一」是量词不是序号，必须排除，否则会被误判成选第 1 首。
  */
 export function parseSelection(text: string, candidates: readonly MusicCandidate[]): number | null {
@@ -163,13 +167,13 @@ export function parseSelection(text: string, candidates: readonly MusicCandidate
   const norm = normalize(text)
   if (!norm) return null
 
-  // 1) 显式序号：「第X首/个」，或整句就是个数字/中文数字（二、2、两）
-  const ordinal = /第([一二两三四五六七八九十\d]+)[首个]?/.exec(norm)
+  // 1) 显式序号：「第X首/个/件」，或整句就是个数字/中文数字（二、2、两）
+  const ordinal = new RegExp(`第([一二两三四五六七八九十\\d]+)[${ORDINAL_UNIT}]?`).exec(norm)
   if (ordinal) {
     const num = toNumber(ordinal[1])
     if (num !== null && num >= 1 && num <= candidates.length) return num - 1
   }
-  const bare = /^([一二两三四五六七八九十\d]+)[首个]?$/.exec(norm)
+  const bare = new RegExp(`^([一二两三四五六七八九十\\d]+)[${ORDINAL_UNIT}]?$`).exec(norm)
   if (bare) {
     const num = toNumber(bare[1])
     if (num !== null && num >= 1 && num <= candidates.length) return num - 1
@@ -181,6 +185,21 @@ export function parseSelection(text: string, candidates: readonly MusicCandidate
     if (title && norm.includes(title)) return i
   }
   return null
+}
+
+/**
+ * 这句话是否「像是在报编号」（含「第X」或整句就是序号），不要求解析出具体编号。
+ * 用于选号失败时决定「口播重问并留住列表」还是「放行到正常流程」：
+ * 「第几个」「第三件」「2」都算；「今天天气怎么样」不算。
+ * 「几」要算进来——用户说「第几个」往往是在找词，不该被丢给大模型当音乐/点歌。
+ */
+export function looksLikeSelectionAttempt(text: string): boolean {
+  const norm = normalize(text)
+  if (!norm) return false
+  return (
+    new RegExp(`第[一二两三四五六七八九十\\d几]+[${ORDINAL_UNIT}]?`).test(norm) ||
+    new RegExp(`^[一二两三四五六七八九十\\d]+[${ORDINAL_UNIT}]?$`).test(norm)
+  )
 }
 
 function toNumber(raw: string): number | null {

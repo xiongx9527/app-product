@@ -58,6 +58,9 @@ export interface OpenSourceOptions {
   fetcher?: OpenSourceFetcher
   /** 结构化结果回调：拿到筛选后的条目时调用，由组合根转成 media.detail 下发给客户端。 */
   onResults?: (items: DetailItem[]) => void
+  /** 读取长期记忆偏好关键词（无记忆/读取失败时返回空）：泛推荐时据此排序。
+   *  工具层不碰 DataService，由组合根包好注入，离线测试可直接不传。 */
+  getPreferenceKeywords?: () => Promise<string[]>
 }
 
 /** 把若干条目格式化成本地化纯文本，交给大模型逐条带编号播报，方便用户说编号选择。 */

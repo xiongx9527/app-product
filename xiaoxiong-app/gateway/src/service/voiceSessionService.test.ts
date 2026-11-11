@@ -196,8 +196,8 @@ function createHarness(
   }
 }
 
-async function startDialog(service: VoiceSessionService): Promise<void> {
-  service.handleText(JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN' }))
+async function startDialog(service: VoiceSessionService, lang = 'zh-CN'): Promise<void> {
+  service.handleText(JSON.stringify({ type: 'session.start', sessionId: 's1', lang }))
   await sleep(5)
 }
 
@@ -590,6 +590,128 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     // 只口播一句确认，不复述简介；这句不进 LLM
     expect(texts(h)).toContain('第 2 个开源项目')
     expect(h.agentCalls()).toBe(agentCallsBefore)
+  })
+
+  it('说「第三件」（商品量词）也能选中第 3 件，且不会落到点歌/大模型', async () => {
+    const three: Deal[] = [
+      ...sampleDeals,
+      { title: '第三件商品', price: '30元', mall: '京东', tags: [], link: 'https://x/c' },
+    ]
+    const h = createHarness({
+      finalizeTexts: ['有什么折扣', '第三件'],
+      dealsQuery: async () => ({ text: '查到 3 件最新好价', deals: three }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const selected = h.events.filter(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
+        e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    expect(selected[0].selectedIndex).toBe(3)
+    expect(texts(h)).toContain('第 3 件商品详情')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('列完商品后一句没说清（不是编号），再说「第二件」仍能选中：列表不被清掉', async () => {
+    const h = createHarness({
+      finalizeTexts: ['有什么折扣', '那个商品怎么样', '第二件'],
+      dealsQuery: async () => ({ text: '查到 2 件最新好价', deals: sampleDeals }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    expect(h.events.some((e) => e.type === 'media.detail' && e.selectedIndex === undefined)).toBe(true)
+
+    // 中间这句含糊话正常处理，但卡片还在屏幕上，选号状态要留住
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const selected = h.events.filter(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
+        e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    expect(selected[0].selectedIndex).toBe(2)
+    expect(texts(h)).toContain('第 2 件商品详情')
+  })
+
+  it('说「第几个」没对上：就地重问、不进 LLM，后面再说编号还能选中', async () => {
+    const h = createHarness({
+      finalizeTexts: ['有什么折扣', '第几个', '第二件'],
+      dealsQuery: async () => ({ text: '查到 2 件最新好价', deals: sampleDeals }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    h.playbackDone()
+    await sleep(20)
+    const callsBefore = h.agentCalls()
+    await speakUtterance(h)
+    await sleep(30)
+    // 这句被当成「想选号但没说清」消费掉，绝不放行到大模型（否则会被答成音乐/推荐歌曲）
+    expect(h.agentCalls()).toBe(callsBefore)
+    expect(texts(h)).toContain('没听清是第几件')
+
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+    const selected = h.events.filter(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
+        e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    expect(selected[0].selectedIndex).toBe(2)
+  })
+
+  it('开源项目同样：含糊话后列表仍在，再说「第二个」能选中', async () => {
+    const h = createHarness({ finalizeTexts: ['推荐点开源项目', '那个怎么样', '第二个'] })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(20)
+    h.playbackDone()
+    await sleep(20)
+
+    h.emitMedia({
+      type: 'media.detail',
+      kind: 'project',
+      items: [
+        { index: 1, title: 'UIEIP', fields: [{ label: '定位', value: '低代码平台' }] },
+        { index: 2, title: 'vmr', fields: [{ label: '定位', value: 'SDK 版本管理' }] },
+      ],
+    })
+    await sleep(20)
+
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const selected = h.events.filter(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
+        e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    expect(selected[0].kind).toBe('project')
+    expect(selected[0].selectedIndex).toBe(2)
   })
 
   it('切语音来源（rearm 重发 session.start）后商品编号仍可选：pendingDeals 不被清空', async () => {
@@ -1497,6 +1619,63 @@ describe('点歌信息不足：候选列表 + 语音选择', () => {
     expect(finals.some((e) => e.text === '第二首')).toBe(true)
   })
 
+  it('列完歌单后插一句无关指令，再说「第二首」仍能选中：候选歌单不被清掉', async () => {
+    const resolved: string[] = []
+    const h = createHarness({
+      finalizeTexts: ['周杰伦的歌', '音量30%', '第二首'],
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async (g) => {
+          resolved.push(String(g))
+          return { url: 'https://bili/a.m4s', title: '晴天', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+    // 中间这句走音量直连，既不选歌也不该把候选歌单清掉
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ title: string }>
+    expect(plays.some((p) => p.title === '晴天')).toBe(true)
+    expect(resolved).toContain('周杰伦 晴天')
+  })
+
+  it('说「第几个」没对上：就地重问、不进 LLM/不播歌，后面再说编号还能选中', async () => {
+    const h = createHarness({
+      finalizeTexts: ['周杰伦的歌', '第几个', '第二首'],
+      candidateFetcher: mb(three),
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/a.m4s', title: '晴天', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+
+    const callsBefore = h.agentCalls()
+    await speakUtterance(h)
+    await sleep(30)
+    expect(h.agentCalls()).toBe(callsBefore)
+    expect(texts(h)).toContain('没听清选哪首')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+
+    h.playbackDone()
+    await sleep(30)
+    await speakUtterance(h)
+    await sleep(30)
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ title: string }>
+    expect(plays.some((p) => p.title === '晴天')).toBe(true)
+  })
+
   it('只有 1 个候选：直接播放，不口播列表', async () => {
     const resolved: string[] = []
     const h = createHarness({
@@ -2218,5 +2397,104 @@ describe('播放源实时切换（session.playback）', () => {
     expect(lastPlayTitle(h, before)).toBe('歌-custom')
     // 全程没进 LLM（直连点歌）
     expect(h.agentCalls()).toBe(0)
+  })
+})
+
+/**
+ * 英文会话（en-US 带地区码）下三类列表的「没听清编号」重问文案必须本地化。
+ * 特别锁住 music.chooseAgain：英文目录原来靠 ...zhCN.music 展开，没覆盖就会冒中文。
+ * 用越界编号「9」触发重问——像在报编号但没对上，列表只有 2~3 条。
+ */
+describe('英文会话：选号重问文案本地化', () => {
+  function spoken(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  const playSource = (resolve: MusicSource['resolve']): MusicSource => ({ resolve })
+  const mb = (items: Array<{ title: string; artist: string }>) => async () => ({
+    ok: true,
+    json: async () => ({
+      recordings: items.map((c) => ({ title: c.title, 'artist-credit': [{ name: c.artist }] })),
+    }),
+  })
+  const songs = [
+    { title: '稻香', artist: '周杰伦' },
+    { title: '晴天', artist: '周杰伦' },
+    { title: '七里香', artist: '周杰伦' },
+  ]
+  const items = [
+    { title: '商品A', price: '9.9元', mall: '京东', tags: [], link: 'https://x/a' },
+    { title: '商品B', price: '20元', mall: '天猫', tags: [], link: 'https://x/b' },
+  ]
+
+  it('音乐候选：en-US 说越界编号 → 英文重问，且不冒中文继承文案', async () => {
+    const h = createHarness({
+      finalizeTexts: ['周杰伦的歌', '9'],
+      candidateFetcher: mb(songs),
+      musicSourceFactory: () =>
+        playSource(async () => ({ url: 'https://bili/a.m4s', title: '晴天', channel: 'bilibili' })),
+    })
+    await startDialog(h.service, 'en-US')
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(spoken(h)).toContain("Didn't catch which song")
+    expect(spoken(h)).not.toContain('没听清选哪首')
+    expect(h.agentCalls()).toBe(0)
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+  })
+
+  it('商品列表：en-US 说越界编号 → 英文重问', async () => {
+    const h = createHarness({
+      finalizeTexts: ['有什么折扣', '9'],
+      dealsQuery: async () => ({ text: '查到 2 件最新好价', deals: items }),
+    })
+    await startDialog(h.service, 'en-US')
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+    const before = h.agentCalls()
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(spoken(h)).toContain("Didn't catch which item")
+    expect(spoken(h)).not.toContain('没听清是第几件')
+    expect(h.agentCalls()).toBe(before)
+  })
+
+  it('开源项目：en-US 说越界编号 → 英文重问', async () => {
+    const h = createHarness({ finalizeTexts: ['推荐点开源项目', '9'] })
+    await startDialog(h.service, 'en-US')
+    await speakUtterance(h)
+    await sleep(20)
+    h.playbackDone()
+    await sleep(20)
+
+    h.emitMedia({
+      type: 'media.detail',
+      kind: 'project',
+      items: [
+        { index: 1, title: 'UIEIP', fields: [{ label: 'Tagline', value: 'Low-code' }] },
+        { index: 2, title: 'vmr', fields: [{ label: 'Tagline', value: 'SDK manager' }] },
+      ],
+    })
+    await sleep(20)
+    h.playbackDone()
+    await sleep(20)
+    const before = h.agentCalls()
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(spoken(h)).toContain("Didn't catch which project")
+    expect(spoken(h)).not.toContain('没听清是第几个')
+    expect(h.agentCalls()).toBe(before)
   })
 })

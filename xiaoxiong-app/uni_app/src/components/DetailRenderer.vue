@@ -15,9 +15,12 @@
           :key="a.key"
           class="detail-action"
           :class="{ 'detail-action--disabled': a.disabled }"
+          :aria-label="a.label"
           @tap="runAction(a)"
         >
-          <text class="detail-action-label">{{ a.label }}</text>
+          <!-- 图标优先，缺图标的源回退成文字，不让按钮变成空白 -->
+          <image v-if="a.icon" class="detail-action-icon" :src="a.icon" mode="aspectFit" />
+          <text v-else class="detail-action-label">{{ a.label }}</text>
         </view>
       </view>
       <text v-if="hint" class="detail-hint">{{ hint }}</text>
@@ -72,21 +75,31 @@ function onSelect(index: number): void {
 }
 
 .detail-action {
-  padding: 6px 12px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 8px;
   background: rgba(108, 140, 255, 0.14);
+  flex-shrink: 0;
 }
 
 .detail-action:active {
-  background: rgba(108, 140, 255, 0.26);
+  background: rgba(108, 140, 255, 0.3);
 }
 
 .detail-action--disabled {
   opacity: 0.5;
 }
 
+.detail-action-icon {
+  width: 18px;
+  height: 18px;
+}
+
 .detail-action-label {
-  font-size: 12px;
+  font-size: 11px;
   color: #cfd8ff;
 }
 

@@ -22,6 +22,7 @@ import { createDealsTool } from './dealsTool'
 import { createSmzdmSource, type DealsSource } from '../deals'
 import { createOpenSourceTool } from './opensourceTool'
 import { createOschinaSource, type OpenSourceSource } from '../opensource'
+import { preferenceKeywords } from '../dealsPreference'
 import type { MusicSource } from '../music/types'
 import {
   createRememberTool,
@@ -112,6 +113,16 @@ export function createToolkit(
       source: opensourceSource,
       // 结构化结果经同一条 emit 通道下发成 media.detail(kind: project) 卡片
       onResults: emit ? (items) => emit({ type: 'media.detail', kind: 'project', items }) : undefined,
+      // 泛推荐结合长期记忆：与商品同一套偏好关键词，读失败就当作没有记忆
+      getPreferenceKeywords: memoryStore
+        ? async () => {
+            try {
+              return preferenceKeywords(await memoryStore.list())
+            } catch {
+              return []
+            }
+          }
+        : undefined,
     }),
   ]
   // 媒体指令需要 emit 把指令下发给客户端，且需要 musicSource 决定播什么；

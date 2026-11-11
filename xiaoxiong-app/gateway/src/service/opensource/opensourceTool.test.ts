@@ -220,8 +220,14 @@ describe('createOpenSourceTool 抓取与降级', () => {
     expect(items.map((i) => i.index)).toEqual([1, 2, 3])
     expect(items[0].title).toBe('UIEIP')
     // 详情字段走统一 label+value，客户端不认识具体字段名
-    expect(items[0].fields?.map((x) => x.label)).toEqual(['定位', '语言', '系统', '简介', '收录时间'])
-    expect(items[0].fields?.find((x) => x.label === '语言')?.value).toBe('Go')
+    expect(items[0].fields?.map((x) => x.label)).toEqual([
+      '来源', '定位', '开发语言', '开源协议', '系统', '收录时间', '简介',
+    ])
+    // 当前源不给语言/协议，两行如实显示占位而不是编造
+    expect(items[0].fields?.find((x) => x.label === '开发语言')?.value).toBe('Go')
+    expect(items[0].fields?.find((x) => x.label === '开源协议')?.value).toBe('暂无')
+    expect(items[0].fields?.find((x) => x.label === '开发语言')?.value).toBe('Go')
+    expect(items[0].fields?.[0]).toEqual({ label: '来源', value: '开源中国' })
   })
 
   it('没有结果时不下发空卡片', async () => {
@@ -234,6 +240,46 @@ describe('createOpenSourceTool 抓取与降级', () => {
     })
     await tool.call?.({ keyword: '不存在的品类xyz' })
     expect(cards).toHaveLength(0)
+  })
+
+  it('泛推荐结合长期记忆：偏好 Python 时 Python 项目排到第 1 条', async () => {
+    const f = fetcherFor({ [page1]: { ok: true, body: SAMPLE_JSON } })
+    const cards: Array<Array<{ title: string }>> = []
+    const tool = createOpenSourceTool('zh-CN', {
+      source,
+      fetcher: f,
+      getPreferenceKeywords: async () => ['Python'],
+      onResults: (items) => cards.push(items),
+    })
+    const out = await tool.call?.({})
+    // 口播与卡片同一份顺序，用户说「第一个」拿到的是同一件
+    expect(out).toContain('1、DBmind')
+    expect(cards[0][0].title).toBe('DBmind')
+  })
+
+  it('用户指定了品类就不按记忆重排（记忆不能盖过明确需求）', async () => {
+    const f = fetcherFor({ [page1]: { ok: true, body: SAMPLE_JSON } })
+    const tool = createOpenSourceTool('zh-CN', {
+      source,
+      fetcher: f,
+      getPreferenceKeywords: async () => ['Python'],
+    })
+    const out = await tool.call?.({ keyword: 'Go' })
+    expect(out).toContain('UIEIP')
+    expect(out).not.toContain('DBmind')
+  })
+
+  it('长期记忆读取失败不影响推荐：退回取最新的普通结果', async () => {
+    const f = fetcherFor({ [page1]: { ok: true, body: SAMPLE_JSON } })
+    const tool = createOpenSourceTool('zh-CN', {
+      source,
+      fetcher: f,
+      getPreferenceKeywords: async () => {
+        throw new Error('db down')
+      },
+    })
+    const out = await tool.call?.({})
+    expect(out).toContain('1、UIEIP')
   })
 
   it('有关键词并行抓多页并合并去重', async () => {

@@ -4,6 +4,7 @@ import {
   needsCandidateList,
   candidateQuery,
   parseSelection,
+  looksLikeSelectionAttempt,
   looksLikeBareMusicQuery,
   filterByCurrentArtist,
   artistMatches,
@@ -40,6 +41,28 @@ describe('needsCandidateList / candidateQuery', () => {
     expect(candidateQuery('周杰伦 歌')).toBe('周杰伦')
     expect(candidateQuery('周杰伦')).toBe('周杰伦')
     expect(candidateQuery('周杰伦 稻香')).toBe('周杰伦 稻香')
+  })
+})
+
+describe('编号量词（音乐 / 商品 / 开源项目共用）', () => {
+  it('「件」「项」「款」「条」等量词也能选出编号', () => {
+    expect(parseSelection('第三件', candidates)).toBe(2)
+    expect(parseSelection('就第2件吧', candidates)).toBe(1)
+    expect(parseSelection('第一项', candidates)).toBe(0)
+    expect(parseSelection('第二款', candidates)).toBe(1)
+    expect(parseSelection('3件', candidates)).toBe(2)
+  })
+
+  it('像在报编号就识别出来（含「第几个」这种没具体数字的）', () => {
+    for (const t of ['第三件', '第几个', '第2个', '2', '两件', '就第三个吧']) {
+      expect(looksLikeSelectionAttempt(t)).toBe(true)
+    }
+  })
+
+  it('普通问句 / 指令不算选号，不劫持正常对话', () => {
+    for (const t of ['今天天气怎么样', '给我推荐首歌', '这件多少钱', '打开设置']) {
+      expect(looksLikeSelectionAttempt(t)).toBe(false)
+    }
   })
 })
 

@@ -45,9 +45,8 @@ export function preferenceKeywords(entries: readonly MemoryEntry[], max = 30): s
   return [...out]
 }
 
-/** 单件商品的偏好得分：标题/标签/商城命中关键词的个数，长词权重更高。 */
-function score(deal: Deal, keywords: readonly string[]): number {
-  const hay = `${deal.title} ${deal.tags.join(' ')} ${deal.mall}`
+/** 条目得分：由调用方给出可匹配文本，命中关键词的个数即得分，长词权重更高。 */
+function score(hay: string, keywords: readonly string[]): number {
   let s = 0
   for (const k of keywords) {
     if (hay.includes(k)) s += k.length >= 3 ? 2 : 1
@@ -56,14 +55,30 @@ function score(deal: Deal, keywords: readonly string[]): number {
 }
 
 /**
- * 按记忆偏好挑要推荐的条目：得分高的在前，同分保持原顺序（稳定），取前 limit 条。
- * 没有记忆或全都没命中时，等价于「取前 limit 条」——行为与没有记忆功能时一致。
+ * 通用偏好排序：得分高的在前，同分保持原顺序（稳定），取前 limit 条。
+ * 商品与开源项目共用这一套——条目类型由调用方给出可匹配文本，本函数不认识任何业务字段。
+ * 没有记忆或全都没命中时等价于「取前 limit 条」，行为与没有个性化时一致。
  */
-export function pickDeals(deals: readonly Deal[], keywords: readonly string[], limit = 3): Deal[] {
-  if (!keywords.length) return deals.slice(0, limit)
-  return deals
-    .map((d, i) => ({ d, i, s: score(d, keywords) }))
+export function rankByPreference<T>(
+  items: readonly T[],
+  keywords: readonly string[],
+  textOf: (item: T) => string,
+  limit: number,
+): T[] {
+  if (!keywords.length) return items.slice(0, limit)
+  return items
+    .map((item, i) => ({ item, i, s: score(textOf(item), keywords) }))
     .sort((a, b) => b.s - a.s || a.i - b.i)
     .slice(0, limit)
-    .map((x) => x.d)
+    .map((x) => x.item)
+}
+
+/** 商品偏好挑选（保留原入口，内部复用通用排序）。 */
+export function pickDeals(deals: readonly Deal[], keywords: readonly string[], limit = 3): Deal[] {
+  return rankByPreference(
+    deals,
+    keywords,
+    (d) => `${d.title} ${d.tags.join(' ')} ${d.mall}`,
+    limit,
+  )
 }

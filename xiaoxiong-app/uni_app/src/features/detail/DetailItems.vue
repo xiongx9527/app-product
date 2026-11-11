@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { t } from '@/core/i18n'
-import type { DetailItem, MediaDetail } from '@/core/transport/types'
+import type { DetailField, DetailItem, MediaDetail } from '@/core/transport/types'
 
 /**
  * 通用内容渲染器：编号列表 ↔ 选中详情，用同一块区域切换。
@@ -24,19 +24,15 @@ const selected = computed<DetailItem | null>(() => {
  *  按数据判断而非按 kind，换数据源/新类型都不用改这里。 */
 const anyImage = computed(() => props.detail.items.some((it) => !!it.image))
 
-/** 列表摘要只做预览：过长会把每项撑成三四行、一屏放不下几条。
- *  统一取前两条 fields[].value 并截断，完整内容留在详情里看——列表只负责让用户选号。 */
-const SUMMARY_VALUE_CAP = 20
-const SUMMARY_CAP = 40
-function clip(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…` : s
-}
-function summary(item: DetailItem): string {
-  const text = (item.fields ?? [])
-    .slice(0, 2)
-    .map((f) => clip(f.value, SUMMARY_VALUE_CAP))
-    .join(' · ')
-  return clip(text, SUMMARY_CAP)
+/**
+ * 列表里也要能看到关键信息（来源、开发语言、系统、收录时间等），不只标题。
+ * 只挑较短的字段做预览：整段简介/优惠说明这类长正文留给详情，避免把每项撑成好几行。
+ * 不认识任何字段名，纯按长度与顺序收敛——换源、加字段都不改这里。
+ */
+const LIST_FIELD_CAP = 4
+const SHORT_VALUE_CAP = 24
+function listFields(item: DetailItem): DetailField[] {
+  return (item.fields ?? []).filter((f) => f.value.length <= SHORT_VALUE_CAP).slice(0, LIST_FIELD_CAP)
 }
 </script>
 
@@ -54,7 +50,12 @@ function summary(item: DetailItem): string {
           <text class="deal-index">{{ it.index }}.</text>
           <text class="deal-title">{{ it.title }}</text>
         </view>
-        <text v-if="summary(it)" class="deal-summary">{{ summary(it) }}</text>
+        <!-- 列表里也展示来源/语言/系统等短字段，紧凑成一行行小字 -->
+        <view v-if="listFields(it).length" class="deal-row-fields">
+          <text v-for="(f, i) in listFields(it)" :key="i" class="deal-row-field">
+            <text class="deal-row-field-label">{{ f.label }}</text><text class="deal-row-field-value">{{ f.value }}</text>
+          </text>
+        </view>
       </view>
     </view>
     <text v-if="!detail.items.length" class="deal-empty">{{ t('detail.empty') }}</text>
@@ -130,8 +131,21 @@ function summary(item: DetailItem): string {
   line-height: 1.45;
   color: #e8eaf6;
 }
-.deal-summary {
+.deal-row-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+.deal-row-field {
   font-size: 11px;
+  line-height: 1.5;
+  color: #9aa0bd;
+}
+.deal-row-field-label {
+  color: #6f7691;
+  margin-right: 4px;
+}
+.deal-row-field-value {
   color: #9aa0bd;
 }
 .deal-empty,

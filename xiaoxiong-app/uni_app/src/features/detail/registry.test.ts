@@ -44,6 +44,13 @@ describe('detail registry', () => {
 
     expect(actions.map((a) => a.key)).toEqual(['copyLink', 'favorite', 'share', 'email'])
     expect(actions.every((a) => a.label.length > 0)).toBe(true)
+    // 四项都配了图标：容器按 icon 渲染，label 只作 aria-label
+    expect(actions.map((a) => a.icon)).toEqual([
+      '/static/icons/copy.svg',
+      '/static/icons/favorite.svg',
+      '/static/icons/share.svg',
+      '/static/icons/email.svg',
+    ])
     // 有 link 时复制可用
     expect(actions[0].disabled).toBe(false)
     vi.unstubAllGlobals()

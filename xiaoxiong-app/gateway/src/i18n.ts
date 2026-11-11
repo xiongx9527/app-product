@@ -81,6 +81,8 @@ export interface Messages {
     chooseHint: () => string
     /** 选中第 n 件后的一句确认；详情只走 media.detail 展示，不进 TTS */
     detailIntro: (n: number) => string
+    /** 像在报编号但没对上（含糊/听错/越界）时的重问；列表保留，不交给大模型 */
+    chooseAgain: () => string
     /** 详情字段的统一 label：网关本地化后随 fields[] 下发，客户端不认识具体字段名 */
     fieldLabels: {
       price: () => string
@@ -97,6 +99,10 @@ export interface Messages {
   /** 开源工具/项目：选中后一句确认 + 详情字段 label（列表话术由工具自身产出） */
   opensource: {
     detailIntro: (n: number) => string
+    /** 像在报编号但没对上时的重问；列表保留，不交给大模型 */
+    chooseAgain: () => string
+    /** 数据源没给值时的占位文案（不编造具体语言/协议，但字段行要留着） */
+    emptyValue: () => string
     fieldLabels: {
       tagline: () => string
       language: () => string
@@ -229,6 +235,7 @@ const zhCN: Messages = {
     candidates: (items) =>
       `查到几件：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}件，${it}`).join('；')}。`,
     chooseHint: () => '你想看第几件，直接说编号就行。',
+    chooseAgain: () => '没听清是第几件，请直接说编号，比如第三件。',
     detailIntro: (n) => `已为你打开第 ${n} 件商品详情，请看屏幕。`,
     fieldLabels: {
       price: () => '现价',
@@ -243,6 +250,8 @@ const zhCN: Messages = {
   sources: { smzdm: '什么值得买', oschina: '开源中国', github: 'GitHub', gitee: 'Gitee' },
   opensource: {
     detailIntro: (n) => `已为你打开第 ${n} 个开源项目，请看屏幕。`,
+    chooseAgain: () => '没听清是第几个，请直接说编号，比如第二个。',
+    emptyValue: () => '暂无',
     fieldLabels: {
       tagline: () => '定位',
       language: () => '开发语言',
@@ -301,27 +310,53 @@ const en: Messages = {
     )
   },
   // 占位播放源提示：英文会话也要拿到本地化展示名与英文文案，不残留中文
+  // 逐项显式覆盖：不再用 ...zhCN.music 展开，漏一项 TypeScript 就会报错，
+  // 避免英文会话里忽然冒出中文口播。
   music: {
-    ...zhCN.music,
+    playing: (title) => `Now playing: ${title}.`,
+    switched: (title) => `Switched to: ${title}.`,
+    paused: () => 'Paused.',
+    resumed: () => 'Resumed.',
+    stopped: () => 'Playback stopped.',
+    notFound: (spoken) =>
+      spoken
+        ? "Couldn't find that content. Try a different name?"
+        : "Couldn't find that song. Try a different title or artist?",
     notImplemented: (kind) =>
       `The music source "${sourceDisplayName(kind, 'en')}" is not yet available. Please switch to "${sourceDisplayName('baidu', 'en')}" in settings.`,
-    subtitleOff: () => 'Subtitles off.',
-    subtitleOn: () => 'Subtitles on.',
-    subtitleNone: () => 'No subtitles for this track. I\'ve turned them on, and they\'ll show automatically when the next one has them.',
-    subtitleNoActive: () => 'There are no subtitles currently — they\'re already off.',
-    musicNotPlaying: () => 'Nothing is playing right now; play something first.',
+    candidates: (items) =>
+      `Found some songs: ${items.map((it, i) => `number ${i + 1}, ${it}`).join('; ')}.`,
+    chooseHint: () => 'Which one? Say the number or the song title.',
+    chooseAgain: () => "Didn't catch which song. Say the number or the title.",
+    recommend: (items) =>
+      `Here are some picks: ${items.map((it, i) => `number ${i + 1}, ${it}`).join('; ')}.`,
+    recommendPrompt: () =>
+      "What style are you in the mood for, or name an artist and I'll pick a few?",
     offerOtherType: () =>
       'No other content of the same type found. Shall I switch to something else, or would you name one?',
     switchedOther: () => 'No other content of the same type found; switching to something else.',
+    looping: (count) => (count > 1 ? `Looping it ${count} times.` : 'Replaying once.'),
+    loopNothing: () => 'Nothing is playing right now; play something first, then ask me to loop it.',
+    volumeSet: (pct) => `Volume set to ${pct}%.`,
+    volumeUp: (pct) => `Volume up — now ${pct}%.`,
+    volumeDown: (pct) => `Volume down — now ${pct}%.`,
+    volumeMax: () => 'Volume is already at maximum.',
+    volumeMin: () => 'Volume is already at minimum.',
+    subtitleOff: () => 'Subtitles off.',
+    subtitleOn: () => 'Subtitles on.',
+    subtitleNone: () => "No subtitles for this track. I've turned them on, and they'll show automatically when the next one has them.",
+    subtitleNoActive: () => "There are no subtitles currently — they're already off.",
+    musicNotPlaying: () => 'Nothing is playing right now; play something first.',
     playModeFloat: () => 'Switched to floating mode.',
     playModePlayer: () => 'Switched to player mode.',
     playModeToggled: () => 'Playback mode switched.',
   },
+  // 与 music 一样逐项显式覆盖，不用 ...zhCN.deals 展开：漏一项 TypeScript 就会报错
   deals: {
-    ...zhCN.deals,
     candidates: (items) =>
       `Found some items: ${items.map((it, i) => `number ${i + 1}, ${it}`).join('; ')}.`,
     chooseHint: () => 'Which one? Just say the number.',
+    chooseAgain: () => "Didn't catch which item. Just say the number, e.g. 'number 3'.",
     detailIntro: (n) => `Opened item ${n} on screen.`,
     fieldLabels: {
       price: () => 'Price',
@@ -336,6 +371,8 @@ const en: Messages = {
   sources: { smzdm: 'SMZDM', oschina: 'OSCHINA', github: 'GitHub', gitee: 'Gitee' },
   opensource: {
     detailIntro: (n) => `Opened project ${n} on screen.`,
+    chooseAgain: () => "Didn't catch which project. Just say the number, e.g. 'number 2'.",
+    emptyValue: () => 'N/A',
     fieldLabels: {
       tagline: () => 'Tagline',
       language: () => 'Language',
