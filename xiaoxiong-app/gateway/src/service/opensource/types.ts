@@ -1,4 +1,4 @@
-import type { Lang } from '../../protocol'
+import type { DetailItem, Lang } from '../../protocol'
 
 /** 单个开源工具/软件条目：只取数据源真实返回的字段，不编造没有返回的字段。 */
 export interface OpenSourceProject {
@@ -16,6 +16,12 @@ export interface OpenSourceProject {
   link: string
   /** 收录/更新时间。 */
   publishedAt: string
+  /** 开源协议 / 许可证（数据源有给才填，绝不编造）。 */
+  license?: string
+  /** 项目图标（数据源可选提供）。 */
+  image?: string
+  /** 数据来源标识（如 oschina）：网关按 lang 查表得到展示名，客户端不认识这个 key。 */
+  sourceKey?: string
 }
 
 /**
@@ -50,6 +56,8 @@ export interface OpenSourceOptions {
   keywordPages?: number
   /** 注入抓取器（默认全局 fetch）。 */
   fetcher?: OpenSourceFetcher
+  /** 结构化结果回调：拿到筛选后的条目时调用，由组合根转成 media.detail 下发给客户端。 */
+  onResults?: (items: DetailItem[]) => void
 }
 
 /** 把若干条目格式化成本地化纯文本，交给大模型逐条带编号播报，方便用户说编号选择。 */

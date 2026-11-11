@@ -3,6 +3,7 @@ import type { Lang } from '../../protocol'
 import {
   filterProjects,
   formatProjects,
+  projectsToDetailItems,
   type OpenSourceFetcher,
   type OpenSourceOptions,
   type OpenSourceProject,
@@ -40,6 +41,8 @@ export function createOpenSourceTool(
   const pagesEnvOk = Number.isFinite(pagesEnv) && pagesEnv > 0 ? pagesEnv : 3
   const keywordPages = Math.max(1, Math.min(options.keywordPages ?? pagesEnvOk, 5))
   const fetcher = options.fetcher ?? (globalThis.fetch as unknown as OpenSourceFetcher)
+  // 结构化结果回调：由组合根接到「下发客户端」，工具本身不碰传输层
+  const onResults = options.onResults
   const cache = new Map<string, CacheEntry>()
 
   function fetchPage(url: string): Promise<OpenSourceProject[]> {
@@ -116,7 +119,13 @@ export function createOpenSourceTool(
         }
         return formatProjects(lang, [], keyword)
       }
-      return formatProjects(lang, filterProjects(merged, keyword, limit), keyword)
+      const picked = filterProjects(merged, keyword, limit)
+      // 与口播同一份结果：客户端卡片与语音编号一一对应，用户说「第2个」看到的正是第 2 张卡。
+      // 结构是统一的 DetailItem，客户端不知道数据来自哪个源。
+      if (picked.length) {
+        onResults?.(projectsToDetailItems(picked, lang))
+      }
+      return formatProjects(lang, picked, keyword)
     },
   }
 }

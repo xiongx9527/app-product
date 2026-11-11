@@ -13,6 +13,9 @@ interface OschinaRecord {
   programmingLanguage?: string | null
   operatingSystem?: string | null
   createTime?: string
+  /** oschina 列表接口目前不返回许可证；留着接口，换源（GitHub 等）时直接填。 */
+  license?: string | null
+  imgUrl?: string | null
 }
 
 /** 折叠连续空白，避免播报里出现大段换行/空格。 */
@@ -41,6 +44,9 @@ export function parseOschina(raw: string): OpenSourceProject[] {
       // 详情页：有 ident 用 ident，否则回退 id；都没有则留空，不编造链接。
       link: ident ? `https://www.oschina.net/p/${ident}` : '',
       publishedAt: (r.createTime ?? '').slice(0, 10),
+      license: r.license ? collapse(String(r.license)) : undefined,
+      image: r.imgUrl ? r.imgUrl.trim() : undefined,
+      sourceKey: 'oschina',
     })
   }
   return out

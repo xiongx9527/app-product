@@ -204,6 +204,38 @@ describe('createOpenSourceTool 抓取与降级', () => {
     expect(out).toContain('查到 3 个开源工具/软件')
   })
 
+  it('结构化结果回调：与口播同一份列表、同一顺序，编号从 1 起', async () => {
+    const f = fetcherFor({ [page1]: { ok: true, body: SAMPLE_JSON } })
+    const cards: Array<Array<{ index: number; title: string; fields?: Array<{ label: string; value: string }> }>> = []
+    const tool = createOpenSourceTool('zh-CN', {
+      source,
+      fetcher: f,
+      onResults: (items) => cards.push(items),
+    })
+    const out = await tool.call?.({})
+    expect(cards).toHaveLength(1)
+    const items = cards[0]
+    // 与播报顺序一致：第 1 条就是口播里的「1、UIEIP」
+    expect(out).toContain('1、UIEIP')
+    expect(items.map((i) => i.index)).toEqual([1, 2, 3])
+    expect(items[0].title).toBe('UIEIP')
+    // 详情字段走统一 label+value，客户端不认识具体字段名
+    expect(items[0].fields?.map((x) => x.label)).toEqual(['定位', '语言', '系统', '简介', '收录时间'])
+    expect(items[0].fields?.find((x) => x.label === '语言')?.value).toBe('Go')
+  })
+
+  it('没有结果时不下发空卡片', async () => {
+    const f = fetcherFor({ [page1]: { ok: true, body: SAMPLE_JSON } })
+    const cards: unknown[] = []
+    const tool = createOpenSourceTool('zh-CN', {
+      source,
+      fetcher: f,
+      onResults: (items) => cards.push(items),
+    })
+    await tool.call?.({ keyword: '不存在的品类xyz' })
+    expect(cards).toHaveLength(0)
+  })
+
   it('有关键词并行抓多页并合并去重', async () => {
     const f = fetcherFor({
       [page1]: { ok: true, body: SAMPLE_JSON },

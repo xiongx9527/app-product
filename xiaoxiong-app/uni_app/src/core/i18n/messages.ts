@@ -228,6 +228,22 @@ const zhCN: Messages = {
   'music.volume': '音量',
   'music.mute': '静音',
   'music.unmute': '取消静音',
+
+  // 结构化内容卡片（商品详情等）：只放界面文案，字段名由网关 fields[] 按 lang 下发
+  'detail.title': '详情',
+  'detail.listTitle': '为你找到',
+  'detail.projectListTitle': '开源项目',
+  'detail.close': '关闭',
+  'detail.back': '返回列表',
+  'detail.copyLink': '复制链接',
+  'detail.favorite': '收藏',
+  'detail.copied': '已复制',
+  'detail.notAvailable': '暂未开放',
+  'detail.noLink': '暂无链接',
+  'detail.empty': '暂无内容',
+  'detail.noImage': '暂无图片',
+  'detail.share': '分享',
+  'detail.email': '发邮箱',
 }
 
 const enUS: Messages = {
@@ -460,6 +476,21 @@ const enUS: Messages = {
   'music.volume': 'Volume',
   'music.mute': 'Mute',
   'music.unmute': 'Unmute',
+
+  'detail.title': 'Details',
+  'detail.listTitle': 'Results',
+  'detail.projectListTitle': 'Open-source',
+  'detail.close': 'Close',
+  'detail.back': 'Back to list',
+  'detail.copyLink': 'Copy link',
+  'detail.favorite': 'Save',
+  'detail.copied': 'Copied',
+  'detail.notAvailable': 'Coming soon',
+  'detail.noLink': 'No link',
+  'detail.empty': 'Nothing here',
+  'detail.noImage': 'No image',
+  'detail.share': 'Share',
+  'detail.email': 'Email',
 }
 
 export const MESSAGES: Record<Locale, Messages> = {

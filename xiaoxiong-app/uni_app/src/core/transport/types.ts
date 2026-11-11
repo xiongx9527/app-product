@@ -5,19 +5,29 @@ export interface SubtitleLine {
 }
 
 /**
+ * 一行结构化信息（统一字段契约，与网关 protocol.ts 的 DetailField 镜像）。
+ * label 已由网关按 lang 本地化，客户端只渲染 label+value，不认识任何具体字段名。
+ */
+export interface DetailField {
+  label: string
+  value: string
+}
+
+/**
  * 结构化内容卡片的一项（协议层稳定契约，与网关 protocol.ts 的 DetailItem 镜像）。
- * 除 index/title 外全部可选，客户端必须容忍字段缺失（换数据源不改本结构/卡片组件）。
+ * 固定槽位只有 index/title/image/link，其余属性统一走 fields[]：
+ * 换数据源、新字段、新内容类型都不改本结构与卡片组件。
  * 不从网关 service/deals 导入类型，卡片与底层来源解耦。
  */
 export interface DetailItem {
   index: number
   title: string
-  price?: string
-  mall?: string
-  tags?: string[]
-  time?: number
-  link?: string
+  /** 列表缩略图 */
   image?: string
+  /** 详情大图；缺省时回退缩略图 */
+  imageLarge?: string
+  link?: string
+  fields?: DetailField[]
 }
 
 /** 服务端下行事件（与 contracts/README.md 保持一致） */
@@ -53,7 +63,13 @@ export type ServerEvent =
    *  kind 判别内容类型，容器不感知业务字段：deals=商品详情，未来扩展 text/project/chart/report/webview。
    *  deals 的 items 为编号列表；selectedIndex 省略/null 显示列表、为数字切详情、close=true 收起。
    *  详情数据与语音服务来源/数据源解耦，切来源不重置卡片。 */
-  | { type: 'media.detail'; kind: 'deals'; items: DetailItem[]; selectedIndex?: number | null; close?: boolean }
+  | {
+      type: 'media.detail'
+      kind: 'deals' | 'project'
+      items: DetailItem[]
+      selectedIndex?: number | null
+      close?: boolean
+    }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置时才下发，客户端据此请求定位授权并上报 session.location；不在建连时主动要 */
@@ -64,6 +80,9 @@ export type ServerEvent =
    *  ASR/TTS/LLM 未就绪时网关没法用语音播报，改发预录提示音让用户听得见。cue 为提示音名。 */
   | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' }
   | { type: 'error'; code: string; message: string }
+
+/** media.detail 事件负载：详情卡片的全量状态快照（供 useAssistant 持有、渲染器分派）。 */
+export type MediaDetail = Extract<ServerEvent, { type: 'media.detail' }>
 
 export type SessionMode = 'wake' | 'dialog'
 

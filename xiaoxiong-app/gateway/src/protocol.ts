@@ -14,19 +14,34 @@ export interface SubtitleLine {
 }
 
 /**
- * 结构化内容卡片的一项（协议层稳定契约，与底层数据源解耦）。
- * 除 index/title 外全部可选：不同数据源字段多少不一，客户端必须容忍缺失。
- * 换数据源只改网关侧映射，本结构与卡片组件不动。
+ * 一行结构化信息（统一字段契约）。
+ * 任何数据源、任何内容类型的「附加属性」都收敛成同一形状 label+value：
+ * label 由网关按会话 lang 本地化，value 为纯文本。
+ * 新增数据源 / 新增字段 = 网关映射里多一条 fields 项，
+ * 不改本协议、不改事件、不改卡片、不改客户端状态结构。
+ */
+export interface DetailField {
+  label: string
+  value: string
+}
+
+/**
+ * 结构化内容卡片的一项（协议层稳定契约，与底层数据源/内容类型解耦）。
+ * 固定槽位只保留「任何内容都通用、且客户端要据此执行动作或渲染」的最小集合：
+ *   index 编号 / title 标题 / image 主图 / link 主链接（复制、跳转目标）。
+ * 其余一切属性（价格、商城、标签、时间、折扣、评分、许可证、语言……）
+ * 一律走统一的 fields[]，使换源、加字段、加内容类型都不引发本结构或卡片改动。
+ * 内部 Deal 可随数据源自由增删字段，唯一的桥是网关映射 toDetailItems()。
  */
 export interface DetailItem {
   index: number
   title: string
-  price?: string
-  mall?: string
-  tags?: string[]
-  time?: number
-  link?: string
+  /** 列表缩略图 */
   image?: string
+  /** 详情大图；缺省时客户端回退缩略图，避免小图被拉糊 */
+  imageLarge?: string
+  link?: string
+  fields?: DetailField[]
 }
 
 export type Lang = 'zh-CN'
@@ -118,10 +133,18 @@ export type ServerEvent =
    *  close=true 时客户端收起字幕面板（语音「关闭字幕」指令下发），忽略 title/lines。 */
   | { type: 'media.subtitle'; title: string; artist?: string; lines: SubtitleLine[]; close?: boolean }
   /** 结构化内容卡片的全量状态快照（幂等，收到即整体替换；只展示不朗读）。
-   *  kind 判别内容类型，容器不感知业务字段：deals=商品详情，未来扩展 text/project/chart/report/webview。
-   *  deals 的 items 为编号列表；selectedIndex 省略/null 显示列表、为数字切详情、close=true 收起。
+   *  kind 判别内容类型，容器不感知业务字段：deals=商品详情、project=开源项目，
+   *  未来扩展 text/chart/report/webview。
+   *  各 kind 的列表项统一用 DetailItem（固定槽位 + 统一 fields[]），换数据源不改事件结构。
+   *  items 为编号列表；selectedIndex 省略/null 显示列表、为数字切详情、close=true 收起。
    *  详情数据与语音服务来源/数据源解耦，切来源不重置卡片，也不得塞进 session.start.voice.params。 */
-  | { type: 'media.detail'; kind: 'deals'; items: DetailItem[]; selectedIndex?: number | null; close?: boolean }
+  | {
+      type: 'media.detail'
+      kind: 'deals' | 'project'
+      items: DetailItem[]
+      selectedIndex?: number | null
+      close?: boolean
+    }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置（位置/天气类工具被调用但会话尚无位置）时才下发，

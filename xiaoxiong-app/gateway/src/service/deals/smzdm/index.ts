@@ -1,1 +1,1 @@
-export { createSmzdmSource, parseDeals } from './smzdmSource'
+export { createSmzdmSource, parseDeals, parseDealDetail } from './smzdmSource'

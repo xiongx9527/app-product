@@ -2,7 +2,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
+import type { ClientMessage, DetailItem, Lang, LocationInfo, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
 import type { GatewayConfig } from '../config'
 import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
@@ -10,8 +10,8 @@ import { createMusicSource, needsProxy, type MusicSource } from './music'
 import { MusicSourceNotImplementedError } from './music/types'
 import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest, detectContentType } from './music/types'
 import { formatMemories, formatDeals, type MemoryStore, type RequestLocation } from './tools'
-import { createDealsTool } from './tools/dealsTool'
-import { createSmzdmSource } from './deals'
+import { createDealsTool, enrichDeal, type DealsSnapshot } from './tools/dealsTool'
+import { createSmzdmSource, toDetailItems, type Deal, type DealDetail } from './deals'
 import { detectDealsCommand } from './dealsControl'
 import {
   searchCandidates,
@@ -28,6 +28,7 @@ import {
 import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './musicControl'
 import { detectVolumeCommand } from './volumeControl'
 import { detectMemoryCommand } from './memoryControl'
+import { pickDeals, preferenceKeywords } from './dealsPreference'
 import { detectSubtitleCommand } from './subtitleControl'
 import { detectPlayModeCommand } from './playModeControl'
 import { messages } from '../i18n'
@@ -71,8 +72,12 @@ export interface VoiceSessionDeps {
   musicSourceFactory?: () => MusicSource
   /** 检索候选歌曲（MusicBrainz）；测试可注入桩避免联网 */
   candidateFetcher?: CandidateFetcher
-  /** 查询商品/好价：测试可注入桩避免联网，缺省用 createDealsTool 真实查询 */
-  dealsQuery?: (keyword?: string) => Promise<string>
+  /** 查询商品/好价：测试可注入桩避免联网。一次返回口播文本 + 结构化 Deal[]，
+   *  缺省用 createDealsTool.snapshot（工具与直连共用同一抓取缓存，零二次抓取）。 */
+  dealsQuery?: () => Promise<DealsSnapshot>
+  /** 选中某件后补抓它的详情页（优惠说明/品牌/权威时间/大图）；测试可注入桩避免联网。
+   *  缺省走数据源自身的 detailUrl + parseDetail，拿不到就返回 null（卡片用列表数据照常展示）。 */
+  dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
   /**
    * 设备稳定标识（来自客户端上报的 deviceId）；用于命令日志/会话落库归属设备。
    * 缺省空：旧客户端未上报，会话不进注册表、不复用。
@@ -166,6 +171,15 @@ export class VoiceSessionService {
   private musicVolume = 0.5
   /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
   private pendingCandidates: { items: MusicCandidate[]; query: string } | null = null
+  /**
+   * 待用户说编号选中的商品列表：口播编号后挂起，下一句解析「1 / 第二个 / 商品名」。
+   * 与音乐候选分开、生命周期独立：cancel()/重武装(re-arm)不清，仅 end()/全新 start 清空——
+   * 切语音来源（设置页 rearm 重发 session.start）不应让编号失效（「换源不出问题」）。
+   * 商品数据只经 media.detail 下发，绝不进 session.start.voice.params 共用通道。
+   */
+  private pendingDeals: { items: Deal[]; query: string } | null = null
+  /** 开源项目卡片（工具层直接下发）：留住列表，供下一轮「第二个」语音选号。 */
+  private pendingProjects: { items: DetailItem[] } | null = null
   /** 上一轮「换一首」没找到同类型的歌，正等用户确认是否换其它风格（不直接乱播） */
   private pendingNextFallback = false
   private mode: 'wake' | 'dialog' = 'dialog'
@@ -544,6 +558,9 @@ export class VoiceSessionService {
       return true
     }
     this.pendingCandidates = { items: ranked, query }
+    // 点歌候选与商品候选互斥：同时挂着会让「第二个」到底选歌还是选商品产生歧义。
+    this.pendingDeals = null
+    this.pendingProjects = null
     const labels = items.map((c) => (c.artist ? `${c.title}，${c.artist}` : c.title))
     await this.speakReply(
       (recommend ? m.recommend(labels) : m.candidates(labels)) + m.chooseHint()
@@ -757,25 +774,140 @@ export class VoiceSessionService {
   }
 
   /**
-   * 处理「查商品 / 找好价」直接指令（绕开 LLM）：直接调 dealsTool 拿本地化文本并播报。
-   * 工具内部对抓取失败 / 空结果已有本地化兜底文案（含「暂时查不到」），这里不改写、不编造，
-   * 保证「没有好价」时也如实播报；dealsQuery 可由测试注入桩，避免联网。
+   * 处理「查商品 / 找好价」直接指令（绕开 LLM）：一次查询同时拿到口播文本与结构化 Deal[]。
+   * 留住列表供下一轮语音选号；详情只走 media.detail 展示、不进 TTS；商品数据不进 voice.params。
+   * dealsQuery 可由测试注入桩避免联网；缺省用 createDealsTool.snapshot（共用抓取缓存，零二次抓取）。
    */
   private async runDealsCommand(): Promise<void> {
     const query =
       this.deps.dealsQuery ??
-      (async (): Promise<string> => {
-        // DealsOptions.source 必需（数据源由调用方注入，工具本身不绑定站点），
-        // 这里用默认 smzdm 源；组合根若已注入 dealsQuery 则走注入的那个。
+      (async (): Promise<DealsSnapshot> => {
+        // DealsOptions.source 必需（数据源由调用方注入，工具本身不绑定站点）。
         const tool = createDealsTool(this.lang, { source: createSmzdmSource() })
-        return tool.call({})
+        // 多抓一些候选：下面要按长期记忆偏好挑 3 条，只取 3 条就没有挑选余地。
+        return tool.snapshot({ limit: 10 })
       })
     try {
-      const text = await query()
-      await this.speakReply(text?.trim() || formatDeals(this.lang, []))
+      const { text, deals } = await query()
+      // 「推荐几件」按用户长期记忆里的偏好排序（确定性纯函数，不调 LLM）；
+      // 没有记忆或都没命中时等价于取前 3 条，与没有个性化时行为一致。
+      const picked = pickDeals(deals, await this.dealPreferenceKeywords(), 3)
+      this.pendingDeals = { items: picked, query: '' }
+      // 全量快照（列表形态）：编号列表卡片 + 每项完整详情，客户端只认此协议快照。
+      this.deps.send({ type: 'media.detail', kind: 'deals', items: toDetailItems(picked, this.lang) })
+      const m = messages(this.lang).deals
+      // 有结果口播编号让用户选；没结果如实播报兜底文案（「没有好价」也照常回应）。
+      // 价格等详情只在卡片展示，不逐条朗读（同字幕口径）。
+      const spoken = picked.length
+        ? `${m.candidates(picked.map((d) => d.title))}${m.chooseHint()}`
+        : text
+      await this.speakReply(spoken)
     } catch {
       await this.speakReply(formatDeals(this.lang, []))
     }
+  }
+
+  /** 读长期记忆抽商品偏好关键词；没有记忆或读取失败就返回空（不做个性化，行为同以前）。 */
+  private async dealPreferenceKeywords(): Promise<string[]> {
+    try {
+      const entries = (await this.memoryStore?.list()) ?? []
+      return preferenceKeywords(entries)
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * 处理用户对商品编号列表的语音选择。返回 true 表示这句已被消费。
+   * 同 handleCandidateSelection，必须在回声比对之前调用：「第二个」正是刚口播过的词，
+   * 否则会被 resemblesSpoken 当播报回声丢掉、永远选不中。
+   * parseSelection 只读候选的 .title，用 {title, artist:''} 适配 Deal[]，零改动音乐模块。
+   */
+  private async handleDealSelection(text: string): Promise<boolean> {
+    const pending = this.pendingDeals
+    if (!pending || !pending.items.length) return false
+    const idx = parseSelection(
+      text,
+      pending.items.map((d) => ({ title: d.title, artist: '' })),
+    )
+    if (idx === null) {
+      // 不是选择（可能换了话题）：清掉待选，交回常规流程处理这句
+      this.pendingDeals = null
+      return false
+    }
+    this.pendingDeals = null
+    this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+
+    // 先开口播确认（不复述商品内容），详情页补充信息与播报并行拉取：
+    // 用户听到「已为你打开第 N 件」时卡片正好切过去，感知不到这次额外抓取。
+    const spoken = this.speakReply(messages(this.lang).deals.detailIntro(idx + 1))
+    const detail = await this.lookupDealDetail(pending.items[idx])
+    // 源无关的补充信息合并进该条；合并后仍走同一个 toDetailItems 映射成统一 fields[]，
+    // 客户端不知道详情来自列表页还是详情页、来自哪个站点。
+    const items = detail
+      ? pending.items.map((d, i) => (i === idx ? { ...d, ...detail } : d))
+      : pending.items
+    // 同一 kind 的全量快照 + selectedIndex（对应 DetailItem.index，1 起），客户端切成该商品详情。
+    this.deps.send({
+      type: 'media.detail',
+      kind: 'deals',
+      items: toDetailItems(items, this.lang),
+      selectedIndex: idx + 1,
+    })
+    await spoken
+    return true
+  }
+
+  /**
+   * 工具层下发的事件统一走这里：透传客户端，同时记住「开源项目列表」供语音选号。
+   * 开源项目由 LLM 调工具产出卡片，网关没有直连路径，因此在这个唯一出口旁听一次；
+   * 商品（deals）是直连下发、自己就持有列表，不走这里。
+   */
+  private readonly emitToClient = (m: ServerEvent): void => {
+    if (m.type === 'media.detail' && m.kind === 'project' && m.selectedIndex == null && !m.close) {
+      this.pendingProjects = { items: m.items }
+    }
+    this.deps.send(m)
+  }
+
+  /** 补抓选中商品的详情页；任何失败都返回 null，卡片退回列表数据照常展示。 */
+  private async lookupDealDetail(deal: Deal): Promise<DealDetail | null> {
+    if (!deal) return null
+    const lookup = this.deps.dealsDetail ?? ((d: Deal) => enrichDeal(createSmzdmSource(), d))
+    try {
+      return await lookup(deal)
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 处理用户对**开源项目编号列表**的语音选择。返回 true 表示这句已被消费。
+   * 与商品选号同一条规则：必须在回声比对之前调用（「第二个」正是刚口播过的词）。
+   * 列表由工具层下发的卡片快照持有，这里只切 selectedIndex 并口播一句确认，
+   * 不复述项目简介（详情只展示、不朗读）。
+   */
+  private async handleProjectSelection(text: string): Promise<boolean> {
+    const pending = this.pendingProjects
+    if (!pending || !pending.items.length) return false
+    const idx = parseSelection(
+      text,
+      pending.items.map((it) => ({ title: it.title, artist: '' })),
+    )
+    if (idx === null) {
+      this.pendingProjects = null
+      return false
+    }
+    this.pendingProjects = null
+    this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+    this.deps.send({
+      type: 'media.detail',
+      kind: 'project',
+      items: pending.items,
+      selectedIndex: idx + 1,
+    })
+    await this.speakReply(messages(this.lang).opensource.detailIntro(idx + 1))
+    return true
   }
 
   /**
@@ -986,6 +1118,10 @@ export class VoiceSessionService {
     // 必须在下面的回声比对之前：用户说的「第二首」「稻香」正是刚口播过的词，
     // 否则会被 resemblesSpoken 当成播报回声丢掉，导致永远选不中。
     if (this.pendingCandidates && await this.handleCandidateSelection(text)) return
+    // 上一轮给过商品编号列表，这一句优先当作「说编号 / 点商品名」解析。
+    // 同样必须早于回声比对：「第二个」正是刚口播过的词。
+    if (this.pendingDeals && await this.handleDealSelection(text)) return
+    if (this.pendingProjects && await this.handleProjectSelection(text)) return
 
     // 上一轮「换一首」没找到同类型的其它歌，正等用户确认是否换其它风格：
     // 把决定权交还给用户。这句优先判定为「接受换其它 / 点名想听什么」。
@@ -1317,7 +1453,7 @@ export class VoiceSessionService {
             this.timezone,
             () => this.getLocation(),
             () => this.musicSource,
-            (m) => this.deps.send(m),
+            this.emitToClient,
             this.memoryStore,
             this.memoryContext,
             () => this.requestClientLocation(),
@@ -1331,8 +1467,10 @@ export class VoiceSessionService {
       return
     }
 
-    // 全新会话：清空跨轮状态并重建 LLM
+    // 全新会话：清空跨轮状态并重建 LLM（重武装/re-arm 走上面的早返回，不清商品候选）
     this.pendingCandidates = null
+    this.pendingDeals = null
+    this.pendingProjects = null
     this.pendingNextFallback = false
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
     // 加载该设备的长期记忆并注入系统提示（让助手「知道你的习惯」）；
@@ -1359,7 +1497,7 @@ export class VoiceSessionService {
             this.timezone,
             () => this.getLocation(),
             () => this.musicSource,
-            (m) => this.deps.send(m),
+            this.emitToClient,
             memoryStore,
             memoryContext,
             () => this.requestClientLocation(),
@@ -1408,6 +1546,8 @@ export class VoiceSessionService {
     this.echoUntil = 0
     this.queue.length = 0
     this.pendingCandidates = null
+    this.pendingDeals = null
+    this.pendingProjects = null
     this.pendingNextFallback = false
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()

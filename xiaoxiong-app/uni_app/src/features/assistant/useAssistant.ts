@@ -102,6 +102,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const subtitle = ref<{ title: string; artist?: string; lines: { time: number; text: string }[] } | null>(null)
   /** 字幕已复制：行内短暂提示（不弹浮层），复制成功后显示 1.5s */
   const copied = ref(false)
+  /**
+   * 结构化内容卡片：网关 media.detail 的全量状态快照（kind 判别、容器不感知业务）。
+   * 纯展示状态，与 subtitle 同源；不参与重武装/切语音来源的能力重建——切 provider
+   * 重发 session.start 时不重置它（商品结果与语音来源无关，见「换源不出问题」）。
+   */
+  const detailCard = ref<Extract<ServerEvent, { type: 'media.detail' }> | null>(null)
 
   /** 同一轮掉线自动重连（及手动重试）的次数上限；耗尽后停自动重连，改由页面「重试连接」按钮处理 */
   const MAX_RETRY = 5
@@ -392,6 +398,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 网关语音「音量 30% / 调大 / 调小」下发，直接设到本地播放器与滑块显示；
         // 这是服务端驱动的，不回执（避免又把同一值上报回去形成环）。
         setMusicVolume(event.volume)
+        break
+      case 'media.detail':
+        // 结构化内容卡片的全量状态快照：close=true 收起，否则整体替换。
+        // 与助手回复流无关（页面里单独成块展示），后续对话不会顶掉它。
+        detailCard.value = event.close ? null : { ...event }
         break
       case 'client.playMode': {
         // 语音「切换播放模式」：网关只下发意图，客户端翻转/指定显示模式并落盘，
@@ -715,6 +726,31 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   }
 
   /**
+   * 点编号项选中某条详情：纯本地切换 selectedIndex，不上行、不口播。
+   * 与语音「说第二个」落到同一状态（网关下发 media.detail(selectedIndex)）等价：
+   * UI 点选不必惊动网关，也避免再说一句被 TTS 抢词。
+   */
+  function selectDetail(index: number): void {
+    const card = detailCard.value
+    if (!card || !card.items.some((it) => it.index === index)) return
+    detailCard.value = { ...card, selectedIndex: index }
+  }
+
+  /**
+   * 关闭详情卡片（页面关闭按钮）。纯展示状态，不影响网关 pendingDeals。
+   * 详情是从列表点进去的，所以关详情先退回列表（items 本来就在快照里，不需要再问网关），
+   * 列表形态下再关才整块收起——否则关一次详情连列表一起没了，用户只能重新问一遍。
+   */
+  function closeDetailCard(): void {
+    const card = detailCard.value
+    if (card && card.selectedIndex != null) {
+      detailCard.value = { ...card, selectedIndex: null }
+      return
+    }
+    detailCard.value = null
+  }
+
+  /**
    * 复制字幕：把逐行文本拼成纯文本写入剪贴板。用行内「已复制」提示代替 toast（不弹浮层）。
    * 仅当确有字幕时才复制，空字幕不动作。
    */
@@ -839,6 +875,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     subtitle,
     copySubtitle,
     copied,
+    detailCard,
+    selectDetail,
+    closeDetailCard,
     activeSubtitleIndex,
     currentSubtitleText,
     activeSubtitleSplit,

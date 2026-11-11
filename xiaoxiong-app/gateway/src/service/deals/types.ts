@@ -13,8 +13,30 @@ export interface Deal {
   time?: number
   /** 商品详情页链接。 */
   link: string
-  /** 商品主图（数据源可选提供）；无图时卡片显示占位，不阻断展示。 */
+  /** 商品主图（列表缩略图，数据源可选提供）；无图时卡片显示占位，不阻断展示。 */
   image?: string
+  /** 商品大图（详情封面用）。数据源只给缩略图时可省略，客户端回退 image。 */
+  imageLarge?: string
+  /** 优惠/购买说明（详情页正文摘要，如「京东售价 256 元，领券后实付 91.14 元」）。列表页通常没有，抓详情页后才有。 */
+  desc?: string
+  /** 品牌（详情页才有）。 */
+  brand?: string
+  /** 数据来源标识（如 smzdm）：网关按会话 lang 查表得到展示名，客户端不认识这个 key。
+   *  换源只改源解析里填的值，映射层/协议/卡片都不动。 */
+  sourceKey?: string
+}
+
+/**
+ * 详情页补充信息：列表页信息量有限（价格、商城、几条标签），选中某件后再抓它的详情页
+ * 可以补出优惠说明、权威发布时间、更清晰的主图。字段全部可选——抓不到就当没有，
+ * 绝不因为详情页失败而让卡片打不开（列表数据已经在手）。
+ */
+export interface DealDetail {
+  desc?: string
+  brand?: string
+  /** 权威发布时间（unix 秒），覆盖列表页的近似值 */
+  time?: number
+  imageLarge?: string
 }
 
 /**
@@ -31,6 +53,10 @@ export interface DealsSource {
   pageUrl(page: number): string
   /** 解析列表页 HTML 为 Deal[]（失败抛错，由上层降级）。 */
   parse(html: string): Deal[]
+  /** 该条目的详情页地址；不实现表示这个源没有详情页可补。 */
+  detailUrl?(deal: Deal): string | undefined
+  /** 解析详情页 HTML 为补充信息（纯函数；解析不出就返回空对象，由上层容忍）。 */
+  parseDetail?(html: string): DealDetail
 }
 
 /** 抓取器：测试可注入桩，避免真实联网。 */

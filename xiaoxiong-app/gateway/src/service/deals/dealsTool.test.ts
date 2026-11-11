@@ -9,6 +9,7 @@ const SAMPLE_HTML = `
 <ul>
   <li class="J_feed_za feed-row-wide" timesort="1794386285" articleid="3_185932776">
     <div class="feed-block z-hor-feed">
+      <div class="z-feed-img"><img data-original="//img.xxx.com/a.jpg_d200.jpg" src="https://img.xxx.com/placeholder.gif" /></div>
       <div class="z-feed-content">
         <h5 class="feed-block-title">
           <a target="_blank" href="https://www.smzdm.com/p/185932776/">全棉时代婴儿棉柔巾 80 抽 24 包</a>
@@ -55,10 +56,17 @@ describe('parseDeals', () => {
     expect(a.tags).toEqual(expect.arrayContaining(['历史低价', '商品好评率100%', '手慢无']))
     expect(a.time).toBe(1794386285)
     expect(a.link).toBe('https://www.smzdm.com/p/185932776/')
+    // 懒加载主图取 data-original，协议相对 // 补 https
+    expect(a.image).toBe('https://img.xxx.com/a.jpg_d200.jpg')
+    // 缩略图换大图：只改尺寸段（_d200 → _d800），详情封面不糊
+    expect(a.imageLarge).toBe('https://img.xxx.com/a.jpg_d800.jpg')
 
     expect(b.title).toBe('大艺无刷电动扳手')
     expect(b.price).toBe('106.84元')
     expect(b.tags).toEqual(['365天新低'])
+    // 无图条目：image / imageLarge 均缺省（换源/字段缺失时卡片需容忍）
+    expect(b.image).toBeUndefined()
+    expect(b.imageLarge).toBeUndefined()
   })
 
   it('缺标题和价格的空壳条目被跳过', () => {

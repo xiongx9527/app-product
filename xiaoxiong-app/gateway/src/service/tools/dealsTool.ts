@@ -3,10 +3,11 @@ import type { Lang } from '../../protocol'
 import {
   filterDeals,
   formatDeals,
+  type Deal,
+  type DealDetail,
   type DealsFetcher,
   type DealsOptions,
   type DealsSource,
-  type Deal,
 } from '../deals'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
@@ -158,4 +159,61 @@ export function createDealsTool(
     /** 语音直连入口：同一份查询同时拿到文本与结构化列表，供编号选择/详情卡片使用。 */
     snapshot,
   }
+}
+
+/** 详情页缓存：同一件商品不该反复抓（详情页 ~230KB）。按 URL 缓存，跨会话复用。 */
+const detailCache = new Map<string, { promise: Promise<DealDetail | null>; expires: number }>()
+const DETAIL_CACHE_TTL_MS = 10 * 60_000
+const DETAIL_TIMEOUT_MS = 1500
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('detail timeout')), ms)
+    p.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (e) => {
+        clearTimeout(timer)
+        reject(e)
+      },
+    )
+  })
+}
+
+/**
+ * 选中某件后补抓它的**详情页**（源特有解析，见 `DealsSource.parseDetail`）。
+ * 拿到的仍是源无关的 `DealDetail`（优惠说明/品牌/权威时间/大图），由 `toDetailItems`
+ * 统一映射成协议 `fields[]`——客户端始终不知道数据来自哪个站点、哪个页面。
+ *
+ * 任何失败（源不支持 / 超时 / 非 200 / 解析不出）一律返回 null，调用方用列表数据照常展示：
+ * 详情页只是「更全」，不能成为卡片能否打开的依赖。
+ */
+export async function enrichDeal(
+  source: DealsSource,
+  deal: Deal,
+  fetcher: DealsFetcher = globalThis.fetch as unknown as DealsFetcher,
+  timeoutMs = DETAIL_TIMEOUT_MS,
+): Promise<DealDetail | null> {
+  const parse = source.parseDetail
+  const url = source.detailUrl?.(deal)
+  if (!url || !parse) return null
+
+  const now = Date.now()
+  const hit = detailCache.get(url)
+  if (hit && hit.expires > now) return hit.promise
+
+  const promise = (async (): Promise<DealDetail | null> => {
+    try {
+      const res = await withTimeout(fetcher(url, { headers: { 'user-agent': USER_AGENT } }), timeoutMs)
+      if (!res.ok) return null
+      const detail = parse(await res.text())
+      return Object.keys(detail).length ? detail : null
+    } catch {
+      return null
+    }
+  })()
+  detailCache.set(url, { promise, expires: now + DETAIL_CACHE_TTL_MS })
+  return promise
 }

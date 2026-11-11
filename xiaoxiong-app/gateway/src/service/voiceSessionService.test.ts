@@ -10,6 +10,8 @@ import type { ResolvedCapabilities } from '../voiceConfig'
 import type { ServerEvent } from '../protocol'
 import type { HealthReport } from './health'
 import type { MusicSource } from './music/types'
+import type { DealsSnapshot } from './tools/dealsTool'
+import type { Deal, DealDetail } from './deals'
 
 /** 100ms 的方波人声帧（16k/16bit/mono），能量远高于自适应门限。 */
 function loudFrame(samples = 1600): Uint8Array {
@@ -49,6 +51,8 @@ interface Harness {
   forgetCalls: () => Array<{ deviceId: string | null; topic?: string }>
   /** 最近一次 agentFactory 收到的 memoryContext（验证系统提示注入了记忆） */
   lastMemoryContext: () => string | undefined
+  /** 模拟工具层通过 emit 通道下发事件（如开源项目卡片） */
+  emitMedia: (m: ServerEvent) => void
 }
 
 function createHarness(
@@ -70,8 +74,10 @@ function createHarness(
     locationRequestTimeoutMs?: number
     /** 注入能力探测桩：返回各能力 reachable 与否；缺省「全部就绪」，不下发 client.cue */
     capabilityProbe?: () => Promise<HealthReport | null>
-    /** 注入商品/好价查询桩，避免直连用例真的联网抓页面 */
-    dealsQuery?: (keyword?: string) => Promise<string>
+    /** 注入商品/好价查询桩（口播文本 + 结构化 Deal[]），避免直连用例真的联网抓页面 */
+    dealsQuery?: () => Promise<DealsSnapshot>
+    /** 注入详情页补充信息桩；缺省返回 null（不联网），需要验证合并时再注入 */
+    dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
     /** 智能体口播文本（经 ChannelSplitter 下发）；默认「好的，我来说一句。」。可注入泄漏标记验证兜底 */
     replyText?: string,
     /** 覆盖 resolveVoice：默认忽略 voice 返回空配置；需要验证「切来源重建 agent」时注入，
@@ -86,6 +92,7 @@ function createHarness(
   let factoryCalls = 0
   let textIdx = 0
   let finish: (() => void) | null = null
+  let emitFn: ((m: ServerEvent) => void) | undefined
   const replyText = opts.replyText ?? '好的，我来说一句。'
   const agent: AgentService = {
     reply(_text, onDelta, onThinking) {
@@ -151,9 +158,10 @@ function createHarness(
     },
   } as unknown as DataService
   const deps: VoiceSessionDeps = {
-    agentFactory: (_lang, _tz, _loc, _music, _emit, _store, _memStore, memoryContext) => {
+    agentFactory: (_llm, _lang, _tz, _loc, _music, emit, _store, memoryContext) => {
       factoryCalls += 1
       lastMemoryContext = memoryContext
+      emitFn = emit
       return agent
     },
     createAsr: () => asr,
@@ -166,6 +174,8 @@ function createHarness(
     musicSourceFactory: opts.musicSourceFactory,
     candidateFetcher: opts.candidateFetcher,
     dealsQuery: opts.dealsQuery,
+    // 默认不抓详情页：单测不联网；需要验证补充信息合并时由用例注入
+    dealsDetail: opts.dealsDetail ?? (async () => null),
     locationRequestTimeoutMs: opts.locationRequestTimeoutMs ?? 50,
     deviceId: opts.deviceId === undefined ? 'test-device' : opts.deviceId,
     // 默认「全部就绪」，避免每个用例都下发 client.cue；需要验证不可用时由调用方注入 capabilityProbe
@@ -182,6 +192,7 @@ function createHarness(
     asrFrames: () => frames,
     forgetCalls: () => forgetCalls,
     lastMemoryContext: () => lastMemoryContext,
+    emitMedia: (m) => emitFn?.(m),
   }
 }
 
@@ -355,13 +366,19 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(texts(h)).toContain('正在为你播放')
   })
 
-  it('「有什么折扣」直连查商品/好价：绕开 LLM + 如实播报工具文本', async () => {
+  /** 两份结构化商品（第二份缺 image，验证换源/字段缺失容忍） */
+  const sampleDeals: Deal[] = [
+    { title: '示例商品A', price: '9.9元', mall: '京东', tags: ['历史低价'], link: 'https://x/a', image: 'https://img/a.jpg' },
+    { title: '示例商品B', price: '20元', mall: '天猫', tags: [], link: 'https://x/b' },
+  ]
+
+  it('「有什么折扣」直连查商品/好价：绕开 LLM + 口播编号 + 下发详情列表', async () => {
     let queried = 0
     const h = createHarness({
       finalizeText: '有什么折扣',
       dealsQuery: async () => {
         queried += 1
-        return '查到 2 件最新好价：1. 示例商品，现价9.9元'
+        return { text: '查到 2 件最新好价', deals: sampleDeals }
       },
     })
     await startDialog(h.service)
@@ -370,13 +387,18 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
 
     expect(queried).toBe(1)
     expect(h.agentCalls()).toBe(0)
-    expect(texts(h)).toContain('查到 2 件最新好价')
+    // 口播的是编号列表话术（价格等详情只在卡片展示，不逐条朗读）
+    expect(texts(h)).toContain('第一件，示例商品A')
+    const detail = h.events.find((e) => e.type === 'media.detail')
+    expect(detail).toBeDefined()
+    expect(detail && detail.type === 'media.detail' && detail.items).toHaveLength(2)
+    expect(detail && detail.type === 'media.detail' && detail.selectedIndex).toBeUndefined()
   })
 
   it('没查到好价也照常播报兜底文案，且不进 LLM', async () => {
     const h = createHarness({
       finalizeText: '查询商品',
-      dealsQuery: async () => '暂时没有查到好价。',
+      dealsQuery: async () => ({ text: '暂时没有查到好价。', deals: [] }),
     })
     await startDialog(h.service)
     await speakUtterance(h)
@@ -393,7 +415,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
       finalizeText: '把这个东西拿过来给我看看',
       dealsQuery: async () => {
         queried += 1
-        return '不该被调用'
+        return { text: '不该被调用', deals: [] }
       },
     })
     await startDialog(h.service)
@@ -403,6 +425,201 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     // 核心断言：泛词不得触发商品查询（其余直连链怎么处理是既有行为，不在此断言）
     expect(queried).toBe(0)
     expect(texts(h)).not.toContain('不该被调用')
+  })
+
+  it('说「第二个」选中第 2 件：下发 media.detail(selectedIndex=2)、不进 LLM', async () => {
+    const h = createHarness({
+      finalizeTexts: ['有什么折扣', '第二个'],
+      dealsQuery: async () => ({ text: '查到 2 件最新好价', deals: sampleDeals }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    // 先下发编号列表（selectedIndex 缺省）
+    expect(h.events.some((e) => e.type === 'media.detail' && e.selectedIndex === undefined)).toBe(true)
+
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const selected = h.events.filter(
+      (e) => e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    expect((selected[0] as { selectedIndex: number }).selectedIndex).toBe(2)
+    // 只口播一句编号确认，不复述商品价格等详情；全程绕开 LLM
+    expect(texts(h)).toContain('第 2 件商品详情')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('选中后补抓详情页：优惠说明/品牌并入该条，仍走统一 fields[]（客户端无感知来源）', async () => {
+    const h = createHarness({
+      finalizeTexts: ['有什么折扣', '第二个'],
+      dealsQuery: async () => ({ text: '查到 2 件最新好价', deals: sampleDeals }),
+      dealsDetail: async () => ({ desc: '领券后实付 18 元', brand: '示例品牌', time: 1794386285 }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(50)
+
+    const selected = h.events.filter(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
+        e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    const item = selected[0].items[1]
+    // 详情页信息只表现为多出的 fields 行，结构与其他源完全一致
+    expect(item.fields?.map((f) => f.label)).toEqual([
+      '现价',
+      '商城',
+      '品牌',
+      '优惠详情',
+      '发布时间',
+    ])
+    expect(item.fields?.find((f) => f.label === '品牌')?.value).toBe('示例品牌')
+    expect(item.fields?.find((f) => f.label === '优惠详情')?.value).toBe('领券后实付 18 元')
+    // 没被选中的那件不带详情页信息
+    expect(selected[0].items[0].fields?.some((f) => f.label === '优惠详情')).toBe(false)
+  })
+
+  it('详情页抓取失败不影响选号：照常下发 selectedIndex，用列表数据展示', async () => {
+    const h = createHarness({
+      finalizeTexts: ['有什么折扣', '第一个'],
+      dealsQuery: async () => ({ text: '查到 2 件最新好价', deals: sampleDeals }),
+      dealsDetail: async () => {
+        throw new Error('detail down')
+      },
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(50)
+
+    const selected = h.events.filter(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
+        e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    expect(selected[0].selectedIndex).toBe(1)
+    expect(selected[0].items[0].fields?.map((f) => f.label)).toEqual([
+      '现价',
+      '商城',
+      '优惠',
+    ])
+  })
+
+  it('推荐商品依据长期记忆：偏好咖啡时咖啡商品排到第 1 件', async () => {
+    const deals: Deal[] = [
+      { title: '无线蓝牙耳机', price: '99元', mall: '京东', tags: [], link: 'https://x/a' },
+      { title: '云南咖啡豆 500g', price: '39元', mall: '天猫', tags: [], link: 'https://x/b' },
+      { title: '猫粮 10kg', price: '199元', mall: '京东', tags: [], link: 'https://x/c' },
+    ]
+    const h = createHarness({
+      finalizeText: '推荐几件打折的商品',
+      memories: [{ key: '偏好', value: '喜欢喝咖啡', updatedAt: 0 }],
+      dealsQuery: async () => ({ text: '查到 3 件最新好价', deals }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const detail = h.events.find(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> => e.type === 'media.detail',
+    )
+    expect(detail?.items[0].title).toBe('云南咖啡豆 500g')
+    // 口播顺序与卡片顺序一致，用户说「第一个」拿到的是同一件
+    expect(texts(h)).toContain('第一件，云南咖啡豆 500g')
+  })
+
+  it('没有记忆时不个性化：顺序与数据源原顺序一致', async () => {
+    const deals: Deal[] = [
+      { title: '无线蓝牙耳机', price: '99元', mall: '京东', tags: [], link: 'https://x/a' },
+      { title: '云南咖啡豆 500g', price: '39元', mall: '天猫', tags: [], link: 'https://x/b' },
+    ]
+    const h = createHarness({
+      finalizeText: '推荐几件打折的商品',
+      dealsQuery: async () => ({ text: '查到 2 件最新好价', deals }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const detail = h.events.find(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> => e.type === 'media.detail',
+    )
+    expect(detail?.items.map((i) => i.title)).toEqual(['无线蓝牙耳机', '云南咖啡豆 500g'])
+  })
+
+  it('开源项目卡片：工具层下发列表后，说「第二个」切到该条详情、不进 LLM', async () => {
+    const h = createHarness({ finalizeTexts: ['推荐点开源项目', '第二个'] })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(20)
+    h.playbackDone()
+    await sleep(20)
+
+    const items = [
+      { index: 1, title: 'UIEIP', link: 'https://x/uieip', fields: [{ label: '定位', value: '低代码平台' }] },
+      { index: 2, title: 'vmr', link: 'https://x/vmr', fields: [{ label: '定位', value: 'SDK 版本管理' }] },
+    ]
+    // 工具层通过 emit 通道下发列表卡片（网关在此旁听并记住列表）
+    h.emitMedia({ type: 'media.detail', kind: 'project', items })
+    await sleep(20)
+    expect(h.events.some((e) => e.type === 'media.detail' && e.kind === 'project')).toBe(true)
+
+    const agentCallsBefore = h.agentCalls()
+    await speakUtterance(h)
+    await sleep(30)
+
+    const selected = h.events.filter(
+      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
+        e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    expect(selected[0].kind).toBe('project')
+    expect(selected[0].selectedIndex).toBe(2)
+    expect(selected[0].items.map((i) => i.title)).toEqual(['UIEIP', 'vmr'])
+    // 只口播一句确认，不复述简介；这句不进 LLM
+    expect(texts(h)).toContain('第 2 个开源项目')
+    expect(h.agentCalls()).toBe(agentCallsBefore)
+  })
+
+  it('切语音来源（rearm 重发 session.start）后商品编号仍可选：pendingDeals 不被清空', async () => {
+    const h = createHarness({
+      finalizeTexts: ['有什么折扣', '2'],
+      dealsQuery: async () => ({ text: '查到 2 件最新好价', deals: sampleDeals }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    // 模拟设置页切 provider → rearm 重发 session.start（同一会话实例，走 re-arm 早返回）
+    h.service.handleText(
+      JSON.stringify({
+        type: 'session.start',
+        sessionId: 's1',
+        lang: 'zh-CN',
+        voice: { provider: 'dashscope', url: 'https://x', apiKey: 'k' },
+      }),
+    )
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const selected = h.events.filter(
+      (e) => e.type === 'media.detail' && e.selectedIndex !== undefined,
+    )
+    expect(selected).toHaveLength(1)
+    expect((selected[0] as { selectedIndex: number }).selectedIndex).toBe(2)
+    expect(h.agentCalls()).toBe(0)
   })
 
   it('自动字幕开启：播放后同源自动拉取并下发 media.subtitle，字幕不进 LLM', async () => {

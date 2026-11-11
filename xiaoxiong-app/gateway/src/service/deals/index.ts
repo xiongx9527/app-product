@@ -1,3 +1,4 @@
-export type { Deal, DealsSource, DealsFetcher, DealsOptions } from './types'
+export type { Deal, DealDetail, DealsSource, DealsFetcher, DealsOptions } from './types'
 export { formatDeals, filterDeals } from './types'
-export { createSmzdmSource, parseDeals } from './smzdm'
+export { createSmzdmSource, parseDeals, parseDealDetail } from './smzdm'
+export { toDetailItems } from './detail'

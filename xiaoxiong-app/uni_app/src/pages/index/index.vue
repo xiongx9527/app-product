@@ -5,6 +5,7 @@ import { FLOAT_POSITION_PRESETS } from '@/core/adaptation/floatLayer'
 import { appConfig } from '@/core/config'
 import { DEFAULT_SUBTITLE_FONT_SIZE, DEFAULT_SUBTITLE_COLOR } from '@/core/config/constants'
 import FloatLayer from '@/components/FloatLayer.vue'
+import DetailRenderer from '@/components/DetailRenderer.vue'
 import { useAssistant } from '@/features/assistant/useAssistant'
 import { toDisplayText } from '@/core/text/displayText'
 import { toReplyHtml } from '@/core/text/replyHtml'
@@ -75,6 +76,9 @@ const {
   nextMusic,
   seekMusic,
   closeSubtitle,
+  detailCard,
+  selectDetail,
+  closeDetailCard,
 } = useAssistant()
 
 /** 悬浮小圆是否显示：开关打开 + 有内容在播放即可；无封面时显示占位唱片，所有播放内容同等对待 */
@@ -623,6 +627,15 @@ function onConnTap(): void {
       </scroll-view>
       <text v-else class="subtitle-empty">{{ t('music.noSubtitle') }}</text>
     </view>
+
+    <!-- 结构化详情卡片：独立内嵌面板（与播放条 / 字幕面板同级，不进助手回复框、不悬浮）。
+         纯展示状态，不随新一轮对话 / 切语音来源重置，避免被后续回复顶掉。 -->
+    <DetailRenderer
+      v-if="detailCard"
+      :detail="detailCard"
+      @select="selectDetail"
+      @close="closeDetailCard"
+    />
 
     <!-- 悬浮小圆：通用悬浮层的一个业务（音乐播放器），内容与容器解耦。
          z-index / 角落由 FloatLayer 统一管；圆形封面播放时旋转、暂停停，下方大字是当前正在唱的那句。 -->

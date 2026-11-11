@@ -73,6 +73,40 @@ export interface Messages {
     /** 语音切换播放模式：只说切换（客户端自行 toggle） */
     playModeToggled: () => string
   }
+  /** 商品/好价查询：编号列表话术、选择引导、选中后一句确认（不复述商品内容） */
+  deals: {
+    /** items 为编号后的商品标题；措辞用「第X件」不用「首」 */
+    candidates: (items: readonly string[]) => string
+    /** 让用户说编号的引导 */
+    chooseHint: () => string
+    /** 选中第 n 件后的一句确认；详情只走 media.detail 展示，不进 TTS */
+    detailIntro: (n: number) => string
+    /** 详情字段的统一 label：网关本地化后随 fields[] 下发，客户端不认识具体字段名 */
+    fieldLabels: {
+      price: () => string
+      mall: () => string
+      brand: () => string
+      tags: () => string
+      desc: () => string
+      time: () => string
+      source: () => string
+    }
+  }
+  /** 数据来源展示名（按 lang 本地化）：值由数据源给 sourceKey，网关查表，客户端不认识 key。 */
+  sources: Record<string, string>
+  /** 开源工具/项目：选中后一句确认 + 详情字段 label（列表话术由工具自身产出） */
+  opensource: {
+    detailIntro: (n: number) => string
+    fieldLabels: {
+      tagline: () => string
+      language: () => string
+      os: () => string
+      desc: () => string
+      time: () => string
+      source: () => string
+      license: () => string
+    }
+  }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
   /** 大模型整句都不可念（泄漏控制符 / 空回复 / 只剩符号）时的兜底口播：不念垃圾，给一句让人能重说的 */
@@ -191,6 +225,34 @@ const zhCN: Messages = {
     playModePlayer: () => '已切换到播放器模式。',
     playModeToggled: () => '已切换播放模式。',
   },
+  deals: {
+    candidates: (items) =>
+      `查到几件：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}件，${it}`).join('；')}。`,
+    chooseHint: () => '你想看第几件，直接说编号就行。',
+    detailIntro: (n) => `已为你打开第 ${n} 件商品详情，请看屏幕。`,
+    fieldLabels: {
+      price: () => '现价',
+      mall: () => '商城',
+      brand: () => '品牌',
+      tags: () => '优惠',
+      desc: () => '优惠详情',
+      time: () => '发布时间',
+      source: () => '来源',
+    },
+  },
+  sources: { smzdm: '什么值得买', oschina: '开源中国', github: 'GitHub', gitee: 'Gitee' },
+  opensource: {
+    detailIntro: (n) => `已为你打开第 ${n} 个开源项目，请看屏幕。`,
+    fieldLabels: {
+      tagline: () => '定位',
+      language: () => '开发语言',
+      license: () => '开源协议',
+      os: () => '系统',
+      desc: () => '简介',
+      time: () => '收录时间',
+      source: () => '来源',
+    },
+  },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
   memory: {
@@ -255,6 +317,35 @@ const en: Messages = {
     playModePlayer: () => 'Switched to player mode.',
     playModeToggled: () => 'Playback mode switched.',
   },
+  deals: {
+    ...zhCN.deals,
+    candidates: (items) =>
+      `Found some items: ${items.map((it, i) => `number ${i + 1}, ${it}`).join('; ')}.`,
+    chooseHint: () => 'Which one? Just say the number.',
+    detailIntro: (n) => `Opened item ${n} on screen.`,
+    fieldLabels: {
+      price: () => 'Price',
+      mall: () => 'Store',
+      brand: () => 'Brand',
+      tags: () => 'Tags',
+      desc: () => 'Details',
+      time: () => 'Posted',
+      source: () => 'Source',
+    },
+  },
+  sources: { smzdm: 'SMZDM', oschina: 'OSCHINA', github: 'GitHub', gitee: 'Gitee' },
+  opensource: {
+    detailIntro: (n) => `Opened project ${n} on screen.`,
+    fieldLabels: {
+      tagline: () => 'Tagline',
+      language: () => 'Language',
+      license: () => 'License',
+      os: () => 'Platform',
+      desc: () => 'Summary',
+      time: () => 'Added',
+      source: () => 'Source',
+    },
+  },
 }
 
 const catalogs: Record<string, Messages> = {
@@ -263,7 +354,11 @@ const catalogs: Record<string, Messages> = {
 }
 
 export function messages(lang: Lang | string = 'zh-CN'): Messages {
-  return catalogs[lang] ?? zhCN
+  if (catalogs[lang]) return catalogs[lang]
+  // 客户端可能上报带地区的语言码（en-US / en_GB / zh-TW），按语言前缀回退，
+  // 否则精确匹配失败会整体退回中文——下发给英文用户的文案会变成中文。
+  const prefix = lang.toLowerCase().split(/[-_]/)[0]
+  return catalogs[prefix] ?? zhCN
 }
 
 /** 语言代码 → 当前会话文案里的可读名称，用于「请切换语言」提示。 */

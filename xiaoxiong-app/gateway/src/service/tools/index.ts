@@ -108,7 +108,11 @@ export function createToolkit(
     createCurrentLocationTool(lang, locationProvider, requestLocation),
     createWeatherTool(lang, locationProvider, undefined, requestLocation),
     createDealsTool(lang, { source: dealsSource }),
-    createOpenSourceTool(lang, { source: opensourceSource }),
+    createOpenSourceTool(lang, {
+      source: opensourceSource,
+      // 结构化结果经同一条 emit 通道下发成 media.detail(kind: project) 卡片
+      onResults: emit ? (items) => emit({ type: 'media.detail', kind: 'project', items }) : undefined,
+    }),
   ]
   // 媒体指令需要 emit 把指令下发给客户端，且需要 musicSource 决定播什么；
   // 两者都齐才注册音乐工具，否则（离线测试 / 客户端未配置音乐源）不注册，避免空转。

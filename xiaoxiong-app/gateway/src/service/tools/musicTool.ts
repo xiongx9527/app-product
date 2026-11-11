@@ -6,9 +6,23 @@ import { needsProxy } from '../music'
 import { isSpokenContentRequest, MusicSourceNotImplementedError } from '../music/types'
 
 /** 媒体指令：直接透传给客户端；客户端据此播放/停止/暂停/恢复/设音量/展示。 */
+/**
+ * 工具层可下发给客户端的「媒体/展示类」指令集合。
+ * 除音乐播放控制外，也包含结构化详情卡片（开源项目结果等由工具直接产出卡片，
+ * 与语音编号一一对应），因此这里是「工具→客户端」的通道，不只是音乐。
+ */
 export type MediaDirective = Extract<
   ServerEvent,
-  { type: 'media.play' | 'media.stop' | 'media.subtitle' | 'media.pause' | 'media.resume' | 'media.volume' }
+  {
+    type:
+      | 'media.play'
+      | 'media.stop'
+      | 'media.subtitle'
+      | 'media.pause'
+      | 'media.resume'
+      | 'media.volume'
+      | 'media.detail'
+  }
 >
 
 /**
