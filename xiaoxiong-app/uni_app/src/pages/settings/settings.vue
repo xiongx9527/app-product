@@ -456,6 +456,19 @@ watch(
             @update:model-value="(v: string) => (appConfig.timezone = v)"
           />
         </view>
+
+        <!-- 自动开启语音助手：开屏即连接网关进入待唤醒，免去手动点开关 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.general.autoConnect') }}</text>
+            <text class="hint">{{ t('settings.general.autoConnectHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.autoConnect"
+            color="#6c8cff"
+            @change="(e: any) => (appConfig.general.autoConnect = e.detail.value)"
+          />
+        </view>
       </template>
     </view>
 

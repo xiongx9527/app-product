@@ -100,6 +100,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const musicCover = ref('')
   /** 字幕面板：网关下发 media.subtitle 后展示（lines 带每行起始时间，用于跟随播放高亮） */
   const subtitle = ref<{ title: string; artist?: string; lines: { time: number; text: string }[] } | null>(null)
+  /**
+   * 字幕可见性：与 subtitle 数据分离，便于「手动关闭后可手动再打开」——手动关闭只翻这个标记、
+   * 不丢数据，和语音「关闭字幕 / 开启字幕」共用同一真相源（都落在客户端），因此手动与语音互相可逆。
+   * 默认开；播放停止（media.stop）复位为开，让下一首照常自动显示。
+   */
+  const subtitleVisible = ref(true)
   /** 字幕已复制：行内短暂提示（不弹浮层），复制成功后显示 1.5s */
   const copied = ref(false)
   /**
@@ -374,13 +380,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         stopMusic()
         musicCover.value = ''
         // 停止后悬浮小圆消失，字幕面板会从「与悬浮互斥」状态切回可见；
-        // 同时清掉上一首的字幕数据，避免面板在悬浮模式下被「字幕框」顶出来。
+        // 清掉上一首的字幕数据并复位 visible 为开，让下一首照常自动显示（而不是停在「已关闭」）。
         subtitle.value = null
+        subtitleVisible.value = true
         break
       case 'media.subtitle':
-        // close=true 由语音「关闭字幕」指令下发，直接收起字幕面板；否则按 lines 渲染/更新。
+        // close=true 由语音「关闭字幕」指令下发，收起字幕面板（保留数据，便于手动/语音再打开）；
+        // 否则按 lines 渲染/更新，并翻 visible 为开（新歌/语音「开启字幕」都走这里，自动或重新显示）。
         if (event.close) {
-          subtitle.value = null
+          subtitleVisible.value = false
           break
         }
         // 循环重播同一首时，网关偶发的空字幕不应把已显示的歌词覆盖成「暂无字幕」。
@@ -393,6 +401,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           break
         }
         subtitle.value = { title: event.title, artist: event.artist, lines: event.lines ?? [] }
+        // 新字幕（新歌 / 语音「开启字幕」重发）一律重新显示，覆盖之前手动/语音关闭的状态。
+        subtitleVisible.value = true
         break
       case 'media.volume':
         // 网关语音「音量 30% / 调大 / 调小」下发，直接设到本地播放器与滑块显示；
@@ -719,10 +729,21 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     phase.value = 'listening'
   }
 
-  /** 关闭字幕面板 */
+  /** 关闭字幕面板：只翻 visible 标记、保留数据，便于之后手动/语音重新打开 */
   function closeSubtitle(): void {
-    subtitle.value = null
+    subtitleVisible.value = false
     copied.value = false
+  }
+
+  /** 重新打开字幕面板：仅翻 visible 标记，数据仍在（手动关闭后照样能打开） */
+  function openSubtitle(): void {
+    if (subtitle.value) subtitleVisible.value = true
+  }
+
+  /** 字幕显隐切换（界面按钮与语音共用）：有数据才有效 */
+  function toggleSubtitle(): void {
+    if (!subtitle.value) return
+    subtitleVisible.value = !subtitleVisible.value
   }
 
   /**
@@ -873,8 +894,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     musicDuration: musicState.duration,
     musicLive: musicState.live,
     subtitle,
+    subtitleVisible,
     copySubtitle,
     copied,
+    toggleSubtitle,
+    openSubtitle,
     detailCard,
     selectDetail,
     closeDetailCard,

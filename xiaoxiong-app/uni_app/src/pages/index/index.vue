@@ -64,8 +64,10 @@ const {
   musicDuration,
   musicLive,
   subtitle,
+  subtitleVisible,
   copySubtitle,
   copied,
+  toggleSubtitle,
   activeSubtitleIndex,
   currentSubtitleText,
   activeSubtitleSplit,
@@ -398,6 +400,9 @@ function openSettings(): void {
 
 onMounted(() => {
   uni.onWindowResize(onResize)
+  // 自动开启语音助手：开屏即连接网关进入待唤醒（设置项 general.autoConnect，默认开），
+  // 免去手动点开关；关闭则需用户手动开启。
+  if (appConfig.general.autoConnect) enable()
 })
 
 onUnmounted(() => {
@@ -569,6 +574,15 @@ function onConnTap(): void {
           <view class="music-ctrl" :aria-label="t('music.playModeToggle')" @tap="onTogglePlayMode">
             <image class="music-icon" :src="floatPlayerIcon" mode="aspectFit" />
           </view>
+          <view
+            v-if="subtitle"
+            class="music-ctrl"
+            :class="{ active: subtitleVisible }"
+            :aria-label="t('music.subtitleToggle')"
+            @tap="toggleSubtitle"
+          >
+            <image class="music-icon" src="/static/icons/subtitle.svg" mode="aspectFit" />
+          </view>
           <!-- 喇叭提升到顶行：面板作为喇叭的兄弟节点（避免点击面板冒泡到开关而缩回），
                喇叭已在上方，面板改为向下弹出，盖住下方进度行而非飞出屏幕顶部。 -->
           <view class="vol-group">
@@ -626,7 +640,7 @@ function onConnTap(): void {
     </view>
 
     <!-- 字幕面板与悬浮互斥：悬浮小圆已用大字显示当前歌词，不再叠一份完整字幕列表 -->
-    <view v-if="subtitle && !floatDiscVisible" class="subtitle">
+    <view v-if="subtitle && subtitleVisible && !floatDiscVisible" class="subtitle">
       <view class="subtitle-head">
         <text class="subtitle-title">{{ t('music.subtitle') }} · {{ subtitle.title }}</text>
         <view class="subtitle-actions">
@@ -675,6 +689,10 @@ function onConnTap(): void {
              @tap.stop 避免误触小圆本身的暂停/继续；不是单纯关闭，故与语音切换互相可逆 -->
         <view class="disc-mode-toggle" :aria-label="t('music.playModeToggle')" @tap.stop="onTogglePlayMode">
           <image class="disc-mode-icon" :src="floatPlayerIcon" mode="aspectFit" />
+        </view>
+        <!-- 停止播放：彻底停止（非暂停），与悬浮小圆本身的暂停/继续区分开 -->
+        <view class="disc-stop" :aria-label="t('music.stop')" @tap.stop="onStopMusic">
+          <image class="disc-stop-icon" src="/static/icons/stop.svg" mode="aspectFit" />
         </view>
         <view class="disc" :class="{ 'disc--paused': musicPaused || musicEnded, 'disc--playing': !musicPaused && !musicEnded }" @tap="onTogglePause">
           <view class="disc__glow" />
@@ -1843,6 +1861,32 @@ function onConnTap(): void {
 .disc-mode-icon {
   width: 14px;
   height: 14px;
+}
+
+/* 悬浮小圆上的停止按钮：位于内容层左上角，彻底停止（非暂停），与模式切换分置两角避免误触 */
+.disc-stop {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(4px);
+  border: none;
+  transition: background 0.15s ease;
+}
+
+.disc-stop:active {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.disc-stop-icon {
+  width: 13px;
+  height: 13px;
 }
 
 /* 当前正在唱的那句：单行显示整句，不换行/不省略/不滚动；字号按句长微缩（由 :style 注入） */
