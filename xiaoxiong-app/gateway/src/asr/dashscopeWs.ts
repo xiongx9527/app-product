@@ -37,10 +37,8 @@ const MAX_BUFFERED_BYTES = SAMPLE_RATE * 2 * 30
  * 一个连接只跑一句话：句末关闭，下一句重新建连。这样不用赌服务端是否允许
  * 同一连接连续跑多个任务，重连/打断也只需要 terminate 一个 socket。
  *
- * 该类目前未接入 createAsr 工厂；接线时只需在 asr/index.ts 增加一个分支：
- *   if (config.asr.provider === 'aliyun' && config.asr.baseUrl.startsWith('ws')) {
- *     return new DashScopeWsAsr(config.asr.baseUrl, config.asr.params, config.asr.apiKey)
- *   }
+ * 已接入 createAsr 工厂：config.asr.provider === 'dashscope' 时直接走该实现，
+ * baseUrl 既支持 wss:// 原生 WS 入口，也支持 https:// 业务空间域名（自动换算成 /api-ws/v1/inference）。
  */
 export class DashScopeWsAsr implements AsrProvider {
   private readonly url: string

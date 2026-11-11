@@ -6,8 +6,8 @@ import type { Lang, ServerErrorCode } from './protocol'
  */
 export interface Messages {
   systemPrompt: string
-  /** 当前正在播放的曲目上下文：拼进系统提示，让助手能回答「现在播的什么歌」。 */
-  nowPlayingContext: (title: string, artist?: string) => string
+  /** 当前正在播放的曲目上下文：拼进系统提示，让助手能回答「现在播的什么、谁的作品」。 */
+  nowPlayingContext: (title: string, artist?: string, contentType?: string) => string
   errors: Record<ServerErrorCode, string>
   /** 排队提示与拒绝原因，按 lang 本地化后下发给客户端展示 */
   queue: {
@@ -58,8 +58,14 @@ export interface Messages {
     volumeMin: () => string
     /** 语音「关闭字幕」后口播 */
     subtitleOff: () => string
-    /** 语音「开启字幕」后口播 */
+    /** 语音「开启字幕」且有字幕：口播确认 */
     subtitleOn: () => string
+    /** 语音「开启字幕」但当前曲无同源字幕：如实说没有，不乱称已显示 */
+    subtitleNone: () => string
+    /** 语音「关闭字幕」但当前本就没有字幕：如实说没有，不谎称已关闭 */
+    subtitleNoActive: () => string
+    /** 语音「暂停/继续/停止」但当前没在播放：如实说没有，不乱称已操作 */
+    musicNotPlaying: () => string
     /** 语音切换播放模式：切到悬浮 */
     playModeFloat: () => string
     /** 语音切换播放模式：切回播放器 */
@@ -106,10 +112,14 @@ const zhCN: Messages = {
     '**加粗**、# 标题、列表符号、表格、代码块等）。禁止在调用工具（尤其是音乐工具）前后' +
     '说铺垫废话或道歉（如“好的”“稍等”“对不起，出现…”“让我看看”“Skipping…”之类），' +
     '直接调用工具或给一句最简短的回复即可。全程使用简体中文，不要中英混排。',
-  nowPlayingContext: (title, artist) =>
-    `【当前正在播放】《${title}》${artist ? `（${artist}）` : ''}。` +
-    '若用户问起正在播放的内容叫什么名字、是谁的作品，请直接据此回答，不要说不知道；' +
-    '它可能是歌曲、评书、戏曲、相声或影视内容，不要一律当成歌曲。',
+  nowPlayingContext: (title, artist, contentType) => {
+    const kind = contentType ? contentType : '内容'
+    return (
+      `【当前正在播放】${kind}《${title}》${artist ? `（${artist}）` : ''}。` +
+      '若用户问起正在播放的是什么（歌/电视/电影/动画/相声/评书等）、叫什么名字、是谁的作品（演唱/演出/导演等），' +
+      '请直接据此回答，不要说不知道；没有标注创作者时只回答已知的名字，不要编造。'
+    )
+  },
   errors: {
     AUTH_FAILED: '鉴权失败，请重新登录',
     ASR_TIMEOUT: '识别超时',
@@ -165,8 +175,14 @@ const zhCN: Messages = {
     volumeMin: () => '音量已经最小了。',
     /** 语音「关闭字幕」后口播 */
     subtitleOff: () => '已关闭字幕。',
-    /** 语音「开启字幕」后口播 */
+    /** 语音「开启字幕」且有歌词：口播确认 */
     subtitleOn: () => '已开启字幕。',
+    /** 语音「开启字幕」但当前曲没有同源字幕：如实说没有，不乱称已显示 */
+    subtitleNone: () => '这首歌没有字幕，先给你开着，下一首有就自动显示。',
+    /** 语音「关闭字幕」但当前本就没有字幕：如实说没有，不谎称已关闭 */
+    subtitleNoActive: () => '当前没有字幕，本来就是关着的。',
+    /** 语音「暂停/继续/停止」但当前没在播放：如实说没有，不乱称已操作 */
+    musicNotPlaying: () => '现在还没在播放什么，先放一首吧。',
     playModeFloat: () => '已切换到悬浮模式。',
     playModePlayer: () => '已切换到播放器模式。',
     playModeToggled: () => '已切换播放模式。',
@@ -205,10 +221,15 @@ const en: Messages = {
     'Do not add filler or apologies before or after calling a tool (especially music tools) — ' +
     'no "Sure", "Just a moment", "Sorry, ...", "Let me see", "Skipping...", etc. ' +
     'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing.',
-  nowPlayingContext: (title, artist) =>
-    `[Now playing] "${title}"${artist ? ` (${artist})` : ''}. ` +
-    'It may be a song, storytelling, opera, crosstalk or video content — do not assume it is a song. ' +
-    'If the user asks what is playing, its name or creator, answer directly from this; do not say you don\'t know.',
+  nowPlayingContext: (title, artist, contentType) => {
+    const kind = contentType ? contentType : 'content'
+    return (
+      `[Now playing] ${kind} "${title}"${artist ? ` (${artist})` : ''}. ` +
+      'If the user asks what is playing (song/TV/movie/anime/crosstalk/audiobook…), its name, or who made it ' +
+      '(singer/performer/director…), answer directly from this; do not say you don\'t know. ' +
+      'If no creator is given, only name the title and do not invent one.'
+    )
+  },
   // 占位播放源提示：英文会话也要拿到本地化展示名与英文文案，不残留中文
   music: {
     ...zhCN.music,
@@ -216,6 +237,9 @@ const en: Messages = {
       `The music source "${sourceDisplayName(kind, 'en')}" is not yet available. Please switch to "${sourceDisplayName('baidu', 'en')}" in settings.`,
     subtitleOff: () => 'Subtitles off.',
     subtitleOn: () => 'Subtitles on.',
+    subtitleNone: () => 'No subtitles for this track. I\'ve turned them on, and they\'ll show automatically when the next one has them.',
+    subtitleNoActive: () => 'There are no subtitles currently — they\'re already off.',
+    musicNotPlaying: () => 'Nothing is playing right now; play something first.',
     offerOtherType: () =>
       'No other content of the same type found. Shall I switch to something else, or would you name one?',
     switchedOther: () => 'No other content of the same type found; switching to something else.',

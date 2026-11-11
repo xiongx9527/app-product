@@ -357,6 +357,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'media.stop':
         stopMusic()
         musicCover.value = ''
+        // 停止后悬浮小圆消失，字幕面板会从「与悬浮互斥」状态切回可见；
+        // 同时清掉上一首的字幕数据，避免面板在悬浮模式下被「字幕框」顶出来。
+        subtitle.value = null
         break
       case 'media.subtitle':
         // close=true 由语音「关闭字幕」指令下发，直接收起字幕面板；否则按 lines 渲染/更新。

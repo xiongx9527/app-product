@@ -53,7 +53,7 @@ export interface VoiceSessionDeps {
     defaultLoop?: number,
     defaultVolume?: number,
     autoLoop?: boolean,
-    getNowPlaying?: () => { title: string; artist?: string } | null
+    getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null
   ) => AgentService
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
   createAsr: (cfg: AsrConfig) => AsrProvider
@@ -137,6 +137,8 @@ export class VoiceSessionService {
   private autoSubtitle = true
   /** 上一次成功下发的同源字幕，供「循环播放」重播同一首时复用，避免重新拉取失败把字幕覆盖成「暂无字幕」 */
   private lastSubtitleLines: SubtitleLine[] | null = null
+  /** 当前是否真的有字幕面板在显示：仅在成功下发非空字幕时为 true，用于「关闭字幕」时如实反馈 */
+  private subtitleActive = false
   /** 默认循环播放次数（含当前这一遍）；0/1 表示不循环，缺省 3。每次新播放经 media.play 的 loop 带入。 */
   private defaultLoop = 3
   /** 默认播放音量（0–1），缺省 0.5；每次新播放开始时经 media.volume 下发，供「调大/调小」相对增减。 */
@@ -435,23 +437,34 @@ export class VoiceSessionService {
    * 自动字幕：开关开启时，用当前音乐源拉取字幕并下发 media.subtitle。
    * 尽力而为——拉取失败/超时不影响播放；取不到时也下发空 lyrics，让客户端显示「暂无字幕」而非什么都不提示。
    */
-  private async emitAutoSubtitle(title: string, artist?: string, reuse = false): Promise<void> {
-    if (!this.autoSubtitle) return
+  private async emitAutoSubtitle(title: string, artist?: string, reuse = false): Promise<boolean> {
+    if (!this.autoSubtitle) {
+      this.subtitleActive = false
+      return false
+    }
     // 循环播放重播同一首：直接复用上一次成功下发的同源字幕，不再重新拉取。
     // 否则缓存未命中 / 网络波动时 getSubtitle 返回 null，会把客户端已显示的歌词覆盖成「暂无字幕」。
     if (reuse && this.lastSubtitleLines) {
       this.deps.send({ type: 'media.subtitle', title, artist, lines: this.lastSubtitleLines })
-      return
+      this.subtitleActive = this.lastSubtitleLines.length > 0
+      return this.subtitleActive
     }
     const source = this.musicSource
-    if (!source?.getSubtitle) return
+    if (!source?.getSubtitle) {
+      this.subtitleActive = false
+      return false
+    }
     try {
       const lines = await source.getSubtitle(artist ?? '', title)
       this.lastSubtitleLines = lines ?? []
       this.deps.send({ type: 'media.subtitle', title, artist, lines: lines ?? [] })
+      this.subtitleActive = (lines ?? []).length > 0
+      return this.subtitleActive
     } catch {
       this.lastSubtitleLines = null
+      this.subtitleActive = false
       // 字幕失败不影响播放
+      return false
     }
   }
 
@@ -641,16 +654,30 @@ export class VoiceSessionService {
           break
         }
         case 'pause':
+          // 没在播放却说「暂停」是谎话：如实说当前没有可暂停的内容。
+          if (!this.musicActive) {
+            await this.speakReply(m.musicNotPlaying())
+            break
+          }
           this.deps.send({ type: 'media.pause' })
           await this.speakReply(m.paused())
           break
         case 'resume':
+          if (!this.musicActive) {
+            await this.speakReply(m.musicNotPlaying())
+            break
+          }
           this.deps.send({ type: 'media.resume' })
           await this.speakReply(m.resumed())
           break
         case 'stop':
+          if (!this.musicActive) {
+            await this.speakReply(m.musicNotPlaying())
+            break
+          }
           this.deps.send({ type: 'media.stop' })
           this.musicActive = false
+          this.subtitleActive = false
           await this.speakReply(m.stopped())
           break
       }
@@ -773,12 +800,23 @@ export class VoiceSessionService {
     const m = messages(this.lang).music
     this.autoSubtitle = action === 'on'
     if (action === 'off') {
+      // 如实反馈：当前本就没有字幕时，不乱称「已关闭」，直接说没有。
+      const had = this.subtitleActive
       this.deps.send({ type: 'media.subtitle', title: '', lines: [], close: true })
-      await this.speakReply(m.subtitleOff())
+      this.subtitleActive = false
+      await this.speakReply(had ? m.subtitleOff() : m.subtitleNoActive())
       return
     }
     // 开启：对当前正在播放的曲子重发字幕；没有则在下一首播放时自动带出。
-    if (this.lastTrack) await this.emitAutoSubtitle(this.lastTrack.title, this.lastTrack.artist)
+    if (this.lastTrack) {
+      // 如实反馈：有字幕才说「已开启字幕」，没有就直说这首歌没字幕，不乱称已显示。
+      const has = await this.emitAutoSubtitle(this.lastTrack.title, this.lastTrack.artist)
+      await this.speakReply(has ? m.subtitleOn() : m.subtitleNone())
+      return
+    }
+    // 没在播的曲子：仅把开关打开（设置态），当前没有字幕可显示，照实说已开启即可。
+    this.subtitleActive = false
+    await this.speakReply(m.subtitleOn())
     await this.speakReply(m.subtitleOn())
   }
 
@@ -1251,7 +1289,7 @@ export class VoiceSessionService {
             this.defaultLoop,
             this.defaultVolume,
             this.autoLoop,
-            () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist } : null)
+            () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null)
           )
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }
