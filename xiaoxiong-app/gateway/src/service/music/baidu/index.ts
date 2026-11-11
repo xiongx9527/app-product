@@ -66,6 +66,7 @@ export function createBaiduMusicSource(fetcher: MusicFetcher): MusicSource {
               title: query,
               channel: 'gequbao',
               ...(track.cover ? { cover: track.cover } : {}),
+              ...(track.artist ? { artist: track.artist } : {}),
             }
           }
         } catch {

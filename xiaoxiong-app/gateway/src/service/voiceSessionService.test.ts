@@ -696,7 +696,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(plays).toHaveLength(2)
     expect((plays[1] as { title: string }).title).toContain('其它风格') // 换到了不同的风格
     expect((plays[1] as { title: string }).title).not.toBe('猪八戒主题曲')
-    expect(texts(h)).toContain('给你换首其它风格的')
+    expect(texts(h)).toContain('给你换点别的')
   })
 
   it('换一首找不到同类型：用户点名想听的（放首刘德华的忘情水）直接按名字播，不强行换风格', async () => {

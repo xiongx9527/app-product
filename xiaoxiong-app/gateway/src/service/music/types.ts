@@ -6,6 +6,9 @@ export interface ResolvedTrack {
   url: string
   /** 展示用标题 */
   title: string
+  /** 演唱者 / 主创（歌曲的歌手、影视的导演等）；来源能取到时随 lastTrack 进入「正在播放」上下文，
+   *  让助手能回答「现在播的谁唱的 / 谁演的」。取不到（如 B 站抽音轨）留空，由语音点歌时用户口述的歌手兜底。 */
+  artist?: string
   /** 来源标识（频道名 / 服务商 id），便于客户端展示 */
   channel?: string
   /** 封面图地址（与音频同源，如歌曲宝详情页 mp3_cover），随 media.play 下发供播放器展示 */

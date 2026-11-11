@@ -130,6 +130,8 @@ async function searchGequbao(query: string, fetcher: MusicFetcher): Promise<GqCa
 export interface GequbaoTrack {
   url: string
   cover?: string
+  /** 详情页搜索结果抠出的歌手（「歌名 - 歌手」的后者），同源同曲，最权威 */
+  artist?: string
   lyrics: SubtitleLine[]
 }
 
@@ -167,7 +169,7 @@ export async function resolveGequbaoTrack(
         if (j.code !== 1 || !j.data?.url) continue
         // 字幕与音频出自同一详情页：严格同源同曲，绝不跨条目配词
         const lyrics = app.lrc_is_empty ? [] : parseLrc(extractLrc(html))
-        return { url: j.data.url, cover: normalizeCoverUrl(app.mp3_cover), lyrics }
+        return { url: j.data.url, cover: normalizeCoverUrl(app.mp3_cover), artist: c.artist, lyrics }
       } catch {
         // 该候选失败，试下一个
       }

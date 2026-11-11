@@ -393,7 +393,7 @@ export class VoiceSessionService {
    */
   /** 下发 media.play 并口播确认。 */
   private async playTrack(
-    track: { url: string; title: string; channel?: string; cover?: string },
+    track: { url: string; title: string; channel?: string; cover?: string; artist?: string },
     confirm: string,
     loop?: number,
     artist?: string,
@@ -407,7 +407,8 @@ export class VoiceSessionService {
       title: track.title,
       channel: track.channel,
       cover: track.cover,
-      artist,
+      // 优先用源抠出的真实歌手（歌曲宝详情页），没有再退回语音点歌时口述的歌手
+      artist: track.artist ?? artist,
       contentType: contentType ?? this.lastTrack?.contentType,
     }
     // 音量以默认值为起点：每次新播放下发 media.volume，供后续「调大/调小」相对增减。
