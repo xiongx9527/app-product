@@ -8,6 +8,8 @@ export interface ResolvedTrack {
   title: string
   /** 来源标识（频道名 / 服务商 id），便于客户端展示 */
   channel?: string
+  /** 封面图地址（与音频同源，如歌曲宝详情页 mp3_cover），随 media.play 下发供播放器展示 */
+  cover?: string
 }
 
 /** 音乐播放源抽象：给定风格返回可播放曲目（可异步，如需要联网搜歌的厂商）。 */
@@ -30,7 +32,7 @@ export interface MusicSource {
 /**
  * 占位播放源尚未实现：点歌时应明确告知用户该源暂不可用，
  * 而非被上层 catch 当成「没找到这首歌」误导用户。
- * 只携带源 kind（如 'netease'，代码值而非展示名），展示名由 i18n 按 lang 解析，
+ * 只携带源 kind（代码值而非展示名），展示名由 i18n 按 lang 解析，
  * 避免硬编码中文、保证英文会话也拿到本地化文案。
  */
 export class MusicSourceNotImplementedError extends Error {

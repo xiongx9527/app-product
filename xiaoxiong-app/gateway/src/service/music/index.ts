@@ -1,8 +1,5 @@
 import type { MusicFetcher, MusicSource } from './types'
 import { createBaiduMusicSource } from './baidu'
-import { createNeteaseMusicSource } from './netease'
-import { createTencentMusicSource } from './tencent'
-import { createKugouMusicSource } from './kugou'
 
 export type { MusicSource }
 
@@ -42,32 +39,11 @@ export function needsProxy(channel?: string, url?: string): boolean {
   return false
 }
 
-/** 当前支持的播放源；缺省/未知值一律回退到百度（B 站音轨 + 百度搜索兜底）。 */
-const VALID_SOURCES = ['baidu', 'netease', 'tencent', 'kugou'] as const
-export type MusicSourceKind = (typeof VALID_SOURCES)[number]
-
-function resolveSourceKind(source?: string): MusicSourceKind {
-  return (VALID_SOURCES as readonly string[]).includes(source ?? '') ? (source as MusicSourceKind) : 'baidu'
-}
-
 /**
  * 按客户端设置页下发的播放源构造音乐源（session.start.playback.source）。
- * 百度已实现；网易云 / 腾讯音乐 / 酷狗音乐当前为占位空实现，调用会抛「未实现」。
- * 后续新增来源时在此按 source 分支调用对应 createXxxMusicSource 即可，
- * 各来源内部自行决定子源组合，互不影响。
+ * 当前仅「百度」一种（SomaFM 电台 + B 站搜索兜底 + 歌曲宝前瞻音频），
+ * 未知/缺省值一律回退百度；新增来源时在此按 source 分支调用对应 createXxxMusicSource 即可。
  */
-export function createMusicSource(
-  opts?: { source?: string; fetcher?: MusicFetcher },
-): MusicSource {
-  const fetcher = opts?.fetcher ?? nativeFetch
-  switch (resolveSourceKind(opts?.source)) {
-    case 'baidu':
-      return createBaiduMusicSource(fetcher)
-    case 'netease':
-      return createNeteaseMusicSource(fetcher)
-    case 'tencent':
-      return createTencentMusicSource(fetcher)
-    case 'kugou':
-      return createKugouMusicSource(fetcher)
-  }
+export function createMusicSource(opts?: { source?: string; fetcher?: MusicFetcher }): MusicSource {
+  return createBaiduMusicSource(opts?.fetcher ?? nativeFetch)
 }

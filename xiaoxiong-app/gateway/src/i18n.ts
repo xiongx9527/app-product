@@ -26,7 +26,7 @@ export interface Messages {
      * 措辞不能叫「这首歌」——否则用户会以为系统把他的话当成了点歌。
      */
     notFound: (spoken?: boolean) => string
-    /** 占位播放源尚未实现：明确告知用户该源暂不可用，并引导改用百度搜索。入参是源 kind（如 'netease'），展示名由 i18n 解析 */
+    /** 占位播放源尚未实现：明确告知用户该源暂不可用，并引导改用百度搜索。入参是源 kind（代码值），展示名由 i18n 解析 */
     notImplemented: (kind: string) => string
     /** 多候选时口播编号列表，让用户用语音选「第几首」或直接说歌名 */
     candidates: (items: readonly string[]) => string
@@ -83,9 +83,6 @@ export interface Messages {
 /** 播放源 kind → 各语言展示名（与客户端 settings.playback.* i18n 保持一致）。kind 是代码值，展示名集中在此处与客户端两侧对齐 */
 const SOURCE_DISPLAY: Record<string, Record<string, string>> = {
   baidu: { 'zh-CN': '百度搜索', en: 'Baidu Search' },
-  netease: { 'zh-CN': '网易云音乐', en: 'NetEase Cloud Music' },
-  tencent: { 'zh-CN': '腾讯音乐', en: 'Tencent Music' },
-  kugou: { 'zh-CN': '酷狗音乐', en: 'Kugou Music' },
 }
 
 /** 按 lang 解析播放源展示名；未知 kind 退化为 kind 本身，绝不硬编码中文展示名 */

@@ -97,11 +97,12 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
     expect(detectMusicCommand('再放')).toBe('resume')
   })
 
-  it('parseLoopCount：解析「N 遍」遍数，缺省默认 2（再播一遍），超界收敛', () => {
+  it('parseLoopCount：解析显式「N 遍」；不带遍数交回设置默认(1)；「再放一遍」固定 2；超界收敛', () => {
     expect(parseLoopCount('循环播放3遍')).toBe(3)
     expect(parseLoopCount('循环播放2遍')).toBe(2)
-    expect(parseLoopCount('循环播放')).toBe(2) // 没写遍数 → 默认再播一遍（共 2 遍）
-    // 只认阿拉伯数字，「一遍」这类中文数词无数字则回落默认 2（= 再播一遍，共 2 遍）
+    expect(parseLoopCount('循环播放')).toBe(1) // 不带遍数 → 交回设置里的默认循环次数（3），不再写死 2
+    expect(parseLoopCount('单曲循环')).toBe(1)
+    // 只认阿拉伯数字；「再放一遍」这种明确「多播一次」的口语仍固定为 2
     expect(parseLoopCount('再放一遍')).toBe(2)
     expect(parseLoopCount('循环播放999遍')).toBe(99) // 超上限收敛
     expect(parseLoopCount('放首歌')).toBe(1) // 非循环语境 → 1（不循环）

@@ -8,12 +8,14 @@ describe('detectSubtitleCommand', () => {
     expect(detectSubtitleCommand('字幕关了')).toBe('off')
     expect(detectSubtitleCommand('不要字幕')).toBe('off')
     expect(detectSubtitleCommand('隐藏歌词')).toBe('off')
+    expect(detectSubtitleCommand('关闭歌词')).toBe('off')
     expect(detectSubtitleCommand('把字幕关了')).toBe('off')
   })
 
   it('开启类：开启字幕 / 显示字幕 / 我要看字幕 → on', () => {
     expect(detectSubtitleCommand('开启字幕')).toBe('on')
     expect(detectSubtitleCommand('打开歌词')).toBe('on')
+    expect(detectSubtitleCommand('显示歌词')).toBe('on')
     expect(detectSubtitleCommand('显示字幕')).toBe('on')
     expect(detectSubtitleCommand('我要看字幕')).toBe('on')
   })

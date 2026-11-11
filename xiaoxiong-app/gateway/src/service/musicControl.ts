@@ -40,10 +40,12 @@ const ACTION_PATTERNS: Array<{ action: MusicAction; re: RegExp }> = [
 ]
 
 /**
- * 从口语里解析「循环 N 遍」的遍数。命中「循环 / 重复 / 再放 N 遍」等模式时返回正整数，
- * 没带数字（纯「循环播放 / 再放一遍」）默认 2（把当前曲再播一遍）；完全不含循环语义的
- * 普通点歌（如「放首歌」）返回 1（不循环）——否则会把每首歌都误加成 loop:2。
- * 超出上限按上限收敛，避免极端值拖垮播放。
+ * 从口语里解析显式「循环 N 遍」的遍数；返回 1 表示「未指定遍数，交回设置里的默认循环次数」。
+ *  - 「循环播放3遍」→ 3；超上限按上限收敛，避免极端值拖垮播放。
+ *  - 「再放一遍 / 再来一次」是明确「多播一次」的口语 → 固定 2。
+ *  - 不带遍数的「循环播放 / 单曲循环 / 重复播放」→ 1，由上层落到设置里的「默认循环次数」
+ *    （缺省 3），绝不在这里写死 2 把用户的 3 遍设置盖掉。
+ *  - 普通点歌「放首歌」→ 1（不循环）。
  */
 export function parseLoopCount(text: string, max = 99): number {
   const t = (text || '').trim()
@@ -54,12 +56,9 @@ export function parseLoopCount(text: string, max = 99): number {
     if (Number.isFinite(n) && n >= 1) return Math.min(Math.floor(n), max)
     return 1
   }
-  // 没写数字，但明确是循环语义（循环 / 重复 / 回放 / 再放…遍）→ 默认再播一遍（共 2 遍）；
-  // 「再放一遍 / 一次」语义同样是「再多放一次」，也是 2 遍。
-  const hasLoopWord =
-    /(循环播放|单曲循环|列表循环|重复播放|回放)/.test(t) || /再放.*遍/.test(t)
-  if (!hasLoopWord) return 1
-  return 2
+  // 只有「再放一遍」这种明确「多一次」的口语固定为 2，其余不带遍数的循环词交回设置默认。
+  if (/再(放|来|播).*(一遍|一次)/.test(t)) return 2
+  return 1
 }
 
 /** 返回匹配到的音乐动作；非音乐指令返回 null。 */

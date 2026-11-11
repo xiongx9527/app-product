@@ -22,20 +22,23 @@ export type ServerEvent =
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
   /** 让客户端播放一段音频流（电台/歌曲）：客户端用独立播放器，不与 TTS 冲突。
    *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。
-   *  proxy 标记该直链带防盗链需经网关 /music/stream 代理；频道→代理判定在网关侧，客户端只认此标记。 */
-  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean }
+   *  proxy 标记该直链带防盗链需经网关 /music/stream 代理；频道→代理判定在网关侧，客户端只认此标记。
+   *  cover 为与音频同源的封面图（如歌曲宝详情页），供播放器展示。 */
+  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean; cover?: string }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
   /** 让客户端暂停当前播放 */
   | { type: 'media.pause' }
   /** 让客户端恢复（继续）播放 */
   | { type: 'media.resume' }
-  /** 让客户端展示某首歌/视频的字幕（同源：来自当前播放源）。lines 为带起始时间的逐行字幕，客户端据此跟随播放进度高亮并支持复制。 */
-  | { type: 'media.subtitle'; title: string; artist?: string; lines: SubtitleLine[] }
+  /** 让客户端展示某首歌/视频的字幕（同源：来自当前播放源）。lines 为带起始时间的逐行字幕，客户端据此跟随播放进度高亮并支持复制。close=true 时收起字幕面板（语音「关闭字幕」下发）。 */
+  | { type: 'media.subtitle'; title: string; artist?: string; lines: SubtitleLine[]; close?: boolean }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置时才下发，客户端据此请求定位授权并上报 session.location；不在建连时主动要 */
   | { type: 'client.location.request' }
+  /** 语音「切换播放模式」：在悬浮小圆 / 普通播放条间切换；mode 省略=客户端自行 toggle，float/player=直接指定 */
+  | { type: 'client.playMode'; mode?: 'float' | 'player' }
   /** 让客户端播一条「能力不可用」提示音（网关 /static/cues/<cue>.mp3）；
    *  ASR/TTS/LLM 未就绪时网关没法用语音播报，改发预录提示音让用户听得见。cue 为提示音名。 */
   | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' }

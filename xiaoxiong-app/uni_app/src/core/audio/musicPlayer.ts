@@ -65,6 +65,9 @@ function ensureContext(): UniApp.InnerAudioContext | null {
     // 不进「播完」态。loopRemaining 是「还要重播几次」，首遍已算在内故从 N-1 开始递减。
     if (loopRemaining.value > 0) {
       loopRemaining.value -= 1
+      // 重播从 0 开始：同步把进度读数归零，否则 currentTime 还停在上一遍末尾，
+      // 字幕高亮会卡在最后一行、看起来「循环后字幕没跟着来」。
+      currentTime.value = 0
       try {
         instance.seek(0)
       } catch {

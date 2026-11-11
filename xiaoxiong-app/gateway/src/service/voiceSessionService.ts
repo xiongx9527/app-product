@@ -2,7 +2,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode } from '../protocol'
+import type { ClientMessage, Lang, LocationInfo, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
 import type { GatewayConfig } from '../config'
 import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
@@ -123,10 +123,12 @@ export class VoiceSessionService {
   private locationRequestTimer: ReturnType<typeof setTimeout> | null = null
   /** 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），随会话构建 */
   private musicSource: MusicSource | undefined = undefined
-  /** 最近一次下发的曲目（url/title/channel），供「循环播放」指令复用同一首重播 */
-  private lastTrack: { url: string; title: string; channel?: string; artist?: string } | null = null
+  /** 最近一次下发的曲目（url/title/channel/cover），供「循环播放」指令复用同一首重播 */
+  private lastTrack: { url: string; title: string; channel?: string; cover?: string; artist?: string } | null = null
   /** 自动字幕开关：播放音乐时同源字幕是否自动拉取并展示；来自客户端设置（缺省开启）。 */
   private autoSubtitle = true
+  /** 上一次成功下发的同源字幕，供「循环播放」重播同一首时复用，避免重新拉取失败把字幕覆盖成「暂无字幕」 */
+  private lastSubtitleLines: SubtitleLine[] | null = null
   /** 默认循环播放次数（含当前这一遍）；0/1 表示不循环，缺省 3。每次新播放经 media.play 的 loop 带入。 */
   private defaultLoop = 3
   /** 默认播放音量（0–1），缺省 0.5；每次新播放开始时经 media.volume 下发，供「调大/调小」相对增减。 */
@@ -383,14 +385,15 @@ export class VoiceSessionService {
    */
   /** 下发 media.play 并口播确认。 */
   private async playTrack(
-    track: { url: string; title: string; channel?: string },
+    track: { url: string; title: string; channel?: string; cover?: string },
     confirm: string,
     loop?: number,
-    artist?: string
+    artist?: string,
+    reuseSubtitle = false
   ): Promise<void> {
     // 记下当前曲目，供「循环播放」指令复用（不必重新检索就能把同一首再播 N 遍）；
     // 同时记下歌手，供后续「点一首歌」时按当前歌手优先（避免正在听周杰伦却让我选）。
-    this.lastTrack = { url: track.url, title: track.title, channel: track.channel, artist }
+    this.lastTrack = { url: track.url, title: track.title, channel: track.channel, cover: track.cover, artist }
     // 音量以默认值为起点：每次新播放下发 media.volume，供后续「调大/调小」相对增减。
     this.musicVolume = this.defaultVolume
     this.deps.send({ type: 'media.volume', volume: this.defaultVolume })
@@ -404,9 +407,10 @@ export class VoiceSessionService {
       channel: track.channel,
       proxy: needsProxy(track.channel, track.url),
       ...(effectiveLoop && effectiveLoop > 1 ? { loop: effectiveLoop } : {}),
+      ...(track.cover ? { cover: track.cover } : {}),
     })
     // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示，不弹面板）。
-    void this.emitAutoSubtitle(track.title, artist)
+    void this.emitAutoSubtitle(track.title, artist, reuseSubtitle)
     await this.speakReply(confirm)
   }
 
@@ -414,14 +418,22 @@ export class VoiceSessionService {
    * 自动字幕：开关开启时，用当前音乐源拉取字幕并下发 media.subtitle。
    * 尽力而为——拉取失败/超时不影响播放；取不到时也下发空 lyrics，让客户端显示「暂无字幕」而非什么都不提示。
    */
-  private async emitAutoSubtitle(title: string, artist?: string): Promise<void> {
+  private async emitAutoSubtitle(title: string, artist?: string, reuse = false): Promise<void> {
     if (!this.autoSubtitle) return
+    // 循环播放重播同一首：直接复用上一次成功下发的同源字幕，不再重新拉取。
+    // 否则缓存未命中 / 网络波动时 getSubtitle 返回 null，会把客户端已显示的歌词覆盖成「暂无字幕」。
+    if (reuse && this.lastSubtitleLines) {
+      this.deps.send({ type: 'media.subtitle', title, artist, lines: this.lastSubtitleLines })
+      return
+    }
     const source = this.musicSource
     if (!source?.getSubtitle) return
     try {
       const lines = await source.getSubtitle(artist ?? '', title)
+      this.lastSubtitleLines = lines ?? []
       this.deps.send({ type: 'media.subtitle', title, artist, lines: lines ?? [] })
     } catch {
+      this.lastSubtitleLines = null
       // 字幕失败不影响播放
     }
   }
@@ -593,7 +605,7 @@ export class VoiceSessionService {
           }
           const explicitLoop = parseLoopCount(text)
           const loop = explicitLoop > 1 ? explicitLoop : this.defaultLoop
-          await this.playTrack(this.lastTrack, m.looping(loop), loop > 1 ? loop : undefined)
+          await this.playTrack(this.lastTrack, m.looping(loop), loop > 1 ? loop : undefined, this.lastTrack.artist, true)
           this.musicActive = true
           break
         }

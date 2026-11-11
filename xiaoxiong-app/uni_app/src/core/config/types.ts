@@ -1,3 +1,5 @@
+import type { FloatPositionKey } from '../adaptation/floatLayer'
+
 /**
  * 运行模式：
  * - byok：自带服务，用户自己选语音服务来源（内置 / DashScope）并填地址、Key（当前唯一可用）
@@ -80,4 +82,11 @@ export interface PlaybackConfig {
    * 每次新播放开始时由网关经 media.volume 下发，与「自动循环播放」开关无关。
    */
   defaultVolume: number
+  /**
+   * 是否显示「悬浮小圆播放器」（酷狗式圆形旋转唱片封面 + 当前歌词大字），默认关闭。
+   * 纯客户端 UI 开关，不下发网关；关闭时保持现有播放条与字幕面板。
+   */
+  floatPlayer?: boolean
+  /** 悬浮小圆的显示位置（通用悬浮层位置参数 key），默认顶部居中 */
+  floatPosition?: FloatPositionKey
 }

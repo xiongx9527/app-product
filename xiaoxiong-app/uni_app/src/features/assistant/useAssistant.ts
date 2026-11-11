@@ -95,6 +95,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const gatewayPreparing = ref(false)
   /** 队列已满（排队数超上限）的专用话术，显示在页面顶部横幅，不进「你说」卡片 */
   const queueFullMsg = ref('')
+  /** 当前播放曲目的封面图（与音频同源，网关 media.play.cover 下发），无封面为空串 */
+  const musicCover = ref('')
   /** 字幕面板：网关下发 media.subtitle 后展示（lines 带每行起始时间，用于跟随播放高亮） */
   const subtitle = ref<{ title: string; artist?: string; lines: { time: number; text: string }[] } | null>(null)
   /** 字幕已复制：行内短暂提示（不弹浮层），复制成功后显示 1.5s */
@@ -342,6 +344,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           event.title,
           event.loop != null ? { loop: event.loop } : undefined
         )
+        // 封面与音频同源（歌曲宝详情页），每次新播放覆盖，无封面时清空避免显示上一首
+        musicCover.value = event.cover ?? ''
         break
       }
       case 'media.pause':
@@ -352,11 +356,21 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       case 'media.stop':
         stopMusic()
+        musicCover.value = ''
         break
       case 'media.subtitle':
         // close=true 由语音「关闭字幕」指令下发，直接收起字幕面板；否则按 lines 渲染/更新。
         if (event.close) {
           subtitle.value = null
+          break
+        }
+        // 循环重播同一首时，网关偶发的空字幕不应把已显示的歌词覆盖成「暂无字幕」。
+        // 仅在「同一首歌 + 当前已有非空歌词」时保留；新歌没字幕仍正常显示「暂无字幕」。
+        if (
+          (!event.lines || event.lines.length === 0) &&
+          subtitle.value?.title === event.title &&
+          subtitle.value.lines.length
+        ) {
           break
         }
         subtitle.value = { title: event.title, artist: event.artist, lines: event.lines ?? [] }
@@ -548,6 +562,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     stopPlayback()
     stopMusic()
     subtitle.value = null
+    musicCover.value = ''
     transport.close()
   }
 
@@ -696,18 +711,29 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   /**
    * 当前应高亮的字幕行下标：按播放进度（秒）匹配最后一行 time <= currentTime 的行。
-   * 字幕时间相对音轨开头，而 MusicSource 抽的是同一视频音轨，进度大致对齐；无字幕/未播放时为 -1。
+   * onTimeUpdate 是采样回调（非实时），加上解码/缓冲，进度读数常略滞后于实际听感，
+   * 高亮会「慢半拍」；这里给约 1 秒的提前量抵消滞后，让当前行跟上正在唱的内容。
+   * 字幕与音频同源、时间相对音轨开头；无字幕/未播放时为 -1。
    */
+  const SUBTITLE_LEAD_SEC = 1.0
   const activeSubtitleIndex = computed(() => {
     const lines = subtitle.value?.lines
     if (!lines?.length) return -1
-    const cur = musicState.currentTime.value
+    const cur = musicState.currentTime.value + SUBTITLE_LEAD_SEC
     let idx = -1
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].time <= cur) idx = i
       else break
     }
     return idx
+  })
+
+  /** 当前正在播放的那句歌词（activeSubtitleIndex 对应行），供悬浮小圆等业务单独大字展示 */
+  const currentSubtitleText = computed(() => {
+    const idx = activeSubtitleIndex.value
+    const lines = subtitle.value?.lines
+    if (idx < 0 || !lines || !lines[idx]) return ''
+    return lines[idx].text
   })
 
   onUnmounted(() => {
@@ -764,6 +790,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     musicError: musicState.musicError,
     musicVisible: musicState.visible,
     musicTitle: musicState.title,
+    musicCover,
     musicCurrent: musicState.currentTime,
     musicDuration: musicState.duration,
     musicLive: musicState.live,
@@ -771,6 +798,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     copySubtitle,
     copied,
     activeSubtitleIndex,
+    currentSubtitleText,
     stopMusic,
     pauseMusic,
     resumeMusic,

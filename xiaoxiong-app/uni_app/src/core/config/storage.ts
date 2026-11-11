@@ -1,4 +1,5 @@
 import { DEFAULT_LANGUAGE, DEFAULT_TIMEZONE, normalizeTimezone } from './constants'
+import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
 import type { AppConfig, PlaybackConfig, PlaybackSource, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
 
 export const CONFIG_STORAGE_KEY = 'app-product.config.v1'
@@ -29,6 +30,8 @@ const DEFAULT_PLAYBACK: PlaybackConfig = {
   defaultLoop: 3,
   autoLoop: false,
   defaultVolume: 0.5,
+  floatPlayer: false,
+  floatPosition: 'top-center',
 }
 
 /** 默认播放设置：播放源百度，关闭自动收藏，自动字幕开启，关闭自动循环，默认循环 3 次、默认音量 50% */
@@ -40,6 +43,8 @@ export function createDefaultPlayback(): PlaybackConfig {
     defaultLoop: DEFAULT_PLAYBACK.defaultLoop,
     autoLoop: DEFAULT_PLAYBACK.autoLoop,
     defaultVolume: DEFAULT_PLAYBACK.defaultVolume,
+    floatPlayer: DEFAULT_PLAYBACK.floatPlayer,
+    floatPosition: DEFAULT_PLAYBACK.floatPosition,
   }
 }
 
@@ -118,6 +123,12 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
   // 默认音量：夹紧到 0–1，缺省/非法回退 0.5。
   const rawVol = Number(source.defaultVolume)
   const defaultVolume = Number.isFinite(rawVol) ? Math.min(1, Math.max(0, rawVol)) : 0.5
+  // 悬浮小圆播放器：boolean，缺省关闭（纯客户端 UI 开关，不下发网关）。
+  const floatPlayer = typeof source.floatPlayer === 'boolean' ? source.floatPlayer : false
+  // 悬浮位置：只接受通用悬浮层的预设 key，非法/缺省回退「顶部居中」。
+  const rawPos = typeof source.floatPosition === 'string' ? source.floatPosition : ''
+  const floatPosition: FloatPositionKey =
+    rawPos in FLOAT_POSITION_PRESETS ? (rawPos as FloatPositionKey) : 'top-center'
   return {
     source: valid.includes(src as PlaybackSource) ? (src as PlaybackSource) : 'baidu',
     autoSave,
@@ -125,6 +136,8 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
     defaultLoop,
     autoLoop,
     defaultVolume,
+    floatPlayer,
+    floatPosition,
   }
 }
 

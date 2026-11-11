@@ -88,8 +88,9 @@ export type ServerEvent =
    *  proxy 标记该直链需经网关 /music/stream 代理：要么带防盗链（如 B 站，需 Referer），
    *  要么拒绝非浏览器 UA（如 SomaFM，原生 App 播放器会被 403）。客户端 InnerAudioContext
    *  无法自定义请求头，统一由网关带浏览器 UA/Referer 代拉。频道/直链→代理的判定由网关持有
-   *  （源特有知识），客户端只认此标记，不再写死频道名 / host。 */
-  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean }
+   *  （源特有知识），客户端只认此标记，不再写死频道名 / host。
+   *  cover 为与音频同源的封面图（如歌曲宝详情页 mp3_cover），供客户端播放器展示。 */
+  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean; cover?: string }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
   /** 让客户端暂停当前播放（再响一声「暂停」用 media.resume 恢复） */
@@ -105,6 +106,9 @@ export type ServerEvent =
   /** 服务端需要设备位置（位置/天气类工具被调用但会话尚无位置）时才下发，
    * 客户端据此请求定位授权并上报 session.location；不在建连时主动要位置，避免冷启动弹窗。 */
   | { type: 'client.location.request' }
+  /** 语音「切换播放模式」：让客户端在「悬浮小圆」与「普通播放条」之间切换。
+   *  mode 省略表示客户端自行 toggle 当前模式；指定 float/player 则直接切到对应模式。 */
+  | { type: 'client.playMode'; mode?: 'float' | 'player' }
   /** 让客户端播一条「能力不可用」提示音（网关侧 /static/cues/<cue>.mp3）：
    *  ASR/TTS/LLM 未就绪时，网关在本帧前无法用语音播报，改用预录提示音告知用户。
    *  只需传提示音名，客户端按名拉取播放，不下发具体文案（提示音已含人声）。 */

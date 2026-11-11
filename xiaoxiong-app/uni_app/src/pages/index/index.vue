@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { readScreenInfo, type ScreenInfo } from '@/core/adaptation/screen'
+import { FLOAT_POSITION_PRESETS } from '@/core/adaptation/floatLayer'
+import { appConfig } from '@/core/config'
+import FloatLayer from '@/components/FloatLayer.vue'
 import { useAssistant } from '@/features/assistant/useAssistant'
 import { toDisplayText } from '@/core/text/displayText'
 import { toReplyHtml } from '@/core/text/replyHtml'
@@ -55,6 +58,7 @@ const {
   musicError,
   musicVisible,
   musicTitle,
+  musicCover,
   musicCurrent,
   musicDuration,
   musicLive,
@@ -62,6 +66,7 @@ const {
   copySubtitle,
   copied,
   activeSubtitleIndex,
+  currentSubtitleText,
   stopMusic,
   pauseMusic,
   resumeMusic,
@@ -71,6 +76,31 @@ const {
   seekMusic,
   closeSubtitle,
 } = useAssistant()
+
+/** 悬浮小圆是否显示：设置开关打开 + 音乐条可见 + 有同源封面 */
+const floatDiscVisible = computed(
+  () => appConfig.playback.floatPlayer === true && musicVisible.value && !!musicCover.value,
+)
+
+/** 位置从设置读取（通用 FloatPosition 参数），非法值回退顶部居中 */
+const floatDiscPosition = computed(
+  () =>
+    FLOAT_POSITION_PRESETS[appConfig.playback.floatPosition ?? 'top-center'] ??
+    FLOAT_POSITION_PRESETS['top-center'],
+)
+
+/** 估算歌词占宽当量（中文/全角按 1 字，英数按 0.55 字） */
+function lyricCharWidth(s: string): number {
+  let n = 0
+  for (const ch of s) n += /[\x00-\xff]/.test(ch) ? 0.55 : 1
+  return n
+}
+
+/** 单行显示整句：按句长在 18~13px 间微缩字号塞进固定宽度；不换行、不滚动，也不撑宽容器 */
+const lyricFontSize = computed(() => {
+  const w = Math.max(1, lyricCharWidth(currentSubtitleText.value))
+  return Math.round(Math.max(13, Math.min(18, 280 / w)))
+})
 
 // 网关能力健康度：连上 WS 后轮询 /api/health，把 LLM / ASR / TTS / 外网状态展示出来，
 // 静默失效（如 ASR 仍是占位桩）能直接被看到，而不是「唤醒没反应」却毫无提示。
@@ -145,6 +175,14 @@ const musicProgress = computed(() => ({
 }))
 const musicSeekable = computed(() => isSeekable(musicProgress.value))
 const musicPercent = computed(() => progressPercent(musicProgress.value, seekPreview.value))
+
+/** 悬浮小圆外层环形进度：conic-gradient 按播放百分比画一圈（直播/未知时长固定 0） */
+const discProgressStyle = computed(() => {
+  const pct = Math.min(100, Math.max(0, musicPercent.value))
+  return {
+    background: `conic-gradient(#6c8cff 0%, #6c8cff ${pct}%, rgba(255,255,255,0.16) ${pct}%, rgba(255,255,255,0.16) 100%)`,
+  }
+})
 const musicElapsed = computed(() => elapsedLabel(musicProgress.value, seekPreview.value))
 const musicTotal = computed(() => totalLabel(musicProgress.value))
 
@@ -463,8 +501,11 @@ function onConnTap(): void {
       </view>
     </view>
 
-    <view v-if="musicVisible" class="music-bar">
+    <!-- 播放条与悬浮小圆互斥：悬浮显示时隐藏播放条，避免两个播放器同时出现 -->
+    <view v-if="musicVisible && !floatDiscVisible" class="music-bar">
       <view class="music-row">
+        <!-- 封面与音频同源（歌曲宝详情页），有则展示、无则不留占位 -->
+        <image v-if="musicCover" class="music-cover" :src="musicCover" mode="aspectFill" />
         <view class="music-info">
           <text class="music-label" :class="{ paused: musicPaused, ended: musicEnded }">{{ musicEnded ? t('music.ended') : musicPaused ? t('music.pausedLabel') : t('music.nowPlaying') }}</text>
           <text class="music-title">{{ musicTitle }}</text>
@@ -536,18 +577,24 @@ function onConnTap(): void {
       </view>
     </view>
 
-    <view v-if="subtitle" class="subtitle">
+    <!-- 字幕面板与悬浮互斥：悬浮小圆已用大字显示当前歌词，不再叠一份完整字幕列表 -->
+    <view v-if="subtitle && !floatDiscVisible" class="subtitle">
       <view class="subtitle-head">
         <text class="subtitle-title">{{ t('music.subtitle') }} · {{ subtitle.title }}</text>
         <view class="subtitle-actions">
-          <text v-if="subtitle.lines.length" class="subtitle-copy" @tap="copySubtitle">
-            {{ copied ? t('music.copied') : t('music.copySubtitle') }}
-          </text>
-          <text class="subtitle-close" @tap="closeSubtitle">{{ t('music.close') }}</text>
+          <!-- 复制 / 关闭都用图标；复制成功短暂切成对勾（行内反馈，不弹 toast/浮层） -->
+          <view v-if="subtitle.lines.length" class="subtitle-icon-btn" :aria-label="copied ? t('music.copied') : t('music.copySubtitle')" @tap="copySubtitle">
+            <image class="subtitle-icon" :src="copied ? '/static/icons/check.svg' : '/static/icons/copy.svg'" mode="aspectFit" />
+          </view>
+          <view class="subtitle-icon-btn" :aria-label="t('music.close')" @tap="closeSubtitle">
+            <image class="subtitle-icon" src="/static/icons/close.svg" mode="aspectFit" />
+          </view>
         </view>
       </view>
       <text v-if="subtitle.artist" class="subtitle-artist">{{ subtitle.artist }}</text>
-      <scroll-view v-if="subtitle.lines.length" scroll-y class="subtitle-body" :scroll-into-view="activeSubtitleIndex >= 0 ? 'sub-' + activeSubtitleIndex : ''" scroll-with-animation>
+      <!-- 滚到当前行「前 2 行」而非当前行：scroll-into-view 会把目标贴在可视区顶部，
+           直接滚当前行 Big 字高亮行会被上沿裁住；往前留两行让高亮行落在中部、上下都有上下文。 -->
+      <scroll-view v-if="subtitle.lines.length" scroll-y class="subtitle-body" :scroll-into-view="activeSubtitleIndex >= 2 ? 'sub-' + (activeSubtitleIndex - 2) : 'sub-0'" scroll-with-animation>
         <view
           v-for="(line, i) in subtitle.lines"
           :key="i"
@@ -556,8 +603,30 @@ function onConnTap(): void {
           :class="{ 'subtitle-line--active': i === activeSubtitleIndex }"
         >{{ line.text }}</view>
       </scroll-view>
-      <text v-else class="subtitle-body">{{ t('music.noSubtitle') }}</text>
+      <text v-else class="subtitle-empty">{{ t('music.noSubtitle') }}</text>
     </view>
+
+    <!-- 悬浮小圆：通用悬浮层的一个业务（音乐播放器），内容与容器解耦。
+         z-index / 角落由 FloatLayer 统一管；圆形封面播放时旋转、暂停停，下方大字是当前正在唱的那句。 -->
+    <!-- 位置由 playback.floatPosition 配置作为统一参数传入，通用层只认参数；点击小圆切暂停/继续 -->
+    <FloatLayer id="music-disc" :visible="floatDiscVisible" :position="floatDiscPosition">
+      <!-- 固定宽度内容层：歌词再长也不撑宽容器，FloatLayer 的 translateX(-50%) 基准恒定，
+           位置不会左右移动；小圆与歌词都在此层内居中，整体严格顶部居中 -->
+      <view class="float-disc-body">
+        <view class="disc" :class="{ 'disc--paused': musicPaused || musicEnded }" @tap="onTogglePause">
+          <view class="disc__glow" />
+          <view class="disc__progress" :style="discProgressStyle" />
+          <image class="disc__cover" :src="musicCover" mode="aspectFill" />
+          <view class="disc__hole" />
+        </view>
+        <!-- 单行显示整句：不换行、不省略、不滚动；超长按句长微缩字号塞进固定宽度 -->
+        <text
+          v-if="currentSubtitleText"
+          class="disc-lyric"
+          :style="{ fontSize: lyricFontSize + 'px' }"
+        >{{ currentSubtitleText }}</text>
+      </view>
+    </FloatLayer>
 
     <view class="controls">
       <view class="switch-row">
@@ -1291,11 +1360,21 @@ function onConnTap(): void {
   color: #8ee0bd;
 }
 
+.music-cover {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(108, 140, 255, 0.22);
+}
+
 .music-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
 .music-label {
@@ -1343,18 +1422,27 @@ function onConnTap(): void {
 .subtitle-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 2px;
   flex-shrink: 0;
 }
 
-.subtitle-close {
-  font-size: 12px;
-  color: #8b91ab;
+.subtitle-icon-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  flex-shrink: 0;
 }
 
-.subtitle-copy {
-  font-size: 12px;
-  color: #6c8cff;
+.subtitle-icon-btn:active {
+  background: rgba(108, 140, 255, 0.18);
+}
+
+.subtitle-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .subtitle-artist {
@@ -1364,7 +1452,95 @@ function onConnTap(): void {
 
 .subtitle-body {
   max-height: 240px;
-  padding: 2px 0;
+  /* 只留少量对称内边距；高亮行靠「滚到前 2 行」居中，不需要底部大留白（会空一大片） */
+  padding: 6px 0;
+}
+
+.subtitle-empty {
+  font-size: 13px;
+  color: #8b91ab;
+}
+
+/* 悬浮小圆（酷狗式旋转唱片）：内容是音乐业务，层级/位置由通用 FloatLayer 容器负责 */
+.disc {
+  position: relative;
+  width: 100px;
+  height: 100px;
+}
+
+.disc__glow {
+  position: absolute;
+  top: -12px;
+  right: -12px;
+  bottom: -12px;
+  left: -12px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(108, 140, 255, 0.38), rgba(108, 140, 255, 0) 70%);
+}
+
+/* 外层环形进度：封面盖住中心，只露出这一圈；background 由 :style 按播放进度注入 conic-gradient */
+.disc__progress {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 50%;
+}
+
+.disc__cover {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  box-sizing: border-box;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  animation: disc-spin 14s linear infinite;
+}
+
+.disc--paused .disc__cover {
+  animation-play-state: paused;
+}
+
+.disc__hole {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border-radius: 50%;
+  background: #14162a;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+}
+
+@keyframes disc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 固定宽度内容层：FloatLayer 宽度恒定 → 居中稳定，不随歌词长度左右移动 */
+.float-disc-body {
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 当前正在唱的那句：单行显示整句，不换行/不省略/不滚动；字号按句长微缩（由 :style 注入） */
+.disc-lyric {
+  width: 280px;
+  margin-top: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: #ffffff;
+  text-align: center;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+  white-space: nowrap;
+  overflow: visible;
 }
 
 .subtitle-line {
@@ -1378,10 +1554,15 @@ function onConnTap(): void {
   transition: color 0.18s ease, background 0.18s ease;
 }
 
+/* 当前高亮行明显大于普通行（13px→17px），配合加粗/底色/左侧亮条，一眼区分正在唱的那句 */
 .subtitle-line--active {
   color: #ffffff;
-  background: rgba(108, 140, 255, 0.18);
-  font-weight: 600;
+  background: rgba(108, 140, 255, 0.22);
+  font-weight: 700;
+  font-size: 17px;
+  line-height: 1.6;
+  padding: 6px 10px;
+  box-shadow: inset 3px 0 0 #6c8cff;
 }
 
 /* 平板与折叠屏展开态：内容限宽，布局更舒展 */

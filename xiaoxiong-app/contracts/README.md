@@ -94,9 +94,9 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 - API Key 只存在客户端本地并经 WSS 文本帧传输，网关不落库；客户端不得直连 DashScope。
 - 本地 AI 服务的语音接口前缀为 `/voice`（LLM 为 `/llm/v1`）；网关 `ASR_BASE_URL` / `TTS_BASE_URL` 须带上 `/voice`。旧拼写 `/voide` 已废弃，不保留别名。
 
-音乐播放为网关内置能力，但**播放源可由客户端配置**：`session.start.playback.source` 指定当前播放源（取值 `baidu` / `netease` / `tencent` / `kugou`，缺省/未知值回退到 `baidu`；其中仅 `baidu` 已实现，`netease`/`tencent`/`kugou` 当前为占位空实现，选择后调用会报未实现）。网关始终注册音乐工具（`play_music` / `stop_music` / `pause_music` / `resume_music` / `next_music`），按请求类型自动分流——
+音乐播放为网关内置能力：当前仅 `baidu` 一种播放源（`session.start.playback.source` 缺省/未知值一律回退到 `baidu`）。网关始终注册音乐工具（`play_music` / `stop_music` / `pause_music` / `resume_music` / `next_music`），按请求类型自动分流——
 - 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台（直接 mp3 流，无需 Key）；
-- 具体歌名/歌手请求 → B 站原生搜索 API 兜底（WBI 签名），命中视频后抽取音轨返回可播放直链（视频也能播放）。
+- 具体歌名/歌手请求 → 先试歌曲宝详情页拿**同源**音频直链（同时带封面与 LRC 字幕），拿不到再走 B 站原生搜索 API（WBI 签名）抽取音轨（视频也能播放）。
 
 两边都搜不到时，工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。B 站直链带防盗链，由网关 `/music/stream` 代理转发给客户端。
 
@@ -116,6 +116,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "audio.duplex", "mode": "half" }
 { "type": "media.play", "url": "https://ice6.somafm.com/groovesalad-128-mp3", "title": "Groove Salad（轻电子/氛围）", "channel": "groovesalad" }
 { "type": "media.play", "url": "https://.../track.m4s", "title": "稻香", "channel": "bilibili", "loop": 3 }
+{ "type": "media.play", "url": "https://.../kuwo.mp3", "title": "一路向北", "channel": "gequbao", "cover": "https://img.../albumcover.jpg" }
 { "type": "media.stop" }
 { "type": "media.subtitle", "title": "七里香", "artist": "周杰伦", "lines": [{ "time": 1, "text": "窗外的麻雀" }, { "time": 9, "text": "在电线杆上多嘴" }] }
 { "type": "media.subtitle", "close": true }
@@ -124,11 +125,13 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "error", "code": "ASR_TIMEOUT", "message": "识别超时" }
 ```
 
-`media.play` 让客户端用**独立播放器**播放一段音频流（电台/歌曲），与 TTS 的音频播放互不冲突；`media.stop` 停止当前播放。客户端在 TTS 播报期间应压低（duck）音乐音量，播完恢复。`media.subtitle` 携带逐行字幕（同源：来自当前播放源，音乐视频的字幕即歌词），每行含起始时间 `time`（秒，相对音轨开头），供客户端在页面展示并跟随播放进度高亮；字幕只展示、不朗读。音乐只在用户要求时播放，不做预约/定时播放。`media.subtitle` 可带布尔字段 `close: true`（语音「关闭字幕」指令下发），客户端收到后直接收起字幕面板，忽略 `title`/`lines`。
+`media.play` 让客户端用**独立播放器**播放一段音频流（电台/歌曲），与 TTS 的音频播放互不冲突；`media.stop` 停止当前播放。客户端在 TTS 播报期间应压低（duck）音乐音量，播完恢复。`media.subtitle` 携带逐行字幕，**必须与当前播放音频同源同曲**：歌曲宝音频配同一详情页的 LRC、B 站音轨配该视频字幕，绝不跨源去配第三方歌词库（否则歌词与音频对不上）。取不到同源字幕时 `lines` 为空数组，客户端显示「暂无字幕」。每行含起始时间 `time`（秒，相对音轨开头），供客户端在页面展示并跟随播放进度高亮；字幕只展示、不朗读。音乐只在用户要求时播放，不做预约/定时播放。`media.subtitle` 可带布尔字段 `close: true`（语音「关闭字幕」指令下发），客户端收到后直接收起字幕面板，忽略 `title`/`lines`。
 
 `media.play` 可带可选字段 `loop`（正整数，缺省/1 表示不循环）：客户端播完最后一遍后自动重播同一首直到达到总遍数；播完最后一遍进入「已播放完毕」态（暂停按钮变为「继续播放」按钮）。`loop>1` 时客户端在自己内部循环，不回服务端重新检索。`loop` 的默认值（来自 `session.start.playback.defaultLoop` / `session.playback.defaultLoop`，缺省 3）由网关在每次新播放的 `media.play` 里带入；语音「循环 N 遍」显式指定时优先于默认值。
 
 `media.play` 下发前，网关先下发一条 `media.volume`（取值来自 `session.start.playback.defaultVolume` / `session.playback.defaultVolume`，缺省 0.5，收敛到 [0,1]），客户端据此把本次播放音量设到默认值；后续语音「音量 30% / 调大 / 调小」在该值上相对增减。这样「默认音量」在网关侧真正生效，而非仅存于客户端设置。
+
+`media.play` 可带可选字段 `cover`（字符串）：与音频**同源**的封面图地址（如歌曲宝详情页 `mp3_cover`），客户端播放器有则展示、无则不占位；每次新播放覆盖，停止播放时清空。
 
 `media.play` 可带可选字段 `proxy`（布尔）：为 `true` 表示该直链带防盗链、需经服务端 `/music/stream` 代理转发（客户端 `InnerAudioContext` 无法自定义 Referer）。**频道→是否代理的判定在服务端完成**（属于「百度」播放源的源特有知识），服务端在 `media.play` 里直接给 `proxy` 标记，客户端只认此标记、按 `httpBase` 拼 `/music/stream.m4a?url=<encoded>` 即可，**客户端不再写死任何频道名**（如 `bilibili` / `haokan`）。
 

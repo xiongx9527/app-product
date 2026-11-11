@@ -400,6 +400,65 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(h.events.some((e) => e.type === 'media.subtitle')).toBe(false)
   })
 
+  it('循环播放（复用当前曲）也重新下发同源字幕，不会「循环后字幕没出来」', async () => {
+    const subtitleLines = [{ time: 1, text: '第一句' }, { time: 5, text: '第二句' }]
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '循环播放'],
+      musicSourceFactory: () => ({
+        resolve: async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }),
+        getSubtitle: async () => subtitleLines,
+      }),
+    })
+    h.service.handleText(
+      JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN', playback: { source: 'baidu', autoSubtitle: true } }),
+    )
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const subs = h.events.filter((e) => e.type === 'media.subtitle') as Array<{
+      lines: Array<{ time: number; text: string }>
+    }>
+    expect(subs.length).toBeGreaterThanOrEqual(2) // 点歌一次 + 循环一次
+    expect(subs[subs.length - 1].lines).toEqual(subtitleLines)
+  })
+
+  it('循环播放复用缓存字幕：重新拉取返回 null 也不把字幕覆盖成「暂无字幕」', async () => {
+    const subtitleLines = [{ time: 1, text: '第一句' }]
+    let calls = 0
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '循环播放'],
+      musicSourceFactory: () => ({
+        resolve: async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }),
+        getSubtitle: async () => {
+          calls++
+          return calls === 1 ? subtitleLines : null // 第二次（若重新拉）模拟拉取失败
+        },
+      }),
+    })
+    h.service.handleText(
+      JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN', playback: { source: 'baidu', autoSubtitle: true } }),
+    )
+    await sleep(5)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const subs = h.events.filter((e) => e.type === 'media.subtitle') as Array<{
+      lines: Array<{ time: number; text: string }>
+    }>
+    expect(subs.length).toBeGreaterThanOrEqual(2)
+    expect(subs[subs.length - 1].lines).toEqual(subtitleLines) // 循环仍是原字幕，不是空
+    expect(calls).toBe(1) // 循环时不重新调 getSubtitle，直接复用缓存
+  })
+
   it('默认循环/默认音量：网关侧生效，每次新播放带入 loop 与 media.volume', async () => {
     const h = createHarness({
       finalizeText: '播放周杰伦的稻香',
@@ -709,7 +768,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(texts(h)).toContain('循环播放')
   })
 
-  it('循环播放（不带遍数）：默认再播一遍，下发 loop:2', async () => {
+  it('循环播放（不带遍数）：按设置里的默认循环次数 3 下发 loop:3，不再写死 2', async () => {
     const h = createHarness({
       finalizeTexts: ['播放周杰伦的稻香', '循环播放'],
       musicSourceFactory: () =>
@@ -725,7 +784,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
 
     const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ loop?: number }>
     expect(plays).toHaveLength(2)
-    expect(plays[1].loop).toBe(2) // 没写遍数 → 默认再播一遍（共 2 遍）
+    expect(plays[1].loop).toBe(3) // 没写遍数 → 落到设置里的默认循环次数（defaultLoop 缺省 3）
   })
 
   it('循环播放但当前没在播：口播提示，不下发 media.play', async () => {
@@ -1610,12 +1669,6 @@ describe('播放源实时切换（session.playback）', () => {
     resolve: async () => ({ url: `https://x/${kind}`, title: `歌-${kind}`, channel: kind }),
   })
 
-  function spokenText(h: Harness): string {
-    return h.events
-      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
-      .map((e) => e.text)
-      .join('')
-  }
   function lastPlayTitle(h: Harness, after: number): string | undefined {
     const plays = h.events.slice(after).filter((e) => e.type === 'media.play') as Array<{
       type: 'media.play'
@@ -1641,34 +1694,16 @@ describe('播放源实时切换（session.playback）', () => {
     h.playbackDone()
     await sleep(10)
 
-    // 模拟设置页 onSave：切到 netease 并下发 session.playback
-    kind = 'netease'
-    h.service.handleText(JSON.stringify({ type: 'session.playback', source: 'netease' }))
+    // 模拟设置页 onSave：切到另一个源并下发 session.playback（工厂按可变 kind 返回不同源）
+    kind = 'custom'
+    h.service.handleText(JSON.stringify({ type: 'session.playback', source: 'custom' }))
     await sleep(5)
 
     const before = h.events.length
     await speakUtterance(h)
     await sleep(30)
-    expect(lastPlayTitle(h, before)).toBe('歌-netease')
+    expect(lastPlayTitle(h, before)).toBe('歌-custom')
     // 全程没进 LLM（直连点歌）
     expect(h.agentCalls()).toBe(0)
-  })
-
-  it('未注入工厂时按 msg.source 重新建源：切到未实现的源给出「尚未实现」口播', async () => {
-    // 不传 musicSourceFactory → 网关走 createMusicSource({ source: msg.source })
-    const h = createHarness({ finalizeText: '播放周杰伦的稻香' })
-    await startDialog(h.service)
-
-    // 先切到尚未实现的 netease（stub 不会触网），再点歌，避免默认 baidu 走真实检索
-    h.service.handleText(JSON.stringify({ type: 'session.playback', source: 'netease' }))
-    await sleep(5)
-
-    const before = h.events.length
-    await speakUtterance(h)
-    await sleep(30)
-    // netease 是空实现：不应下发媒体，而口播「尚未实现」
-    expect(h.events.slice(before).some((e) => e.type === 'media.play')).toBe(false)
-    expect(spokenText(h)).toContain('网易云音乐')
-    expect(spokenText(h)).toContain('尚未实现')
   })
 })

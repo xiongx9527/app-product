@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import type { FloatPositionKey } from '@/core/adaptation/floatLayer'
 import {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
@@ -9,7 +10,6 @@ import {
   resetVoice,
   setVoiceProvider,
 } from '@/core/config'
-import type { PlaybackSource } from '@/core/config'
 import { DEFAULT_DASHSCOPE_URL } from '@/core/config/constants'
 import { t } from '@/core/i18n'
 import { secureRequest } from '@/core/transport/secureRequest'
@@ -23,13 +23,16 @@ const timezoneOptions = computed(() =>
   TIMEZONE_OPTIONS.map((o) => ({ value: o.value, label: t(o.i18nKey) })),
 )
 
-/** 播放源下拉：当前仅百度，后续可扩展；文案按当前语言本地化。 */
-const playbackSources = computed(() => [
-  { value: 'baidu' as PlaybackSource, label: t('settings.playback.baidu') },
-  { value: 'netease' as PlaybackSource, label: t('settings.playback.netease') },
-  { value: 'tencent' as PlaybackSource, label: t('settings.playback.tencent') },
-  { value: 'kugou' as PlaybackSource, label: t('settings.playback.kugou') },
-])
+/** 悬浮位置选项：key 来自通用悬浮层预设，展示文案按语言本地化 */
+const FLOAT_POSITION_KEYS: FloatPositionKey[] = [
+  'top-center', 'top-left', 'top-right', 'bottom-center', 'bottom-left', 'bottom-right',
+]
+const floatPositionOptions = computed(() =>
+  FLOAT_POSITION_KEYS.map((k) => ({ value: k, label: t(`settings.playback.floatPosition.${k}`) })),
+)
+function setFloatPosition(value: string): void {
+  appConfig.playback.floatPosition = value as FloatPositionKey
+}
 
 const saving = ref(false)
 
@@ -302,6 +305,10 @@ onMounted(() => {
   void loadMemories()
   void loadLlmModels()
   void loadTtsVoices()
+  // 播放源目前仅百度一种（隐藏选择器），旧配置若存过其它源（netease/tencent/kugou）静默回退到百度。
+  if (appConfig.playback.source !== 'baidu') {
+    appConfig.playback.source = 'baidu'
+  }
 })
 
 // 语言切换时：导航栏标题与（服务端本地化的）音色标签都要跟着变。
@@ -475,20 +482,7 @@ watch(
         </view>
       </view>
       <template v-if="!playbackCollapsed">
-        <text class="row-label">{{ t('settings.playback.source') }}</text>
-        <view class="providers">
-          <view
-            v-for="opt in playbackSources"
-            :key="opt.value"
-            class="provider"
-            :class="{ active: appConfig.playback.source === opt.value }"
-            @tap="appConfig.playback.source = opt.value as PlaybackSource"
-          >
-            <view class="radio"><view v-if="appConfig.playback.source === opt.value" class="radio-dot" /></view>
-            <text class="provider-name">{{ opt.label }}</text>
-          </view>
-        </view>
-        <text class="hint">{{ t('settings.playback.sourceHint') }}</text>
+        <!-- 播放源目前仅百度一种，隐藏选择器，无需用户选择；其余设置与播放源无关，全局生效 -->
 
         <!-- 播放完自动收藏：与播放源无关，全局一个开关 -->
         <view class="setting-row">
@@ -515,6 +509,28 @@ watch(
             @change="(e: any) => (appConfig.playback.autoSubtitle = e.detail.value)"
           />
         </view>
+
+        <!-- 悬浮小圆播放器：纯客户端 UI 开关（通用悬浮层的一个业务），不下发网关 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.playback.floatPlayer') }}</text>
+            <text class="hint">{{ t('settings.playback.floatPlayerHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.playback.floatPlayer"
+            color="#6c8cff"
+            @change="(e: any) => (appConfig.playback.floatPlayer = e.detail.value)"
+          />
+        </view>
+
+        <!-- 悬浮位置：通用悬浮层的位置参数，业务只传 key -->
+        <SelectRow
+          :title="t('settings.playback.floatPosition')"
+          :hint="t('settings.playback.floatPositionHint')"
+          :options="floatPositionOptions"
+          :model-value="appConfig.playback.floatPosition ?? 'top-center'"
+          @update:model-value="setFloatPosition"
+        />
 
         <!-- 自动循环播放：全局开关；开启后每次新播放默认按默认循环次数循环 -->
         <view class="setting-row">
@@ -665,6 +681,8 @@ watch(
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1;
+  min-width: 0;
   cursor: pointer;
 }
 

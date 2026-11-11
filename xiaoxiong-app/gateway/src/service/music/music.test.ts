@@ -598,28 +598,10 @@ describe('音乐聚合源（无配置）', () => {
     expect(createMusicSource({ source: 'baidu' })).toBeTruthy()
   })
 
-  it('指定 netease 源返回占位实现，调用抛 MusicSourceNotImplementedError', async () => {
-    const source = createMusicSource({ source: 'netease' })
-    expect(source).toBeTruthy()
-    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow('netease')
-    await expect(source.next!('周杰伦 稻香')).rejects.toThrow('netease')
-  })
-
-  it('指定 tencent 源返回占位实现，调用抛 MusicSourceNotImplementedError', async () => {
-    const source = createMusicSource({ source: 'tencent' })
-    expect(source).toBeTruthy()
-    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow('tencent')
-    await expect(source.next!('周杰伦 稻香')).rejects.toThrow('tencent')
-  })
-
-  it('指定 kugou 源返回占位实现，调用抛 MusicSourceNotImplementedError', async () => {
-    const source = createMusicSource({ source: 'kugou' })
-    expect(source).toBeTruthy()
-    await expect(source.resolve('周杰伦 稻香')).rejects.toThrow('kugou')
-    await expect(source.next!('周杰伦 稻香')).rejects.toThrow('kugou')
-  })
-
-  it('非法/未知播放源回退到百度，不抛错', () => {
+  it('非法/未知播放源（含已移除的 netease/tencent/kugou）一律回退百度，不抛错', () => {
+    for (const kind of ['spotify', 'netease', 'tencent', 'kugou']) {
+      expect(createMusicSource({ source: kind })).toBeTruthy()
+    }
     const source = createMusicSource({ source: 'spotify' })
     expect(source).toBeTruthy()
     // 风格请求仍能正常走 SomaFM 分支（源可用）

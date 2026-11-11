@@ -84,6 +84,7 @@ export function createMusicTool(
           channel: track.channel,
           proxy: needsProxy(track.channel, track.url),
           ...(loop && loop > 1 ? { loop } : {}),
+          ...(track.cover ? { cover: track.cover } : {}),
         })
         // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示）。
         void emitAutoSubtitles(getSource, emit, track.title, undefined, autoSubtitle)
@@ -202,6 +203,7 @@ export function createNextMusicTool(
           channel: track.channel,
           proxy: needsProxy(track.channel, track.url),
           ...(autoLoop && defaultLoop > 1 ? { loop: defaultLoop } : {}),
+          ...(track.cover ? { cover: track.cover } : {}),
         })
         // 自动字幕：开关开启时，换歌后尽力同源拉取字幕并下发（无字幕则不显示）。
         void emitAutoSubtitles(getSource, emit, track.title, undefined, autoSubtitle)
