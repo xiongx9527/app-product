@@ -109,3 +109,25 @@ describe('buildHealth：ASR/TTS 功能性探测，根路径不再决定判定', 
     expect(h.llm.reachable).toBe(false)
   })
 })
+
+describe('buildHealth：deep 模式 LLM 未选模型不得假绿', () => {
+  const dashscopeVoice = (model: string) =>
+    ({ provider: 'dashscope', url: 'https://llm-x.maas.aliyuncs.com', apiKey: 'k', model }) as unknown as import('../voiceConfig').VoiceConfig
+
+  it('未选模型：即使主机可达，也不得报 reachable=true（避免假绿）', async () => {
+    stubFetch(() => ({ status: 200 })) // 主机通，但没模型
+    const h = await buildHealth(CONFIG, dashscopeVoice(''), true)
+    expect(h.llm.reachable).toBe(false)
+    expect(h.llm.message).toContain('未选择模型')
+  })
+
+  it('选了模型：真正调用 /chat/completions，连通 200 ⇒ reachable=true', async () => {
+    stubFetch((url) => {
+      if (url.includes('/chat/completions')) return { status: 200, body: '{}' }
+      return { status: 200 }
+    })
+    const h = await buildHealth(CONFIG, dashscopeVoice('qwen-plus'), true)
+    expect(h.llm.reachable).toBe(true)
+    expect(h.llm.message).toContain('已接入')
+  })
+})

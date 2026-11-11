@@ -1,5 +1,6 @@
 import { onUnmounted, ref, watch, type Ref } from 'vue'
 import { resolveGatewayHttpBase } from '@/core/transport'
+import { activeVoiceConfig } from '@/core/config'
 
 /** 单个能力（ASR / LLM / TTS）的就绪状态，与网关 /api/health 返回对齐 */
 interface ProviderStatus {
@@ -37,20 +38,20 @@ const HEALTH_PATH = '/api/health'
 const POLL_MS = 30000
 
 /** 跨端发 GET 并解析 JSON：App 走 uni.request，H5 / 测试环境回退 fetch */
-function httpGetJson(url: string): Promise<unknown> {
+function httpGetJson(url: string, headers: Record<string, string> = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (typeof uni !== 'undefined' && typeof uni.request === 'function') {
       uni.request({
         url,
         method: 'GET',
-        header: { accept: 'application/json' },
+        header: { accept: 'application/json', ...headers },
         success: (res) => resolve(res.data),
         fail: (err) => reject(err),
       })
       return
     }
     if (typeof fetch !== 'undefined') {
-      fetch(url, { cache: 'no-store' })
+      fetch(url, { cache: 'no-store', headers })
         .then((r) => r.json())
         .then(resolve)
         .catch(reject)
@@ -79,7 +80,12 @@ export function useHealth(wsConnected: Ref<boolean>) {
   async function fetchHealth(): Promise<void> {
     try {
       const base = resolveGatewayHttpBase()
-      const data = (await httpGetJson(`${base}${HEALTH_PATH}`)) as {
+      // 把当前选中的语音来源配置带给网关，使其按所选来源（如 DashScope）探测能力，
+      // 而非永远探测网关默认的内置；密钥只在本机 localhost 回传网关、响应不含密钥。
+      const voice = activeVoiceConfig()
+      const data = (await httpGetJson(`${base}${HEALTH_PATH}`, {
+        'x-voice-config': JSON.stringify(voice),
+      })) as {
         providers?: HealthReport
       }
       if (!data?.providers) {
@@ -117,6 +123,29 @@ export function useHealth(wsConnected: Ref<boolean>) {
   onUnmounted(stopTimer)
 
   return { health, healthError, refreshHealth: fetchHealth }
+}
+
+/**
+ * 手动触发一次能力检测：按指定语音来源配置探测 LLM / ASR / TTS / 外网是否正常。
+ * 与定时轮询共用同一套响应解析，只是这里由设置页「一键检测」按钮主动触发，
+ * 不依赖 WS 是否连上。返回 HealthReport；网关不可达或响应异常时返回 null。
+ * @param voice 客户端当前选中的语音来源配置（含 url / apiKey / model / voice），不传则回退网关默认
+ * @param deep 是否做深度探测：true 时 LLM 会真正发一次最小对话补全，
+ *   能暴露「连通但不可用」的故障（欠费 / 模型名不存在 / 密钥无权限），而非误报正常
+ */
+export async function fetchHealthReport(voice: unknown, deep = false): Promise<HealthReport | null> {
+  try {
+    const base = resolveGatewayHttpBase()
+    // 把当前选中的语音来源配置带给网关，使其按所选来源（如 DashScope）探测能力，
+    // 而非永远探测网关默认的内置；密钥只在本机 localhost 回传网关、响应不含密钥。
+    const data = (await httpGetJson(`${base}${HEALTH_PATH}?${deep ? 'deep=1' : ''}`, {
+      'x-voice-config': JSON.stringify(voice),
+    })) as { providers?: HealthReport }
+    if (!data?.providers) return null
+    return data.providers
+  } catch {
+    return null
+  }
 }
 
 /** 把 /api/health 的 providers 收敛成界面要展示的状态项（纯函数，便于复用） */

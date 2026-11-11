@@ -92,4 +92,42 @@ describe('apiController：/api/admin/llm-models（前端只传 provider，网关
     const res = await api({ method: 'GET', pathname: '/api/admin/llm-models', query, body: null })
     expect(res.status).toBe(502)
   })
+
+  it('百炼：前端带 url 时按该地址拉模型，而非网关默认云端地址', async () => {
+    const { api } = makeApi()
+    let seenUrl = ''
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.includes('/compatible-mode/v1/models')) {
+        seenUrl = u
+        return new Response(JSON.stringify({ data: [{ id: 'maas-model' }] }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const query = new URLSearchParams('provider=dashscope&apiKey=k&url=https://llm-x.maas.aliyuncs.com')
+    const res = await api({ method: 'GET', pathname: '/api/admin/llm-models', query, body: null })
+    expect(res.status).toBe(200)
+    expect(asBody(res.body).models).toEqual(['maas-model'])
+    expect(seenUrl).toContain('https://llm-x.maas.aliyuncs.com/compatible-mode/v1/models')
+  })
+
+  it('百炼：不带 url 时回退网关默认地址（旧行为不变）', async () => {
+    const { api } = makeApi()
+    let seenUrl = ''
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.includes('/compatible-mode/v1/models')) {
+        seenUrl = u
+        return new Response(JSON.stringify({ data: [{ id: 'cloud-model' }] }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const query = new URLSearchParams('provider=dashscope&apiKey=k')
+    const res = await api({ method: 'GET', pathname: '/api/admin/llm-models', query, body: null })
+    expect(res.status).toBe(200)
+    expect(asBody(res.body).models).toEqual(['cloud-model'])
+    expect(seenUrl).toContain('https://dashscope.aliyuncs.com/compatible-mode/v1/models')
+  })
 })

@@ -72,17 +72,20 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
     }
 
     // 设置接口（/api/admin）：语音助手设置页自身使用，不需要登录。
-    // LLM 模型下拉框的数据源：按 provider 从网关配置的来源地址拉可选模型
-    // （内置=网关 VOICE_BUILTIN_URL 指向的服务已配置的上游模型；百炼=网关 VOICE_DASHSCOPE_URL
-    // + 用户本机 api-key 拉真实模型目录）。地址由网关持有并中转，前端只传 provider、绝不直接指定来源地址。
+    // LLM 模型下拉框的数据源：默认按 provider 从网关配置的来源地址拉可选模型
+    // （内置=网关 VOICE_BUILTIN_URL；百炼=网关 VOICE_DASHSCOPE_URL + 用户本机 api-key）。
+    // 若前端带上了当前选中的来源地址 url（用户设置里的 voice.url，如自建 MAAS 实例），则优先用它——
+    // 保证「模型列表」和「真实推理」走同一个地址，避免列表从云端拉、推理打到 MAAS 的模型名错位。
+    // 地址由网关持有并中转，前端只与网关通信；url 只作来源地址透传，不落库。
     if (pathname === '/api/admin/llm-models' && method === 'GET') {
       const provider = query.get('provider')
       const apiKey = query.get('apiKey') ?? undefined
+      const url = query.get('url') ?? undefined
       if (provider !== 'builtin' && provider !== 'dashscope') {
         return { status: 400, body: { error: 'provider 仅支持 builtin / dashscope' } }
       }
       try {
-        const models = await listLlmModels(provider as 'builtin' | 'dashscope', config, apiKey)
+        const models = await listLlmModels(provider as 'builtin' | 'dashscope', config, apiKey, url)
         return { status: 200, body: { models } }
       } catch (err) {
         return { status: 502, body: { error: (err as Error).message } }

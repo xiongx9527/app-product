@@ -52,6 +52,9 @@ export interface AssistantTransport {
   connect(mode?: SessionMode): Promise<void>
   /** 在当前连接上切换会话模式（重新下发 session.start） */
   startSession(mode: SessionMode): void
+  /** 设置变更（语音来源 / 播放设置等）后重武装当前会话：在已连 socket 上重新下发 session.start，
+   *  网关据此用新配置重建 ASR / TTS / LLM，无需重连（记忆与会话不丢）。未连时静默无操作。 */
+  rearm(): void
   /** 连接是否仍可用：网关重启后本地标志会过期，必须以此为准 */
   isConnected(): boolean
   /** 订阅 WS 连接状态变化（网关是否当前连通）；订阅时立即回灌一次当前值 */

@@ -1,5 +1,6 @@
 import type { GatewayConfig } from '../config'
 import { resolveCapabilityConfig } from '../voiceConfig'
+import type { VoiceConfig } from '../voiceConfig'
 
 /** 单个能力（ASR / LLM / TTS）的就绪状态，供界面直接展示 */
 export interface ProviderStatus {
@@ -78,13 +79,13 @@ export function summarizeProvider(
  */
 const HEALTH_FALLBACK_PATHS = ['/v1/models', '/health', '/api/tags', '/models', '/v1/health']
 
-async function probeOne(url: string, timeoutMs: number): Promise<boolean> {
+async function probeOne(url: string, timeoutMs: number, headers: Record<string, string> = {}): Promise<boolean> {
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     let res: Response
     try {
-      res = await fetch(url, { method: 'GET', signal: controller.signal })
+      res = await fetch(url, { method: 'GET', headers, signal: controller.signal })
     } finally {
       clearTimeout(timer)
     }
@@ -94,11 +95,32 @@ async function probeOne(url: string, timeoutMs: number): Promise<boolean> {
   }
 }
 
-async function probe(baseUrl: string, timeoutMs = 3000): Promise<boolean> {
-  if (await probeOne(baseUrl, timeoutMs)) return true
+/**
+ * 主机连通性：能收到任何 HTTP 响应（含 4xx/5xx）即视为主机可达；仅网络错误/超时算不可达。
+ * 用于 WebSocket 类能力（DashScope ASR/TTS）的轻量可达性判断——无法在此做功能性 HTTP 探测。
+ */
+async function probeHost(baseUrl: string, timeoutMs = 3000): Promise<boolean> {
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      await fetch(baseUrl.replace(/\/$/, ''), { method: 'GET', signal: controller.signal })
+      return true
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch {
+    return false
+  }
+}
+
+async function probe(baseUrl: string, apiKey?: string, timeoutMs = 3000): Promise<boolean> {
+  const headers: Record<string, string> = {}
+  if (apiKey) headers['authorization'] = `Bearer ${apiKey}`
+  if (await probeOne(baseUrl, timeoutMs, headers)) return true
   const base = baseUrl.replace(/\/$/, '')
   for (const p of HEALTH_FALLBACK_PATHS) {
-    if (await probeOne(`${base}${p}`, Math.min(timeoutMs, 1500))) return true
+    if (await probeOne(`${base}${p}`, Math.min(timeoutMs, 1500), headers)) return true
   }
   return false
 }
@@ -145,8 +167,14 @@ function tinySilentWav(): Uint8Array {
  * 功能性探测 ASR：真发一段音频到 /v1/audio/transcriptions，能回合法 JSON 才算通。
  * 只 ping baseUrl 会误判——坏掉的上游代理也能回 200，但真正转写会 5xx/超时；
  * 之前「对不了话」正是本机 127.0.0.1:9529 的语音服务挂了却被报成 reachable=true。
+ * DashScope ASR 是 WebSocket（wss://host/api-ws/v1/inference），无功能性 HTTP 接口，
+ * 退化为「已配密钥 + 主机可达」的近似判断（无法在此做真转写探测）。
  */
-async function probeAsr(baseUrl: string): Promise<boolean> {
+async function probeAsr(baseUrl: string, provider: string, apiKey?: string): Promise<boolean> {
+  if (provider === 'dashscope') {
+    if (!apiKey) return false
+    return probeHost(baseUrl)
+  }
   return cachedProbe(`asr:${baseUrl}`, async () => {
     try {
       const form = new FormData()
@@ -172,8 +200,13 @@ async function probeAsr(baseUrl: string): Promise<boolean> {
   })
 }
 
-/** 功能性探测 TTS：真发一句文本到 /v1/audio/speech，能回非空音频才算通。 */
-async function probeTts(baseUrl: string): Promise<boolean> {
+/** 功能性探测 TTS：真发一句文本到 /v1/audio/speech，能回非空音频才算通。
+ *  DashScope TTS 同样是 WebSocket，退化为「已配密钥 + 主机可达」判断。 */
+async function probeTts(baseUrl: string, provider: string, apiKey?: string): Promise<boolean> {
+  if (provider === 'dashscope') {
+    if (!apiKey) return false
+    return probeHost(baseUrl)
+  }
   return cachedProbe(`tts:${baseUrl}`, async () => {
     try {
       const controller = new AbortController()
@@ -205,15 +238,16 @@ async function buildStatus(
   provider: string,
   baseUrl: string,
   kind: 'asr' | 'tts' | 'llm',
+  apiKey?: string,
 ): Promise<ProviderStatus> {
   if (provider === 'stub') return summarizeProvider('stub', false)
   const endpoint = hostOf(baseUrl)
   const reachable =
     kind === 'asr'
-      ? await probeAsr(baseUrl)
+      ? await probeAsr(baseUrl, provider, apiKey)
       : kind === 'tts'
-        ? await probeTts(baseUrl)
-        : await probe(baseUrl)
+        ? await probeTts(baseUrl, provider, apiKey)
+        : await probe(baseUrl, apiKey)
   return summarizeProvider(provider, reachable, endpoint)
 }
 
@@ -226,7 +260,7 @@ const EXTERNAL_HOSTS = ['https://www.baidu.com', 'https://www.bilibili.com']
 
 async function probeExternal(): Promise<NetworkStatus> {
   const results = await Promise.allSettled(
-    EXTERNAL_HOSTS.map((h) => probe(h, 2500)),
+    EXTERNAL_HOSTS.map((h) => probe(h, undefined, 2500)),
   )
   const idx = results.findIndex((r) => r.status === 'fulfilled' && r.value)
   if (idx >= 0) {
@@ -240,14 +274,93 @@ async function probeExternal(): Promise<NetworkStatus> {
 }
 
 /** 汇总 LLM / ASR / TTS 三类能力的就绪状态，供 /api/health 返回。
- *  ASR/TTS 用功能性探测（真发请求验证），LLM 沿用轻量连通探测。 */
-export async function buildHealth(config: GatewayConfig): Promise<HealthReport> {
-  const resolved = resolveCapabilityConfig(undefined, config)
-  const [asr, llm, tts, network] = await Promise.all([
-    buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr'),
-    buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm'),
-    buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts'),
-    probeExternal(),
-  ])
+ *  ASR/TTS 用功能性探测（真发请求验证），LLM 沿用轻量连通探测。
+ *  voice 为客户端当前选中的语音来源配置：不传则回退网关默认（内置），
+ *  传了（如 DashScope）就按所选来源展开并探测——这样面板反映用户实际会用的那套能力。 */
+/**
+ * 功能性探测 LLM：真发一次最小对话补全（max_tokens=1），能回 2xx 才算通。
+ * 连通探测（只 GET 根路径）会漏掉「地址通、但调模型被拒」这类故障——典型如欠费 / 额度不足 /
+ * 模型名不存在 / 密钥无权限：端点照样可达，真正对话才炸。deep 检测（一键检测按钮）走这条，
+ * 把上游真实报错（如「余额不足」）带回到界面，而不是误报「正常」。
+ * 未选模型（model 为空）时无法真正调用，退化为连通探测并在 message 里说清原因。
+ */
+async function probeLlmDeep(
+  baseUrl: string,
+  apiKey: string | undefined,
+  model: string,
+  timeoutMs = 8000,
+): Promise<ProviderStatus> {
+  const endpoint = hostOf(baseUrl)
+  if (!model) {
+    // 没选模型，没法真正调用对话接口：绝不能报“可用”（假绿），只能说明“无法验证”。
+    // 仍顺手探一下主机连通性用于更具体的提示，但 reachable 一律为 false。
+    const hostUp = await probe(baseUrl, apiKey)
+    return {
+      provider: 'llm',
+      configured: true,
+      reachable: false,
+      endpoint,
+      message: hostUp
+        ? `主机可达（${endpoint}），但未选择模型，无法验证对话能力`
+        : `未选择模型，且地址不可达（${endpoint}）`,
+    }
+  }
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+        signal: controller.signal,
+      })
+      if (res.ok) {
+        return { provider: 'llm', configured: true, reachable: true, endpoint, message: `已接入（${endpoint}）` }
+      }
+      const text = await res.text().catch(() => '')
+      return {
+        provider: 'llm',
+        configured: true,
+        reachable: false,
+        endpoint,
+        message: `已配置但调用失败（${endpoint}）：${res.status} ${text.slice(0, 200)}`,
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch (e) {
+    return {
+      provider: 'llm',
+      configured: true,
+      reachable: false,
+      endpoint,
+      message: `已配置但调用失败（${endpoint}）：${(e as Error).message}`,
+    }
+  }
+}
+
+export async function buildHealth(
+  config: GatewayConfig,
+  voice?: VoiceConfig,
+  deep = false,
+): Promise<HealthReport> {
+  const resolved = resolveCapabilityConfig(voice, config)
+  const asr = await buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey)
+  const tts = await buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey)
+  const network = await probeExternal()
+  // LLM：deep（一键检测）走真正调用模型，能暴露欠费 / 模型名 / 密钥这类「连通但不可用」故障；
+  // 其余（30s 轮询）只做连通探测，避免每次轮询都真打模型烧额度。
+  const llm = deep
+    ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, resolved.llm.model)
+    : await buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey)
   return { asr, llm, tts, network }
 }

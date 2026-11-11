@@ -26,17 +26,19 @@ async function fetchJson(url: string, headers: Record<string, string>): Promise<
 }
 
 /**
- * 列出某来源的 LLM 模型：地址一律由网关持有（来自自身配置），前端只传 provider 与可选的
- * api-key（密钥只落本机，只能从前端带来），绝不直接指定内置服务地址。前端只与网关通信，
- * 网关做中转去拉各来源的模型目录，并把 api-key 透传给对应来源。
+ * 列出某来源的 LLM 模型：地址优先用客户端设置里带过来的 voice.url（用户真正在用的来源地址，
+ * 如自建 MAAS 实例），缺省才回退网关自身配置（VOICE_BUILTIN_URL / VOICE_DASHSCOPE_URL）。
+ * 这样「模型列表」和「真实推理」用同一个地址，避免列表从云端拉、推理打到 MAAS 这种
+ * 模型名对不上的错位（会导致「模型异常」）。api-key 只落本机，由前端带来，网关透传给来源。
  */
 export async function listLlmModels(
   provider: 'builtin' | 'dashscope',
   config: { voiceBuiltinUrl: string; voiceDashscopeUrl: string },
   apiKey?: string,
+  url?: string,
 ): Promise<string[]> {
-  if (provider === 'builtin') return listBuiltinModels(config.voiceBuiltinUrl, apiKey)
-  return listDashScopeModels(config.voiceDashscopeUrl, apiKey)
+  if (provider === 'builtin') return listBuiltinModels(url || config.voiceBuiltinUrl, apiKey)
+  return listDashScopeModels(url || config.voiceDashscopeUrl, apiKey)
 }
 
 /** 内置来源：地址取网关配置 voiceBuiltinUrl，由 Node 网关中转，前端不感知具体地址。

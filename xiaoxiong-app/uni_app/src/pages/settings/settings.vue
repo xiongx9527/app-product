@@ -17,6 +17,8 @@ import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
 import { getActiveTransport } from '@/core/transport'
 import { getDeviceId } from '@/core/config/deviceId'
+import { activeVoiceConfig } from '@/core/config'
+import { fetchHealthReport, toHealthItems, type HealthItem } from '@/features/assistant/useHealth'
 import SelectRow from '@/components/SelectRow.vue'
 
 /** 时区下拉选项：值用 IANA 名，展示文案按当前语言本地化。 */
@@ -110,8 +112,11 @@ async function loadLlmModels(): Promise<void> {
   // 前端只与网关通信：模型列表由网关持有来源地址并中转拉取，前端只传 provider。
   // 仅百炼需要用户本机 api-key（密钥只落本机，必须由前端带来）；内置无需任何密钥。
   const qs = new URLSearchParams({ provider })
-  // api-key 只落本机，必须由前端带来；内置非必填（可空），百炼必带。地址一律由网关持有中转，
-  // 前端只传 provider + 可选 api-key，绝不直接指定来源地址。
+  // api-key 只落本机，必须由前端带来；内置非必填（可空），百炼必带。地址默认由网关持有中转，
+  // 但当前选中的来源地址（voice.url，如自建 MAAS 实例）也要带上：让网关从「真实在用的地址」
+  // 拉模型目录，而不是默认云端地址——否则列表里的模型名和真实推理地址对不上，会「模型异常」。
+  // 不传 url 时网关回退自身默认地址，旧行为不变。
+  if (settings.url) qs.set('url', settings.url)
   if (settings.apiKey) qs.set('apiKey', settings.apiKey)
   try {
     const res = await secureRequest({
@@ -140,6 +145,34 @@ function onSelectProvider(p: 'builtin' | 'dashscope'): void {
   setVoiceProvider(p)
   void loadLlmModels()
   void loadTtsVoices()
+}
+
+/** 一键检测：按当前选中的来源（内置 / DashScope）探测 LLM / ASR / TTS / 外网是否正常。
+ *  结果反映未保存的编辑（url / apiKey 直接读 appConfig），可先测后存。 */
+const detecting = ref(false)
+const detectItems = ref<HealthItem[] | null>(null)
+const detectError = ref(false)
+const detectProviderName = computed(() =>
+  appConfig.voice.provider === 'dashscope'
+    ? t('settings.voice.dashscope')
+    : t('settings.voice.builtin'),
+)
+
+async function runDetection(): Promise<void> {
+  if (detecting.value) return
+  detecting.value = true
+  detectError.value = false
+  try {
+    const report = await fetchHealthReport(activeVoiceConfig(), true)
+    if (!report) {
+      detectError.value = true
+      detectItems.value = null
+      return
+    }
+    detectItems.value = toHealthItems(report)
+  } finally {
+    detecting.value = false
+  }
 }
 
 /** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用；百炼=官方 CosyVoice 标准），不实时拉取以便国际化。 */
@@ -490,7 +523,22 @@ watch(
         <text v-if="ttsVoiceHint" class="hint" @tap="loadTtsVoices">{{ ttsVoiceHint }}</text>
       </template>
 
-      <button class="reset" @tap="onResetVoice">{{ t('settings.reset') }}</button>
+      <!-- 恢复默认 + 一键检测同一行：检测按钮在最右侧 -->
+      <view class="voice-actions">
+        <button class="reset" @tap="onResetVoice">{{ t('settings.reset') }}</button>
+        <button class="detect-btn" :disabled="detecting" @tap="runDetection">
+          {{ detecting ? t('settings.voice.detecting') : t('settings.voice.detect') }}
+        </button>
+      </view>
+      <text class="hint">{{ t('settings.voice.detectHint', { provider: detectProviderName }) }}</text>
+      <text v-if="detectError" class="detect-error">{{ t('settings.voice.detectError') }}</text>
+      <view v-if="detectItems" class="detect-result">
+        <view v-for="item in detectItems" :key="item.key" class="detect-row">
+          <view class="dot" :class="item.status" />
+          <text class="detect-key">{{ t(`settings.voice.cap.${item.key}`) }}</text>
+          <text class="detect-detail">{{ item.detail }}</text>
+        </view>
+      </view>
       </template>
     </view>
 
@@ -780,6 +828,95 @@ watch(
 .provider-name {
   font-size: 13px;
   color: #e8eaf6;
+}
+
+/* 恢复默认在左、一键检测在右，两端对齐 */
+.voice-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* 一键检测：按钮 + 结果卡片 */
+.detect-btn {
+  margin: 0;
+  height: 34px;
+  line-height: 34px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #6c8cff, #8a6cff);
+  border: none;
+}
+
+.detect-btn::after {
+  border: none;
+}
+
+.detect-btn[disabled] {
+  opacity: 0.6;
+}
+
+.detect-error {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #ff8a8a;
+}
+
+.detect-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.detect-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dot.ok {
+  background: #4ec98a;
+  box-shadow: 0 0 6px rgba(78, 201, 138, 0.6);
+}
+
+.dot.warn {
+  background: #f5c451;
+  box-shadow: 0 0 6px rgba(245, 196, 81, 0.6);
+}
+
+.dot.down {
+  background: #ff6b6b;
+  box-shadow: 0 0 6px rgba(255, 107, 107, 0.6);
+}
+
+.detect-key {
+  font-size: 12px;
+  color: #cfd8ff;
+  width: 64px;
+  flex-shrink: 0;
+}
+
+.detect-detail {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #9aa0bd;
+  flex: 1;
+  min-width: 0;
 }
 
 .group-head {

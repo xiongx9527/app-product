@@ -50,6 +50,17 @@ export interface AppConfig {
   voice: VoiceServiceConfig
   /** 播放设置（音乐播放源等），独立于语音服务 */
   playback: PlaybackConfig
+  /** 通用设置：与具体能力无关、偏行为开关的项统一放这里 */
+  general: GeneralConfig
+}
+
+/** 通用设置 */
+export interface GeneralConfig {
+  /**
+   * 自动连接网关：开屏/进入主页即自动连接网关并进入待唤醒，免手动点圆球开启。
+   * 默认关闭——避免一启动就建连/常驻监听，用户按需打开。
+   */
+  autoConnect: boolean
 }
 
 /** 音乐播放源；百度已实现，网易云/腾讯音乐/酷狗音乐为占位空实现（选择后调用会报未实现），后续可扩展 */

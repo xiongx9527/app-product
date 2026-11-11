@@ -74,6 +74,37 @@ export function isPromptCuePlaying(): boolean {
 }
 
 /**
+ * 多条提示音共享的串行队列：网关可能在建连即一次性下发多条（如 ASR/TTS/LLM 全不可达），
+ * 健康栏瞬时变化也可能补播多条；统一进队列、按各自时长串起来播，避免首尾叠音、自激或互相覆盖。
+ * 单条即时提示（greeting / farewell / stillThere 等）仍走 playPromptCue 立即出声，不进队列。
+ */
+const cueQueue: PromptCue[] = []
+let cueDraining = false
+
+function drainCueQueue(): void {
+  if (cueDraining) return
+  const cue = cueQueue.shift()
+  if (!cue) return
+  cueDraining = true
+  // 先等掉任何正在播的即时提示（如 greeting），再起播本队列首条，避免跨队列叠音
+  const wait = Math.max(0, cueMuteUntil - Date.now())
+  setTimeout(() => {
+    playPromptCue(cue)
+    // 前一条播完（含尾音余量）后才播下一条
+    setTimeout(() => {
+      cueDraining = false
+      drainCueQueue()
+    }, CUE_MUTE_MS[cue])
+  }, wait)
+}
+
+/** 把一条提示音排进串行队列：用于「一次性多条」场景（能力不可达播报）。 */
+export function enqueueCue(cue: PromptCue): void {
+  cueQueue.push(cue)
+  drainCueQueue()
+}
+
+/**
  * 唤醒招呼、退出提示都必须本地出声，断网也能用。
  * H5 用 WebAudio 生成提示音；App 用 static/audio 下的本地文件。
  */
@@ -92,15 +123,10 @@ export function playPromptCue(cue: PromptCue): void {
 
 /**
  * 顺序播多条本地提示音（如唤醒后发现多个能力不可用，逐条告知）。
- * 每条按各自时长留足静音窗口再播下一条，避免首尾叠音、自激或互相覆盖。
+ * 改为走共享串行队列，与网关一次性下发的多条 client.cue 统一排程，彻底避免叠音。
  */
 export function playPromptCueSequence(cues: PromptCue[]): void {
-  let delay = 0
-  cues.forEach((cue) => {
-    setTimeout(() => playPromptCue(cue), delay)
-    // 累加前一条的静音窗口，下一条在前一条播完（含尾音余量）后才起播
-    delay += CUE_MUTE_MS[cue]
-  })
+  cues.forEach((cue) => enqueueCue(cue))
 }
 
 // #ifdef H5

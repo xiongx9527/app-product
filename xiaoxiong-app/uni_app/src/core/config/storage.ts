@@ -8,7 +8,7 @@ import {
   DEFAULT_SUBTITLE_COLOR,
 } from './constants'
 import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
-import type { AppConfig, PlaybackConfig, PlaybackSource, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
+import type { AppConfig, GeneralConfig, PlaybackConfig, PlaybackSource, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
 
 export const CONFIG_STORAGE_KEY = 'app-product.config.v1'
 
@@ -68,7 +68,20 @@ export function createDefaultConfig(): AppConfig {
     timezone: DEFAULT_TIMEZONE,
     voice: createDefaultVoice(),
     playback: createDefaultPlayback(),
+    general: createDefaultGeneral(),
   }
+}
+
+/** 通用设置默认值：自动连接网关默认开启（开屏即连网关进入待唤醒，免去手动点开关）。 */
+function createDefaultGeneral(): GeneralConfig {
+  return { autoConnect: true }
+}
+
+/** 归一化通用设置：autoWake 只认 boolean，缺省/非法回退 false。 */
+function normalizeGeneral(raw: unknown): GeneralConfig {
+  const source = isRecord(raw) ? raw : {}
+  const autoWake = typeof source.autoWake === 'boolean' ? source.autoWake : false
+  return { autoWake }
 }
 
 function normalizeProviderSettings(
@@ -181,8 +194,9 @@ export function normalizeConfig(
   // 旧的 asr / llm / tts 字段直接丢弃，不迁移、不兼容；voice 缺失补默认
   const voice = normalizeVoice(source.voice ?? base.voice)
   const playback = normalizePlayback(source.playback ?? base.playback)
+  const general = normalizeGeneral(source.general ?? base.general)
 
-  return { version: 1, mode, language, timezone, voice, playback }
+  return { version: 1, mode, language, timezone, voice, playback, general }
 }
 
 function hasStorage(): boolean {

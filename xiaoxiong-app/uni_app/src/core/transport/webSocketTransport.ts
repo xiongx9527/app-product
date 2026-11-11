@@ -196,6 +196,17 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendStart(mode)
   }
 
+  /**
+   * 设置变更（语音来源 / 播放设置等）后重武装当前 WS 会话：在已连的 socket 上重新下发
+   * session.start，网关据此用新配置重建 ASR / TTS / LLM，无需重连（对话记忆与会话行不丢）。
+   * 仅在已连时有效；未连则无会话可重武装，由 connect 自行带最新配置建连。
+   */
+  rearm(): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.sendStart(this.pendingMode)
+    }
+  }
+
   isConnected(): boolean {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN
   }

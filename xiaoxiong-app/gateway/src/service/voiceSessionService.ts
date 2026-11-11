@@ -139,6 +139,15 @@ export class VoiceSessionService {
   private lastSubtitleLines: SubtitleLine[] | null = null
   /** 当前是否真的有字幕面板在显示：仅在成功下发非空字幕时为 true，用于「关闭字幕」时如实反馈 */
   private subtitleActive = false
+  /** 最近一次 session.start 带下来的语音来源配置：供 announceCapabilityProblems 按「实际会用的那套能力」
+   *  探测就绪状态（而非永远探测网关默认的内置），与 /api/health 的 provider-aware 探测保持一致。 */
+  private lastVoice: VoiceConfig | undefined = undefined
+  /** 跨轮记忆相关引用（来自设备长期记忆），首次建连时拉取并缓存，重武装时复用，避免重复拉取。 */
+  private memoryStore: MemoryStore | undefined = undefined
+  private memoryContext: string | undefined = undefined
+  /** 上次建 agent 用的 LLM 配置指纹：重武装时若来源未变则保留原 agent（对话历史不丢），
+   *  仅当来源真变了（如切到 DashScope）才重建 LLM 客户端，让「切换来源」立即生效。 */
+  private lastLlmKey: string | null = null
   /** 默认循环播放次数（含当前这一遍）；0/1 表示不循环，缺省 3。每次新播放经 media.play 的 loop 带入。 */
   private defaultLoop = 3
   /** 默认播放音量（0–1），缺省 0.5；每次新播放开始时经 media.volume 下发，供「调大/调小」相对增减。 */
@@ -1205,7 +1214,7 @@ export class VoiceSessionService {
       report = this.deps.capabilityProbe
         ? await this.deps.capabilityProbe()
         : this.deps.config
-          ? await buildHealth(this.deps.config)
+          ? await buildHealth(this.deps.config, this.lastVoice)
           : null
     } catch {
       return
@@ -1231,6 +1240,7 @@ export class VoiceSessionService {
     this.timezone = timezone?.trim() || 'Asia/Shanghai'
     this.mode = mode
     this.active = true
+    this.lastVoice = voice
     // 按客户端设置展开三套能力配置并构建实例：地址 / 密钥 / 参数一律来自设置，
     // 不再读网关硬编码。每次 start 重建（重武装也重建，状态由 reset 清空，跨轮记忆不丢）。
     const resolved = this.deps.resolveVoice(voice)
@@ -1251,10 +1261,41 @@ export class VoiceSessionService {
     this.asr.reset()
     this.vad.reset()
 
-    // 重新武装：同一实例的二次 start（设备重连/重唤醒，agent 已存在）——
-    // 保留 LLM 对话记忆与 pendingCandidates（候选歌单）、sessionRowId（同一会话日志），
-    // 仅复位在途轮次与播放/回声状态，不清空跨轮记忆。这样助手在重唤醒/重连后不"失忆"。
-    if (this.agent !== null) return
+    // 重新武装 vs 全新：agent 已存在即视为重武装。普通重唤醒/重连（来源未变）保留原 agent
+    // （含本轮对话上下文，不丢）；仅当来源真的变了（如切到 DashScope）才重建 LLM 客户端，
+    // 让「切换来源」立即生效，同时记忆已缓存直接复用、不丢长期记忆。
+    const llmKey = JSON.stringify(resolved.llm)
+    const rearm = this.agent !== null
+    const llmChanged = this.lastLlmKey !== llmKey
+    if (rearm && !llmChanged) {
+      // 来源没变：保留原 agent（对话历史不丢），仅复位在途轮次与播放/回声状态。
+      this.lastLlmKey = llmKey
+      return
+    }
+    if (rearm) {
+      // 来源变了：重建 agent（记忆已缓存复用，不丢长期记忆）；切来源本就发生在设置页、非对话中途，
+      // 本轮对话历史随旧 agent 作废可接受。
+      this.agent = mode === 'wake'
+        ? null
+        : this.deps.agentFactory(
+            resolved.llm,
+            lang,
+            this.timezone,
+            () => this.getLocation(),
+            () => this.musicSource,
+            (m) => this.deps.send(m),
+            this.memoryStore,
+            this.memoryContext,
+            () => this.requestClientLocation(),
+            this.autoSubtitle,
+            this.defaultLoop,
+            this.defaultVolume,
+            this.autoLoop,
+            () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
+          )
+      this.lastLlmKey = llmKey
+      return
+    }
 
     // 全新会话：清空跨轮状态并重建 LLM
     this.pendingCandidates = null
@@ -1272,6 +1313,9 @@ export class VoiceSessionService {
     const memoryContext = memoryStore
       ? messages(this.lang).memory.context(formatMemories(await this.deps.data.getMemories(this.deviceId)))
       : undefined
+    // 缓存记忆相关引用，重武装时直接复用（记忆本就来自同一设备，无需重新拉取）。
+    this.memoryStore = memoryStore
+    this.memoryContext = memoryContext
     this.agent =
       mode === 'wake'
         ? null
@@ -1291,6 +1335,7 @@ export class VoiceSessionService {
             this.autoLoop,
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null)
           )
+    this.lastLlmKey = llmKey
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
   }
 

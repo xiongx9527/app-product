@@ -2,6 +2,7 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import {
   playPromptCue,
   playPromptCueSequence,
+  enqueueCue,
   isPromptCuePlaying,
   type PromptCue,
 } from '@/core/audio/promptPlayer'
@@ -51,7 +52,7 @@ import type { ServerEvent, SessionMode } from '@/core/transport/types'
 import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
 import { matchWakeWord } from '@/core/wake/wakeWord'
 import { getLanguage } from '@/core/config'
-import { appConfig, persistConfig } from '@/core/config'
+import { appConfig, persistConfig, activeVoiceConfig } from '@/core/config'
 import { addFavorite } from '@/features/favorites/favoritesStore'
 
 /** 一轮对话的阶段：界面据此告诉用户「现在在干嘛」，避免以为卡住而插话。 */
@@ -167,6 +168,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   transport.onConnecting((value) => {
     connecting.value = value
   })
+  // 语音配置（来源 / 音色 / 模型等）任意变更：在已连会话上重武装，让网关用新配置重建 ASR/TTS/LLM。
+  // 改音色（来源没变但音色变了）也要重武装——否则网关仍用旧 TTS 客户端，播报声音不变。
+  // 不重连即可生效，记忆与会话不丢；未连时无需动作——下次 connect 自带最新配置。
+  watch(
+    () => JSON.stringify(activeVoiceConfig()),
+    () => {
+      if (transport.isConnected()) transport.rearm()
+    },
+  )
   // 网关能力健康度（LLM / ASR / TTS / 外网）：连上后定时轮询，负责「运行中 ok→down」的瞬时变化；
   // 「建连那一刻就已不可用」的兜底下发由网关 client.cue 事件负责（见 handleServerEvent）。
   const { health } = useHealth(wsConnected)
@@ -415,7 +425,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           'network-down': 'networkDown',
         }
         const cue = map[event.cue]
-        if (cue) playPromptCue(cue)
+        // 网关可能一次性下发多条 client.cue（如 ASR/TTS/LLM 全不可达），串行播放，避免叠音
+        if (cue) enqueueCue(cue)
         break
       }
     }

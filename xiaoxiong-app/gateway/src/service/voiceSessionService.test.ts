@@ -71,7 +71,10 @@ function createHarness(
     /** 注入能力探测桩：返回各能力 reachable 与否；缺省「全部就绪」，不下发 client.cue */
     capabilityProbe?: () => Promise<HealthReport | null>
     /** 智能体口播文本（经 ChannelSplitter 下发）；默认「好的，我来说一句。」。可注入泄漏标记验证兜底 */
-    replyText?: string
+    replyText?: string,
+    /** 覆盖 resolveVoice：默认忽略 voice 返回空配置；需要验证「切来源重建 agent」时注入，
+     *  按 voice.provider 返回不同的 llm 配置指纹，使重武装能识别来源变化。 */
+    resolveVoice?: (voice?: unknown) => ResolvedCapabilities,
   } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
@@ -153,7 +156,7 @@ function createHarness(
     },
     createAsr: () => asr,
     createTts: () => tts,
-    resolveVoice: () => ({}) as unknown as ResolvedCapabilities,
+    resolveVoice: opts.resolveVoice ?? (() => ({}) as unknown as ResolvedCapabilities),
     data,
     send: (event) => events.push(event),
     sendAudio: () => {},
@@ -1600,6 +1603,102 @@ describe('会话与连接解耦：重武装（deviceId 复用不丢记忆）', (
     // 全新会话：再说一句普通对话，agent 被重建且可用
     await speakSettle(h)
     expect(h.agentCalls()).toBe(2)
+  })
+})
+
+describe('重武装切来源重建 agent（让「切换来源/音色」立即生效）', () => {
+  /**
+   * 按 voice.provider 返回不同的 llm 配置指纹：builtin 与 dashscope 必须产出不同的 llmKey
+   * （JSON.stringify(resolved.llm)），从而让 start() 在 re-arm 时识别出「来源变了」并重建 agent。
+   * 若某次 resolve 出的 llm 与上次相同（例如只换了音色、provider 没变），llmKey 不变，不重建。
+   */
+  function resolveByProvider(voice?: unknown): ResolvedCapabilities {
+    const provider =
+      voice && typeof voice === 'object' && (voice as { provider?: string }).provider === 'dashscope'
+        ? 'dashscope'
+        : 'builtin'
+    if (provider === 'dashscope') {
+      return {
+        llm: { provider: 'dashscope', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen', apiKey: 'sk' },
+        asr: { provider: 'dashscope', baseUrl: 'https://dashscope.aliyuncs.com', apiKey: 'sk' },
+        tts: { provider: 'dashscope', baseUrl: 'https://dashscope.aliyuncs.com', apiKey: 'sk' },
+      } as unknown as ResolvedCapabilities
+    }
+    return {
+      llm: { provider: 'builtin', baseUrl: 'http://127.0.0.1:9529/llm/v1', model: '' },
+      asr: { provider: 'builtin', baseUrl: 'http://127.0.0.1:9529/voice' },
+      tts: { provider: 'builtin', baseUrl: 'http://127.0.0.1:9529/voice' },
+    } as unknown as ResolvedCapabilities
+  }
+
+  /** 携带指定 voice 的 session.start（不带 voice 即视为内置）。 */
+  async function startWithVoice(service: VoiceSessionService, voice?: unknown): Promise<void> {
+    service.handleText(
+      JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN', ...(voice ? { voice } : {}) })
+    )
+    await sleep(5)
+  }
+
+  /** 说完一句并等句末定稿、释放播完回执（本 describe 内复用）。 */
+  async function settle(h: Harness): Promise<void> {
+    await speakUtterance(h)
+    await sleep(900)
+    h.playbackDone()
+    await sleep(60)
+  }
+
+  it('首次 start 构造 agent；同来源 re-arm 保留 agent（factoryCalls 不增）', async () => {
+    const h = createHarness({ asrEndpointMs: 800, resolveVoice: resolveByProvider })
+    await startWithVoice(h.service, { provider: 'builtin' })
+    expect(h.agentFactoryCalls()).toBe(1)
+
+    // 同来源（builtin）再次 start：走 re-arm，保留原 agent，不重建
+    await startWithVoice(h.service, { provider: 'builtin' })
+    expect(h.agentFactoryCalls()).toBe(1)
+
+    // 原 agent 仍可用：再说一句普通对话能正常进 LLM
+    await settle(h)
+    expect(h.agentCalls()).toBe(1)
+  })
+
+  it('re-arm 切到 DashScope：重建 agent（factoryCalls 增 1），切换来源立即生效', async () => {
+    const h = createHarness({ asrEndpointMs: 800, resolveVoice: resolveByProvider })
+    await startWithVoice(h.service, { provider: 'builtin' })
+    expect(h.agentFactoryCalls()).toBe(1)
+
+    // 切到 DashScope：llm 指纹变了，必须重建 agent
+    await startWithVoice(h.service, { provider: 'dashscope', apiKey: 'sk-test' })
+    expect(h.agentFactoryCalls()).toBe(2)
+
+    // 仍是 DashScope 再次 re-arm：指纹没变，不再重建
+    await startWithVoice(h.service, { provider: 'dashscope', apiKey: 'sk-test' })
+    expect(h.agentFactoryCalls()).toBe(2)
+
+    // 重建后的 agent 仍可用
+    await settle(h)
+    expect(h.agentCalls()).toBe(1)
+  })
+
+  it('re-arm 切回 builtin：再次重建 agent（factoryCalls 再增 1）', async () => {
+    const h = createHarness({ asrEndpointMs: 800, resolveVoice: resolveByProvider })
+    await startWithVoice(h.service, { provider: 'builtin' })
+    await startWithVoice(h.service, { provider: 'dashscope', apiKey: 'sk-test' })
+    expect(h.agentFactoryCalls()).toBe(2)
+
+    // 切回 builtin：指纹又变，再次重建
+    await startWithVoice(h.service, { provider: 'builtin' })
+    expect(h.agentFactoryCalls()).toBe(3)
+  })
+
+  it('仅改音色（同 provider）：llm 指纹未变，不重建 agent', async () => {
+    // 音色变化落在 tts params 上，provider/baseUrl/model 不变 → llmKey 不变 → 不重建 LLM agent。
+    // 这正好验证「音色换了声音没变」的修复点在「客户端 re-arm 触发 + start() 每次无条件重建 tts 实例」，
+    // 而非每次都重建整个 agent（那会丢掉在途对话）。
+    const h = createHarness({ asrEndpointMs: 800, resolveVoice: resolveByProvider })
+    await startWithVoice(h.service, { provider: 'dashscope', apiKey: 'sk', params: { voice: 'xiaoxiao' } })
+    expect(h.agentFactoryCalls()).toBe(1)
+    await startWithVoice(h.service, { provider: 'dashscope', apiKey: 'sk', params: { voice: 'yunxi' } })
+    expect(h.agentFactoryCalls()).toBe(1) // 同来源，未重建 agent
   })
 })
 

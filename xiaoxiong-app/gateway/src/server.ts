@@ -12,6 +12,7 @@ import { createDocsController } from './controller/docsController'
 import { handleMusicStream } from './controller/musicStreamController'
 import { createVoiceConnection } from './controller/voiceController'
 import { buildHealth } from './service/health'
+import type { VoiceConfig } from './voiceConfig'
 import { encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
 import type { GatewayConfig } from './config'
 
@@ -52,8 +53,22 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
 
       // 健康检查：汇总 LLM / ASR / TTS 就绪状态（是否真接入引擎 + 地址是否可达）。
       // 允许跨域，便于 H5（与网关不同端口）直接拉取展示；不做鉴权——仅暴露能力状态，不含密钥。
+      // 客户端可经 x-voice-config 头带上当前选中的语音来源配置，使探测按所选来源（如 DashScope）
+      // 展开，而非永远探测网关默认的（内置）。响应不含任何密钥。
       if (url.pathname === '/api/health' || url.pathname === '/health') {
-        const report = await buildHealth(config)
+        let voice: VoiceConfig | undefined
+        const rawVoice = req.headers['x-voice-config']
+        if (typeof rawVoice === 'string') {
+          try {
+            voice = JSON.parse(rawVoice) as VoiceConfig
+          } catch {
+            voice = undefined
+          }
+        }
+        // deep=1：一键检测走「真正调用模型」的深度探测，能暴露欠费 / 模型名 / 密钥这类
+        // 「连通但不可用」的故障；普通轮询不带该参数，只做轻量连通探测。
+        const deep = url.searchParams.get('deep') === '1'
+        const report = await buildHealth(config, voice, deep)
         res.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',
           'access-control-allow-origin': '*',

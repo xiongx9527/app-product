@@ -39,8 +39,6 @@ const {
   liveText,
   errorMessage,
   gatewayPreparing,
-  wakeSupported,
-  wakeProviderName,
   wsConnected,
   connecting,
   retry,
@@ -671,11 +669,6 @@ function onConnTap(): void {
       <text v-else-if="isActive" class="talk-hint">{{ t('talk.listening') }}</text>
     </view>
 
-    <view class="footer">
-      <text>{{ screen.width }} × {{ screen.height }} · {{ screen.breakpoint }}</text>
-      <text v-if="!wakeSupported">当前端无原生唤醒，按钮为模拟；App 端接原生 KWS</text>
-      <text v-else>唤醒已就绪：{{ wakeProviderName }}</text>
-    </view>
   </view>
 </template>
 
@@ -1163,16 +1156,6 @@ function onConnTap(): void {
 
 .talk-hint.warn {
   color: #ffcf8a;
-}
-
-.footer {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: center;
-  font-size: 11px;
-  color: #6f7691;
-  text-align: center;
 }
 
 .music-bar {
