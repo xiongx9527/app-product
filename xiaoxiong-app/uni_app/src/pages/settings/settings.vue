@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import type { FloatPositionKey } from '@/core/adaptation/floatLayer'
+import { SUBTITLE_FONT_SIZE_OPTIONS, SUBTITLE_COLOR_OPTIONS } from '@/core/config/constants'
 import {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
@@ -32,6 +33,26 @@ const floatPositionOptions = computed(() =>
 )
 function setFloatPosition(value: string): void {
   appConfig.playback.floatPosition = value as FloatPositionKey
+}
+
+/** 当前字幕字号/颜色：选项来自 config/constants 的预设，值与配置同域 */
+const subtitleFontSizeOptions = computed(() =>
+  SUBTITLE_FONT_SIZE_OPTIONS.map((px) => ({
+    value: String(px),
+    label: t(`settings.playback.subtitleFontSize.${px}`),
+  })),
+)
+const subtitleColorOptions = computed(() =>
+  SUBTITLE_COLOR_OPTIONS.map((hex) => ({
+    value: hex,
+    label: t(`settings.playback.subtitleColor.${hex.slice(1)}`),
+  })),
+)
+function setSubtitleFontSize(value: string): void {
+  appConfig.playback.subtitleFontSize = Number(value)
+}
+function setSubtitleColor(value: string): void {
+  appConfig.playback.subtitleColor = value
 }
 
 const saving = ref(false)
@@ -530,6 +551,22 @@ watch(
           :options="floatPositionOptions"
           :model-value="appConfig.playback.floatPosition ?? 'top-center'"
           @update:model-value="setFloatPosition"
+        />
+
+        <!-- 当前字幕样式：字号档位 + 颜色预设，应用到悬浮当前句与字幕面板高亮行 -->
+        <SelectRow
+          :title="t('settings.playback.subtitleFontSize')"
+          :hint="t('settings.playback.subtitleFontSizeHint')"
+          :options="subtitleFontSizeOptions"
+          :model-value="String(appConfig.playback.subtitleFontSize ?? 18)"
+          @update:model-value="setSubtitleFontSize"
+        />
+        <SelectRow
+          :title="t('settings.playback.subtitleColor')"
+          :hint="t('settings.playback.subtitleColorHint')"
+          :options="subtitleColorOptions"
+          :model-value="appConfig.playback.subtitleColor ?? '#ffffff'"
+          @update:model-value="setSubtitleColor"
         />
 
         <!-- 自动循环播放：全局开关；开启后每次新播放默认按默认循环次数循环 -->

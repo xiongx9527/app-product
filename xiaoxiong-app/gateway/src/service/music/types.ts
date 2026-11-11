@@ -110,6 +110,17 @@ export function isSpokenContentRequest(text?: string): boolean {
   return CONTENT_TYPE_WORDS.some((w) => t.includes(w))
 }
 
+/**
+ * 识别具体的非歌曲内容类型（评书 / 相声 / 戏曲 / 电影…），长词优先（数组已按长词在前排好）。
+ * 歌曲名不含这些词时返回 undefined，表示「歌曲」。用于会话内记住当前播放的到底是什么，
+ * 后续换内容、失败提示、系统提示都据此措辞，避免一律当成「放歌」。
+ */
+export function detectContentType(text?: string): string | undefined {
+  if (!text) return undefined
+  const t = text.toLowerCase()
+  return CONTENT_TYPE_WORDS.find((w) => t.includes(w))
+}
+
 /** 判断一句话是否只是泛化点歌/语气（如「歌 / 放首歌 / 播放个音乐」），而非带具体歌手/歌名/风格。 */
 export function isGenericPlayPhrase(text: string): boolean {
   const c = (text ?? '').replace(/\s/g, '')

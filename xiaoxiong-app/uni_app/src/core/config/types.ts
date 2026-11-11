@@ -83,10 +83,14 @@ export interface PlaybackConfig {
    */
   defaultVolume: number
   /**
-   * 是否显示「悬浮小圆播放器」（酷狗式圆形旋转唱片封面 + 当前歌词大字），默认关闭。
+   * 是否显示「悬浮小圆播放器」（酷狗式圆形旋转唱片封面 + 当前歌词大字），默认开启。
    * 纯客户端 UI 开关，不下发网关；关闭时保持现有播放条与字幕面板。
    */
   floatPlayer?: boolean
   /** 悬浮小圆的显示位置（通用悬浮层位置参数 key），默认顶部居中 */
   floatPosition?: FloatPositionKey
+  /** 当前字幕（悬浮当前句 / 面板高亮行）字号 px，默认 18，只接受预设档位 [14,18,22,26] */
+  subtitleFontSize?: number
+  /** 当前字幕颜色（预设 hex），默认白色 */
+  subtitleColor?: string
 }

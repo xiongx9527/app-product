@@ -1,4 +1,12 @@
-import { DEFAULT_LANGUAGE, DEFAULT_TIMEZONE, normalizeTimezone } from './constants'
+import {
+  DEFAULT_LANGUAGE,
+  DEFAULT_TIMEZONE,
+  normalizeTimezone,
+  SUBTITLE_FONT_SIZE_OPTIONS,
+  SUBTITLE_COLOR_OPTIONS,
+  DEFAULT_SUBTITLE_FONT_SIZE,
+  DEFAULT_SUBTITLE_COLOR,
+} from './constants'
 import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
 import type { AppConfig, PlaybackConfig, PlaybackSource, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
 
@@ -30,8 +38,10 @@ const DEFAULT_PLAYBACK: PlaybackConfig = {
   defaultLoop: 3,
   autoLoop: false,
   defaultVolume: 0.5,
-  floatPlayer: false,
+  floatPlayer: true,
   floatPosition: 'top-center',
+  subtitleFontSize: DEFAULT_SUBTITLE_FONT_SIZE,
+  subtitleColor: DEFAULT_SUBTITLE_COLOR,
 }
 
 /** 默认播放设置：播放源百度，关闭自动收藏，自动字幕开启，关闭自动循环，默认循环 3 次、默认音量 50% */
@@ -45,6 +55,8 @@ export function createDefaultPlayback(): PlaybackConfig {
     defaultVolume: DEFAULT_PLAYBACK.defaultVolume,
     floatPlayer: DEFAULT_PLAYBACK.floatPlayer,
     floatPosition: DEFAULT_PLAYBACK.floatPosition,
+    subtitleFontSize: DEFAULT_PLAYBACK.subtitleFontSize,
+    subtitleColor: DEFAULT_PLAYBACK.subtitleColor,
   }
 }
 
@@ -123,12 +135,22 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
   // 默认音量：夹紧到 0–1，缺省/非法回退 0.5。
   const rawVol = Number(source.defaultVolume)
   const defaultVolume = Number.isFinite(rawVol) ? Math.min(1, Math.max(0, rawVol)) : 0.5
-  // 悬浮小圆播放器：boolean，缺省关闭（纯客户端 UI 开关，不下发网关）。
-  const floatPlayer = typeof source.floatPlayer === 'boolean' ? source.floatPlayer : false
+  // 悬浮小圆播放器：boolean，缺省开启（纯客户端 UI 开关，不下发网关）。
+  const floatPlayer = typeof source.floatPlayer === 'boolean' ? source.floatPlayer : true
   // 悬浮位置：只接受通用悬浮层的预设 key，非法/缺省回退「顶部居中」。
   const rawPos = typeof source.floatPosition === 'string' ? source.floatPosition : ''
   const floatPosition: FloatPositionKey =
     rawPos in FLOAT_POSITION_PRESETS ? (rawPos as FloatPositionKey) : 'top-center'
+  // 当前字幕字号：只接受预设档位，非法/缺省回退 18。
+  const rawFont = Number(source.subtitleFontSize)
+  const subtitleFontSize = (SUBTITLE_FONT_SIZE_OPTIONS as readonly number[]).includes(rawFont)
+    ? rawFont
+    : DEFAULT_SUBTITLE_FONT_SIZE
+  // 当前字幕颜色：只接受预设 hex，非法/缺省回退白色。
+  const rawColor = typeof source.subtitleColor === 'string' ? source.subtitleColor : ''
+  const subtitleColor = (SUBTITLE_COLOR_OPTIONS as readonly string[]).includes(rawColor)
+    ? rawColor
+    : DEFAULT_SUBTITLE_COLOR
   return {
     source: valid.includes(src as PlaybackSource) ? (src as PlaybackSource) : 'baidu',
     autoSave,
@@ -138,6 +160,8 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
     defaultVolume,
     floatPlayer,
     floatPosition,
+    subtitleFontSize,
+    subtitleColor,
   }
 }
 

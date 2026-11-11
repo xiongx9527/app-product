@@ -8,7 +8,7 @@ import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
 import { createMusicSource, needsProxy, type MusicSource } from './music'
 import { MusicSourceNotImplementedError } from './music/types'
-import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest } from './music/types'
+import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest, detectContentType } from './music/types'
 import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
 import {
   searchCandidates,
@@ -26,6 +26,7 @@ import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './musicContr
 import { detectVolumeCommand } from './volumeControl'
 import { detectMemoryCommand } from './memoryControl'
 import { detectSubtitleCommand } from './subtitleControl'
+import { detectPlayModeCommand } from './playModeControl'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -94,7 +95,10 @@ export interface VoiceSessionDeps {
 function nextPreference(text: string): string | undefined {
   if (!text) return undefined
   let kw = text
-    .replace(/换一?首|下一?首|换个?风格|换一?个风格|切歌|来点别的|换台/g, '')
+    .replace(
+      /换一?首|下一?首|换个?风格|换一?个风格|切歌|来点别的|换台|换一?段|换段|下一?段|换一?集|换集|下一?集|换一?部|换部|换一?回|换回|再来一?段|来段别的|来个别的|换一个|换个|换一下|再来一个/g,
+      ''
+    )
     .replace(/的/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -123,8 +127,12 @@ export class VoiceSessionService {
   private locationRequestTimer: ReturnType<typeof setTimeout> | null = null
   /** 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），随会话构建 */
   private musicSource: MusicSource | undefined = undefined
-  /** 最近一次下发的曲目（url/title/channel/cover），供「循环播放」指令复用同一首重播 */
-  private lastTrack: { url: string; title: string; channel?: string; cover?: string; artist?: string } | null = null
+  /**
+   * 最近一次下发的曲目，供「循环播放」复用同一首重播。
+   * contentType 记住当前播的是歌 / 评书 / 戏曲 / 电影…（歌曲为 undefined），
+   * 后续换内容、失败提示都据此措辞，避免一律当成「放歌」。
+   */
+  private lastTrack: { url: string; title: string; channel?: string; cover?: string; artist?: string; contentType?: string } | null = null
   /** 自动字幕开关：播放音乐时同源字幕是否自动拉取并展示；来自客户端设置（缺省开启）。 */
   private autoSubtitle = true
   /** 上一次成功下发的同源字幕，供「循环播放」重播同一首时复用，避免重新拉取失败把字幕覆盖成「暂无字幕」 */
@@ -333,7 +341,7 @@ export class VoiceSessionService {
     // 「换首刘德华的」带了具体偏好，应交回正常流程去放刘德华，不强行换风格。
     if (detectMusicCommand(text) === 'next') return !nextPreference(text)
     const t = (text ?? '').trim()
-    return /^(好|可以|行|嗯|要|就换|好的|好的呀|没问题|同意|是|对|换成|换一个|再来一个|别的|其它|其他|换首其它的|来首其它的|来个其它的)$/.test(
+    return /^(好|可以|行|嗯|要|就换|好的|好的呀|没问题|同意|是|对|换成|换个|换一个|再来一个|别的|其它|其他|换首其它的|来首其它的|来个其它的)$/.test(
       t
     )
   }
@@ -389,11 +397,19 @@ export class VoiceSessionService {
     confirm: string,
     loop?: number,
     artist?: string,
-    reuseSubtitle = false
+    reuseSubtitle = false,
+    contentType?: string
   ): Promise<void> {
     // 记下当前曲目，供「循环播放」指令复用（不必重新检索就能把同一首再播 N 遍）；
-    // 同时记下歌手，供后续「点一首歌」时按当前歌手优先（避免正在听周杰伦却让我选）。
-    this.lastTrack = { url: track.url, title: track.title, channel: track.channel, cover: track.cover, artist }
+    // 同时记下歌手与内容类型，供后续点歌/换内容按当前上下文走、措辞不一律当成「歌」。
+    this.lastTrack = {
+      url: track.url,
+      title: track.title,
+      channel: track.channel,
+      cover: track.cover,
+      artist,
+      contentType: contentType ?? this.lastTrack?.contentType,
+    }
     // 音量以默认值为起点：每次新播放下发 media.volume，供后续「调大/调小」相对增减。
     this.musicVolume = this.defaultVolume
     this.deps.send({ type: 'media.volume', volume: this.defaultVolume })
@@ -576,7 +592,14 @@ export class VoiceSessionService {
           // 关键词带了歌手（如「周杰伦 稻香」）→ 记下歌手，供后续点歌按当前歌手优先
           const words = contentWords(genre)
           const artistGuess = words.length >= 2 ? words[0] : this.lastTrack?.artist
-          await this.playTrack(track, m.playing(track.title), loop > 1 ? loop : undefined, artistGuess)
+          await this.playTrack(
+            track,
+            m.playing(track.title),
+            loop > 1 ? loop : undefined,
+            artistGuess,
+            false,
+            detectContentType(text) ?? detectContentType(track.title)
+          )
           this.musicActive = true
           break
         }
@@ -592,7 +615,14 @@ export class VoiceSessionService {
             await this.speakReply(m.offerOtherType())
             break
           }
-          await this.playTrack(track, m.switched(track.title))
+          await this.playTrack(
+            track,
+            m.switched(track.title),
+            undefined,
+            undefined,
+            false,
+            detectContentType(track.title) ?? this.lastTrack?.contentType
+          )
           this.musicActive = true
           break
         }
@@ -629,7 +659,8 @@ export class VoiceSessionService {
         await this.speakReply(m.notImplemented(e.sourceKind))
         return
       }
-      await this.speakReply(m.notFound(isSpokenContentRequest(text)))
+      // 当前播的是评书/戏曲等非歌曲内容时，即使这句指令里没带类型词也不能说「没找到这首歌」
+      await this.speakReply(m.notFound(isSpokenContentRequest(text) || !!this.lastTrack?.contentType))
     }
   }
 
@@ -657,6 +688,13 @@ export class VoiceSessionService {
     const subCmd = detectSubtitleCommand(text)
     if (subCmd) {
       await this.runSubtitleCommand(subCmd)
+      return true
+    }
+    // 「切换播放模式」「换个播放模式」含「播放」，会被音乐指令的 play 词误中，
+    // 故播放模式检测必须排在音乐指令之前。
+    const playModeCmd = detectPlayModeCommand(text)
+    if (playModeCmd) {
+      await this.runPlayModeCommand(playModeCmd)
       return true
     }
     const action = detectMusicCommand(text)
@@ -741,6 +779,20 @@ export class VoiceSessionService {
     // 开启：对当前正在播放的曲子重发字幕；没有则在下一首播放时自动带出。
     if (this.lastTrack) await this.emitAutoSubtitle(this.lastTrack.title, this.lastTrack.artist)
     await this.speakReply(m.subtitleOn())
+  }
+
+  /**
+   * 处理「切换播放模式」直接指令（绕开 LLM）：下发 client.playMode 让客户端
+   * 在「悬浮小圆」与「普通播放条」之间切换，再口播一句确认。
+   * toggle 不指定 mode，由客户端翻转当前模式；float/player 则直接指定。
+   */
+  private async runPlayModeCommand(action: NonNullable<ReturnType<typeof detectPlayModeCommand>>): Promise<void> {
+    const m = messages(this.lang).music
+    const mode = action === 'float' ? 'float' : action === 'player' ? 'player' : undefined
+    this.deps.send({ type: 'client.playMode', ...(mode ? { mode } : {}) })
+    const confirm =
+      action === 'float' ? m.playModeFloat() : action === 'player' ? m.playModePlayer() : m.playModeToggled()
+    await this.speakReply(confirm)
   }
 
   /** 口播一句短确认：复用 TTS 下发链路（tts.start → 流式 → tts.end），不进 LLM。 */

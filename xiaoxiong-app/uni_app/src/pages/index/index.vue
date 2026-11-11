@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { readScreenInfo, type ScreenInfo } from '@/core/adaptation/screen'
 import { FLOAT_POSITION_PRESETS } from '@/core/adaptation/floatLayer'
 import { appConfig } from '@/core/config'
+import { DEFAULT_SUBTITLE_FONT_SIZE, DEFAULT_SUBTITLE_COLOR } from '@/core/config/constants'
 import FloatLayer from '@/components/FloatLayer.vue'
 import { useAssistant } from '@/features/assistant/useAssistant'
 import { toDisplayText } from '@/core/text/displayText'
@@ -77,9 +78,9 @@ const {
   closeSubtitle,
 } = useAssistant()
 
-/** 悬浮小圆是否显示：设置开关打开 + 音乐条可见 + 有同源封面 */
+/** 悬浮小圆是否显示：开关打开 + 有内容在播放即可；无封面时显示占位唱片，所有播放内容同等对待 */
 const floatDiscVisible = computed(
-  () => appConfig.playback.floatPlayer === true && musicVisible.value && !!musicCover.value,
+  () => appConfig.playback.floatPlayer === true && musicVisible.value,
 )
 
 /** 位置从设置读取（通用 FloatPosition 参数），非法值回退顶部居中 */
@@ -96,10 +97,15 @@ function lyricCharWidth(s: string): number {
   return n
 }
 
-/** 单行显示整句：按句长在 18~13px 间微缩字号塞进固定宽度；不换行、不滚动，也不撑宽容器 */
+/** 当前字幕字号/颜色：来自设置页预设，缺省 18px / 白色；作用于悬浮当前句与字幕面板高亮行 */
+const subtitleActiveFontSize = computed(() => appConfig.playback.subtitleFontSize ?? DEFAULT_SUBTITLE_FONT_SIZE)
+const subtitleActiveColor = computed(() => appConfig.playback.subtitleColor ?? DEFAULT_SUBTITLE_COLOR)
+
+/** 单行显示整句：以用户设置字号为上限，超长句按比例缩到不换行（最低 13），不撑宽容器 */
 const lyricFontSize = computed(() => {
+  const base = subtitleActiveFontSize.value
   const w = Math.max(1, lyricCharWidth(currentSubtitleText.value))
-  return Math.round(Math.max(13, Math.min(18, 280 / w)))
+  return Math.round(Math.max(13, Math.min(base, 280 / w)))
 })
 
 // 网关能力健康度：连上 WS 后轮询 /api/health，把 LLM / ASR / TTS / 外网状态展示出来，
@@ -176,11 +182,12 @@ const musicProgress = computed(() => ({
 const musicSeekable = computed(() => isSeekable(musicProgress.value))
 const musicPercent = computed(() => progressPercent(musicProgress.value, seekPreview.value))
 
-/** 悬浮小圆外层环形进度：conic-gradient 按播放百分比画一圈（直播/未知时长固定 0） */
+/** 悬浮小圆外层环形进度：conic-gradient 按播放百分比画一圈（直播/未知时长固定 0）；
+ * 民国铜色环，与老式播放器主题一致（原为科技蓝） */
 const discProgressStyle = computed(() => {
   const pct = Math.min(100, Math.max(0, musicPercent.value))
   return {
-    background: `conic-gradient(#6c8cff 0%, #6c8cff ${pct}%, rgba(255,255,255,0.16) ${pct}%, rgba(255,255,255,0.16) 100%)`,
+    background: `conic-gradient(#c9a063 0%, #e7c987 ${pct}%, rgba(180,140,80,0.18) ${pct}%, rgba(180,140,80,0.18) 100%)`,
   }
 })
 const musicElapsed = computed(() => elapsedLabel(musicProgress.value, seekPreview.value))
@@ -504,8 +511,19 @@ function onConnTap(): void {
     <!-- 播放条与悬浮小圆互斥：悬浮显示时隐藏播放条，避免两个播放器同时出现 -->
     <view v-if="musicVisible && !floatDiscVisible" class="music-bar">
       <view class="music-row">
-        <!-- 封面与音频同源（歌曲宝详情页），有则展示、无则不留占位 -->
-        <image v-if="musicCover" class="music-cover" :src="musicCover" mode="aspectFill" />
+        <!-- 民国留声机：大铜喇叭 + 唱片 + 唱针，作为大播放器左侧视觉主体；
+             播放时喇叭暖光呼吸、唱片旋转、唱针‘放下’压片；暂停时喇叭收暗、停转、唱针‘拿起’ -->
+        <view
+          class="music-phono"
+          :class="{ 'music-phono--playing': !musicPaused && !musicEnded, 'music-phono--paused': musicPaused || musicEnded }"
+        >
+          <view class="phono__horn" />
+          <view class="phono__tube" />
+          <image v-if="musicCover" class="phono__record" :src="musicCover" mode="aspectFill" />
+          <view v-else class="phono__record phono__record--placeholder" />
+          <view class="phono__tonearm-base" />
+          <view class="phono__tonearm" />
+        </view>
         <view class="music-info">
           <text class="music-label" :class="{ paused: musicPaused, ended: musicEnded }">{{ musicEnded ? t('music.ended') : musicPaused ? t('music.pausedLabel') : t('music.nowPlaying') }}</text>
           <text class="music-title">{{ musicTitle }}</text>
@@ -563,7 +581,7 @@ function onConnTap(): void {
           class="music-slider"
           :value="musicPercent"
           :max="100"
-          activeColor="#5cd6b2"
+          activeColor="#c9a063"
           backgroundColor="rgba(255, 255, 255, 0.14)"
           block-size="10"
           @changing="onSeekPreview"
@@ -601,6 +619,7 @@ function onConnTap(): void {
           :id="'sub-' + i"
           class="subtitle-line"
           :class="{ 'subtitle-line--active': i === activeSubtitleIndex }"
+          :style="i === activeSubtitleIndex ? { fontSize: subtitleActiveFontSize + 'px', color: subtitleActiveColor } : {}"
         >{{ line.text }}</view>
       </scroll-view>
       <text v-else class="subtitle-empty">{{ t('music.noSubtitle') }}</text>
@@ -613,17 +632,21 @@ function onConnTap(): void {
       <!-- 固定宽度内容层：歌词再长也不撑宽容器，FloatLayer 的 translateX(-50%) 基准恒定，
            位置不会左右移动；小圆与歌词都在此层内居中，整体严格顶部居中 -->
       <view class="float-disc-body">
-        <view class="disc" :class="{ 'disc--paused': musicPaused || musicEnded }" @tap="onTogglePause">
+        <view class="disc" :class="{ 'disc--paused': musicPaused || musicEnded, 'disc--playing': !musicPaused && !musicEnded }" @tap="onTogglePause">
           <view class="disc__glow" />
           <view class="disc__progress" :style="discProgressStyle" />
-          <image class="disc__cover" :src="musicCover" mode="aspectFill" />
+          <!-- 民国留声机唱针：播放时压在唱片上、暂停时抬起，是播放/暂停最直观的区分 -->
+          <view class="disc__tonearm-base" />
+          <view class="disc__tonearm" />
+          <image v-if="musicCover" class="disc__cover" :src="musicCover" mode="aspectFill" />
+          <view v-else class="disc__cover disc__cover--placeholder" />
           <view class="disc__hole" />
         </view>
         <!-- 单行显示整句：不换行、不省略、不滚动；超长按句长微缩字号塞进固定宽度 -->
         <text
           v-if="currentSubtitleText"
           class="disc-lyric"
-          :style="{ fontSize: lyricFontSize + 'px' }"
+          :style="{ fontSize: lyricFontSize + 'px', color: subtitleActiveColor }"
         >{{ currentSubtitleText }}</text>
       </view>
     </FloatLayer>
@@ -1157,8 +1180,9 @@ function onConnTap(): void {
   gap: 8px;
   padding: 12px 14px;
   border-radius: 14px;
-  background: rgba(92, 214, 178, 0.08);
-  border: 1px solid rgba(92, 214, 178, 0.28);
+  /* 民国暖铜调，与悬浮小圆同色系，突出老式播放器质感 */
+  background: rgba(201, 160, 99, 0.1);
+  border: 1px solid rgba(201, 160, 99, 0.3);
 }
 
 .music-row {
@@ -1193,9 +1217,9 @@ function onConnTap(): void {
 }
 
 .music-ctrl.primary {
-  background: rgba(92, 214, 178, 0.18);
-  border-color: rgba(92, 214, 178, 0.42);
-  color: #8ee0bd;
+  background: rgba(201, 160, 99, 0.2);
+  border-color: rgba(201, 160, 99, 0.45);
+  color: #e7c987;
 }
 
 /* 循环按钮：容纳剩余次数角标 */
@@ -1215,7 +1239,7 @@ function onConnTap(): void {
   line-height: 16px;
   text-align: center;
   color: #0f1220;
-  background: #5cd6b2;
+  background: #c9a063;
   box-shadow: 0 0 0 1px rgba(15, 18, 32, 0.6);
 }
 
@@ -1228,7 +1252,7 @@ function onConnTap(): void {
 
 /* 喇叭：已提升到顶行控制区末尾 */
 .music-ctrl.vol-ctrl {
-  color: #8ee0bd;
+  color: #e7c987;
 }
 
 /* 竖向滑块：uni-app 的 slider 仅支持横向，这里用旋转把它立起来。
@@ -1287,7 +1311,7 @@ function onConnTap(): void {
   left: 0;
   right: 0;
   bottom: 0;
-  background: #5cd6b2;
+  background: #c9a063;
   border-radius: 3px;
 }
 
@@ -1299,7 +1323,7 @@ function onConnTap(): void {
   border-radius: 50%;
   background: #fff;
   transform: translate(-50%, 50%);
-  box-shadow: 0 0 6px rgba(92, 214, 178, 0.75);
+  box-shadow: 0 0 6px rgba(201, 160, 99, 0.75);
 }
 
 .music-ctrl.vol-ctrl.muted {
@@ -1307,9 +1331,9 @@ function onConnTap(): void {
 }
 
 .music-ctrl.vol-ctrl.active {
-  background: rgba(92, 214, 178, 0.18);
-  border-color: rgba(92, 214, 178, 0.42);
-  color: #8ee0bd;
+  background: rgba(201, 160, 99, 0.2);
+  border-color: rgba(201, 160, 99, 0.45);
+  color: #e7c987;
 }
 
 .music-ctrl:active {
@@ -1329,7 +1353,7 @@ function onConnTap(): void {
 
 .music-time {
   font-size: 11px;
-  color: #8ee0bd;
+  color: #e7c987;
   min-width: 30px;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -1351,22 +1375,162 @@ function onConnTap(): void {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #5cd6b2;
+  background: #c9a063;
 }
 
 .music-live-text {
   font-size: 11px;
   letter-spacing: 1px;
-  color: #8ee0bd;
+  color: #e7c987;
 }
 
-.music-cover {
-  width: 48px;
-  height: 48px;
-  border-radius: 10px;
+/* 民国留声机：大铜喇叭 + 唱片 + 唱针，作为大播放器左侧视觉主体。
+   播放时喇叭暖光呼吸、唱片旋转、唱针‘放下’压片；暂停时喇叭收暗、停转、唱针‘拿起’（留在圈内）。 */
+.music-phono {
+  position: relative;
+  width: 78px;
+  height: 64px;
   flex-shrink: 0;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(108, 140, 255, 0.22);
+}
+
+/* 大铜喇叭：朝左上张开的喇叭口，播放暖光呼吸、暂停收暗 */
+.phono__horn {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 34px;
+  height: 30px;
+  clip-path: polygon(0% 22%, 58% 0%, 100% 38%, 100% 62%, 58% 100%, 0% 78%);
+  background: linear-gradient(135deg, #f7e6b0 0%, #d8b06a 45%, #a8834d 100%);
+  border: 1px solid #6b4f25;
+  box-shadow: inset 0 0 8px rgba(255, 240, 200, 0.65);
+  transform: rotate(-8deg);
+  transform-origin: right center;
+  transition: opacity 0.4s ease, filter 0.4s ease;
+}
+/* 喇叭口内膛（暗膛），强化铜喇叭的张口感 */
+.phono__horn::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 22%;
+  width: 10px;
+  height: 56%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 50%, rgba(60, 40, 20, 0.85), rgba(20, 14, 8, 0.95));
+}
+
+/* 连接喇叭与唱片的细铜管 */
+.phono__tube {
+  position: absolute;
+  top: 26px;
+  left: 28px;
+  width: 18px;
+  height: 6px;
+  background: linear-gradient(180deg, #e7c987, #8a6d3b);
+  border: 1px solid #6b4f25;
+  border-radius: 3px;
+  transform: rotate(8deg);
+}
+
+/* 唱片：承接封面，播放旋转；铜边 + 做旧 */
+.phono__record {
+  position: absolute;
+  top: 14px;
+  right: 2px;
+  box-sizing: border-box;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 2px solid rgba(201, 160, 99, 0.6);
+  box-shadow: 0 0 0 1px rgba(124, 94, 46, 0.35), inset 0 0 10px rgba(0, 0, 0, 0.35);
+  filter: sepia(0.3) saturate(0.92) contrast(0.96);
+  animation: disc-spin 14s linear infinite;
+}
+.phono__record--placeholder {
+  background: repeating-radial-gradient(circle at 50% 50%, #3a2f1e 0, #3a2f1e 3px, #2a2114 4px, #2a2114 6px);
+}
+
+/* 唱针底座在唱片右上，唱针‘拿起/放下’区分播放/暂停（落在圈内） */
+.phono__tonearm-base {
+  position: absolute;
+  top: 16px;
+  right: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #e7c987, #8a6d3b);
+  border: 1px solid #6b4f25;
+  /* 转轴高光，做出金属轴芯的立体感 */
+  box-shadow: inset 0 1px 2px rgba(255, 240, 200, 0.55), inset 0 -1px 2px rgba(0, 0, 0, 0.4);
+  z-index: 3;
+}
+.phono__tonearm {
+  position: absolute;
+  top: 19px;
+  right: 8px;
+  width: 30px;
+  height: 4px;
+  border-radius: 4px;
+  /* 黄铜圆管：上沿高光、下沿暗边，做出金属圆柱质感 */
+  background: linear-gradient(180deg, #f7e6b0 0%, #e7c987 38%, #b88a4d 72%, #8a6d3b 100%);
+  transform-origin: right center;
+  transform: rotate(36deg);
+  /* 带回弹的缓动，让‘放下/拿起’更有机械质感 */
+  transition: transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+  z-index: 2;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+/* 针头端（唱头 + 针尖）：落在唱片上的那一端 */
+.phono__tonearm::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: -2px;
+  width: 7px;
+  height: 8px;
+  border-radius: 2px 2px 3px 3px;
+  background: linear-gradient(180deg, #f7e6b0, #a8834d);
+  border: 1px solid #6b4f25;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+/* 配重：靠近转轴的一端，平衡锤 */
+.phono__tonearm::after {
+  content: '';
+  position: absolute;
+  right: -3px;
+  top: -2px;
+  width: 6px;
+  height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #e7c987, #7a5e30);
+  border: 1px solid #6b4f25;
+}
+/* 暂停：唱针‘拿起’离开唱片，唱片停转、做旧加深；喇叭收暗 */
+.music-phono--paused .phono__tonearm {
+  transform: rotate(4deg);
+  opacity: 0.8;
+}
+.music-phono--paused .phono__record {
+  animation-play-state: paused;
+  filter: sepia(0.6) saturate(0.5) contrast(0.9) brightness(0.92);
+}
+.music-phono--paused .phono__horn {
+  opacity: 0.5;
+  filter: saturate(0.6) brightness(0.85);
+}
+/* 播放：喇叭暖光呼吸 */
+.music-phono--playing .phono__horn {
+  animation: phono-horn 2.8s ease-in-out infinite;
+}
+@keyframes phono-horn {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.18) drop-shadow(0 0 6px rgba(231, 201, 135, 0.7));
+  }
 }
 
 .music-info {
@@ -1380,11 +1544,11 @@ function onConnTap(): void {
 .music-label {
   font-size: 10px;
   letter-spacing: 1px;
-  color: #8ee0bd;
+  color: #e7c987;
 }
 
 .music-label.paused {
-  color: #ffb38a;
+  color: #e0a466;
 }
 
 .music-title {
@@ -1461,24 +1625,42 @@ function onConnTap(): void {
   color: #8b91ab;
 }
 
-/* 悬浮小圆（酷狗式旋转唱片）：内容是音乐业务，层级/位置由通用 FloatLayer 容器负责 */
+/* 悬浮小圆（民国老式留声机风格）：内容是音乐业务，层级/位置由通用 FloatLayer 容器负责 */
 .disc {
   position: relative;
-  width: 100px;
-  height: 100px;
+  width: 64px;
+  height: 64px;
 }
 
 .disc__glow {
   position: absolute;
-  top: -12px;
-  right: -12px;
-  bottom: -12px;
-  left: -12px;
+  top: -9px;
+  right: -9px;
+  bottom: -9px;
+  left: -9px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(108, 140, 255, 0.38), rgba(108, 140, 255, 0) 70%);
+  background: radial-gradient(circle, rgba(201, 160, 99, 0.42), rgba(201, 160, 99, 0) 70%);
+  transition: opacity 0.45s ease;
+}
+/* 民国铜色光晕：播放时暖光呼吸，暂停时收暗 */
+.disc--playing .disc__glow {
+  animation: disc-glow 2.8s ease-in-out infinite;
+}
+.disc--paused .disc__glow {
+  opacity: 0.32;
 }
 
-/* 外层环形进度：封面盖住中心，只露出这一圈；background 由 :style 按播放进度注入 conic-gradient */
+@keyframes disc-glow {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* 外层环形进度：封面盖住中心，只露出这一圈；background 由 :style 按播放进度注入 conic-gradient（铜色） */
 .disc__progress {
   position: absolute;
   top: 0;
@@ -1490,30 +1672,107 @@ function onConnTap(): void {
 
 .disc__cover {
   position: absolute;
-  top: 8px;
-  left: 8px;
+  top: 6px;
+  left: 6px;
   box-sizing: border-box;
-  width: 84px;
-  height: 84px;
+  width: 54px;
+  height: 54px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.28);
+  border: 2px solid rgba(201, 160, 99, 0.55);
+  box-shadow: 0 0 0 1px rgba(124, 94, 46, 0.35), inset 0 0 10px rgba(0, 0, 0, 0.35);
+  /* 民国做旧：常驻轻微 sepia，播放时更暖 */
+  filter: sepia(0.32) saturate(0.92) contrast(0.96);
   animation: disc-spin 14s linear infinite;
+}
+
+/* 无封面时的占位唱片：暖色黑胶纹路，保证评书/电台/百度兜底等内容也能同等悬浮 */
+.disc__cover--placeholder {
+  background: repeating-radial-gradient(
+    circle at 50% 50%,
+    #3a2f1e 0,
+    #3a2f1e 3px,
+    #2a2114 4px,
+    #2a2114 6px
+  );
 }
 
 .disc--paused .disc__cover {
   animation-play-state: paused;
+  /* 暂停：唱片褪成做旧灰黄，与播放的暖亮形成明显反差 */
+  filter: sepia(0.6) saturate(0.55) contrast(0.9) brightness(0.92);
 }
 
 .disc__hole {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 18px;
-  height: 18px;
-  margin: -9px 0 0 -9px;
+  width: 15px;
+  height: 15px;
+  margin: -7.5px 0 0 -7.5px;
   border-radius: 50%;
-  background: #14162a;
-  border: 2px solid rgba(255, 255, 255, 0.3);
+  background: radial-gradient(circle, #c9a063, #8a6d3b);
+  border: 2px solid rgba(255, 240, 210, 0.5);
+}
+
+/* 民国留声机唱针：底座在唱片圈内右上角（不再伸出圈外）。
+   播放：唱针‘放下’压在唱片上；暂停：唱针‘拿起’离开 —— 即播放/暂停最直观的区分。 */
+.disc__tonearm-base {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #e7c987, #8a6d3b);
+  border: 1px solid #6b4f25;
+  /* 转轴高光，做出金属轴芯的立体感 */
+  box-shadow: inset 0 1px 2px rgba(255, 240, 200, 0.55), inset 0 -1px 2px rgba(0, 0, 0, 0.4);
+  z-index: 6;
+}
+.disc__tonearm {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 46px;
+  height: 5px;
+  border-radius: 4px;
+  /* 黄铜圆管：上沿高光、下沿暗边，做出金属圆柱质感 */
+  background: linear-gradient(180deg, #f7e6b0 0%, #e7c987 38%, #b88a4d 72%, #8a6d3b 100%);
+  transform-origin: right center;
+  transform: rotate(38deg);
+  /* 带回弹的缓动，让‘放下/拿起’更有机械质感 */
+  transition: transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+  z-index: 5;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+/* 针头端（唱头 + 针尖）：落在唱片上的那一端 */
+.disc__tonearm::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: -2px;
+  width: 8px;
+  height: 9px;
+  border-radius: 2px 2px 3px 3px;
+  background: linear-gradient(180deg, #f7e6b0, #a8834d);
+  border: 1px solid #6b4f25;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+/* 配重：靠近转轴的一端，平衡锤 */
+.disc__tonearm::after {
+  content: '';
+  position: absolute;
+  right: -3px;
+  top: -2px;
+  width: 7px;
+  height: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #e7c987, #7a5e30);
+  border: 1px solid #6b4f25;
+}
+.disc--paused .disc__tonearm {
+  transform: rotate(6deg);
+  opacity: 0.78;
 }
 
 @keyframes disc-spin {
@@ -1524,7 +1783,7 @@ function onConnTap(): void {
 
 /* 固定宽度内容层：FloatLayer 宽度恒定 → 居中稳定，不随歌词长度左右移动 */
 .float-disc-body {
-  width: 280px;
+  width: 200px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1532,11 +1791,11 @@ function onConnTap(): void {
 
 /* 当前正在唱的那句：单行显示整句，不换行/不省略/不滚动；字号按句长微缩（由 :style 注入） */
 .disc-lyric {
-  width: 280px;
+  width: 200px;
   margin-top: 12px;
   font-weight: 600;
   line-height: 1.45;
-  color: #ffffff;
+  color: #f3e6c8;
   text-align: center;
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
   white-space: nowrap;
@@ -1554,12 +1813,10 @@ function onConnTap(): void {
   transition: color 0.18s ease, background 0.18s ease;
 }
 
-/* 当前高亮行明显大于普通行（13px→17px），配合加粗/底色/左侧亮条，一眼区分正在唱的那句 */
+/* 当前高亮行：字号/颜色由设置页（:style 注入）控制，这里只给加粗/底色/左侧亮条做区分 */
 .subtitle-line--active {
-  color: #ffffff;
   background: rgba(108, 140, 255, 0.22);
   font-weight: 700;
-  font-size: 17px;
   line-height: 1.6;
   padding: 6px 10px;
   box-shadow: inset 3px 0 0 #6c8cff;

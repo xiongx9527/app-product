@@ -6,6 +6,7 @@ import {
   type ResolvedTrack,
 } from '../types'
 import { extractBilibiliAudio, extractBvidsFromHtml, getWbiKey, wbiSign } from './bilibiliAudio'
+import { normalizeCoverUrl } from '../coverUrl'
 
 /**
  * 百度搜索兜底：B 站原生搜索对部分歌曲（生僻歌名/特殊字符/新歌）召回不足，
@@ -193,6 +194,8 @@ function relevanceScore(title: string, keyword = ''): number {
 export interface BiliResult {
   bvid: string
   title: string
+  /** B 站视频封面（搜索结果的 pic），与音轨/字幕同源；评书、视频类内容也据此显示悬浮封面 */
+  cover?: string
 }
 
 /** 递归遍历搜索返回的 JSON，收集所有「同时带 bvid 与 title」的视频条目（去重）。 */
@@ -208,8 +211,12 @@ function collectResults(node: unknown, out: Map<string, BiliResult> = new Map())
     if (!out.has(bvid)) {
       out.set(
         bvid,
-        // 标题里常混 <em> 高亮标签，去掉再比较
-        { bvid, title: String(obj.title).replace(/<[^>]+>/g, '') }
+        // 标题里常混 <em> 高亮标签，去掉再比较；视频封面(pic)同源带出，供悬浮/播放条显示
+        {
+          bvid,
+          title: String(obj.title).replace(/<[^>]+>/g, ''),
+          ...(typeof obj.pic === 'string' ? { cover: normalizeCoverUrl(obj.pic) } : {}),
+        }
       )
     }
   }
@@ -263,7 +270,12 @@ export function createBilibiliSearchSource(
       try {
         const audio = await extractBilibiliAudio(r.bvid, fetcher)
         if (audio.url) {
-          return { url: audio.url, title: audio.title ?? r.title, channel: 'bilibili' }
+          return {
+            url: audio.url,
+            title: audio.title ?? r.title,
+            channel: 'bilibili',
+            ...(r.cover ? { cover: r.cover } : {}),
+          }
         }
       } catch {
         // 该视频抽不到音轨，试下一个

@@ -685,7 +685,7 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     plays = h.events.filter((e) => e.type === 'media.play')
     expect(plays).toHaveLength(1) // 仍只有第一首，没有乱播
     expect(h.agentCalls()).toBe(0)
-    expect(texts(h)).toContain('要我直接换首其它风格的，还是你想听点别的')
+    expect(texts(h)).toContain('没找到同类型的其它内容，要我直接换点别的，还是你自己点名想听的？')
 
     // 用户说「好」：接受换其它风格 → 真的换一首其它风格并口播
     h.playbackDone()
@@ -907,6 +907,101 @@ describe('字幕开关指令（绕开 LLM）', () => {
     expect(subs.some((e) => e.close)).toBe(false)
     expect(h.agentCalls()).toBe(0)
     expect(texts(h)).toContain('已开启字幕')
+  })
+})
+
+describe('播放非歌曲内容时的换内容指令（不一律当「放歌」）', () => {
+  function spoken(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('正在播评书时说「换个」：走换内容、不进 LLM、不弹候选列表、不说「没找到这首歌」', async () => {
+    const h = createHarness({
+      finalizeTexts: ['播放单田芳的张作霖评书', '换个'],
+      musicSourceFactory: () => ({
+        resolve: async () => ({
+          url: 'https://bili/a.m4s',
+          title: '单田芳 张作霖 评书 第1回',
+          channel: 'bilibili',
+        }),
+        next: async () => ({
+          url: 'https://bili/b.m4s',
+          title: '单田芳 张作霖 评书 第2回',
+          channel: 'bilibili',
+        }),
+      }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(20)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(h.events.filter((e) => e.type === 'media.play')).toHaveLength(2)
+    expect(h.agentCalls()).toBe(0)
+    expect(spoken(h)).toContain('已为你切换到')
+    expect(spoken(h)).not.toContain('没找到这首歌')
+    expect(spoken(h)).not.toContain('找到几首')
+  })
+})
+
+describe('播放模式切换指令（绕开 LLM）', () => {
+  function spoken(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('「切换播放模式」：下发 client.playMode(toggle)，口播确认，不进 LLM，也不误当点歌', async () => {
+    const h = createHarness({ finalizeText: '切换播放模式' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const ev = h.events.find((e) => e.type === 'client.playMode') as
+      | { type: 'client.playMode'; mode?: 'float' | 'player' }
+      | undefined
+    expect(ev).toBeDefined()
+    expect(ev?.mode).toBeUndefined()
+    // 含「播放」但绝不能被当成点歌下发 media.play
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+    expect(spoken(h)).toContain('已切换播放模式')
+  })
+
+  it('「换个播放模式」同义说法也能切换', async () => {
+    const h = createHarness({ finalizeText: '换个播放模式' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    expect(h.events.some((e) => e.type === 'client.playMode')).toBe(true)
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('明确指定：「打开悬浮」→ mode:float，「关闭悬浮」→ mode:player', async () => {
+    const on = createHarness({ finalizeText: '打开悬浮' })
+    await startDialog(on.service)
+    await speakUtterance(on)
+    await sleep(30)
+    const evOn = on.events.find((e) => e.type === 'client.playMode') as
+      | { type: 'client.playMode'; mode?: 'float' | 'player' }
+      | undefined
+    expect(evOn?.mode).toBe('float')
+
+    const off = createHarness({ finalizeText: '关闭悬浮' })
+    await startDialog(off.service)
+    await speakUtterance(off)
+    await sleep(30)
+    const evOff = off.events.find((e) => e.type === 'client.playMode') as
+      | { type: 'client.playMode'; mode?: 'float' | 'player' }
+      | undefined
+    expect(evOff?.mode).toBe('player')
   })
 })
 

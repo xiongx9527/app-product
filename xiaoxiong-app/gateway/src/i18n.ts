@@ -60,6 +60,12 @@ export interface Messages {
     subtitleOff: () => string
     /** 语音「开启字幕」后口播 */
     subtitleOn: () => string
+    /** 语音切换播放模式：切到悬浮 */
+    playModeFloat: () => string
+    /** 语音切换播放模式：切回播放器 */
+    playModePlayer: () => string
+    /** 语音切换播放模式：只说切换（客户端自行 toggle） */
+    playModeToggled: () => string
   }
   /** 识别到非当前语言时，提示用户去设置里切换语言 */
   languageMismatch: (langLabel: string) => string
@@ -101,8 +107,9 @@ const zhCN: Messages = {
     '说铺垫废话或道歉（如“好的”“稍等”“对不起，出现…”“让我看看”“Skipping…”之类），' +
     '直接调用工具或给一句最简短的回复即可。全程使用简体中文，不要中英混排。',
   nowPlayingContext: (title, artist) =>
-    `【当前正在播放】歌曲：《${title}》${artist ? `（演唱：${artist}）` : ''}。` +
-    '若用户问起正在播放的歌曲、这首歌叫什么、谁唱的，请直接据此回答，不要说不知道。',
+    `【当前正在播放】《${title}》${artist ? `（${artist}）` : ''}。` +
+    '若用户问起正在播放的内容叫什么名字、是谁的作品，请直接据此回答，不要说不知道；' +
+    '它可能是歌曲、评书、戏曲、相声或影视内容，不要一律当成歌曲。',
   errors: {
     AUTH_FAILED: '鉴权失败，请重新登录',
     ASR_TIMEOUT: '识别超时',
@@ -136,11 +143,11 @@ const zhCN: Messages = {
       `为你推荐：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}首，${it}`).join('；')}。`,
     /** 推荐但没具体歌手/风格：引导补充，不擅自乱播 */
     recommendPrompt: () => '想听点什么风格，或者告诉我歌手，我帮你挑几首？',
-    /** 换一首找不到同类型的其它歌时，把选择权交给用户：问要不要换其它风格，或自己点名想听的 */
+    /** 换内容找不到同类型的其它内容时，把选择权交给用户（措辞对歌曲/评书/戏曲通用，不说「歌」） */
     offerOtherType: () =>
-      '没找到同类型的其它歌，要我直接换首其它风格的，还是你想听点别的（比如某个歌手）？',
-    /** 换一首（按钮/语音确认后）退回其它风格并口播一句（不静默、也不追问） */
-    switchedOther: () => '没找到同类型的其它歌，给你换首其它风格的。',
+      '没找到同类型的其它内容，要我直接换点别的，还是你自己点名想听的？',
+    /** 换内容（按钮/语音确认后）退回其它内容并口播一句（不静默、也不追问） */
+    switchedOther: () => '没找到同类型的其它内容，给你换点别的。',
     /** 循环播放：count 为总共播放的遍数（>1 才真循环，1 表示重播一遍） */
     looping: (count) =>
       count > 1 ? `为你循环播放 ${count} 遍。` : '为你重播一遍。',
@@ -160,6 +167,9 @@ const zhCN: Messages = {
     subtitleOff: () => '已关闭字幕。',
     /** 语音「开启字幕」后口播 */
     subtitleOn: () => '已开启字幕。',
+    playModeFloat: () => '已切换到悬浮模式。',
+    playModePlayer: () => '已切换到播放器模式。',
+    playModeToggled: () => '已切换播放模式。',
   },
   languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
@@ -196,8 +206,9 @@ const en: Messages = {
     'no "Sure", "Just a moment", "Sorry, ...", "Let me see", "Skipping...", etc. ' +
     'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing.',
   nowPlayingContext: (title, artist) =>
-    `[Now playing] Song: "${title}"${artist ? ` (by ${artist})` : ''}. ` +
-    'If the user asks what song is playing, its name, or who sings it, answer directly from this; do not say you don\'t know.',
+    `[Now playing] "${title}"${artist ? ` (${artist})` : ''}. ` +
+    'It may be a song, storytelling, opera, crosstalk or video content — do not assume it is a song. ' +
+    'If the user asks what is playing, its name or creator, answer directly from this; do not say you don\'t know.',
   // 占位播放源提示：英文会话也要拿到本地化展示名与英文文案，不残留中文
   music: {
     ...zhCN.music,
@@ -205,6 +216,12 @@ const en: Messages = {
       `The music source "${sourceDisplayName(kind, 'en')}" is not yet available. Please switch to "${sourceDisplayName('baidu', 'en')}" in settings.`,
     subtitleOff: () => 'Subtitles off.',
     subtitleOn: () => 'Subtitles on.',
+    offerOtherType: () =>
+      'No other content of the same type found. Shall I switch to something else, or would you name one?',
+    switchedOther: () => 'No other content of the same type found; switching to something else.',
+    playModeFloat: () => 'Switched to floating mode.',
+    playModePlayer: () => 'Switched to player mode.',
+    playModeToggled: () => 'Playback mode switched.',
   },
 }
 

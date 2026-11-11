@@ -2,6 +2,10 @@ import type { MusicFetcher } from '../types'
 import type { SubtitleLine } from '../../../protocol'
 import { parseLrc } from '../lyrics/parseLrc'
 import { joinArtistTitle } from '../lyrics/query'
+import { normalizeCoverUrl } from '../coverUrl'
+
+// 封面规范化能力已抽到共享模块，这里继续对外导出，保持本模块「同源曲目解析」的接口完整
+export { normalizeCoverUrl } from '../coverUrl'
 
 /**
  * 候选排序分：歌手 + 歌名都匹配优先（用户规则「歌手+歌名匹配且有歌词」的前半部分）。
@@ -79,21 +83,6 @@ export function extractPlayId(html: string): string | null {
  */
 export function extractLrcIsEmpty(html: string): boolean {
   return extractAppData(html)?.lrc_is_empty === true
-}
-
-/**
- * 规范化封面 URL：歌曲宝 appData 里的 mp3_cover 常带 JSON 转义残留
- * （形如 http:\/\/img1.kuwo.cn\/star\/cover.jpg，是非法 URL，<image> 加载不出），
- * 且多为 http 明文（原生 App / H5 混合内容会拦）。清掉残留反斜杠、统一升为 https，
- * 保证客户端 <image> 能直接加载。
- */
-export function normalizeCoverUrl(raw?: string): string | undefined {
-  if (!raw) return undefined
-  const u = raw.replace(/\\/g, '').trim()
-  if (!u) return undefined
-  if (u.startsWith('//')) return `https:${u}`
-  if (u.startsWith('http://')) return `https://${u.slice('http://'.length)}`
-  return u
 }
 
 /**

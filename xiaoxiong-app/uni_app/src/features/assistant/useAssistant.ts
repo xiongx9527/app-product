@@ -51,7 +51,7 @@ import type { ServerEvent, SessionMode } from '@/core/transport/types'
 import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
 import { matchWakeWord } from '@/core/wake/wakeWord'
 import { getLanguage } from '@/core/config'
-import { appConfig } from '@/core/config'
+import { appConfig, persistConfig } from '@/core/config'
 import { addFavorite } from '@/features/favorites/favoritesStore'
 
 /** 一轮对话的阶段：界面据此告诉用户「现在在干嘛」，避免以为卡住而插话。 */
@@ -380,6 +380,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 这是服务端驱动的，不回执（避免又把同一值上报回去形成环）。
         setMusicVolume(event.volume)
         break
+      case 'client.playMode': {
+        // 语音「切换播放模式」：网关只下发意图，客户端翻转/指定显示模式并落盘，
+        // 让设置页开关与实际呈现同步（悬浮小圆 与 普通播放条互斥，二选一显示）。
+        const next = event.mode ? event.mode === 'float' : !appConfig.playback.floatPlayer
+        appConfig.playback.floatPlayer = next
+        persistConfig()
+        break
+      }
       case 'audio.duplex':
         halfDuplex.value = event.mode === 'half'
         break

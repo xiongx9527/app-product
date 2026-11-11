@@ -108,4 +108,24 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
     expect(parseLoopCount('放首歌')).toBe(1) // 非循环语境 → 1（不循环）
     expect(parseLoopCount('')).toBe(1)
   })
+
+  it('换内容口语：「换个 / 换一个 / 换一段 / 下一集 / 换部」都识别为 next', () => {
+    // 评书/戏曲/影视类习惯说「段 / 集 / 部 / 回」，此前这些词都不命中 next，
+    // 「换个」还会被当成裸歌名去点歌（弹候选列表 / 报「没找到这首歌」）。
+    expect(detectMusicCommand('换个')).toBe('next')
+    expect(detectMusicCommand('换一个')).toBe('next')
+    expect(detectMusicCommand('换一段')).toBe('next')
+    expect(detectMusicCommand('下一段')).toBe('next')
+    expect(detectMusicCommand('换一集')).toBe('next')
+    expect(detectMusicCommand('下一集')).toBe('next')
+    expect(detectMusicCommand('换部电影')).toBe('next')
+    expect(detectMusicCommand('再来一段')).toBe('next')
+    expect(detectMusicCommand('换一回')).toBe('next')
+  })
+
+  it('整句锚定：普通对话里的「换个方法 / 换一个灯泡 / 换个话题」不误判为换内容', () => {
+    expect(detectMusicCommand('换个方法')).toBeNull()
+    expect(detectMusicCommand('换一个灯泡')).toBeNull()
+    expect(detectMusicCommand('换个话题')).toBeNull()
+  })
 })

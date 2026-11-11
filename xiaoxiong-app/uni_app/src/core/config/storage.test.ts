@@ -104,4 +104,35 @@ describe('app config', () => {
     const config = normalizeConfig({ playback: { source: 'baidu' } })
     expect(config.playback.source).toBe('baidu')
   })
+
+  it('默认开启悬浮，位置顶部居中，当前字幕 18px / 白色', () => {
+    const p = createDefaultConfig().playback
+    expect(p.floatPlayer).toBe(true)
+    expect(p.floatPosition).toBe('top-center')
+    expect(p.subtitleFontSize).toBe(18)
+    expect(p.subtitleColor).toBe('#ffffff')
+  })
+
+  it('脏存档里悬浮/位置/字号/颜色收敛到合法默认值', () => {
+    const config = normalizeConfig({
+      playback: {
+        floatPlayer: 'yes',
+        floatPosition: 'nowhere',
+        subtitleFontSize: 999,
+        subtitleColor: 'red',
+      },
+    })
+    expect(config.playback.floatPlayer).toBe(true)
+    expect(config.playback.floatPosition).toBe('top-center')
+    expect(config.playback.subtitleFontSize).toBe(18)
+    expect(config.playback.subtitleColor).toBe('#ffffff')
+  })
+
+  it('合法的字号档位与颜色预设被原样保留', () => {
+    const config = normalizeConfig({
+      playback: { subtitleFontSize: 26, subtitleColor: '#5cd6b2' },
+    })
+    expect(config.playback.subtitleFontSize).toBe(26)
+    expect(config.playback.subtitleColor).toBe('#5cd6b2')
+  })
 })

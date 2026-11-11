@@ -10,7 +10,7 @@ import { extractBvidsFromHtml } from './baidu/bilibiliAudio'
 import { createMusicSource, needsProxy } from './index'
 import { SOMA_CHANNELS } from './baidu/musicChannels'
 import type { MusicFetcher } from './types'
-import { isGenreRequest, genreToKeyword, isSpokenContentRequest } from './types'
+import { isGenreRequest, genreToKeyword, isSpokenContentRequest, detectContentType } from './types'
 
 describe('music sources', () => {
   it('soma：无风格时用默认频道', async () => {
@@ -232,6 +232,22 @@ describe('isSpokenContentRequest（决定「没找到」的措辞，不能把评
     for (const t of ['周杰伦 稻香', '放点轻音乐', '陈奕迅 十年', '', undefined]) {
       expect(isSpokenContentRequest(t)).toBe(false)
     }
+  })
+})
+
+describe('detectContentType（会话内记住当前播的是歌/评书/戏曲…）', () => {
+  it('从标题/请求里识别具体非歌曲类型，长词优先', () => {
+    expect(detectContentType('单田芳 张作霖 评书')).toBe('评书')
+    expect(detectContentType('郭德纲 相声 全集')).toBe('相声')
+    expect(detectContentType('京剧 贵妃醉酒')).toBe('京剧')
+    expect(detectContentType('西游记 动画片')).toBe('动画片')
+  })
+
+  it('歌曲名不含类型词时返回 undefined（表示「歌曲」）', () => {
+    expect(detectContentType('周杰伦 一路向北')).toBeUndefined()
+    expect(detectContentType('稻香')).toBeUndefined()
+    expect(detectContentType('')).toBeUndefined()
+    expect(detectContentType(undefined)).toBeUndefined()
   })
 })
 

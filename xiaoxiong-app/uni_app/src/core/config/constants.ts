@@ -18,6 +18,13 @@ export const TIMEZONE_OPTIONS: Array<{ value: string; i18nKey: string }> = [
   { value: 'UTC', i18nKey: 'settings.timezone.utc' },
 ]
 
+/** 当前字幕（悬浮小圆当前句 / 字幕面板高亮行）字号档位 px；设置页按档位选，脏值收敛 */
+export const SUBTITLE_FONT_SIZE_OPTIONS = [14, 18, 22, 26] as const
+export const DEFAULT_SUBTITLE_FONT_SIZE = 18
+/** 当前字幕颜色预设：只允许这几个 hex，避免自由输入写出非法样式；默认白色 */
+export const SUBTITLE_COLOR_OPTIONS = ['#ffffff', '#6c8cff', '#5cd6b2', '#ffb38a', '#ff8ab5'] as const
+export const DEFAULT_SUBTITLE_COLOR = '#ffffff'
+
 /** 把任意输入收敛到列表里的合法时区，非法或缺省回退东 8 区 */
 export function normalizeTimezone(value: unknown): string {
   const raw = String(value ?? '').trim()
