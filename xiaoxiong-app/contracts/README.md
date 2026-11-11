@@ -123,6 +123,9 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "media.stop" }
 { "type": "media.subtitle", "title": "七里香", "artist": "周杰伦", "lines": [{ "time": 1, "text": "窗外的麻雀" }, { "time": 9, "text": "在电线杆上多嘴" }] }
 { "type": "media.subtitle", "close": true }
+{ "type": "media.detail", "kind": "deals", "items": [{ "index": 1, "title": "全棉时代婴儿棉柔巾", "price": "200元", "mall": "京东", "tags": ["历史低价"], "link": "https://www.smzdm.com/p/xxx/", "image": "https://img.xxx/a.jpg" }] }
+{ "type": "media.detail", "kind": "deals", "items": [{ "index": 1, "title": "全棉时代婴儿棉柔巾", "price": "200元", "mall": "京东", "tags": ["历史低价"], "link": "https://www.smzdm.com/p/xxx/", "image": "https://img.xxx/a.jpg" }], "selectedIndex": 1 }
+{ "type": "media.detail", "kind": "deals", "items": [], "close": true }
 { "type": "client.location.request" }
 { "type": "client.cue", "cue": "asr-down" }
 { "type": "error", "code": "ASR_TIMEOUT", "message": "识别超时" }
@@ -139,6 +142,8 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 `media.play` 可带可选字段 `cover`（字符串）：与音频**同源**的封面图地址——歌曲来自歌曲宝详情页 `mp3_cover`，评书/视频类来自 B 站视频封面 `pic`，统一经网关规范化（清 JSON 转义残留、`http→https`、协议相对补 https）。**所有播放内容同等对待**：客户端有封面则显示圆形封面，无封面时显示**占位唱片**（而不是不显示悬浮）；每次新播放覆盖，停止播放时清空。
 
 `media.play` 可带可选字段 `proxy`（布尔）：为 `true` 表示该直链带防盗链、需经服务端 `/music/stream` 代理转发（客户端 `InnerAudioContext` 无法自定义 Referer）。**频道→是否代理的判定在服务端完成**（属于「百度」播放源的源特有知识），服务端在 `media.play` 里直接给 `proxy` 标记，客户端只认此标记、按 `httpBase` 拼 `/music/stream.m4a?url=<encoded>` 即可，**客户端不再写死任何频道名**（如 `bilibili` / `haokan`）。
+
+`media.detail` 是**结构化内容卡片的全量状态快照**（收到即整体替换，幂等），客户端在对话页**内嵌面板**展示、不用悬浮层。`kind` 是内容类型判别，容器不感知业务字段：`deals` 为商品详情类，未来可扩展 `text`（纯文本）/ `project`（开源项目）/ `chart` / `report`（图表报表）/ `webview`（嵌入页）等，各带自身 payload。`deals` 的 `items` 为编号列表，`index` 从 1 开始；每项 `title` 必有，其余 `price` / `mall` / `tags` / `time` / `link` / `image` 均可缺省（不同数据源字段多少不一，客户端须容忍缺失：缺则不显示、无 `link` 时禁用复制、无 `image` 时显示占位）。`selectedIndex` 省略/null 显示编号列表、为数字时切到该商品详情；`close:true` 收起面板。用户说「1」「第二个」或点编号项都落到同一 `selectedIndex`。**详情内容只展示、不朗读、不进 TTS**（同字幕口径）；选中后网关只口播一句编号确认，不复述商品内容。详情数据与语音服务来源、好价数据源解耦：客户端只认本协议快照，不从 `session.start.voice` 取商品数据；切换语音来源不下发本事件、不重置已显示的卡片。图片/链接等第三方地址只由网关下发（客户端不拼 URL）。
 
 `client.location.request`：服务端**仅在位置/天气类工具被调用但本会话尚无设备位置时才下发**，客户端据此请求定位授权（manifest 已声明权限）并通过 `session.location` 上报经纬度。不在建连时主动要位置，避免冷启动就弹定位授权框打扰用户；用户没问位置相关问题时完全不触发定位。客户端若已授权/取不到位置则静默跳过，不阻断会话。
 
@@ -276,3 +281,6 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 - 所有时间戳为毫秒。
 - 客户端不得依赖服务端未在本文档声明的字段。
 - 新增字段必须向后兼容；删除/改名必须升版本并在 `docs/` 记录。
+- `media.detail` 的内容只做界面展示，不进入 TTS 播报；详情文字/图片/链接不由客户端自行拼接第三方地址。
+- `media.detail` 的 `DetailItem` 字段（`price` / `mall` / `tags` / `time` / `link` / `image`）均为可选，客户端必须容忍字段缺失，不得因换数据源或切语音来源而白屏或改动卡片组件。
+- 语音来源切换（`session.start` 重武装）不重置客户端已展示的 `media.detail` 卡片；商品/详情数据不得塞进 `session.start.voice.params`（该参数是 ASR / LLM / TTS 共用通道）。

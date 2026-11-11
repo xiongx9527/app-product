@@ -13,6 +13,22 @@ export interface SubtitleLine {
   text: string
 }
 
+/**
+ * 结构化内容卡片的一项（协议层稳定契约，与底层数据源解耦）。
+ * 除 index/title 外全部可选：不同数据源字段多少不一，客户端必须容忍缺失。
+ * 换数据源只改网关侧映射，本结构与卡片组件不动。
+ */
+export interface DetailItem {
+  index: number
+  title: string
+  price?: string
+  mall?: string
+  tags?: string[]
+  time?: number
+  link?: string
+  image?: string
+}
+
 export type Lang = 'zh-CN'
 
 /** 设备上报的位置：经纬度必填，address 为系统定位回调附带的可读地址（城市/街道），可选。 */
@@ -101,6 +117,11 @@ export type ServerEvent =
    *  lines 为带每行起始时间的逐行字幕，客户端据此跟随播放进度高亮并支持复制。
    *  close=true 时客户端收起字幕面板（语音「关闭字幕」指令下发），忽略 title/lines。 */
   | { type: 'media.subtitle'; title: string; artist?: string; lines: SubtitleLine[]; close?: boolean }
+  /** 结构化内容卡片的全量状态快照（幂等，收到即整体替换；只展示不朗读）。
+   *  kind 判别内容类型，容器不感知业务字段：deals=商品详情，未来扩展 text/project/chart/report/webview。
+   *  deals 的 items 为编号列表；selectedIndex 省略/null 显示列表、为数字切详情、close=true 收起。
+   *  详情数据与语音服务来源/数据源解耦，切来源不重置卡片，也不得塞进 session.start.voice.params。 */
+  | { type: 'media.detail'; kind: 'deals'; items: DetailItem[]; selectedIndex?: number | null; close?: boolean }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置（位置/天气类工具被调用但会话尚无位置）时才下发，

@@ -27,6 +27,22 @@ export function parseDeals(html: string): Deal[] {
     if (m) mall = m[1].trim()
     const tsRaw = li.attr('timesort')
     const time = tsRaw ? Number(tsRaw) : NaN
+    // 商品主图：懒加载常放在 data-original/data-src，回退 src；协议相对 // 补 https。
+    // 不同数据源图片类名不一，先找图片容器、再回退第一个 img；data: 内联占位图不算。
+    const img = li.find('.z-feed-img img, .feed-block-img img').first()
+    const imgEl = img.length ? img : li.find('img').first()
+    let rawImage = (
+      imgEl.attr('data-original') ||
+      imgEl.attr('data-src') ||
+      imgEl.attr('src') ||
+      ''
+    ).trim()
+    if (rawImage.startsWith('data:')) rawImage = ''
+    const image = rawImage
+      ? rawImage.startsWith('//')
+        ? `https:${rawImage}`
+        : rawImage
+      : undefined
     out.push({
       title,
       price,
@@ -34,6 +50,7 @@ export function parseDeals(html: string): Deal[] {
       tags,
       link,
       time: Number.isFinite(time) ? time : undefined,
+      image,
     })
   })
   return out

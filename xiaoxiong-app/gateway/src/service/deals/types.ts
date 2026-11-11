@@ -13,6 +13,8 @@ export interface Deal {
   time?: number
   /** 商品详情页链接。 */
   link: string
+  /** 商品主图（数据源可选提供）；无图时卡片显示占位，不阻断展示。 */
+  image?: string
 }
 
 /**
