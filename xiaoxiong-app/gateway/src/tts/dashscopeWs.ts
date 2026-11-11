@@ -41,6 +41,11 @@ export class DashScopeWsTts implements TtsProvider {
   private readonly model: string
   private readonly voice: string
   private readonly parameters: Record<string, unknown>
+  /** 最近一次合成的诊断：是否收到真实音频、失败原因。供健康探测复用，避免重复实现 WS 逻辑。 */
+  private lastDiagnosis: { receivedAudio: boolean; error: string | null } = {
+    receivedAudio: false,
+    error: null,
+  }
 
   constructor(
     baseUrl: string,
@@ -53,6 +58,28 @@ export class DashScopeWsTts implements TtsProvider {
     this.voice = normalizeVoice(this.model, stringParam(params.voice, defaultVoice(this.model)))
     this.workspace = stringParam(params.workspace, '')
     this.parameters = buildParameters(params)
+  }
+
+  /** 真合成一句做可用性探测：收到真实音频帧即视为可用；否则返回云端给的具体失败原因。 */
+  async probe(sample = '你好'): Promise<{ ok: boolean; message: string }> {
+    this.lastDiagnosis = { receivedAudio: false, error: null }
+    try {
+      // 消费掉音频生成器；真实音频会在合成过程中写入 lastDiagnosis
+      for await (const _ of this.synthesize(sample)) {
+        /* 不处理帧，仅驱动流程 */
+      }
+    } catch {
+      /* 错误已记录进 lastDiagnosis */
+    }
+    if (this.lastDiagnosis.receivedAudio) {
+      return { ok: true, message: '已接入（真实合成成功）' }
+    }
+    return {
+      ok: false,
+      message: this.lastDiagnosis.error
+        ? `已配置但合成失败：${this.lastDiagnosis.error}`
+        : '已配置但未能合成音频（云端无返回）',
+    }
   }
 
   async *synthesize(text: string): AsyncIterable<Uint8Array> {
@@ -134,6 +161,7 @@ export class DashScopeWsTts implements TtsProvider {
 
         if (event.event === 'task-failed') {
           stopped = true
+          console.error('[tts] DashScope 完整失败回包：', event.raw)
           queue.end(
             new Error(
               `DashScope TTS 任务失败：${event.code || '(no code)'} ${event.message || '(no message)'}`,
@@ -145,23 +173,23 @@ export class DashScopeWsTts implements TtsProvider {
       ws.on('error', (err: Error) => queue.end(err))
       ws.on('close', () => queue.end())
 
-      if (
-        !sendJson(ws, {
-          header: { action: 'run-task', task_id: taskId, streaming: 'duplex' },
-          payload: {
-            task_group: 'audio',
-            task: 'tts',
-            function: 'SpeechSynthesizer',
-            model: this.model,
-            input: {},
-            parameters: {
-              text_type: 'PlainText',
-              voice: this.voice,
-              ...this.parameters,
-            },
+      const runTask = {
+        header: { action: 'run-task', task_id: taskId, streaming: 'duplex' },
+        payload: {
+          task_group: 'audio',
+          task: 'tts',
+          function: 'SpeechSynthesizer',
+          model: this.model,
+          input: {},
+          parameters: {
+            text_type: 'PlainText',
+            voice: this.voice,
+            ...this.parameters,
           },
-        })
-      ) {
+        },
+      }
+      console.error('[tts] DashScope run-task 请求：', JSON.stringify(runTask))
+      if (!sendJson(ws, runTask)) {
         throw new Error('TTS run-task 发送失败')
       }
 
@@ -240,11 +268,13 @@ interface WsEvent {
   event: string
   code: string
   message: string
+  raw: string
 }
 
 function parseEvent(data: RawData): WsEvent | null {
+  const raw = rawToString(data)
   try {
-    const json = JSON.parse(rawToString(data)) as Record<string, unknown>
+    const json = JSON.parse(raw) as Record<string, unknown>
     const header = isRecord(json.header) ? json.header : {}
     const event = typeof header.event === 'string' ? header.event : ''
     if (!event) return null
@@ -252,6 +282,7 @@ function parseEvent(data: RawData): WsEvent | null {
       event,
       code: typeof header.error_code === 'string' ? header.error_code : '',
       message: typeof header.error_message === 'string' ? header.error_message : '',
+      raw,
     }
   } catch {
     return null
@@ -376,27 +407,20 @@ function clampNumber(value: unknown, min: number, max: number): number | null {
   return Math.min(max, Math.max(min, num))
 }
 
-/** 未指定音色时按模型版本给一个可直接使用的默认值。 */
-function defaultVoice(model: string): string {
-  if (model.startsWith('cosyvoice-v1')) return 'longxiaochun'
-  if (model.startsWith('cosyvoice-v3')) return 'longxiaochun_v3'
-  return 'longxiaochun_v2'
+/** 未指定音色时给一个可直接使用的默认值：YUMI（longyumi_v2）是百炼为「语音助手」场景
+ * 优化的 cosyvoice-v2 音色，最贴合本助手的对讲场景。 */
+function defaultVoice(_model: string): string {
+  return 'longyumi_v2'
 }
 
 /**
- * 客户端模板里的系统音色名是 v1 命名（longxiaochun / longxiaoxia / longwan 等），
- * 在 v2/v3 模型上需要带版本后缀，否则任务会直接报“音色不存在”。
- * 对任何未带版本后缀的基础音色都补上对应后缀；已带 _v1/_v2/_v3 的（如复刻音色）原样透传。
+ * 音色目录（gateway ttsVoices.DASHSCOPE_VOICES）已经是 cosyvoice-v2 的精确音色 id：
+ * 一部分带 _v2 后缀（longxiaochun_v2），一部分不带（longhuhu）。这些 id 与 TTS 模型版本
+ * 同源，直接透传即可——曾经在这里盲目补 _v2 后缀，会把 longhuhu 变成不存在的 longhuhu_v2
+ * 而触发 418 InvalidParameter。
  */
-function normalizeVoice(model: string, voice: string): string {
-  const version = model.startsWith('cosyvoice-v3')
-    ? '_v3'
-    : model.startsWith('cosyvoice-v2')
-      ? '_v2'
-      : ''
-  if (!version) return voice
-  if (/_v[123]$/.test(voice)) return voice
-  return `${voice}${version}`
+function normalizeVoice(_model: string, voice: string): string {
+  return voice
 }
 
 /** 静音帧长度：约按文本长度估，最短 0.1s（24kHz/16bit 单声道 = 48000 B/s）。 */

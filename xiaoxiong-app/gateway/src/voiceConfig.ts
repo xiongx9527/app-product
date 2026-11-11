@@ -7,6 +7,10 @@
  * 即「配置一律来自设置，不写死在网关」。两个默认根地址（内置 / DashScope）也由 config.ts 提供，
  * url 缺省时回退到它。
  */
+/** 阿里云百炼（DashScope）官方固定公网入口：语音（ASR/TTS）只能走它。长期稳定不变，
+ * 即便用户把 voice.url 换成自建 MAAS 实例，语音仍固定打云端——MAAS 是 LLM-only，无语音入口。 */
+const DASHSCOPE_CLOUD_URL = 'https://dashscope.aliyuncs.com'
+
 export type VoiceProviderKind = 'builtin' | 'dashscope'
 
 export interface VoiceConfig {
@@ -69,14 +73,19 @@ export function resolveCapabilityConfig(
   const asrProvider = config.asr.provider === 'stub' ? 'stub' : v.provider
   const ttsProvider = config.tts.provider === 'stub' ? 'stub' : v.provider
   if (v.provider === 'dashscope') {
-    const root = v.url.trim() || config.voiceDashscopeUrl
+    // 语音（ASR/TTS）只能走阿里云百炼官方云端入口：用户填的 voice.url 可能是自建 MAAS
+    // 实例（仅 LLM、无语音入口），若语音也跟着走 MAAS 会 418 失败，故语音固定打云端
+    // （DASHSCOPE_CLOUD_URL 长期稳定；环境变量 VOICE_DASHSCOPE_URL 可覆盖）。
+    const voiceRoot = config.voiceDashscopeUrl || DASHSCOPE_CLOUD_URL
+    // LLM 走用户填的 voice.url（如自建 MAAS 实例）的 /compatible-mode/v1；未填时回退云端。
+    const llmRoot = v.url.trim() || config.voiceDashscopeUrl || DASHSCOPE_CLOUD_URL
     return {
       // LLM 走 OpenAI 兼容层 /compatible-mode/v1；语音（ASR/TTS）是百炼的另一套入口，
-      // 不在 /compatible-mode 下：网关把根地址交给 DashScopeWsAsr/Tts，由它们换算成
+      // 不在 /compatible-mode 下：网关把云端根地址交给 DashScopeWsAsr/Tts，由它们换算成
       // wss(s)://host/api-ws/v1/inference（实时 ASR / TTS 均走此 WebSocket 入口）。
-      llm: { provider: llmProvider, baseUrl: `${root}/compatible-mode/v1`, model: v.model ?? config.llm.model, apiKey: v.apiKey, params: v.params ?? config.llm.params },
-      asr: { provider: asrProvider, baseUrl: root, apiKey: v.apiKey, endpointMs: v.endpointMs ?? config.asr.endpointMs, params: v.params ?? config.asr.params },
-      tts: { provider: ttsProvider, baseUrl: root, apiKey: v.apiKey, params: v.params ?? config.tts.params },
+      llm: { provider: llmProvider, baseUrl: `${llmRoot}/compatible-mode/v1`, model: v.model ?? config.llm.model, apiKey: v.apiKey, params: v.params ?? config.llm.params },
+      asr: { provider: asrProvider, baseUrl: voiceRoot, apiKey: v.apiKey, endpointMs: v.endpointMs ?? config.asr.endpointMs, params: v.params ?? config.asr.params },
+      tts: { provider: ttsProvider, baseUrl: voiceRoot, apiKey: v.apiKey, params: v.params ?? config.tts.params },
     }
   }
   // builtin（默认）：本地 AI 服务 OpenAI 兼容层，LLM 在 /llm/v1，语音在 /voice。

@@ -1,7 +1,6 @@
 import { Agent } from '@agentscope-ai/agentscope/agent'
 import {
   OpenAIChatModel,
-  DashScopeChatModel,
 } from '@agentscope-ai/agentscope/model'
 import type { ChatModelBase } from '@agentscope-ai/agentscope/model'
 import { UserMsg } from '@agentscope-ai/agentscope/message'
@@ -37,8 +36,11 @@ function createModel(cfg: LlmConfig): ChatModelBase {
         presetGenParams: params,
       })
     case 'dashscope':
-      // DashScope 官方 SDK（apiKey 必填），走其托管端点。
-      return new DashScopeChatModel({ modelName: model, apiKey, stream: true, presetGenParams: params })
+      // 走 OpenAI 兼容层并显式带上 baseURL：这样用户填的「服务地址」（如自建 MAAS 实例
+      // https://llm-xxx.maas.aliyuncs.com）才会真正被用上。DashScopeChatModel 不带 baseURL
+      // 参数，只会打阿里云云端、无视用户配置，导致自定义端点（MAAS）「模型异常」。
+      // 阿里云兼容模式与通用 OpenAI 兼容，OpenAIChatModel + baseURL 对云端 / 自定义端点一致生效。
+      return new OpenAIChatModel({ modelName: model, apiKey, baseURL: baseUrl || undefined, stream: true, presetGenParams: params })
     default:
       throw new Error(`不支持的 LLM 提供方：${provider as string}`)
   }

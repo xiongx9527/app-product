@@ -16,12 +16,17 @@
 export interface VoiceList {
   /** 该来源的默认音色（前端未选时回退用） */
   defaultVoice: string
+  /** 默认音色的所属模型（与音色一一对应，前端未选时回退用） */
+  defaultModel: string
   voices: VoiceOption[]
 }
 
 export interface VoiceOption {
   value: string
   label: string
+  /** 该音色所属的 TTS 模型（如 cosyvoice-v3-flash）；前端展示为「所属模型」列，并随选择下发，
+   *  网关据此决定实际请求的模型——模型不再写死。 */
+  model: string
 }
 
 /** 单条音色的双语素材：名称/语言各带中英文，性别是二值由函数转成对应词。 */
@@ -32,6 +37,8 @@ interface VoiceSeed {
   gender: 'male' | 'female'
   langZh: string
   langEn: string
+  /** 该音色所属的 cosyvoice 模型版本；同一音色若多个版本都有，取最好的（v3）。 */
+  model: string
 }
 
 function isEn(lang?: string): boolean {
@@ -48,31 +55,85 @@ function formatVoice(seed: VoiceSeed, lang?: string): VoiceOption {
   const name = en ? seed.nameEn : seed.nameZh
   const gender = genderLabel(seed.gender, en)
   const language = en ? seed.langEn : seed.langZh
-  return { value: seed.id, label: `${name}（${seed.id}）· ${gender} · ${language}` }
+  return {
+    value: seed.id,
+    label: `${name}（${seed.id}）· ${gender} · ${language}`,
+    model: seed.model,
+  }
 }
 
-/** 百炼 CosyVoice 官方标准音色目录（cosyvoice-v1；名称/性别/语言出自阿里云帮助中心文档）。 */
+/**
+ * 百炼 CosyVoice 官方 cosyvoice-v2 音色目录（id 取自阿里云帮助中心文档）。
+ * 关键：本网关 TTS 模型固定 cosyvoice-v2，所以这里的 id 必须都是 v2 可用的精确 id——
+ * 一部分带 _v2 后缀（longxiaochun_v2），一部分不带（longhuhu）。切勿混入 cosyvoice-v1 独占的
+ * 音色（如 longxiang / longlaotie / loongstella），否则云端会报 418 InvalidParameter。
+ */
 const DASHSCOPE_VOICES: VoiceSeed[] = [
-  { id: 'longxiaoxia', nameZh: '龙小夏', nameEn: 'Longxiaoxia', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longwan', nameZh: '龙婉', nameEn: 'Longwan', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longcheng', nameZh: '龙橙', nameEn: 'Longcheng', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longhua', nameZh: '龙华', nameEn: 'Longhua', gender: 'male', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longxiaochun', nameZh: '龙小淳', nameEn: 'Longxiaochun', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
-  { id: 'longxiaocheng', nameZh: '龙小诚', nameEn: 'Longxiaocheng', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
-  { id: 'longxiaobai', nameZh: '龙小白', nameEn: 'Longxiaobai', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longlaotie', nameZh: '龙老铁', nameEn: 'Longlaotie', gender: 'male', langZh: '中文东北口音', langEn: 'Northeastern Chinese' },
-  { id: 'longshu', nameZh: '龙书', nameEn: 'Longshu', gender: 'male', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longshuo', nameZh: '龙硕', nameEn: 'Longshuo', gender: 'male', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longjing', nameZh: '龙婧', nameEn: 'Longjing', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longmiao', nameZh: '龙妙', nameEn: 'Longmiao', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longyue', nameZh: '龙悦', nameEn: 'Longyue', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longyuan', nameZh: '龙媛', nameEn: 'Longyuan', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longfei', nameZh: '龙飞', nameEn: 'Longfei', gender: 'male', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longjielidou', nameZh: '龙杰力豆', nameEn: 'Longjielidou', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
-  { id: 'longtong', nameZh: '龙彤', nameEn: 'Longtong', gender: 'female', langZh: '中文', langEn: 'Chinese' },
-  { id: 'longxiang', nameZh: '龙祥', nameEn: 'Longxiang', gender: 'male', langZh: '中文', langEn: 'Chinese' },
-  { id: 'loongstella', nameZh: 'Stella', nameEn: 'Stella', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
-  { id: 'loongbella', nameZh: 'Bella', nameEn: 'Bella', gender: 'female', langZh: '中文', langEn: 'Chinese' },
+  // 旗舰 / 语音助手
+  { id: 'longyumi_v2', nameZh: 'YUMI', nameEn: 'YUMI', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longxiaochun_v2', nameZh: '龙小淳', nameEn: 'Longxiaochun', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longxiaoxia_v2', nameZh: '龙小夏', nameEn: 'Longxiaoxia', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longwan_v2', nameZh: '龙婉', nameEn: 'Longwan', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  // 男声
+  { id: 'longcheng_v2', nameZh: '龙橙', nameEn: 'Longcheng', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longshu_v2', nameZh: '龙书', nameEn: 'Longshu', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longnan_v2', nameZh: '龙楠', nameEn: 'Longnan', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longxiu_v2', nameZh: '龙修', nameEn: 'Longxiu', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longxiaocheng_v2', nameZh: '龙小诚', nameEn: 'Longxiaocheng', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longzhe_v2', nameZh: '龙哲', nameEn: 'Longzhe', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longtian_v2', nameZh: '龙天', nameEn: 'Longtian', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longze_v2', nameZh: '龙泽', nameEn: 'Longze', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longshao_v2', nameZh: '龙邵', nameEn: 'Longshao', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longhao_v2', nameZh: '龙浩', nameEn: 'Longhao', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longhan_v2', nameZh: '龙寒', nameEn: 'Longhan', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'kabuleshen_v2', nameZh: '龙深', nameEn: 'Kabuleshen', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longjielidou_v2', nameZh: '龙杰力豆', nameEn: 'Longjielidou', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English' },
+  // 女声（含无 _v2 后缀的 v2 音色）
+  { id: 'longhua_v2', nameZh: '龙华', nameEn: 'Longhua', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'loongbella_v2', nameZh: 'Bella2.0', nameEn: 'Bella 2.0', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longmiao_v2', nameZh: '龙妙', nameEn: 'Longmiao', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyue_v2', nameZh: '龙悦', nameEn: 'Longyue', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyuan_v2', nameZh: '龙媛', nameEn: 'Longyuan', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longfeifei_v2', nameZh: '龙菲菲', nameEn: 'Longfeifei', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longqiang_v2', nameZh: '龙嫱', nameEn: 'Longqiang', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyan_v2', nameZh: '龙颜', nameEn: 'Longyan', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longhuhu', nameZh: '龙呼呼', nameEn: 'Longhuhu', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longanpei', nameZh: '龙安培', nameEn: 'Longanpei', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longdaiyu', nameZh: '龙黛玉', nameEn: 'Longdaiyu', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingmu', nameZh: '龙应沐', nameEn: 'Longyingmu', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingda', nameZh: '龙应答', nameEn: 'Longyingda', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingjing', nameZh: '龙应静', nameEn: 'Longyingjing', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingyan', nameZh: '龙应严', nameEn: 'Longyingyan', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingtian', nameZh: '龙应甜', nameEn: 'Longyingtian', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingbing', nameZh: '龙应冰', nameEn: 'Longyingbing', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingtao', nameZh: '龙应桃', nameEn: 'Longyingtao', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingling', nameZh: '龙应聆', nameEn: 'Longyingling', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longanran', nameZh: '龙安燃', nameEn: 'Longanran', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longanxuan', nameZh: '龙安宣', nameEn: 'Longanxuan', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longanping', nameZh: '龙安萍', nameEn: 'Longanping', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longbaizhi', nameZh: '龙白芷', nameEn: 'Longbaizhi', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longanrou', nameZh: '龙安柔', nameEn: 'Longanrou', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longyingxiao', nameZh: '龙应笑', nameEn: 'Longyingxiao', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longjixin', nameZh: '龙机心', nameEn: 'Longjixin', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longanli', nameZh: '龙安莉', nameEn: 'Longanli', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longanwen', nameZh: '龙安温', nameEn: 'Longanwen', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longwanjun', nameZh: '龙婉君', nameEn: 'Longwanjun', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  { id: 'longlaoyi', nameZh: '龙老姨', nameEn: 'Longlaoyi', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English' },
+  // 方言 / 特色 / 童声 / 机器人
+  { id: 'longgaoseng', nameZh: '龙高僧', nameEn: 'Longgaoseng', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longyingxun', nameZh: '龙应询', nameEn: 'Longyingxun', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longyingcui', nameZh: '龙应催', nameEn: 'Longyingcui', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longsanshu', nameZh: '龙三叔', nameEn: 'Longsanshu', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longanchong', nameZh: '龙安冲', nameEn: 'Longanchong', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longanyun', nameZh: '龙安昀', nameEn: 'Longanyun', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longanlang', nameZh: '龙安朗', nameEn: 'Longanlang', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longyichen', nameZh: '龙逸尘', nameEn: 'Longyichen', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longlaobo', nameZh: '龙老伯', nameEn: 'Longlaobo', gender: 'male', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longanyue', nameZh: '龙安粤', nameEn: 'Longanyue', gender: 'male', langZh: '中文（粤语）', langEn: 'Cantonese' },
+  { id: 'longshange', nameZh: '龙陕哥', nameEn: 'Longshange', gender: 'male', langZh: '中文（陕西话）', langEn: 'Shaanxi dialect' },
+  { id: 'longanmin', nameZh: '龙安敏', nameEn: 'Longanmin', gender: 'female', langZh: '中文（闽南话）', langEn: 'Minnan dialect' },
+  { id: 'longjiqi', nameZh: '龙机器', nameEn: 'Longjiqi', gender: 'female', langZh: '中文', langEn: 'Chinese' },
+  { id: 'longhouge', nameZh: '龙猴哥', nameEn: 'Longhouge', gender: 'male', langZh: '中文', langEn: 'Chinese' },
 ]
 
 /** 内置语音服务精选目录（以 Edge-TTS 常用音色为主；写死以便国际化，不实时拉取）。 */
