@@ -50,7 +50,7 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       resolveVoice: (voice) => resolveCapabilityConfig(voice, config),
       createAsr,
       createTts,
-      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop) =>
+      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, getNowPlaying) =>
         createAgentService(
           { llm, timeZone: timezone },
           lang,
@@ -63,7 +63,8 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
           autoSubtitle,
           defaultLoop,
           defaultVolume,
-          autoLoop
+          autoLoop,
+          getNowPlaying
         ),
       data,
       send,

@@ -57,7 +57,7 @@ export function createAgentService(
   defaultLoop?: number,
   defaultVolume?: number,
   autoLoop?: boolean,
-  getNowPlaying?: () => { title: string; artist?: string } | null
+  getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null
 ): AgentService {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
@@ -76,7 +76,7 @@ export function createAgentService(
   // 这里更新其底层字段即可（不重建 Agent，避免丢失多轮对话上下文）。
   function refreshNowPlaying(): void {
     const now = getNowPlaying?.()
-    const ctx = now ? m.nowPlayingContext(now.title, now.artist) : ''
+    const ctx = now ? m.nowPlayingContext(now.title, now.artist, now.contentType) : ''
     ;(agent as unknown as { _sysPrompt: string })._sysPrompt = baseSysPrompt + ctx
   }
   return {

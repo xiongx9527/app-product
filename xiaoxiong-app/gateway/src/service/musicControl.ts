@@ -5,6 +5,13 @@
 
 export type MusicAction = 'play' | 'next' | 'pause' | 'resume' | 'stop' | 'recommend' | 'loop'
 
+/**
+ * 问句不应被「的歌 / 听歌」误判成点歌：像「这是谁唱的歌 / 这首歌叫什么」这类疑问，
+ * 应交给大模型从「正在播放」上下文里回答，而不是去放一首新歌。
+ * 只用无歧义疑问词（谁/什么/怎/吗/呢/？），不用「哪」（会误伤「播放哪吒」这类片名）。
+ */
+const MUSIC_QUESTION_RE = /[谁什么怎]|为什么|为何|吗|呢|\?|？/
+
 const ACTION_PATTERNS: Array<{ action: MusicAction; re: RegExp }> = [
   // 暂停类：必须排最前——「暂停播放 / 暂停音乐」里的「暂停」先命中，避免被下面的
   // stop / play 抢匹配（用户反馈「暂停播放被关掉」就是 stop 的「停播」子串误中）。
@@ -76,7 +83,11 @@ export function detectMusicCommand(text: string): MusicAction | null {
   if (!t) return null
   if (BARE_NEXT_RE.test(t)) return 'next'
   for (const { action, re } of ACTION_PATTERNS) {
-    if (re.test(t)) return action
+    if (re.test(t)) {
+      // 问句里的「的歌 / 听歌」不该触发点歌：交给大模型回答「谁唱的 / 叫什么」，避免误放新歌。
+      if (action === 'play' && MUSIC_QUESTION_RE.test(t)) return null
+      return action
+    }
   }
   return null
 }

@@ -8,6 +8,17 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
     expect(detectMusicCommand('来一首轻音乐')).toBe('play')
   })
 
+  it('问句里的「的歌 / 听歌」不误判成点歌：交给大模型回答「谁唱的/叫什么」', () => {
+    // 用户反馈：说「这是谁唱的歌啊 / 这是什么歌」结果被当成点歌去放了一首新的，
+    // 而不是从「正在播放」上下文回答。问句不应触发播放动作。
+    expect(detectMusicCommand('这是谁唱的歌啊')).toBeNull()
+    expect(detectMusicCommand('这首歌叫什么')).toBeNull()
+    expect(detectMusicCommand('这是什么歌')).toBeNull()
+    expect(detectMusicCommand('这首歌是谁唱的')).toBeNull()
+    // 但真正点歌（无疑问词）仍正常识别
+    expect(detectMusicCommand('播放周杰伦的稻香')).toBe('play')
+  })
+
   it('「放 X 的歌」也能识别为播放（只说「放」不带「播」）', () => {
     // 用户反馈：说「放刘德华的歌」失灵，只有「播放刘德华的歌」能放。
     // 这里验证指令识别层能认出 play；解析层由 genreToKeyword 兜底去掉开头的「放」。

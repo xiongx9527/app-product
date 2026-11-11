@@ -566,12 +566,17 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     // 用户反馈：说「暂停播放」结果被关掉（误判成 stop）。这条端到端用例走真实
     // finalizeUtterance 路径（带音乐源），验证命中 pause 后下发 media.pause、
     // 绝不发 media.stop，且绕开大模型。
+    // 先放一首（让 musicActive=true），再发「暂停播放」——没在播时「暂停」应如实说没有，不下发。
     const h = createHarness({
-      finalizeText: '暂停播放',
+      finalizeTexts: ['播放周杰伦的稻香', '暂停播放'],
       musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/x.m4s', title: 'x', channel: 'bilibili' })),
     })
     await startDialog(h.service)
-    await speakUtterance(h)
+    await speakUtterance(h) // 播放
+    await sleep(30)
+    h.playbackDone() // 播完回执，释放排队、允许下一句指令
+    await sleep(20)
+    await speakUtterance(h) // 暂停
     await sleep(30)
 
     const pauses = h.events.filter((e) => e.type === 'media.pause')
@@ -581,6 +586,20 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     // 直连绕开 LLM：不应调用 agent
     expect(h.agentCalls()).toBe(0)
     expect(texts(h)).toContain('已暂停')
+  })
+
+  it('暂停播放但当前没在播放：如实说没有，不下发 media.pause、不进 LLM', async () => {
+    const h = createHarness({
+      finalizeText: '暂停播放',
+      musicSourceFactory: () => playSource(async () => ({ url: 'https://bili/x.m4s', title: 'x', channel: 'bilibili' })),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(h.events.filter((e) => e.type === 'media.pause')).toHaveLength(0)
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('现在还没在播放什么')
   })
 
   /** 桩源：把每次播放/换歌时收到的关键词编码进标题，并随调用递增序号，便于断言“换一首”是否换到不同歌。 */
@@ -881,12 +900,31 @@ describe('字幕开关指令（绕开 LLM）', () => {
   }
 
   it('语音「关闭字幕」：下发 media.subtitle(close) 收起面板并口播，不进 LLM', async () => {
-    const h = createHarness({ finalizeText: '关闭字幕' })
-    await startDialog(h.service)
-    await speakUtterance(h)
+    // 先放一首带字幕的曲子（让 subtitleActive=true），再「关闭字幕」应如实说已关闭。
+    const subtitleLines = [
+      { time: 1, text: '第一句' },
+      { time: 5, text: '第二句' },
+    ]
+    const h = createHarness({
+      finalizeTexts: ['播放周杰伦的稻香', '关闭字幕'],
+      musicSourceFactory: () => ({
+        resolve: async () => ({ url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }),
+        getSubtitle: async () => subtitleLines,
+      }),
+    })
+    h.service.handleText(
+      JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN', playback: { source: 'baidu', autoSubtitle: true } })
+    )
+    await sleep(5)
+    await speakUtterance(h) // 播放（带字幕）
+    await sleep(30)
+    h.playbackDone() // 播完回执，释放排队、允许下一句指令
+    await sleep(20)
+    await speakUtterance(h) // 关闭字幕
     await sleep(30)
 
-    const close = h.events.find((e) => e.type === 'media.subtitle') as
+    // 有多条 media.subtitle（播放时的自动字幕 + 关闭时的 close），取带 close 的那条
+    const close = h.events.find((e) => e.type === 'media.subtitle' && (e as { close?: boolean }).close) as
       | { type: 'media.subtitle'; close?: boolean }
       | undefined
     expect(close).toBeDefined()
@@ -894,6 +932,17 @@ describe('字幕开关指令（绕开 LLM）', () => {
     // 直连指令绕开大模型
     expect(h.agentCalls()).toBe(0)
     expect(texts(h)).toContain('已关闭字幕')
+  })
+
+  it('语音「关闭字幕」但当前本就没有字幕：如实说没有、不谎称已关闭，不进 LLM', async () => {
+    const h = createHarness({ finalizeText: '关闭字幕' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    // 没有正在显示的字幕时也照常下发 close（无害收起），但口播必须如实说「当前没有字幕」，不谎称已关闭
+    expect(h.agentCalls()).toBe(0)
+    expect(texts(h)).toContain('当前没有字幕')
   })
 
   it('语音「开启字幕」：口播开启，不进 LLM', async () => {
