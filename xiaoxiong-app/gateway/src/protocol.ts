@@ -53,6 +53,30 @@ export interface LocationInfo {
   address?: string
 }
 
+/** MCP 服务器传输方式：stdio（拉起本地子进程）/ sse（Server-Sent Events）/ http（Streamable HTTP）。 */
+export type McpTransport = 'stdio' | 'sse' | 'http'
+
+/**
+ * 一个 MCP 服务器配置：由客户端设置页下发，网关据此在会话建连时连上并把其工具注册进助手工具箱。
+ * stdio 方式会在网关侧按 command 拉起本地子进程；sse / http 走网络端点。
+ */
+export interface McpServerConfig {
+  name: string
+  transport: McpTransport
+  /** stdio：要执行的命令（如 npx @modelcontextprotocol/server-filesystem） */
+  command?: string
+  /** stdio：命令参数 */
+  args?: string[]
+  /** stdio：子进程环境变量 */
+  env?: Record<string, string>
+  /** sse / http：服务器地址 */
+  url?: string
+  /** 仅启用的工具白名单；不填表示全部启用 */
+  enabledTools?: string[]
+  /** 禁用的工具黑名单 */
+  disabledTools?: string[]
+}
+
 /** 客户端 → 服务端（文本控制帧） */
 export type ClientMessage =
   | {
@@ -80,6 +104,24 @@ export type ClientMessage =
        * 网关据此作为好价/开源工具未显式指定条数时的默认（工具上限 1–10）。
        */
       recommend?: { dealsCount?: number; opensourceCount?: number }
+      /**
+       * 记忆设置：来自客户端设置页。当前仅自动记忆（自动抽取）开关与合并（摘要）的相关参数。
+       * 手动指令（记录下 / 帮我记 等）不受 auto 开关影响，始终生效。
+       * consolidateThreshold / consolidateEvery 缺省由网关运行配置决定（环境变量可覆盖）。
+       */
+      memory?: {
+        auto?: boolean
+        /** 自动记忆合并（摘要）触发阈值：记忆条数达到此值才周期性合并去重。 */
+        consolidateThreshold?: number
+        /** 自动记忆合并（摘要）频率：每这么多次抽取触发一次合并。 */
+        consolidateEvery?: number
+      }
+      /**
+       * MCP 服务器列表：来自客户端设置页，由用户自行填写并开启。
+       * 网关在会话建连时逐个连上、把它们的工具注册进助手工具箱，使语音助手能调用 MCP 工具。
+       * 单个服务器连接失败不影响会话（跳过并继续）。缺省空（不连接任何 MCP 服务器）。
+       */
+      mcp?: { servers?: McpServerConfig[] }
       /**
        * 设备稳定标识：客户端持久化生成（一次），连接时随 WS URL query 与 payload 上报。
        * 网关据此把会话与连接解耦——同一设备的重连/重唤醒走「重新武装」复用会话，

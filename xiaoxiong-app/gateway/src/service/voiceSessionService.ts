@@ -2,7 +2,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, DetailItem, Lang, LocationInfo, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
+import type { ClientMessage, DetailItem, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
 import type { GatewayConfig } from '../config'
 import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
@@ -42,6 +42,15 @@ import { buildHealth } from './health'
 /** 播报期间最多排几句用户插话，超出直接拒收。 */
 const MAX_QUEUE = 3
 
+/** 自动记忆抽取时，喂给抽取引擎的「最近用户原话」最多保留几句（足够判断稳定性即可）。 */
+const MAX_HISTORY_TURNS = 8
+
+/** 自动记忆合并（摘要）触发阈值默认值：记忆条数达到此值后，每隔 CONSOLIDATE_EVERY 轮抽取合并去重一次。 */
+const DEFAULT_CONSOLIDATE_THRESHOLD = 30
+
+/** 自动记忆合并（摘要）频率默认值：每这么多次抽取触发一次合并（避免每次都打 LLM）。 */
+const DEFAULT_CONSOLIDATE_EVERY = 5
+
 /** 单个语音会话的业务编排：ASR → 智能体 → TTS，并记录日志到数据库。 */
 export interface VoiceSessionDeps {
   agentFactory: (
@@ -60,8 +69,10 @@ export interface VoiceSessionDeps {
     autoLoop?: boolean,
     dealsCount?: number,
     opensourceCount?: number,
-    getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null
-  ) => AgentService
+    getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null,
+    autoMemory?: boolean,
+    mcpServers?: McpServerConfig[]
+  ) => AgentService | Promise<AgentService>
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
   createAsr: (cfg: AsrConfig) => AsrProvider
   createTts: (cfg: TtsConfig) => TtsProvider
@@ -98,6 +109,10 @@ export interface VoiceSessionDeps {
    * 测试可注入桩，避免真打 ASR/TTS/LLM 服务、又能精确控制「哪些能力不可用」。
    */
   capabilityProbe?: () => Promise<import('./health').HealthReport | null>
+  /** 自动记忆合并（摘要）触发阈值：记忆条数达到此值才周期性合并去重（缺省见模块常量） */
+  consolidateThreshold?: number
+  /** 自动记忆合并（摘要）频率：每这么多次抽取触发一次合并（缺省见模块常量） */
+  consolidateEvery?: number
 }
 
 /**
@@ -171,6 +186,16 @@ export class VoiceSessionService {
   private dealsCount = 3
   /** 开源工具推荐条数：来自客户端设置页 session.start.recommend.opensourceCount，缺省 3，范围 1–10。 */
   private opensourceCount = 3
+  /** 自动记忆（自动抽取）开关：来自客户端设置页 session.start.memory.auto，缺省关。开启时助手才会主动沉淀长期记忆。 */
+  private autoMemory = false
+  /** 自动记忆合并（摘要）阈值：来自客户端设置页 session.start.memory.consolidateThreshold，缺省走模块常量/网关配置。 */
+  private consolidateThreshold = DEFAULT_CONSOLIDATE_THRESHOLD
+  /** 自动记忆合并（摘要）频率：来自客户端设置页 session.start.memory.consolidateEvery，缺省走模块常量/网关配置。 */
+  private consolidateEvery = DEFAULT_CONSOLIDATE_EVERY
+  /** 最近几句用户原话（仅真实对话轮次）：作为抽取引擎的上下文，判断哪些事实值得长期记住。 */
+  private recentUserTurns: string[] = []
+  /** 自动抽取累计次数：用于节流合并（摘要）触发频率。 */
+  private autoExtractRuns = 0
   /** 当前是否正在播放（播放/切歌/循环置真，停止置假）。决定「点歌按当前歌手优先」是否生效：
    *  仅当用户正处于某个歌手的播放会话时才自动选同歌手版本；已停止则老老实实列选项让用户选。 */
   private musicActive = false
@@ -192,6 +217,8 @@ export class VoiceSessionService {
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
+  /** MCP 服务器列表：来自客户端 session.start.mcp.servers，建连时交给 agentFactory 注册进工具箱；重建/结束时据此关闭旧客户端。 */
+  private mcpServers: McpServerConfig[] = []
   private readonly deviceId: string | null = null
   /** 本次会话的 ASR / TTS 实例：在 start() 里按客户端设置的语音配置构建（地址/密钥/参数来自设置） */
   private asr!: AsrProvider
@@ -279,6 +306,20 @@ export class VoiceSessionService {
         }
         this.dealsCount = toCount(rc?.dealsCount, 3)
         this.opensourceCount = toCount(rc?.opensourceCount, 3)
+        // 自动记忆开关：来自客户端设置页（session.start.memory.auto），缺省关。
+        // 仅控制助手是否主动沉淀长期记忆；手动指令（记录下 / 帮我记 等）始终生效。
+        this.autoMemory = typeof msg.memory?.auto === 'boolean' ? msg.memory.auto : false
+        // 合并（摘要）阈值/频率：优先用客户端设置页下发的 per-session 值（非负整数，0 表示每轮都合并），
+        // 否则回退到网关运行配置（VoiceSessionDeps 注入），再不行用模块常量。收敛到 >=0 的整数。
+        const toPosInt = (v: unknown, fallback: number): number => {
+          const n = Number(v)
+          return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback
+        }
+        this.consolidateThreshold = toPosInt(msg.memory?.consolidateThreshold, this.deps.consolidateThreshold ?? DEFAULT_CONSOLIDATE_THRESHOLD)
+        this.consolidateEvery = toPosInt(msg.memory?.consolidateEvery, this.deps.consolidateEvery ?? DEFAULT_CONSOLIDATE_EVERY)
+        // MCP 服务器列表：来自客户端设置页（session.start.mcp.servers），缺省空（不连接任何服务器）。
+        // 建连会话据此连上并把工具注册进助手工具箱；单个失败不影响会话（在 agentFactory 内跳过）。
+        this.mcpServers = msg.mcp?.servers ?? []
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, msg.voice)
         // ASR/TTS/LLM 未就绪时，网关没法用语音播报，改为下发预录提示音，让用户「听得见地」知道；
         // 探测有 15s 缓存，连重连/重唤醒都便宜，不每次真打服务。不下发具体文案（提示音已含人声）。
@@ -999,6 +1040,48 @@ export class VoiceSessionService {
     await this.speakReply(n > 0 ? m.forgot(cmd.topic, n) : m.nothingToForget())
   }
 
+  /** 记录本轮用户原话（仅真实对话轮次），供抽取引擎作为最近上下文；最多保留最近若干句。 */
+  private pushUserTurn(text: string): void {
+    const t = (text ?? '').trim()
+    if (!t) return
+    this.recentUserTurns.push(t)
+    if (this.recentUserTurns.length > MAX_HISTORY_TURNS) this.recentUserTurns.shift()
+  }
+
+  /**
+   * 自动记忆：开关开启时，每轮真实对话结束后异步抽取并沉淀长期记忆（不阻塞语音播报）。
+   * - 抽取：把最近几句用户原话交给抽取引擎，得到可长期记住的稳定事实，按 key 覆盖写入。
+   * - 摘要：记忆较多时周期性合并去重，避免无限膨胀；合并结果只会更少或持平，绝不放空。
+   * 失败静默丢弃、不影响正常对话；抽取是异步的，会话若立刻结束可能来不及落库（下一轮再补）。
+   */
+  private async runAutoMemory(): Promise<void> {
+    if (!this.autoMemory || !this.memoryStore || !this.agent) return
+    try {
+      const existing = await this.memoryStore.list()
+      const extracted = await this.agent.extractMemories(this.recentUserTurns.slice(), existing)
+      if (extracted.length === 0) return
+      for (const e of extracted) {
+        await this.memoryStore.save(e.key, e.value)
+      }
+      // 合并（摘要）：条数达标且每 N 轮触发一次；要求合并后条数 ≤ 合并前，防止模型误删把记忆清空。
+      // 阈值/频率来自客户端设置页下发（per-session），回退网关运行配置，再回退模块常量，便于调参、不写死。
+      const threshold = this.consolidateThreshold
+      const every = this.consolidateEvery
+      const total = existing.length + extracted.length
+      this.autoExtractRuns += 1
+      if (total >= threshold && this.autoExtractRuns % every === 0) {
+        const latest = await this.memoryStore.list()
+        const consolidated = await this.agent.consolidateMemories(latest)
+        if (consolidated.length > 0 && consolidated.length <= latest.length) {
+          await this.memoryStore.forget()
+          for (const e of consolidated) await this.memoryStore.save(e.key, e.value)
+        }
+      }
+    } catch {
+      // 自动记忆失败不影响正常对话：静默丢弃，下一轮再试
+    }
+  }
+
   /**
    * 处理「关闭字幕 / 开启字幕」直接指令（绕开 LLM）：运行时切换 autoSubtitle 开关，
    * 关闭时下发 close 事件收起当前字幕面板，开启时对正在播放的曲子重发字幕。
@@ -1024,7 +1107,6 @@ export class VoiceSessionService {
     }
     // 没在播的曲子：仅把开关打开（设置态），当前没有字幕可显示，照实说已开启即可。
     this.subtitleActive = false
-    await this.speakReply(m.subtitleOn())
     await this.speakReply(m.subtitleOn())
   }
 
@@ -1267,6 +1349,12 @@ export class VoiceSessionService {
           await playback
         } else this.cancelPlaybackWait()
         if (this.turn !== turn || this.cancelled) break
+        // 真实对话轮次（非直连命令）结束后，异步抽取并沉淀长期记忆；直连命令（音乐/音量/记忆等）
+        // 不进抽取，避免把「放首歌」「清空记忆」这类指令本身当成偏好记下来。
+        if (!directHandled) {
+          this.pushUserTurn(current)
+          void this.runAutoMemory()
+        }
         const next = this.queue.shift()
         if (!next) break
         // 让客户端把界面切到这句，并同步权威剩余数（客户端不靠 ±1 猜测）
@@ -1477,10 +1565,11 @@ export class VoiceSessionService {
     }
     if (rearm) {
       // 来源变了：重建 agent（记忆已缓存复用，不丢长期记忆）；切来源本就发生在设置页、非对话中途，
-      // 本轮对话历史随旧 agent 作废可接受。
+      // 本轮对话历史随旧 agent 作废可接受。重建前先关掉旧 MCP 客户端（stdio 子进程 / 网络连接）。
+      await this.agent?.closeMcp?.()
       this.agent = mode === 'wake'
         ? null
-        : this.deps.agentFactory(
+        : await this.deps.agentFactory(
             resolved.llm,
             lang,
             this.timezone,
@@ -1497,6 +1586,8 @@ export class VoiceSessionService {
             this.dealsCount,
             this.opensourceCount,
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
+            this.autoMemory,
+            this.mcpServers
           )
       this.lastLlmKey = llmKey
       return
@@ -1507,6 +1598,8 @@ export class VoiceSessionService {
     this.pendingDeals = null
     this.pendingProjects = null
     this.pendingNextFallback = false
+    this.recentUserTurns = []
+    this.autoExtractRuns = 0
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
     // 加载该设备的长期记忆并注入系统提示（让助手「知道你的习惯」）；
     // memoryStore 同时交给工具层，供 remember/recall/forget 读写。无 deviceId 则无记忆。
@@ -1526,7 +1619,7 @@ export class VoiceSessionService {
     this.agent =
       mode === 'wake'
         ? null
-        :                   this.deps.agentFactory(
+        : await this.deps.agentFactory(
             resolved.llm,
             lang,
             this.timezone,
@@ -1542,7 +1635,9 @@ export class VoiceSessionService {
             this.autoLoop,
             this.dealsCount,
             this.opensourceCount,
-            () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null)
+            () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
+            this.autoMemory,
+            this.mcpServers
           )
     this.lastLlmKey = llmKey
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
@@ -1592,7 +1687,9 @@ export class VoiceSessionService {
     if (this.sessionRowId) this.deps.data.endSession(this.sessionRowId, Date.now())
     this.asr.reset()
     this.vad.reset()
-    // 会话显式结束：销毁对话记忆，下次 start 视为全新会话（不再保留历史/候选）。
+    // 会话显式结束：关掉 MCP 客户端（stdio 子进程 / 网络连接）后销毁对话记忆，
+    // 下次 start 视为全新会话（不再保留历史/候选）。
+    void this.agent?.closeMcp?.()
     this.agent = null
     // 从设备注册表移除；下次同一 deviceId 的 start 会新建会话而非复用。
     this.deps.onEnded?.()

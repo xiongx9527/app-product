@@ -130,6 +130,17 @@ export interface Messages {
     /** 没匹配到任何记忆时口播 */
     nothingToForget: () => string
   }
+  /** 自动记忆（自动抽取 + 摘要）：抽取引擎与合并引擎的提示词，按 lang 本地化后再喂给模型 */
+  memoryAuto: {
+    /** 抽取系统提示（静态，不随已有记忆变化） */
+    extractSystem: () => string
+    /** 抽取用户消息：history 为最近几句用户原话，existing 为已存记忆清单（空串表示还没有） */
+    extractTask: (history: string, existing: string) => string
+    /** 合并（摘要）系统提示（静态） */
+    consolidateSystem: () => string
+    /** 合并用户消息：existing 为当前全部记忆清单 */
+    consolidateTask: (existing: string) => string
+  }
 }
 
 /** 播放源 kind → 各语言展示名（与客户端 settings.playback.* i18n 保持一致）。kind 是代码值，展示名集中在此处与客户端两侧对齐 */
@@ -275,6 +286,25 @@ const zhCN: Messages = {
     cleared: () => '已清空关于你的全部记忆。',
     nothingToForget: () => '没找到匹配的，没什么可忘的。',
   },
+  memoryAuto: {
+    extractSystem: () =>
+      '你是语音助手「小熊」的记忆抽取引擎。你的唯一任务：阅读用户最近的口头表述，挑出值得长期记住的稳定事实。' +
+      '只抽取关于这位用户的、稳定且长期有用的信息：习惯、偏好、作息规律、日程、重要的人/地点/事物、长期背景。' +
+      '不要抽取一次性请求、临时需求、闲聊、或显而易见的内容。当新信息与已有记忆冲突时（例如起床时间改了），' +
+      '复用同一个话题标签 key，让旧值被覆盖更新。每条 value 写成精炼摘要（尽量不超过 40 个汉字）。' +
+      '你必须且只能调用 remember_many 工具一次，把抽取结果放进 entries（没有值得记的就传空数组）。不要输出任何文字回复。',
+    extractTask: (history, existing) =>
+      `已有记忆（若为空表示还没有）：\n${existing || '（无）'}\n\n` +
+      `最近对话（用户原话）：\n${history}\n\n` +
+      '请抽取值得长期记住的事实。',
+    consolidateSystem: () =>
+      '你是语音助手「小熊」的记忆合并引擎。下面是关于这位用户已存储的记忆，其中可能包含重复、零散或过时的内容。' +
+      '请把重叠/重复的事实合并成单条精炼记忆，保留所有独特事实，不要丢掉重要信息。' +
+      '每条 value 写成精炼摘要（尽量不超过 40 个汉字），优先用稳定的话题标签 key。' +
+      '你必须且只能调用 remember_many 工具一次，返回合并后的完整记忆集合（不要遗漏任何独特事实）。不要输出任何文字回复。',
+    consolidateTask: (existing) =>
+      `已有记忆：\n${existing}\n\n请合并去重，返回精炼后的完整记忆集合。`,
+  },
 }
 
 /**
@@ -350,6 +380,24 @@ const en: Messages = {
     playModeFloat: () => 'Switched to floating mode.',
     playModePlayer: () => 'Switched to player mode.',
     playModeToggled: () => 'Playback mode switched.',
+  },
+  memoryAuto: {
+    extractSystem: () =>
+      "You are the memory extraction engine for the voice assistant «XiongXiong». Your only job is to read the user's recent spoken utterances and pick out stable facts worth remembering long-term. " +
+      'Extract ONLY durable, long-term-useful information about this user: habits, preferences, routine, schedule, important people/places/things, and long-term context. ' +
+      'Do NOT extract one-off requests, transient needs, chit-chat, or anything obvious. When a new fact supersedes an existing one (e.g. a changed wake-up time), reuse the same topic key so the old value is overwritten. ' +
+      'Keep each value a concise summary (ideally under 80 characters). You MUST call the remember_many tool exactly once with the extracted entries (empty array if nothing is worth saving). Do not output any text reply.',
+    extractTask: (history, existing) =>
+      `Existing memories (empty means none yet):\n${existing || '(none)'}\n\n` +
+      `Recent conversation (user's own words):\n${history}\n\n` +
+      'Extract the facts worth remembering long-term.',
+    consolidateSystem: () =>
+      "You are the memory consolidation engine for the voice assistant «XiongXiong». The memories below may contain duplicates, fragments, or outdated items. " +
+      'Merge overlapping/duplicate facts into single concise entries, keep all unique facts, and do not drop anything important. ' +
+      'Keep each value a concise summary (ideally under 80 characters), preferring stable topic keys. ' +
+      'You MUST call the remember_many tool exactly once and return the consolidated full set (do not omit any unique fact). Do not output any text reply.',
+    consolidateTask: (existing) =>
+      `Existing memories:\n${existing}\n\nPlease merge and de-duplicate, returning the refined full set of memories.`,
   },
   // 与 music 一样逐项显式覆盖，不用 ...zhCN.deals 展开：漏一项 TypeScript 就会报错
   deals: {

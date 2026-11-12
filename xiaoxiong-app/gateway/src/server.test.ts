@@ -19,6 +19,7 @@ const base: GatewayConfig = {
   asr: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', endpointMs: 30, params: {} },
   tts: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', params: {} },
   db: { path: ':memory:' },
+  memory: { consolidateThreshold: 30, consolidateEvery: 5 },
 }
 
 /** 100ms 方波人声帧：客户端持续上行后，静音帧会被 VAD 丢掉，测试得送人声。 */

@@ -20,7 +20,13 @@ interface Harness {
 
 function createHarness(): Harness {
   const captured: Array<MusicSource | undefined> = []
-  const agent: AgentService = { reply: async () => '' }
+  const agent: AgentService = {
+    reply: async () => '',
+    extractMemories: async () => [],
+    consolidateMemories: async () => [],
+    mcpClients: [],
+    async closeMcp() {},
+  }
   const asr: AsrProvider = {
     async push() {
       return null

@@ -135,4 +135,49 @@ describe('app config', () => {
     expect(config.playback.subtitleFontSize).toBe(26)
     expect(config.playback.subtitleColor).toBe('#5cd6b2')
   })
+
+  it('默认 mcp 为空列表', () => {
+    const config = createDefaultConfig()
+    expect(config.mcp).toEqual({ servers: [] })
+  })
+
+  it('记忆合并阈值/频率收敛为非负整数，非法回退默认（30 / 5）', () => {
+    const config = normalizeConfig({
+      memory: { autoMemory: true, consolidateThreshold: -3, consolidateEvery: 'x' },
+    })
+    expect(config.memory.autoMemory).toBe(true)
+    expect(config.memory.consolidateThreshold).toBe(30)
+    expect(config.memory.consolidateEvery).toBe(5)
+    const config2 = normalizeConfig({ memory: { consolidateThreshold: 0, consolidateEvery: 2 } })
+    expect(config2.memory.consolidateThreshold).toBe(0)
+    expect(config2.memory.consolidateEvery).toBe(2)
+  })
+
+  it('normalizeMcp 保留合法项、丢弃缺 command 的 stdio 与缺 url 的 sse/http', () => {
+    const config = normalizeConfig({
+      mcp: {
+        servers: [
+          { id: '1', name: 'fs', enabled: true, transport: 'stdio', command: 'npx foo' },
+          { id: '2', name: 'bad-stdio', enabled: true, transport: 'stdio' }, // 缺 command → 丢弃
+          { id: '3', name: 'http-srv', enabled: false, transport: 'http', url: 'http://x/mcp' },
+          { id: '4', name: 'bad-sse', enabled: true, transport: 'sse' }, // 缺 url → 丢弃
+          { id: '5', name: 'weird', enabled: true, transport: 'telnet' }, // 非法传输 → 丢弃
+        ],
+      },
+    })
+    const names = config.mcp.servers.map((s) => s.name)
+    expect(names).toContain('fs')
+    expect(names).toContain('http-srv')
+    expect(names).not.toContain('bad-stdio')
+    expect(names).not.toContain('bad-sse')
+    expect(names).not.toContain('weird')
+    // enabled 收敛为 boolean（http-srv 为 false）
+    const http = config.mcp.servers.find((s) => s.name === 'http-srv')
+    expect(http?.enabled).toBe(false)
+  })
+
+  it('normalizeMcp 对缺失/非数组回落到空列表', () => {
+    const config = normalizeConfig({ mcp: 'not-an-object' })
+    expect(config.mcp).toEqual({ servers: [] })
+  })
 })

@@ -50,7 +50,7 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       resolveVoice: (voice) => resolveCapabilityConfig(voice, config),
       createAsr,
       createTts,
-      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, opensourceCount, getNowPlaying) =>
+      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, opensourceCount, getNowPlaying, autoMemory, mcpServers) =>
         createAgentService(
           { llm, timeZone: timezone },
           lang,
@@ -66,12 +66,17 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
           autoLoop,
           dealsCount,
           opensourceCount,
-          getNowPlaying
+          getNowPlaying,
+          autoMemory,
+          mcpServers
         ),
       data,
       send,
       sendAudio,
       asrEndpointMs: config.asr.endpointMs,
+      // 自动记忆（抽取 + 摘要）：合并阈值/频率来自网关配置（可经环境变量覆盖），不写死在逻辑里
+      consolidateThreshold: config.memory.consolidateThreshold,
+      consolidateEvery: config.memory.consolidateEvery,
       deviceId,
       onEnded: deviceId ? () => removeSession(deviceId) : undefined,
       config,

@@ -119,6 +119,10 @@ export function playMusic(
   opts?: { loop?: number }
 ): void {
   if (!nextUrl) return
+  // 幂等防护：同一首歌正在播放时，重复下发的 media.play（重武装 / 重连 / 两条路径同时触发）
+  // 不再 stop+play 重头放一遍——否则听感就是「放两遍」。已自然播完（ended）后的重播是用户
+  // 明确意图（点重播按钮 / 换源），不在防护范围内，照常播放。
+  if (nextUrl === url.value && playing.value && !ended.value) return
   // 复用同一 InnerAudioContext 实例：原生端直接给实例换 src 即可重新拉流（这是 uni
   // 原生音频的标准用法，比销毁重建更稳——重建在部分机型上会与旧实例抢音频焦点而播不出）。
   // 切换前先 stop 旧曲，避免叠音。
@@ -199,6 +203,15 @@ export function stopMusic(): void {
     } catch {
       // 忽略
     }
+    // 原生端必须 destroy：仅 stop() 不会释放底层音频对象，webview 刷新后它仍会
+    // 在原生音频层继续播放、且无法再被本页面控制（表现为「关不掉 / 刷新后还在放」）。
+    // 销毁后下一次 playMusic 会经 ensureContext 重建，不影响再次播放。
+    try {
+      ctx.destroy()
+    } catch {
+      // 个别平台 destroy 不支持，忽略
+    }
+    ctx = null
   }
   playing.value = false
   paused.value = false

@@ -319,6 +319,29 @@ export class WebSocketTransport implements AssistantTransport {
         dealsCount: appConfig.recommend.dealsCount,
         opensourceCount: appConfig.recommend.opensourceCount,
       },
+      // 记忆设置：自动记忆（自动抽取）开关与合并（摘要）阈值/频率，来自客户端设置页。
+      // 缺省关；手动指令不受此开关影响。阈值/频率缺省由网关运行配置决定。
+      memory: {
+        auto: appConfig.memory.autoMemory,
+        consolidateThreshold: appConfig.memory.consolidateThreshold,
+        consolidateEvery: appConfig.memory.consolidateEvery,
+      },
+      // MCP 服务器列表：来自客户端设置页，仅启用项下发网关。网关据此连上并把其工具注册进助手工具箱。
+      // rearm 也会重新下发，故修改即时生效（下次 start / 重武装即生效）。
+      mcp: {
+        servers: appConfig.mcp.servers
+          .filter((s) => s.enabled)
+          .map((s) => ({
+            name: s.name,
+            transport: s.transport,
+            command: s.command,
+            args: s.args,
+            env: s.env,
+            url: s.url,
+            enabledTools: s.enabledTools,
+            disabledTools: s.disabledTools,
+          })),
+      },
       location: this.lastLocation ?? undefined,
       mode,
       // 本机稳定设备标识：网关据此复用会话（重连/重唤醒保留记忆）；URL query 也带一份作主路径

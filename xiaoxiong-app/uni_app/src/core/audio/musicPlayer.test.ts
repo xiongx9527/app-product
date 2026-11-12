@@ -357,3 +357,51 @@ describe('musicPlayer 单曲循环与播完态', () => {
     expect(player.musicState.loopRemaining.value).toBe(0)
   })
 })
+
+describe('musicPlayer 播放幂等（歌曲重复回归）', () => {
+  it('同一首歌正在播时，重复 playMusic 不会重头再放一遍', () => {
+    // 统计真正「开始播放」的次数：play() 被调用即代表一次起播
+    let playCount = 0
+    const origPlay = fake.play.bind(fake)
+    fake.play = () => {
+      playCount += 1
+      origPlay()
+    }
+    player.playMusic('https://x/same.mp3', '同一首')
+    player.playMusic('https://x/same.mp3', '同一首') // 网关重武装/重连可能再次下发同一首
+    player.playMusic('https://x/same.mp3', '同一首')
+
+    // 只应真正播放一次，而非每收到一次就 stop+play 重头放（否则听感「放两遍」）
+    expect(playCount).toBe(1)
+    expect(player.musicState.playing.value).toBe(true)
+  })
+
+  it('换一首不同地址的歌仍会正常播放', () => {
+    let playCount = 0
+    const origPlay = fake.play.bind(fake)
+    fake.play = () => {
+      playCount += 1
+      origPlay()
+    }
+    player.playMusic('https://x/a.mp3', 'A')
+    player.playMusic('https://x/b.mp3', 'B')
+
+    expect(playCount).toBe(2)
+    expect(player.musicState.url.value).toBe('https://x/b.mp3')
+  })
+
+  it('同一首歌自然播完后（ended）再播算重播，允许重新播放', () => {
+    let playCount = 0
+    const origPlay = fake.play.bind(fake)
+    fake.play = () => {
+      playCount += 1
+      origPlay()
+    }
+    player.playMusic('https://x/same.mp3', '同一首')
+    const first = playCount
+    fake.emit('ended') // 模拟自然播完
+    player.playMusic('https://x/same.mp3', '同一首')
+
+    expect(playCount).toBe(first + 1)
+  })
+})

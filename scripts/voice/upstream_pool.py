@@ -275,8 +275,8 @@ async def _probe_models(
                         return ids
             except Exception:
                 pass
-            # ollama 原生端点（vendor 为 ollama 或协议走原生时兜底）
-            if (vendor or "").lower() == "ollama" or (protocol or "").startswith("ollama"):
+            # ollama 原生端点兜底：只认 protocol，vendor 只是分组标签不切换协议
+            if (protocol or "").strip().lower() == "ollama":
                 try:
                     r = await client.get(base + "/api/tags", headers=headers)
                     if r.status_code == 200:

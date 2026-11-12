@@ -1168,7 +1168,7 @@ async def llm_models():
     data = await fetch_json(url, headers)
     if isinstance(data, Response):
         return data
-    if entry.get("vendor") == "ollama":
+    if llm_protocols.uses_ollama_native(protocol):
         data = llm_protocols.ollama_tags_to_openai(data)
     upstream_pool.mark_success("LLM", entry)
     return data
@@ -1246,10 +1246,15 @@ async def chat_completions(request: Request):
     req_vendor = body.get("vendor") if isinstance(body.get("vendor"), str) else None
     req_protocol = body.get("protocol") if isinstance(body.get("protocol"), str) else None
     req_base_url = body.get("base_url") if isinstance(body.get("base_url"), str) else None
+    # 管理面板「测试当前账号地址」：显式标志表示 base_url 是真实上游地址（可能尚未
+    # 保存进配置池），原样直连、不做下面那步 /llm 补全——那是「按 URL 测代理实例」
+    # 专用的，外部上游（如 https://api.deepseek.com）被补成 .../llm/v1/... 会 404。
+    # 自身代理剥离仍保留，避免用户误把本代理地址填进账号地址时造成自转发递归。
+    direct_upstream = body.get("direct_upstream") is True and bool(req_base_url)
     # 测试界面「按 URL 测试本代理（或其它实例）」：base_url 只填代理地址即可，
     # 自动补 /llm 前缀命中本代理的 OpenAI 兼容端点 /llm/v1/chat/completions；
     # 已带 /llm（如用户手填完整路径）则不重复追加。
-    if req_base_url and "/llm" not in req_base_url:
+    if req_base_url and not direct_upstream and "/llm" not in req_base_url:
         req_base_url = req_base_url.rstrip("/") + "/llm"
     # base_url 指向本代理自身时等价于「测本代理内部链路」：剥掉它走配置池路由，
     # 不再 HTTP 自转发（否则请求体带着 base_url 无限递归，前端一直「请求中」）。

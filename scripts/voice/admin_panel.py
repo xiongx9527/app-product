@@ -342,11 +342,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.cfg-table .env-req { color:var(--mut); font-size:11px; margin-top:3px; line-height:1.5; text-align:left; }
   /* 模型子表：提供商拥有哪些模型（多选）、哪个是默认、逐个模型是否可用。
      固定布局 + 定宽列：无论模型名长短，ollama / 自定义 两个子表内部列宽完全一致（已对齐）。 */
-  .model-pick { min-width:200px; }
+  .model-pick { min-width:200px; max-height:300px; overflow-y:auto; }
   .model-pick .mp-tools { display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; align-items:center; }
   table.model-sub { width:100%; border-collapse:collapse; table-layout:fixed; }
   table.model-sub th, table.model-sub td { border:1px solid var(--line); padding:2px 5px; font-size:11px; text-align:center; vertical-align:middle; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  table.model-sub th { background:#10141b; color:var(--mut); font-weight:600; }
+  table.model-sub th { background:#10141b; color:var(--mut); font-weight:600; position:sticky; top:0; z-index:1; }
   table.model-sub th:nth-child(1) { width:24px; }   /* 勾选 */
   table.model-sub th:nth-child(3) { width:42px; }   /* 默认 */
   table.model-sub th:nth-child(4) { width:46px; }   /* 操作 */
@@ -475,6 +475,9 @@ const I18N = {
     "body.fieldName": "字段名",
     "body.label": "自定义 body 参数（作为额外字段透传到上游；不保存，本次填写本次生效）",
     "builtin": "内置",
+    "cfg.customApi": "自定义 API",
+    "cfg.customApiOff": "外部 API 后端暂未接通，暂不可设为默认",
+    "cfg.providerPickNote": "单选指定默认提供商（与 LLM 一致）；多提供商切换待后端接入，当前实际仅内置生效。",
     "cfg.apiKeyAuth": "是否启用 API-Key 鉴权",
     "cfg.apiKeyList": "API Key 列表（一行一个；填 auto 自动生成）",
     "cfg.ipAllow": "IP 白名单（一行一个 IP 或 CIDR；留空=不限制）",
@@ -636,6 +639,9 @@ const I18N = {
     "body.fieldName": "Field name",
     "body.label": "Custom body params (forwarded to upstream as extra fields; not saved, applies to this session)",
     "builtin": "Built-in",
+    "cfg.customApi": "Custom API",
+    "cfg.customApiOff": "External API backend not wired yet; cannot be set as default",
+    "cfg.providerPickNote": "Single-select the default provider (same as LLM); multi-provider switching awaits backend wiring, currently only built-in is effective.",
     "cfg.apiKeyAuth": "Enable API-Key auth",
     "cfg.apiKeyList": "API Key list (one per line; fill \"auto\" to auto-generate)",
     "cfg.ipAllow": "IP allowlist (one IP or CIDR per line; blank = no restriction)",
@@ -1072,7 +1078,13 @@ function runModalTest(){
   const protoSel=document.getElementById('testModalProto');
   const proto=protoSel ? protoSel.value : ((g.accounts[0] && g.accounts[0].protocol) || g.protocol);
   const authKey=(document.getElementById('testModalAuthKey')?.value||'').trim();
+  // 测试直接用该提供商账号当前填的地址/key（可能尚未保存），与「刷新模型」同一口径；
+  // 弹窗单独填的 Key 优先，否则用账号里保存的 Key。
+  const acc=g.accounts[0]||{};
+  const directUrl=acc.base_url||'';
+  const directKey=authKey||acc.api_key||'';
   const opts={ vendor:g.vendor, model:m, protocol:proto, stream, think:needThink, bypassCatalog:true, kind:'modal', authKey,
+    direct:true, directUrl, directKey,
     messages:[{role:'user',content:TEST_PROMPT}],
     statusEl: stat, outEl: out,
     thinkEl: document.getElementById('testModalThink'), thinkWrapEl: document.getElementById('testModalThinkWrap'),
@@ -1232,10 +1244,11 @@ function paintAsrTable(){
                : asrBuiltinAvail==='err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
                : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.status')+'</th><th>'+t('common.action')+'</th>'
+    + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.status')+'</th><th>'+t('common.action')+'</th>'
     + '</tr></thead><tbody>';
-  // 固定只展示内置一行：写清依赖环境要求、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
+  // 内置：唯一可用提供商，「默认」单选默认勾选；依赖环境/状态/测试可用保持不变。
   html += `<tr class="asr-builtin" data-builtin="1">
+    <td class="row-act"><input type="radio" name="asrDefault" value="builtin" checked title="${t('llm.defaultProvider')}" /></td>
     <td class="prov-cell"><b>${t(ASR_BUILTIN)}</b></td>
     <td class="env-cell">
       <span class="muted">${t('asr.builtinModel')}</span>
@@ -1244,8 +1257,16 @@ function paintAsrTable(){
     <td>${bAvail}</td>
     <td class="row-act"><button class="mini asr-builtin-test" title="${t('asr.detectingTitle')}">${t('common.testAvail')}</button></td>
   </tr>`;
+  // 自定义 API 占位：单选禁用 + 如实标注后端未接通，不假装能用、不放地址/Key/测试假输入。
+  html += `<tr class="asr-custom">
+    <td class="row-act"><input type="radio" name="asrDefault" value="custom" disabled title="${t('cfg.customApiOff')}" /></td>
+    <td class="prov-cell"><b>${t('cfg.customApi')}</b></td>
+    <td class="env-cell"><span class="muted">${t('cfg.customApiOff')}</span></td>
+    <td><span class="badge b-mut">${t('common.notTested')}</span></td>
+    <td class="row-act"></td>
+  </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('asr.builtinNote')+'</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
+  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('cfg.providerPickNote')+'</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.asr-builtin-test'); if(bt) bt.onclick=testAsrBuiltin;
   const bh=document.getElementById('asrTableHint');
@@ -1283,10 +1304,11 @@ function paintTtsTable(){
                : ttsBuiltinAvail==='err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
                : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.status')+'</th><th>'+t('common.action')+'</th>'
+    + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.status')+'</th><th>'+t('common.action')+'</th>'
     + '</tr></thead><tbody>';
-  // 固定只展示内置一行：写清依赖环境要求、无地址/Key、无刷新、无删除；只留「测试可用」按需检测
+  // 内置：唯一可用提供商，「默认」单选默认勾选；依赖环境/状态/测试可用保持不变。
   html += `<tr class="tts-builtin" data-builtin="1">
+    <td class="row-act"><input type="radio" name="ttsDefault" value="builtin" checked title="${t('llm.defaultProvider')}" /></td>
     <td class="prov-cell"><b>${t('builtin')}</b></td>
     <td class="env-cell">
       <span class="muted">${t('tts.builtinSynth')}</span>
@@ -1296,8 +1318,16 @@ function paintTtsTable(){
     <td>${bAvail}</td>
     <td class="row-act"><button class="mini tts-builtin-test" title="${t('tts.synthTitle')}">${t('common.testAvail')}</button></td>
   </tr>`;
+  // 自定义 API 占位：单选禁用 + 如实标注后端未接通，不假装能用、不放地址/Key/测试假输入。
+  html += `<tr class="tts-custom">
+    <td class="row-act"><input type="radio" name="ttsDefault" value="custom" disabled title="${t('cfg.customApiOff')}" /></td>
+    <td class="prov-cell"><b>${t('cfg.customApi')}</b></td>
+    <td class="env-cell"><span class="muted">${t('cfg.customApiOff')}</span></td>
+    <td><span class="badge b-mut">${t('common.notTested')}</span></td>
+    <td class="row-act"></td>
+  </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('tts.builtinNote')+'</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
+  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('cfg.providerPickNote')+'</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.tts-builtin-test'); if(bt) bt.onclick=testTtsBuiltin;
   const bh=document.getElementById('ttsTableHint');
@@ -1450,7 +1480,7 @@ document.addEventListener('keydown',(e)=>{
 });
 
 async function runLlmChat(opts){
-  const { vendor, model, protocol, stream, messages, statusEl, outEl, thinkEl, thinkWrapEl, onDone, bypassCatalog, think, kind, authKey } = opts;
+  const { vendor, model, protocol, stream, messages, statusEl, outEl, thinkEl, thinkWrapEl, onDone, bypassCatalog, think, kind, authKey, direct, directUrl, directKey } = opts;
   // kind 决定读哪一套自定义请求头 / body 参数表格：底部测试卡片='llm'，配置里的模型测试弹窗='modal'。
   const hkind = kind || 'llm';
   // 思考模式开关：关掉时坚决不显示「思考过程」框（不依赖上游是否遵守 think=false），
@@ -1474,6 +1504,13 @@ async function runLlmChat(opts){
     if(vendor) body.vendor=vendor;          // 显式指定提供商，覆盖模型路由
     if(protocol) body.protocol=protocol;    // 显式指定线协议，覆盖入口配置
     if(bypassCatalog) body.bypass_catalog=true;  // 测试场景：跳过模型目录校验，直接探真实上游
+    // 配置表格「测试当前账号地址」：把表格里当前填的 base_url/key 连同标志一起下发，
+    // 代理据此直连该上游（未保存也能测），与「刷新模型」同一口径；地址没填则退回池内路由。
+    if(direct && directUrl){
+      body.base_url=directUrl;
+      if(directKey) body.api_key=directKey;
+      body.direct_upstream=true;
+    }
     // 思考模式：对外固定一个参数，经请求头 X-Proxy-Think 传（body 里也带一份做双通道），
     // 代理收到后由 apply_think 翻译成上游厂商原生的 body 参数，真正让模型不思考。
     if(think!==undefined && think!==null) body.think = !!think;
@@ -1501,7 +1538,10 @@ async function runLlmChat(opts){
           const data=line.slice(5).trim(); if(data==='[DONE]') break;
           try{
             const j=JSON.parse(data); const d=j.choices&&j.choices[0]&&j.choices[0].delta; if(!d) continue;
-            if(wantThink && thinkEl && d.reasoning_content){ thinkTxt+=d.reasoning_content; thinkEl.textContent=thinkTxt; if(thinkWrapEl) thinkWrapEl.hidden=false; }
+            // 思考内容字段名各家不统一：deepseek 官方用 reasoning_content，
+            // ollama / 通用 OpenAI 兼容端常用 reasoning，两者都要能显示。
+            const thinkChunk = d.reasoning_content || d.reasoning || '';
+            if(wantThink && thinkEl && thinkChunk){ thinkTxt+=thinkChunk; thinkEl.textContent=thinkTxt; if(thinkWrapEl) thinkWrapEl.hidden=false; }
             if(outEl && d.content){ text+=d.content; outEl.textContent=text; }
           }catch(_){}
         }
@@ -1509,7 +1549,7 @@ async function runLlmChat(opts){
     } else {
       const d=await r.json();
       const ch=(d.choices&&d.choices[0]&&d.choices[0].message)||{};
-      const reasoning=ch.reasoning_content||'';
+      const reasoning=ch.reasoning_content||ch.reasoning||'';
       const text=ch.content||JSON.stringify(d);
       if(wantThink && thinkEl && reasoning && thinkWrapEl){ thinkEl.textContent=reasoning; thinkWrapEl.hidden=false; }
       if(outEl) outEl.textContent=text;
@@ -1913,9 +1953,10 @@ async function loadLogs(){
 function escapeHtml(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
 
-// 全局接口 loading：拦截 fetch，任意 /admin 接口进行中时显示全屏遮罩（居中转圈），
-// 全部请求结束才隐藏（计数防止并发请求互相抵消）。遮罩 z-index 低于模态框，
-// 所以弹框内的流式测试仍能在遮罩之上正常显示进度。快速请求（<250ms）延迟显示，避免闪烁。
+// 全局接口 loading：拦截 fetch，仅 /admin/ 管理接口（保存/刷新等）进行中时显示全屏遮罩
+// （居中转圈），全部请求结束才隐藏（计数防止并发请求互相抵消）。快速请求（<250ms）延迟显示。
+// 能力测试端点 /llm/、/voice/ 自带状态文字与流式进度，不弹这个全屏遮罩——否则弹框测试时
+// 遮罩 z-index(40) 被弹框(50) 压在下面，看起来像「loading 在弹框下面」，且会干扰进度。
 (function(){
   let _pending = 0;
   let _timer = null;
@@ -1923,7 +1964,10 @@ function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
   const _show = () => { const e = _el(); if (e) e.classList.add('show'); };
   const _hide = () => { const e = _el(); if (e) e.classList.remove('show'); };
   const _orig = window.fetch.bind(window);
+  const _isAdmin = (u) => typeof u === 'string' && u.indexOf('/admin/') >= 0;
   window.fetch = async (...args) => {
+    const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+    if (!_isAdmin(url)) return _orig(...args);
     _pending++;
     if (_timer === null) _timer = setTimeout(_show, 250);
     try { return await _orig(...args); }
@@ -2159,11 +2203,12 @@ def register_admin_routes(app, stt_builtin_check=None, tts_builtin_check=None) -
                 d = r.json()
                 if isinstance(d, dict):
                     if isinstance(d.get("data"), list):
-                        names = [m.get("id", "") for m in d["data"][:20]]
+                        names = [m.get("id", "") for m in d["data"] if isinstance(m, dict)]
                     elif isinstance(d.get("models"), list):
-                        names = [m.get("name", "") for m in d["models"][:20]]
+                        names = [m.get("name", "") for m in d["models"] if isinstance(m, dict)]
             except Exception:
                 pass
-            return {"ok": ok, "status": r.status_code, "models": [n for n in names if n][:20]}
+            # 不截断：模型多时全量返回，由前端子表滚动展示（截断会让用户以为没拉全）。
+            return {"ok": ok, "status": r.status_code, "models": [n for n in names if n]}
         except Exception as e:
             return {"ok": False, "error": str(e)}

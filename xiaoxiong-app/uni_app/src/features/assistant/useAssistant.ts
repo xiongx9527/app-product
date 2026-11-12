@@ -134,6 +134,20 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 等播放队列清空的取消函数：新轮次开始时作废上一轮的等待 */
   let cancelPlaybackIdle: (() => void) | null = null
   /**
+   * 抗重复下发：同一首歌（url+title）在 2s 内被重复下发（重连/重武装竞态、或任何未知的双发）
+   * 只播一次，避免「放两遍」。下一首/换源是不同的 url，不受影响。
+   */
+  let lastMediaPlaySig = ''
+  let lastMediaPlayAt = 0
+  const MEDIA_PLAY_DEDUP_MS = 2000
+  /**
+   * 回声重新唤醒防护：助手刚播完 TTS 的回声（话里常带「小熊小熊」）会被麦收回、ASR 重新识别成
+   * 唤醒词，导致「我在」过一会又来一句。记录最近一次播报结束时刻，窗口内命中的唤醒词一律当回声忽略。
+   * 用户真的隔一会儿再喊唤醒词（>2s）不受影响。
+   */
+  let lastSpokeAt = 0
+  const WAKE_ECHO_MS = 2000
+  /**
    * 网关还有几句排队没轮到：期间「你说」必须锁在当前句，
    * 中间识别结果、播完回执都不能把文字顶掉。
    * 用 ref 暴露给页面，在「你说」卡片右上角显示排队数量。
@@ -147,8 +161,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const wakeSupported = true
   const wakeProviderName = '网关语音（本地 ASR）'
 
-  transport.onEvent(handleServerEvent)
-  transport.onAudio((chunk) => playPcm(chunk, 24000))
+  // 订阅必须保存反订阅函数并在 onUnmounted 清理：transport 是模块级单例、跨 HMR 存活，
+  // 若热更新重挂载时旧监听不移除，会往同一个 transport 上叠加多份 handleServerEvent，
+  // 导致每条服务器事件被处理两遍（打招呼 / 还在吗 / TTS 全「放两遍」）。这正是在 H5 调试时
+  // 反复改代码触发 HMR 后出现的双音频根因。
+  const offEvent = transport.onEvent(handleServerEvent)
+  const offAudio = transport.onAudio((chunk) => playPcm(chunk, 24000))
   // 网关 WS 连接状态：让页面直接显示「已连/未连」，免去开 DevTools 看 101。
   const wsConnected = ref(transport.isConnected())
   // 网关掉线播报：只念一次，避免重连抖动期间反复打扰；前提是开启了唤醒（助手处于启用状态）。
@@ -163,21 +181,22 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     gatewayDownAnnounced = true
     playPromptCue('gatewayDown')
   }
-  transport.onStatusChange((connected) => {
+  // 连接状态 / 重连耗尽 / 建连中 三个订阅同样要保存反订阅，避免 HMR 重挂载叠加
+  const offStatus = transport.onStatusChange((connected) => {
     wsConnected.value = connected
     if (connected) resetGatewayDownAnnounce()
     else announceGatewayDown()
   })
   // 自动重连次数耗尽：不再静默，用本地语音提示「网关连不上」（断网也能出声），
   // 并提示用户可手动点页面「重试连接」；重置播报标记以便这次能再念一次。
-  transport.onReconnectExhausted(() => {
+  const offReconnectExhausted = transport.onReconnectExhausted(() => {
     if (!enabled.value) return
     resetGatewayDownAnnounce()
     announceGatewayDown()
   })
   /** 正在建连状态（含自动重连每次尝试）：用于连接状态胶囊显示「连接中…」，且不弹独立标签 */
   const connecting = ref(false)
-  transport.onConnecting((value) => {
+  const offConnecting = transport.onConnecting((value) => {
     connecting.value = value
   })
   // 语音配置（来源 / 音色 / 模型等）任意变更：在已连会话上重武装，让网关用新配置重建 ASR/TTS/LLM。
@@ -244,6 +263,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 网关 asr.final 要等 VAD 静音 endpointMs(默认 2.5s) 才下发，那样「说完了还得等一下」
         // 才唤醒。asr.partial 在说话过程中就随缓冲重识别下发，命中即唤醒；asr.final 仍作兜底。
         if (mode === 'wake') {
+          // 刚播完 TTS 的回声窗口内，ASR 命中的唤醒词是助手自己话里的「小熊小熊」被收回，
+          // 当回声忽略，避免「我在」过一会又来一句（回声重新唤醒）。
+          if (Date.now() - lastSpokeAt < WAKE_ECHO_MS) break
           if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
           break
         }
@@ -269,7 +291,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       case 'asr.final':
         if (mode === 'wake') {
-          // 待唤醒阶段只做唤醒词匹配，命中后进入对话
+          // 待唤醒阶段只做唤醒词匹配，命中后进入对话；回声窗口内忽略（见 asr.partial 说明）
+          if (Date.now() - lastSpokeAt < WAKE_ECHO_MS) break
           if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
           break
         }
@@ -323,11 +346,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         if (!answerHasTts) markAnswerDone()
         break
       case 'tts.start':
+        // 抗重复：同一句 TTS 若因任何原因被重复下发（传输层/重连竞态/未知双发），
+        // 已经在播报中（isSpeaking）又来一个 tts.start 视为重复，直接忽略，避免「放两遍」。
+        // 合法的下一句/下一轮总在 tts.end/stop 之后才来，此时 isSpeaking 已复位，不受影响。
+        if (isSpeaking.value) break
         cancelPendingIdle()
         // 不再 resetPlayback()：网关已等上一句播完才下发这一句，
         // 清空队列会把「上一句」的尾音掐掉，正是用户听到的中断。
         answerHasTts = true
         isSpeaking.value = true
+        lastSpokeAt = Date.now()
         phase.value = 'speaking'
         // 播报期间压低正在播放的音乐，避免盖住助手说话
         duckMusic(true)
@@ -349,6 +377,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           cancelPlaybackIdle = null
           duckMusic(false)
           isSpeaking.value = false
+          // 真正播完这一刻记为「最近一次说话」，覆盖其后的回声窗口：
+          // 助手话里若带「小熊小熊」，被麦收回后 2s 内的唤醒词识别当回声忽略。
+          lastSpokeAt = Date.now()
           phase.value = 'done'
           markAnswerDone()
           // 播完回执：网关等它才消费排队的下一句，保证上一句完整播完
@@ -361,6 +392,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         const playUrl = event.proxy
           ? toProxiedMusicUrl(event.url, resolveGatewayHttpBase())
           : event.url
+        // 抗重复：同一首歌（实际播放地址 + 标题）在 2s 内被重复下发只播一次，避免「放两遍」。
+        // 用 playUrl 而非原始 event.url 做签名，防止代理地址差异绕过去重。
+        // 换一首/换源地址不同，或用户真的点了重播（间隔 >2s）都不受影响。
+        // 此外 playMusic 自身对同一首「正在播」的重复调用也直接短路，双保险。
+        const sig = `${playUrl}|${event.title}`
+        const now = Date.now()
+        if (sig === lastMediaPlaySig && now - lastMediaPlayAt < MEDIA_PLAY_DEDUP_MS) break
+        lastMediaPlaySig = sig
+        lastMediaPlayAt = now
         playMusic(
           playUrl,
           event.title,
@@ -729,12 +769,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     phase.value = 'listening'
   }
 
-  /** 关闭字幕面板：只翻 visible 标记、保留数据，便于之后手动/语音重新打开 */
-  function closeSubtitle(): void {
-    subtitleVisible.value = false
-    copied.value = false
-  }
-
   /** 重新打开字幕面板：仅翻 visible 标记，数据仍在（手动关闭后照样能打开） */
   function openSubtitle(): void {
     if (subtitle.value) subtitleVisible.value = true
@@ -744,6 +778,29 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   function toggleSubtitle(): void {
     if (!subtitle.value) return
     subtitleVisible.value = !subtitleVisible.value
+  }
+
+  /** 关闭字幕面板：只翻 visible 标记、保留数据，便于之后手动/语音重新打开 */
+  function closeSubtitle(): void {
+    subtitleVisible.value = false
+    copied.value = false
+  }
+
+  /**
+   * 复制字幕：把逐行文本拼成纯文本写入剪贴板。用行内「已复制」提示代替 toast（不弹浮层）。
+   * 仅当确有字幕时才复制，空字幕不动作。
+   */
+  function copySubtitle(): void {
+    if (!subtitle.value?.lines.length) return
+    const text = subtitle.value.lines.map((l) => l.text).join('\n')
+    uni.setClipboardData({
+      data: text,
+      showToast: false,
+      success: () => {
+        copied.value = true
+        setTimeout(() => (copied.value = false), 1500)
+      },
+    })
   }
 
   /**
@@ -769,23 +826,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       return
     }
     detailCard.value = null
-  }
-
-  /**
-   * 复制字幕：把逐行文本拼成纯文本写入剪贴板。用行内「已复制」提示代替 toast（不弹浮层）。
-   * 仅当确有字幕时才复制，空字幕不动作。
-   */
-  function copySubtitle(): void {
-    if (!subtitle.value?.lines.length) return
-    const text = subtitle.value.lines.map((l) => l.text).join('\n')
-    uni.setClipboardData({
-      data: text,
-      showToast: false,
-      success: () => {
-        copied.value = true
-        setTimeout(() => (copied.value = false), 1500)
-      },
-    })
   }
 
   /**
@@ -841,6 +881,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     clearClosing()
     cancelPendingIdle()
     leaveWake()
+    // 撤销本实例的全部订阅，避免模块级单例 transport 在 HMR 重挂载时叠加重复监听
+    offEvent()
+    offAudio()
+    offStatus()
+    offReconnectExhausted()
+    offConnecting()
   })
 
   // 单曲循环是否进行中（按钮高亮/aria）：语音「循环 N 遍」的有限 loopRemaining
@@ -899,6 +945,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     copied,
     toggleSubtitle,
     openSubtitle,
+    closeSubtitle,
     detailCard,
     selectDetail,
     closeDetailCard,
@@ -913,6 +960,5 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     nextMusic,
     reportVolume,
     seekMusic,
-    closeSubtitle,
   }
 }

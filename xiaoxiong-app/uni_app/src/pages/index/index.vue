@@ -18,15 +18,9 @@ import {
   totalLabel,
 } from '@/core/audio/musicProgress'
 import { t } from '@/core/i18n'
-import { playPromptCue, type PromptCue } from '@/core/audio/promptPlayer'
-import { useHealth, toHealthItems, type HealthItem } from '@/features/assistant/useHealth'
-import { usePermissions, type PermissionItem } from '@/features/assistant/usePermissions'
-import type { PermissionState } from '@/core/permission/permissionStatus'
 
 const {
   state,
-  stateLabel,
-  enabled,
   transcript,
   reply,
   thinking,
@@ -41,12 +35,8 @@ const {
   liveText,
   errorMessage,
   gatewayPreparing,
-  wsConnected,
-  connecting,
-  retry,
   wake,
   enable,
-  disable,
   interrupt,
   musicPlaying,
   musicPaused,
@@ -68,6 +58,7 @@ const {
   copySubtitle,
   copied,
   toggleSubtitle,
+  closeSubtitle,
   activeSubtitleIndex,
   currentSubtitleText,
   activeSubtitleSplit,
@@ -78,7 +69,6 @@ const {
   cycleLoop,
   nextMusic,
   seekMusic,
-  closeSubtitle,
   detailCard,
   selectDetail,
   closeDetailCard,
@@ -103,8 +93,18 @@ const floatDiscVisible = computed(
  * 不会像「临时收起标记」那样让语音再也切不回来。
  */
 function onTogglePlayMode(): void {
-  appConfig.playback.floatPlayer = !appConfig.playback.floatPlayer
+  const next = !appConfig.playback.floatPlayer
+  appConfig.playback.floatPlayer = next
   persistConfig()
+  if (next) {
+    // 开悬浮小圆：恢复字幕（悬浮态用大字显示当前歌词），与「关闭字幕」指令互不冲突——
+    // 仅在有歌词数据时点亮，不会凭空造出字幕。
+    if (subtitle.value) subtitleVisible.value = true
+  } else {
+    // 关悬浮小圆（切到普通播放条）：收起字幕面板，不让「与悬浮互斥」逻辑在下方自动弹出
+    // 一整份歌词框。用户关的是悬浮框，不是要换一种形式看歌词。
+    closeSubtitle()
+  }
 }
 
 /** 切换按钮上的图标：指向「将要切到的模式」——悬浮态显示「切到播放条」，播放条态显示「切到悬浮小圆」 */
@@ -137,58 +137,8 @@ const lyricFontSize = computed(() => {
   return Math.round(Math.max(13, Math.min(base, 280 / w)))
 })
 
-// 网关能力健康度：连上 WS 后轮询 /api/health，把 LLM / ASR / TTS / 外网状态展示出来，
-// 静默失效（如 ASR 仍是占位桩）能直接被看到，而不是「唤醒没反应」却毫无提示。
-const { health } = useHealth(wsConnected)
-const healthItems = computed(() => (health.value ? toHealthItems(health.value) : []))
-// 权限只读检测：麦克风/定位排在能力项前，用 | 隔离（见健康面板模板）
-const { permissionItems } = usePermissions(wsConnected)
-
-// 点击状态胶囊后的「状态播报」：固定在健康栏下方的行内文字（绝不弹浮层），
-// 异常项再补一声本地 mp3 提示音。定位是非必须能力，只显示状态、不播报。
-type StatusCapsule = PermissionItem | HealthItem
-const activeCapsule = ref<string | null>(null)
-const HEALTH_CUE: Record<HealthItem['key'], PromptCue> = {
-  llm: 'llmDown',
-  asr: 'asrDown',
-  tts: 'ttsDown',
-  network: 'networkDown',
-}
-
-function statusWord(status: string): string {
-  if (status === 'ok') return t('health.ok')
-  if (status === 'warn') return t('health.unconfigured')
-  return t('health.unreachable')
-}
-
-function capsuleDetail(item: StatusCapsule): string {
-  if ('state' in item) return t(`health.perm.${item.state}`)
-  return item.detail || statusWord(item.status)
-}
-
-const narrationText = computed(() => {
-  const key = activeCapsule.value
-  if (!key) return ''
-  const items: StatusCapsule[] = [...permissionItems.value, ...healthItems.value]
-  const item = items.find((i) => i.key === key)
-  if (!item) return ''
-  return t('health.narration', { name: t(`health.${key}`), status: capsuleDetail(item) })
-})
-
-function onStatusTap(item: StatusCapsule): void {
-  // 再点同一颗收起说明
-  if (activeCapsule.value === item.key) {
-    activeCapsule.value = null
-    return
-  }
-  activeCapsule.value = item.key
-  // 正常态没有对应提示音，只显示文字；定位按既有约定一律不播报。
-  if ('state' in item) {
-    if (item.key === 'mic' && item.state === 'denied') playPromptCue('micDenied')
-    return
-  }
-  if (item.status !== 'ok') playPromptCue(HEALTH_CUE[item.key])
-}
+// 右上角状态栏已移除：连接/能力健康/权限状态不再常驻展示（见用户要求）。
+// 网关连接状态仍由 useAssistant 内部消费（断线提示、健康播报等），仅不再渲染到页面右上角。
 
 const screen = ref<ScreenInfo>(readScreenInfo())
 
@@ -347,6 +297,10 @@ function onSeekCommit(event: unknown): void {
 function onStopMusic(): void {
   seekPreview.value = null
   stopMusic()
+  // 停止播放：悬浮小圆与字幕一并收起。本地点停止不会走网关 media.stop 事件，
+  // 但字幕数据仍在、subtitleVisible 仍为开，若悬浮态因此收起，下方「与悬浮互斥」的
+  // 字幕面板会反向露出来，表现为「关掉音乐却冒出歌词框」。这里主动收起，和停止动作一致。
+  closeSubtitle()
 }
 
 function onTogglePause(): void {
@@ -415,81 +369,20 @@ onUnmounted(() => {
   }
 })
 
-function onToggle(event: Event): void {
-  const value = (event as unknown as { detail?: { value?: boolean } }).detail?.value
-  if (typeof value !== 'boolean') return
-  if (value) enable()
-  else disable()
-}
-
 function onOrbTap(): void {
-  // 未开启时点圆球先开启；已在待唤醒时点圆球手动开始一轮（等同说「小熊小熊」）
+  // 未开启时点圆球先开启；已在待唤醒时点圆球手动开始一轮（等同说「小熊小熊」）；
+  // 对话进行中点圆球即打断（替代原底部「打断」按钮）
   if (state.value === 'idle') enable()
   else if (state.value === 'standby') wake()
-}
-
-// 网关未连上时，点状态胶囊即可手动重连（沿用开启唤醒时的会话模式），不另出独立标签
-function onConnTap(): void {
-  if (!wsConnected.value && enabled.value) retry()
+  else if (isActive.value) interrupt()
 }
 </script>
 
 <template>
   <view class="page" :class="`bp-${screen.breakpoint}`">
     <view class="header">
-      <view class="brand">
-        <text class="title">{{ t('app.title') }}</text>
-        <text class="subtitle">{{ t('app.subtitle') }}</text>
-      </view>
       <view class="header-actions">
-        <view class="pill" :class="state">{{ stateLabel }}</view>
         <view class="gear" @tap="openSettings">⚙</view>
-      </view>
-    </view>
-
-    <view class="status-row">
-      <view
-        class="conn"
-        :class="wsConnected ? 'ok' : (connecting ? 'connecting' : 'down')"
-        @tap="onConnTap"
-      >
-        <view class="conn-dot" />
-        <text class="conn-text">{{ connecting ? t('conn.connecting') : (wsConnected ? t('conn.connected') : t('conn.disconnected')) }}</text>
-      </view>
-
-      <view v-if="wsConnected" class="health">
-        <!-- 权限组放最前：本地只读检测，连上 WS 即显示，不依赖网关 health 是否成功 -->
-        <view
-          v-for="item in permissionItems"
-          :key="item.key"
-          class="health-item is-tappable"
-          :class="[item.status, { active: activeCapsule === item.key }]"
-          :aria-label="t('health.narration', { name: t(`health.${item.key}`), status: capsuleDetail(item) })"
-          @tap="onStatusTap(item)"
-        >
-          <view class="health-dot" />
-          <text class="health-label">{{ t(`health.${item.key}`) }}</text>
-        </view>
-        <text v-if="health" class="health-divider">|</text>
-        <template v-if="health">
-          <view
-            v-for="item in healthItems"
-            :key="item.key"
-            class="health-item is-tappable"
-            :class="[item.status, { active: activeCapsule === item.key }]"
-            :aria-label="t('health.narration', { name: t(`health.${item.key}`), status: capsuleDetail(item) })"
-            @tap="onStatusTap(item)"
-          >
-            <view class="health-dot" />
-            <text class="health-label">{{ t(`health.${item.key}`) }}</text>
-          </view>
-        </template>
-        <view v-else class="health-checking">{{ t('health.checking') }}</view>
-      </view>
-
-      <!-- 状态播报：固定行内文字，不用 toast / 浮层 -->
-      <view v-if="narrationText" class="health-narration">
-        <text class="health-narration-text">{{ narrationText }}</text>
       </view>
     </view>
 
@@ -639,8 +532,10 @@ function onConnTap(): void {
       </view>
     </view>
 
-    <!-- 字幕面板与悬浮互斥：悬浮小圆已用大字显示当前歌词，不再叠一份完整字幕列表 -->
-    <view v-if="subtitle && subtitleVisible && !floatDiscVisible" class="subtitle">
+    <!-- 字幕面板与悬浮互斥：悬浮小圆已用大字显示当前歌词，不再叠一份完整字幕列表。
+         同时绑定本地播放状态 musicVisible：本地已停止/收起播放时一律不显示，
+         避免「停了歌却从悬浮态反向露出歌词框」——网关仍在推歌词也不能让它亮起来。 -->
+    <view v-if="subtitle && subtitleVisible && !floatDiscVisible && musicVisible" class="subtitle">
       <view class="subtitle-head">
         <text class="subtitle-title">{{ t('music.subtitle') }} · {{ subtitle.title }}</text>
         <view class="subtitle-actions">
@@ -706,7 +601,7 @@ function onConnTap(): void {
         </view>
         <!-- 单行显示整句：不换行、不省略、不滚动；超长按句长微缩字号塞进固定宽度 -->
         <text
-          v-if="currentSubtitleText"
+          v-if="currentSubtitleText && subtitleVisible"
           class="disc-lyric"
           :style="{ fontSize: lyricFontSize + 'px', color: subtitleActiveColor }"
         >{{ activeSubtitleSplit.sung }}<text class="disc-lyric--rest">{{ activeSubtitleSplit.rest }}</text></text>
@@ -714,22 +609,9 @@ function onConnTap(): void {
     </FloatLayer>
 
     <view class="controls">
-      <view class="switch-row">
-        <view class="switch-copy">
-          <text class="switch-title">{{ t('switch.title') }}</text>
-          <text class="switch-desc">{{ t('switch.desc') }}</text>
-        </view>
-        <switch :checked="enabled" color="#6c8cff" @change="onToggle" />
-      </view>
-
-      <view class="buttons">
-        <button class="btn warn" :disabled="!isActive" @tap="interrupt">{{ t('btn.interrupt') }}</button>
-      </view>
-      <text v-if="state === 'standby'" class="talk-hint">{{ t('talk.standby') }}</text>
-      <text v-else-if="halfDuplex" class="talk-hint warn">
+      <text v-if="halfDuplex" class="talk-hint warn">
         {{ t('talk.echo') }}
       </text>
-      <text v-else-if="isActive" class="talk-hint">{{ t('talk.listening') }}</text>
     </view>
 
   </view>
@@ -773,191 +655,6 @@ function onConnTap(): void {
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.brand {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.title {
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-}
-
-.subtitle {
-  font-size: 12px;
-  color: #8b91ab;
-}
-
-.pill {
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #b8bdd4;
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.pill.listening,
-.pill.confirming {
-  color: #cfd8ff;
-  border-color: rgba(108, 140, 255, 0.5);
-  background: rgba(108, 140, 255, 0.16);
-}
-
-.status-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.conn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.conn-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
-}
-
-.conn.ok {
-  color: #8ee0bd;
-  border-color: rgba(92, 214, 178, 0.4);
-}
-
-.conn.ok .conn-dot {
-  background: #5cd6b2;
-  box-shadow: 0 0 8px rgba(92, 214, 178, 0.7);
-}
-
-.conn.down {
-  color: #ff9a9a;
-  border-color: rgba(255, 100, 100, 0.4);
-}
-
-.conn.down .conn-dot {
-  background: #ff6b6b;
-  box-shadow: 0 0 8px rgba(255, 100, 100, 0.6);
-}
-
-.conn.connecting {
-  color: #ffcf8a;
-  border-color: rgba(255, 207, 138, 0.4);
-  cursor: pointer;
-}
-
-.conn.connecting .conn-dot {
-  background: #ffcf8a;
-  box-shadow: 0 0 8px rgba(255, 207, 138, 0.6);
-  animation: pulse-dot 1s ease-in-out infinite;
-}
-
-@keyframes pulse-dot {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.health {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.health-item {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-size: 11px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.health-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex: none;
-  background: #5cd6b2;
-}
-
-.health-item.ok {
-  color: #8ee0bd;
-  border-color: rgba(92, 214, 178, 0.35);
-}
-
-.health-item.warn {
-  color: #ffcf8a;
-  border-color: rgba(255, 207, 138, 0.4);
-}
-
-.health-item.warn .health-dot {
-  background: #ffcf8a;
-  box-shadow: 0 0 6px rgba(255, 207, 138, 0.6);
-}
-
-.health-item.down {
-  color: #ff9a9a;
-  border-color: rgba(255, 100, 100, 0.4);
-}
-
-.health-item.down .health-dot {
-  background: #ff6b6b;
-  box-shadow: 0 0 6px rgba(255, 100, 100, 0.6);
-}
-
-.health-checking {
-  font-size: 11px;
-  color: #8b91ab;
-}
-
-/* 权限组与能力组之间的视觉隔离 */
-.health-divider {
-  color: rgba(255, 255, 255, 0.28);
-  font-size: 13px;
-  margin: 0 2px;
-}
-
-/* 点击可播报状态的胶囊：轻微反馈，选中态高亮边框 */
-.health-item.is-tappable:active {
-  transform: scale(0.94);
-}
-.health-item.active {
-  border-color: rgba(142, 224, 189, 0.6);
-  box-shadow: 0 0 0 1px rgba(142, 224, 189, 0.25);
-}
-
-/* 状态播报：健康栏下方固定行内文字，不弹浮层、不遮挡 */
-.health-narration {
-  margin-top: 8px;
-  padding: 6px 12px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-.health-narration-text {
-  font-size: 12px;
-  color: #c9cede;
-}
 
 .stage {
   display: flex;
@@ -1139,76 +836,6 @@ function onConnTap(): void {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.switch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.switch-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.switch-title {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.switch-desc {
-  font-size: 11px;
-  color: #8b91ab;
-}
-
-.buttons {
-  display: flex;
-  gap: 10px;
-}
-
-.btn {
-  flex: 1;
-  margin: 0;
-  padding: 0 8px;
-  height: 44px;
-  line-height: 44px;
-  border-radius: 12px;
-  font-size: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.05);
-  color: #e8eaf6;
-}
-
-.btn::after {
-  border: none;
-}
-
-.btn.primary {
-  background: linear-gradient(135deg, #6c8cff, #8a6cff);
-  border-color: transparent;
-  color: #fff;
-}
-
-/* 打断：主动中止当前这一轮，用琥珀色描边与文字表达「需谨慎、但非出错」，
-   比默认幽灵按钮更显眼，又不像红色那样像报错 */
-.btn.warn {
-  color: #ffcf8a;
-  border-color: rgba(255, 207, 138, 0.42);
-  background: rgba(255, 207, 138, 0.1);
-}
-
-.btn.warn:active {
-  background: rgba(255, 207, 138, 0.2);
-}
-
-.btn[disabled] {
-  opacity: 0.35;
 }
 
 .talk-hint {

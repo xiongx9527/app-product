@@ -27,6 +27,7 @@ const config: GatewayConfig = {
   asr: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', endpointMs: 30, params: {} },
   tts: { provider: 'stub', baseUrl: 'http://127.0.0.1:9529', apiKey: '', params: {} },
   db: { path: DB_PATH },
+  memory: { consolidateThreshold: 30, consolidateEvery: 5 },
 }
 
 let gateway: ReturnType<typeof createGateway>

@@ -64,6 +64,14 @@ export interface DbConfig {
   path: string
 }
 
+/** 自动记忆（抽取 + 摘要）相关网关配置 */
+export interface MemoryGatewayConfig {
+  /** 合并（摘要）触发阈值：记忆条数达到此值后，每隔 consolidateEvery 轮抽取合并去重一次 */
+  consolidateThreshold: number
+  /** 合并（摘要）频率：每这么多次抽取触发一次合并（避免每次都打 LLM） */
+  consolidateEvery: number
+}
+
 export interface GatewayConfig {
   /** HTTP / WebSocket 监听端口 */
   port: number
@@ -87,6 +95,8 @@ export interface GatewayConfig {
   asr: AsrConfig
   tts: TtsConfig
   db: DbConfig
+  /** 自动记忆（抽取 + 摘要）：合并/摘要的触发阈值与频率，可经环境变量覆盖 */
+  memory: MemoryGatewayConfig
 }
 
 function paramsFromEnv(name: string): VendorParams {
@@ -145,6 +155,12 @@ export function loadConfig(): GatewayConfig {
     },
     db: {
       path: process.env.DB_PATH ?? './data/app.db',
+    },
+    // 自动记忆（抽取 + 摘要）：合并触发阈值与频率，可经环境变量覆盖以便调参，不写死在代码里。
+    // MEMORY_CONSOLIDATE_THRESHOLD：记忆条数达到此值才周期性合并；MEMORY_CONSOLIDATE_EVERY：每这么多次抽取合并一次。
+    memory: {
+      consolidateThreshold: Number(process.env.MEMORY_CONSOLIDATE_THRESHOLD ?? 30),
+      consolidateEvery: Number(process.env.MEMORY_CONSOLIDATE_EVERY ?? 5),
     },
   }
 }

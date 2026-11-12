@@ -60,6 +60,10 @@ export interface AppConfig {
   recommend: RecommendConfig
   /** 通用设置：与具体能力无关、偏行为开关的项统一放这里 */
   general: GeneralConfig
+  /** 记忆设置：长期记忆（自动抽取 / 手动指令）相关开关 */
+  memory: MemoryConfig
+  /** MCP 服务器配置：用户自行填写并开启，网关据此连上并把工具注册进助手工具箱 */
+  mcp: McpConfig
 }
 
 /** 推荐设置：好价商品 / 开源工具每次推荐的条数，独立于语音服务 */
@@ -85,8 +89,59 @@ export interface GeneralConfig {
   autoConnect: boolean
 }
 
+/** 记忆设置 */
+export interface MemoryConfig {
+  /**
+   * 自动记忆（自动抽取）：开启后网关在对话中自动抽取可记忆的信息并沉淀为长期记忆。
+   * 手动指令（记录下 / 帮我记 / 记住 等）无论本开关是否开启都始终生效。
+   * 默认关闭——避免未经用户确认就把对话内容写入长期记忆。
+   */
+  autoMemory: boolean
+  /**
+   * 自动记忆合并（摘要）触发阈值：记忆条数达到此值后才周期性合并去重，避免无限膨胀。
+   * 0 表示每轮都合并。经 session.start.memory.consolidateThreshold 下发网关，缺省 30。
+   */
+  consolidateThreshold: number
+  /**
+   * 自动记忆合并（摘要）频率：每这么多次抽取触发一次合并。经 session.start.memory.consolidateEvery 下发网关，缺省 5。
+   */
+  consolidateEvery: number
+}
+
 /** 音乐播放源；百度已实现，网易云/腾讯音乐/酷狗音乐为占位空实现（选择后调用会报未实现），后续可扩展 */
 export type PlaybackSource = 'baidu' | 'netease' | 'tencent' | 'kugou'
+
+/** MCP 服务器传输方式：stdio（网关侧拉起本地子进程）/ sse（Server-Sent Events）/ http（Streamable HTTP）。 */
+export type McpTransport = 'stdio' | 'sse' | 'http'
+
+/** 单个 MCP 服务器配置：由用户在设置页填写并开启，经 session.start 下发给网关连接。 */
+export interface McpServerConfig {
+  /** 本地稳定标识：新增时生成，用于列表项的 key 与持久化；缺省时由 normalize 补。 */
+  id: string
+  /** 服务器显示名 */
+  name: string
+  /** 是否启用（仅启用项随 session.start 下发） */
+  enabled: boolean
+  /** 传输方式 */
+  transport: McpTransport
+  /** stdio：要执行的命令（如 npx @modelcontextprotocol/server-filesystem） */
+  command?: string
+  /** stdio：命令参数 */
+  args?: string[]
+  /** stdio：子进程环境变量 */
+  env?: Record<string, string>
+  /** sse / http：服务器地址 */
+  url?: string
+  /** 仅启用的工具白名单；不填表示全部启用 */
+  enabledTools?: string[]
+  /** 禁用的工具黑名单 */
+  disabledTools?: string[]
+}
+
+/** MCP 服务器列表配置 */
+export interface McpConfig {
+  servers: McpServerConfig[]
+}
 
 /** 播放设置：音乐播放来源等，独立于语音服务（ASR / LLM / TTS） */
 export interface PlaybackConfig {

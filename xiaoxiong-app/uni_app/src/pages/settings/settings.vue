@@ -96,10 +96,26 @@ function openFavorites(): void {
   uni.navigateTo({ url: '/pages/favorites/favorites' })
 }
 
-/** 推荐设置默认折叠，展开后调整推荐条数与查看列表。 */
-const recommendCollapsed = ref(true)
-function toggleRecommend(): void {
-  recommendCollapsed.value = !recommendCollapsed.value
+/** 合并（摘要）阈值：收敛到非负整数（0 表示每轮都合并），非法回退 30。 */
+function setConsolidateThreshold(e: any): void {
+  const n = Math.floor(Number(e.detail.value))
+  appConfig.memory.consolidateThreshold = Number.isFinite(n) && n >= 0 ? n : 30
+}
+
+/** 合并（摘要）频率：收敛到非负整数，非法回退 5。 */
+function setConsolidateEvery(e: any): void {
+  const n = Math.floor(Number(e.detail.value))
+  appConfig.memory.consolidateEvery = Number.isFinite(n) && n >= 0 ? n : 5
+}
+
+/** 设置分组手风琴：默认全部收起；同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。 */
+type SettingsGroup = 'general' | 'memory' | 'voice' | 'playback' | 'recommend' | 'mcp'
+const expanded = ref<SettingsGroup | null>(null)
+function isOpen(key: SettingsGroup): boolean {
+  return expanded.value === key
+}
+function toggleGroup(key: SettingsGroup): void {
+  expanded.value = expanded.value === key ? null : key
 }
 
 /** 推荐条数夹紧到 1–10 整数，非法/越界回退 3；与网关工具上限一致。 */
@@ -123,6 +139,11 @@ function openDeals(): void {
 /** 进入开源工具列表页：查看助手推荐过的开源工具/软件。 */
 function openOpenSource(): void {
   uni.navigateTo({ url: '/pages/opensource/opensource' })
+}
+
+/** 进入 MCP 服务器配置页：增删一组 MCP 服务器（stdio / sse / http）。 */
+function openMcpServers(): void {
+  uni.navigateTo({ url: '/pages/mcpservers/mcpservers' })
 }
 
 /** LLM 模型下拉：选项来自来源配置（内置=已配置上游模型；百炼=带 key 拉真实目录）。 */
@@ -256,146 +277,9 @@ function onSelectVoice(value: string): void {
   s.voiceModel = voiceModelMap.get(value) || ''
 }
 
-/** 长期记忆：从网关按本机 deviceId 拉取，可单条删除或清空。分页加载，避免记忆多时一次拉全。 */
-interface MemoryItem {
-  key: string
-  value: string
-  createdAt: number
-  updatedAt: number
-}
-interface MemoryPage {
-  items: MemoryItem[]
-  total: number
-  page: number
-  pageSize: number
-}
-const MEM_PAGE_SIZE = 3
-const memories = ref<MemoryItem[]>([])
-const memPage = ref(1)
-const memTotal = ref(0)
-const memLoading = ref(false)
-const memHint = ref('')
-
-function memoriesBaseUrl(): string {
-  return `${resolveGatewayHttpBase()}/api/admin/memories?deviceId=${encodeURIComponent(getDeviceId())}`
-}
-
-function getMemoriesPageUrl(): string {
-  const kw = memQuery.value.trim()
-  return `${memoriesBaseUrl()}&page=${memPage.value}&pageSize=${MEM_PAGE_SIZE}${kw ? `&q=${encodeURIComponent(kw)}` : ''}`
-}
-
-/** 总页数（向上取整）；当前页 / 上一页 / 下一页可用性。 */
-const memTotalPages = computed(() => Math.max(1, Math.ceil(memTotal.value / MEM_PAGE_SIZE)))
-const memHasPrev = computed(() => memPage.value > 1)
-const memHasNext = computed(() => memPage.value < memTotalPages.value)
-/** 长期记忆默认折叠，记忆多时不占首屏空间；点标题展开。 */
-const memCollapsed = ref(true)
-function toggleMemories(): void {
-  memCollapsed.value = !memCollapsed.value
-}
-/** 语音设置默认折叠，展开后再编辑 ASR/LLM/TTS。 */
-const voiceCollapsed = ref(true)
-function toggleVoice(): void {
-  voiceCollapsed.value = !voiceCollapsed.value
-}
-/** 播放设置默认折叠，展开后选择播放源。 */
-const playbackCollapsed = ref(true)
-function togglePlayback(): void {
-  playbackCollapsed.value = !playbackCollapsed.value
-}
-/** 通用设置（语言 / 时区）默认折叠，展开后再调整。 */
-const generalCollapsed = ref(true)
-function toggleGeneral(): void {
-  generalCollapsed.value = !generalCollapsed.value
-}
-/** 关键词检索：对 key / value 模糊匹配，网关 q 参数下发。 */
-const memQuery = ref('')
-
-/** 记忆更新时间（秒级时间戳）格式化展示：YYYY-MM-DD。 */
-function formatMemoryTime(ts: number): string {
-  if (!ts) return ''
-  const d = new Date(ts * 1000)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
-async function loadMemories(): Promise<void> {
-  if (memLoading.value) return
-  memLoading.value = true
-  memHint.value = ''
-  try {
-    const res = await secureRequest({ url: getMemoriesPageUrl(), method: 'GET' })
-    const body = res.data as MemoryPage | null
-    if (res.statusCode >= 200 && res.statusCode < 300 && body && Array.isArray(body.items)) {
-      memories.value = body.items as MemoryItem[]
-      memTotal.value = typeof body.total === 'number' ? body.total : memories.value.length
-      // 删条目后当前页可能越界（如删掉末页唯一一条），回退到最后一页重新拉取。
-      if (memories.value.length === 0 && memPage.value > 1 && memTotal.value > 0) {
-        memPage.value = memTotalPages.value
-        void loadMemories()
-      }
-    } else {
-      memHint.value = t('settings.memory.loadFailed')
-    }
-  } catch {
-    memHint.value = t('settings.memory.loadFailed')
-  } finally {
-    memLoading.value = false
-  }
-}
-
-/** 跳到第 p 页（按总页数夹紧），重新拉取该页（替换式分页，非追加）。 */
-function gotoMemPage(p: number): void {
-  const target = Math.min(Math.max(1, p), memTotalPages.value)
-  if (target === memPage.value) return
-  memPage.value = target
-  void loadMemories()
-}
-
-function prevMemPage(): void {
-  gotoMemPage(memPage.value - 1)
-}
-
-function nextMemPage(): void {
-  gotoMemPage(memPage.value + 1)
-}
-
-function searchMemories(): void {
-  // 检索时自动展开，并从第 1 页重新拉取（q 已拼进 getMemoriesPageUrl）。
-  memCollapsed.value = false
-  memPage.value = 1
-  void loadMemories()
-}
-
-async function deleteMemory(item: MemoryItem): Promise<void> {
-  try {
-    const res = await secureRequest({
-      url: `${memoriesBaseUrl()}&key=${encodeURIComponent(item.key)}`,
-      method: 'DELETE',
-    })
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      memHint.value = t('settings.memory.deleted')
-      // 重新按当前页拉取，保持分页计数一致（总数由服务端返回）。
-      void loadMemories()
-    }
-  } catch {
-    memHint.value = t('settings.memory.loadFailed')
-  }
-}
-
-async function clearMemories(): Promise<void> {
-  try {
-    const res = await secureRequest({ url: memoriesBaseUrl(), method: 'DELETE' })
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      memories.value = []
-      memTotal.value = 0
-      memPage.value = 1
-      memHint.value = t('settings.memory.cleared')
-    }
-  } catch {
-    memHint.value = t('settings.memory.loadFailed')
-  }
+/** 跳转到独立的「长期记忆」分页列表页。 */
+function openLongMemory(): void {
+  uni.navigateTo({ url: '/pages/longmemory/longmemory' })
 }
 
 function syncNavTitle(): void {
@@ -405,7 +289,6 @@ function syncNavTitle(): void {
 
 onMounted(() => {
   syncNavTitle()
-  void loadMemories()
   void loadLlmModels()
   void loadTtsVoices()
   // 播放源目前仅百度一种（隐藏选择器），旧配置若存过其它源（netease/tencent/kugou）静默回退到百度。
@@ -426,15 +309,13 @@ watch(
 
 <template>
   <view class="page">
-    <!-- 通用设置（语言 / 时区），默认折叠 -->
+    <!-- 通用设置（语言 / 时区） -->
     <view class="group">
-      <view class="group-head">
-        <view class="group-title-row" @tap="toggleGeneral">
-          <text class="group-chevron">{{ generalCollapsed ? '▸' : '▾' }}</text>
-          <text class="group-title">{{ t('settings.general.title') }}</text>
-        </view>
+      <view class="group-head" @tap="toggleGroup('general')">
+        <text class="group-title">{{ t('settings.general.title') }}</text>
+        <text class="group-chevron">{{ isOpen('general') ? '▾' : '▸' }}</text>
       </view>
-      <template v-if="!generalCollapsed">
+      <template v-if="isOpen('general')">
         <!-- 语言（跟随全局；唤醒/ASR/TTS 默认语言都继承它） -->
         <view class="sub">
           <SelectRow
@@ -472,15 +353,71 @@ watch(
       </template>
     </view>
 
-    <!-- 语音服务（ASR / LLM / TTS 共用一份配置），默认折叠 -->
+    <!-- 记忆设置：自动记忆开关 + 长期记忆入口（独立分页列表页），置于通用设置之后、便于找到 -->
     <view class="group">
-      <view class="group-head">
-        <view class="group-title-row" @tap="toggleVoice">
-          <text class="group-chevron">{{ voiceCollapsed ? '▸' : '▾' }}</text>
-          <text class="group-title">{{ t('settings.voice.title') }}</text>
-        </view>
+      <view class="group-head" @tap="toggleGroup('memory')">
+        <text class="group-title">{{ t('settings.memory.title') }}</text>
+        <text class="group-chevron">{{ isOpen('memory') ? '▾' : '▸' }}</text>
       </view>
-      <template v-if="!voiceCollapsed">
+      <template v-if="isOpen('memory')">
+      <text class="hint">{{ t('settings.memory.sub') }}</text>
+
+      <!-- 自动记忆开关：开启后对话里自动抽取并沉淀长期记忆；手动指令始终生效。 -->
+      <view class="setting-row">
+        <view class="row-text">
+          <text class="row-label">{{ t('settings.memory.autoMemory') }}</text>
+          <text class="hint">{{ t('settings.memory.autoMemoryHint') }}</text>
+        </view>
+        <switch
+          class="setting-switch"
+          :checked="appConfig.memory.autoMemory"
+          color="#6c8cff"
+          @change="(e: any) => (appConfig.memory.autoMemory = e.detail.value)"
+        />
+      </view>
+
+      <!-- 合并（摘要）阈值：记忆条数达到此值才周期性合并去重；0 表示每轮都合并 -->
+      <view class="setting-row column">
+        <text class="row-label">{{ t('settings.memory.consolidateThreshold') }}</text>
+        <input
+          class="input"
+          type="number"
+          :value="appConfig.memory.consolidateThreshold"
+          @change="setConsolidateThreshold"
+        />
+        <text class="hint">{{ t('settings.memory.consolidateThresholdHint') }}</text>
+      </view>
+
+      <!-- 合并（摘要）频率：每这么多次抽取触发一次合并 -->
+      <view class="setting-row column">
+        <text class="row-label">{{ t('settings.memory.consolidateEvery') }}</text>
+        <input
+          class="input"
+          type="number"
+          :value="appConfig.memory.consolidateEvery"
+          @change="setConsolidateEvery"
+        />
+        <text class="hint">{{ t('settings.memory.consolidateEveryHint') }}</text>
+      </view>
+
+      <!-- 长期记忆入口：跳转到分页列表页，可检索 / 单条删除 / 清空。 -->
+      <view class="entry" @tap="openLongMemory">
+        <view class="row-text">
+          <text class="row-label">{{ t('settings.memory.openLong') }}</text>
+          <text class="hint">{{ t('settings.memory.openLongHint') }}</text>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+      </template>
+    </view>
+
+    <!-- 语音服务（ASR / LLM / TTS 共用一份配置） -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('voice')">
+        <text class="group-title">{{ t('settings.voice.title') }}</text>
+        <text class="group-chevron">{{ isOpen('voice') ? '▾' : '▸' }}</text>
+      </view>
+      <template v-if="isOpen('voice')">
       <text class="row-label">{{ t('settings.voice.provider') }}</text>
       <view class="providers">
         <view
@@ -606,13 +543,11 @@ watch(
 
     <!-- 播放设置（音乐播放源等），默认折叠 -->
     <view class="group">
-      <view class="group-head">
-        <view class="group-title-row" @tap="togglePlayback">
-          <text class="group-chevron">{{ playbackCollapsed ? '▸' : '▾' }}</text>
-          <text class="group-title">{{ t('settings.playback.title') }}</text>
-        </view>
+      <view class="group-head" @tap="toggleGroup('playback')">
+        <text class="group-title">{{ t('settings.playback.title') }}</text>
+        <text class="group-chevron">{{ isOpen('playback') ? '▾' : '▸' }}</text>
       </view>
-      <template v-if="!playbackCollapsed">
+      <template v-if="isOpen('playback')">
         <!-- 播放源目前仅百度一种，隐藏选择器，无需用户选择；其余设置与播放源无关，全局生效 -->
 
         <!-- 播放完自动收藏：与播放源无关，全局一个开关 -->
@@ -731,13 +666,11 @@ watch(
 
     <!-- 推荐设置（好价商品 / 开源工具推荐条数），默认折叠，位于播放设置之后 -->
     <view class="group">
-      <view class="group-head">
-        <view class="group-title-row" @tap="toggleRecommend">
-          <text class="group-chevron">{{ recommendCollapsed ? '▸' : '▾' }}</text>
-          <text class="group-title">{{ t('settings.recommend.title') }}</text>
-        </view>
+      <view class="group-head" @tap="toggleGroup('recommend')">
+        <text class="group-title">{{ t('settings.recommend.title') }}</text>
+        <text class="group-chevron">{{ isOpen('recommend') ? '▾' : '▸' }}</text>
       </view>
-      <template v-if="!recommendCollapsed">
+      <template v-if="isOpen('recommend')">
         <!-- 好价商品推荐条数：1–10，默认 3；经 session.start.recommend 下发网关作为工具默认条数 -->
         <view class="setting-row column">
           <text class="row-label">{{ t('settings.recommend.dealsCount') }}</text>
@@ -776,63 +709,26 @@ watch(
       </template>
     </view>
 
-    <!-- 长期记忆 -->
+    <!-- MCP 服务器（用户自行填写，网关据此连上并把其工具注册进助手工具箱），置于推荐设置之后 -->
     <view class="group">
-      <view class="group-head">
-        <view class="group-title-row" @tap="toggleMemories">
-          <text class="group-chevron">{{ memCollapsed ? '▸' : '▾' }}</text>
-          <text class="group-title">{{ t('settings.memory.title') }}</text>
-          <text v-if="memTotal" class="group-count">{{ t('settings.memory.total', { n: memTotal }) }}</text>
-        </view>
-        <view class="group-actions">
-          <text class="link" :class="{ disabled: memLoading }" @tap="loadMemories">
-            {{ memLoading ? '…' : t('settings.memory.refresh') }}
-          </text>
-          <text
-            v-if="memories.length"
-            class="link"
-            :class="{ disabled: memLoading }"
-            @tap="clearMemories"
-          >
-            {{ t('settings.memory.clearAll') }}
-          </text>
-        </view>
+      <view class="group-head" @tap="toggleGroup('mcp')">
+        <text class="group-title">{{ t('settings.mcp.title') }}</text>
+        <text class="group-chevron">{{ isOpen('mcp') ? '▾' : '▸' }}</text>
       </view>
-      <input
-        class="mem-search"
-        type="text"
-        :value="memQuery"
-        :placeholder="t('settings.memory.search')"
-        @input="(e: any) => { memQuery = e.detail.value ?? e.target.value ?? ''; searchMemories() }"
-      />
-      <template v-if="!memCollapsed">
-        <text v-if="memHint" class="hint">{{ memHint }}</text>
-        <text v-if="!memories.length && !memHint" class="hint">
-          {{ t('settings.memory.empty') }}
-        </text>
-        <view v-for="item in memories" :key="item.key" class="memory-row">
-          <view class="memory-text">
-            <text class="memory-key">{{ item.key }}</text>
-            <text class="memory-value">{{ item.value }}</text>
+      <template v-if="isOpen('mcp')">
+        <text class="hint">{{ t('settings.mcp.sub') }}</text>
+        <!-- 进入独立分页：增删一组 MCP 服务器（stdio / sse / http），保存后随下次会话下发网关 -->
+        <view class="entry" @tap="openMcpServers">
+          <view class="row-text">
+            <text class="row-label">{{ t('settings.mcp.open') }}</text>
+            <text class="hint">{{ t('settings.mcp.openHint') }}</text>
           </view>
-          <view class="memory-meta">
-            <text class="memory-time">{{ t('settings.memory.created') }} {{ formatMemoryTime(item.createdAt) }}</text>
-            <text class="memory-time">{{ t('settings.memory.updated') }} {{ formatMemoryTime(item.updatedAt) }}</text>
-            <text class="link" @tap="deleteMemory(item)">{{ t('settings.memory.delete') }}</text>
-          </view>
-        </view>
-        <view v-if="memTotalPages > 1" class="mem-pager">
-          <text class="link" :class="{ disabled: !memHasPrev || memLoading }" @tap="prevMemPage">
-            {{ memLoading ? '…' : t('settings.memory.prev') }}
-          </text>
-          <text class="mem-page-ind">{{ t('settings.memory.page', { cur: memPage, total: memTotalPages }) }}</text>
-          <text class="link" :class="{ disabled: !memHasNext || memLoading }" @tap="nextMemPage">
-            {{ memLoading ? '…' : t('settings.memory.next') }}
-          </text>
+          <text class="entry-arrow">›</text>
         </view>
       </template>
     </view>
 
+    <!-- 记忆设置 -->
     <button class="save" :disabled="saving" @tap="onSave">{{ t('settings.save') }}</button>
     <text class="foot">{{ t('settings.foot') }}</text>
 
@@ -871,12 +767,7 @@ watch(
   color: #9be8cd;
 }
 
-.group-title-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
+.group-head {
   cursor: pointer;
 }
 
@@ -1183,83 +1074,6 @@ picker {
 
 .reset::after {
   border: none;
-}
-
-.mem-search {
-  width: 100%;
-  height: 34px;
-  line-height: 34px;
-  padding: 0 12px;
-  margin: 8px 0 2px;
-  border-radius: 10px;
-  font-size: 13px;
-  color: #e8eaf6;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-sizing: border-box;
-}
-
-.mem-pager {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  padding: 10px 0 2px;
-}
-
-.mem-page-ind {
-  font-size: 12px;
-  color: #b8bdd4;
-}
-
-.memory-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-}
-
-.memory-text {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-
-.memory-key {
-  font-size: 12px;
-  font-weight: 600;
-  color: #cfd8ff;
-  flex-shrink: 0;
-}
-
-.memory-value {
-  font-size: 13px;
-  color: #e8eaf6;
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.memory-meta {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 1px;
-  flex-shrink: 0;
-}
-
-.memory-time {
-  font-size: 10px;
-  color: rgba(232, 234, 246, 0.5);
-  line-height: 1.4;
 }
 
 .save {

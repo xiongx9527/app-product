@@ -8,7 +8,7 @@ import {
   DEFAULT_SUBTITLE_COLOR,
 } from './constants'
 import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
-import type { AppConfig, GeneralConfig, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
+import type { AppConfig, GeneralConfig, MemoryConfig, McpConfig, McpServerConfig, McpTransport, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
 
 export const CONFIG_STORAGE_KEY = 'app-product.config.v1'
 
@@ -80,6 +80,8 @@ export function createDefaultConfig(): AppConfig {
     playback: createDefaultPlayback(),
     recommend: createDefaultRecommend(),
     general: createDefaultGeneral(),
+    memory: createDefaultMemory(),
+    mcp: createDefaultMcp(),
   }
 }
 
@@ -94,6 +96,77 @@ function normalizeGeneral(raw: unknown): GeneralConfig {
   const autoConnect =
     typeof source.autoConnect === 'boolean' ? source.autoConnect : createDefaultGeneral().autoConnect
   return { autoConnect }
+}
+
+/** 记忆设置默认值：自动记忆（自动抽取）默认关闭，手动指令不受此开关影响。 */
+function createDefaultMemory(): MemoryConfig {
+  return { autoMemory: false, consolidateThreshold: 30, consolidateEvery: 5 }
+}
+
+/** 记忆设置：合并阈值/频率只认非负整数，缺省/非法回退默认值（30 / 5）。 */
+function normalizeMemoryThreshold(v: unknown, fallback: number): number {
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback
+}
+
+/** 归一化记忆设置：autoMemory 只认 boolean，缺省/非法回退默认（关）。 */
+function normalizeMemory(raw: unknown): MemoryConfig {
+  const source = isRecord(raw) ? raw : {}
+  const autoMemory =
+    typeof source.autoMemory === 'boolean' ? source.autoMemory : createDefaultMemory().autoMemory
+  const def = createDefaultMemory()
+  return {
+    autoMemory,
+    consolidateThreshold: normalizeMemoryThreshold(source.consolidateThreshold, def.consolidateThreshold),
+    consolidateEvery: normalizeMemoryThreshold(source.consolidateEvery, def.consolidateEvery),
+  }
+}
+
+/** MCP 服务器列表默认值：空列表（不连接任何 MCP 服务器）。 */
+function createDefaultMcp(): McpConfig {
+  return { servers: [] }
+}
+
+const MCP_TRANSPORTS: McpTransport[] = ['stdio', 'sse', 'http']
+
+/**
+ * 归一化单个 MCP 服务器配置：name 必须为字符串；transport 只接受 stdio/sse/http，否则丢弃该项；
+ * stdio 必须有 command、sse/http 必须有 url，否则丢弃该项（避免下发网关连不上/连错）；
+ * enabled 收敛为 boolean（缺省 true）；id 缺失则补一个稳定随机标识（列表 key 与持久化用）。
+ */
+function normalizeMcpServer(raw: unknown): McpServerConfig | null {
+  const source = isRecord(raw) ? raw : {}
+  const name = typeof source.name === 'string' ? source.name.trim() : ''
+  const transport = (source.transport as McpTransport) ?? 'stdio'
+  if (!name || !MCP_TRANSPORTS.includes(transport)) return null
+  const id = typeof source.id === 'string' && source.id ? source.id : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  const enabled = typeof source.enabled === 'boolean' ? source.enabled : true
+  if (transport === 'stdio') {
+    const command = typeof source.command === 'string' ? source.command.trim() : ''
+    if (!command) return null
+    const args = Array.isArray(source.args) ? source.args.filter((a) => typeof a === 'string') : []
+    const env: Record<string, string> | undefined = isRecord(source.env)
+      ? Object.fromEntries(
+          Object.entries(source.env)
+            .filter(([, v]) => typeof v === 'string')
+            .map(([k, v]) => [k, v as string])
+        )
+      : undefined
+    return { id, name, enabled, transport, command, args, env }
+  }
+  const url = typeof source.url === 'string' ? source.url.trim() : ''
+  if (!url) return null
+  const enabledTools = Array.isArray(source.enabledTools) ? source.enabledTools.filter((t) => typeof t === 'string') : undefined
+  const disabledTools = Array.isArray(source.disabledTools) ? source.disabledTools.filter((t) => typeof t === 'string') : undefined
+  return { id, name, enabled, transport, url, enabledTools, disabledTools }
+}
+
+/** 归一化 MCP 配置：servers 逐项校验，非法项丢弃；非数组/缺省回退空列表。 */
+function normalizeMcp(raw: unknown): McpConfig {
+  const source = isRecord(raw) ? raw : {}
+  const list = Array.isArray(source.servers) ? source.servers : []
+  const servers = list.map(normalizeMcpServer).filter((s): s is McpServerConfig => s !== null)
+  return { servers }
 }
 
 function normalizeProviderSettings(
@@ -227,8 +300,10 @@ export function normalizeConfig(
   const playback = normalizePlayback(source.playback ?? base.playback)
   const recommend = normalizeRecommend(source.recommend ?? base.recommend)
   const general = normalizeGeneral(source.general ?? base.general)
+  const memory = normalizeMemory(source.memory ?? base.memory)
+  const mcp = normalizeMcp(source.mcp ?? base.mcp)
 
-  return { version: 1, mode, language, timezone, voice, playback, recommend, general }
+  return { version: 1, mode, language, timezone, voice, playback, recommend, general, memory, mcp }
 }
 
 function hasStorage(): boolean {

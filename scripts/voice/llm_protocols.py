@@ -88,6 +88,16 @@ def resolve_vendor(protocol: str | None, vendor: str | None) -> str:
     return protocol_vendor(protocol)
 
 
+def uses_ollama_native(protocol: str | None) -> bool:
+    """是否走 Ollama 原生 /api/chat（NDJSON）线协议。
+
+    线协议只由 protocol 决定：仅当显式写 `ollama` 才启用原生端点。vendor 是
+    厂商方言标签（管理面板把某行命名为 ollama 只是分组），不能切换线协议——
+    否则把 deepseek 等 OpenAI 兼容端点归到 ollama 行时会被发到 /api/chat 而 404。
+    """
+    return (protocol or "").strip().lower() == "ollama"
+
+
 @dataclass
 class UpstreamRequest:
     """翻译后的上游请求：URL、请求头、JSON 体。"""
@@ -579,7 +589,7 @@ def openai_responses_to_openai(obj: dict) -> dict:
 # 名字、结构完全不同，必须在这里翻译，不能把 think 原样丢给上游（多数厂商不认，
 # 还可能当成非法参数报错）。同时把代理内部字段从最终 payload 里剔除，避免
 # _build_openai 的 dict(body) 把 base_url / api_key / vendor 等一起透传上去。
-_INTERNAL_KEYS = {"base_url", "api_key", "vendor", "protocol", "bypass_catalog", "think", "extra_body"}
+_INTERNAL_KEYS = {"base_url", "api_key", "vendor", "protocol", "bypass_catalog", "think", "extra_body", "direct_upstream"}
 
 
 def apply_think(payload: dict, body: dict, wire: str, vendor: str) -> dict:
@@ -635,9 +645,11 @@ def prepare(
 ) -> tuple[UpstreamRequest, type[StreamTranslator], callable]:
     """返回（上游请求, 流式翻译器类, 非流式响应翻译函数）。
 
-    协议名先经 normalize_protocol() 收敛到 5 个线协议之一；vendor 决定路径变体
-    （dashscope 走 /compatible-mode/v1，ollama 走 /api/chat）。协议名大小写不敏感；
-    未知协议回退到 openai_chat_completions，保证不崩。
+    线协议（URL 路径 + 流式翻译器）只由 protocol 决定；vendor 只管厂商方言参数
+    （think 开关命名、dashscope 的 /compatible-mode/v1 路径变体），不再切换线协议。
+    Ollama 原生 /api/chat 仅当 protocol 显式为旧别名 ollama 时启用——vendor=ollama
+    只是管理面板的分组标签，不能把贴了该标签的 OpenAI 兼容端点劫持到 /api/chat。
+    协议名大小写不敏感；未知协议回退到 openai_chat_completions，保证不崩。
     """
     wire = normalize_protocol(protocol)
     vendor = resolve_vendor(protocol, vendor)
@@ -660,8 +672,9 @@ def prepare(
     elif wire == "openai_responses":
         req = _build_openai_responses(base, api_key, model_override, body)
         stream_cls, resp_transform = OpenAiResponsesStream, openai_responses_to_openai
-    elif vendor == "ollama":
-        # openai_chat_completions（默认，覆盖 openai / deepseek / dashscope / ollama 等）
+    elif uses_ollama_native(protocol):
+        # 仅 protocol 显式为 ollama 旧别名才走原生 /api/chat（NDJSON）。
+        # vendor=ollama 只是面板分组标签，不能把 OpenAI 兼容端点劫持到 /api/chat。
         req = _build_ollama(base, api_key, model_override, body)
         stream_cls, resp_transform = OllamaStream, ollama_to_openai
     else:
@@ -686,9 +699,8 @@ def prepare_models(
 ) -> tuple[str, dict[str, str]]:
     """模型列表接口：Ollama 走 /api/tags，Gemini 走 /models，其余 OpenAI 兼容走 /v1/models。"""
     wire = normalize_protocol(protocol)
-    vendor = resolve_vendor(protocol, vendor)
     headers = {"Content-Type": "application/json", **_bearer(api_key)}
-    if vendor == "ollama":
+    if uses_ollama_native(protocol):
         return base.rstrip("/") + "/api/tags", headers
     if wire == "gemini":
         return base.rstrip("/") + "/models", headers

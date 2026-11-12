@@ -51,6 +51,16 @@ interface Harness {
   forgetCalls: () => Array<{ deviceId: string | null; topic?: string }>
   /** 最近一次 agentFactory 收到的 memoryContext（验证系统提示注入了记忆） */
   lastMemoryContext: () => string | undefined
+  /** 自动记忆抽取被调用的次数 */
+  extractCalls: () => number
+  /** 最近一次抽取喂入的「最近用户原话」上下文（数组的数组，每次抽取一条） */
+  lastExtractHistory: () => Array<string[]>
+  /** 注入抽取结果：下几次 extractMemories 返回这些条目（验证落库） */
+  setExtractResult: (items: Array<{ key: string; value: string }>) => void
+  /** 自动记忆被写入存储的条目（key/value） */
+  savedMemories: () => Array<{ key: string; value: string }>
+  /** 合并（摘要）被触发的次数（验证阈值/频率配置生效） */
+  consolidateCalls: () => number
   /** 模拟工具层通过 emit 通道下发事件（如开源项目卡片） */
   emitMedia: (m: ServerEvent) => void
 }
@@ -72,6 +82,10 @@ function createHarness(
     deviceId?: string | null
     /** 懒加载定位超时（毫秒）；测试压短，默认 50ms */
     locationRequestTimeoutMs?: number
+    /** 自动记忆合并（摘要）阈值：覆盖缺省，验证配置可注入 */
+    consolidateThreshold?: number
+    /** 自动记忆合并（摘要）频率：覆盖缺省，验证配置可注入 */
+    consolidateEvery?: number
     /** 注入能力探测桩：返回各能力 reachable 与否；缺省「全部就绪」，不下发 client.cue */
     capabilityProbe?: () => Promise<HealthReport | null>
     /** 注入商品/好价查询桩（口播文本 + 结构化 Deal[]），避免直连用例真的联网抓页面 */
@@ -94,6 +108,10 @@ function createHarness(
   let finish: (() => void) | null = null
   let emitFn: ((m: ServerEvent) => void) | undefined
   const replyText = opts.replyText ?? '好的，我来说一句。'
+  let extractCalls = 0
+  let lastExtractHistory: Array<string[]> = []
+  let extractResult: Array<{ key: string; value: string }> = []
+  let consolidateCalls = 0
   const agent: AgentService = {
     reply(_text, onDelta, onThinking) {
       calls += 1
@@ -121,6 +139,18 @@ function createHarness(
         finish = () => resolve(replyText)
       })
     },
+    // 自动记忆抽取桩：记录调用与最近上下文，并由用例注入返回条目以验证落库。
+    async extractMemories(history) {
+      extractCalls += 1
+      lastExtractHistory.push(history.slice())
+      return extractResult
+    },
+    async consolidateMemories() {
+      consolidateCalls += 1
+      return []
+    },
+    mcpClients: [],
+    async closeMcp() {},
   }
   const asr: AsrProvider = {
     async push() {
@@ -145,12 +175,15 @@ function createHarness(
 
   let service!: VoiceSessionService
   const forgetCalls: Array<{ deviceId: string | null; topic?: string }> = []
+  const savedMemories: Array<{ key: string; value: string }> = []
   let lastMemoryContext: string | undefined
   const data = {
     createSession: async () => 1,
     endSession: async () => {},
     insertCommandLog: () => {},
-    saveMemory: async () => {},
+    saveMemory: async (_deviceId: string | null, key: string, value: string) => {
+      savedMemories.push({ key, value })
+    },
     getMemories: async () => opts.memories ?? [],
     forgetMemory: async (deviceId: string | null, topic?: string) => {
       forgetCalls.push({ deviceId, topic })
@@ -177,6 +210,8 @@ function createHarness(
     // 默认不抓详情页：单测不联网；需要验证补充信息合并时由用例注入
     dealsDetail: opts.dealsDetail ?? (async () => null),
     locationRequestTimeoutMs: opts.locationRequestTimeoutMs ?? 50,
+    consolidateThreshold: opts.consolidateThreshold,
+    consolidateEvery: opts.consolidateEvery,
     deviceId: opts.deviceId === undefined ? 'test-device' : opts.deviceId,
     // 默认「全部就绪」，避免每个用例都下发 client.cue；需要验证不可用时由调用方注入 capabilityProbe
     capabilityProbe: opts.capabilityProbe,
@@ -192,12 +227,31 @@ function createHarness(
     asrFrames: () => frames,
     forgetCalls: () => forgetCalls,
     lastMemoryContext: () => lastMemoryContext,
+    extractCalls: () => extractCalls,
+    lastExtractHistory: () => lastExtractHistory,
+    setExtractResult: (items) => {
+      extractResult = items
+    },
+    savedMemories: () => savedMemories,
+    consolidateCalls: () => consolidateCalls,
     emitMedia: (m) => emitFn?.(m),
   }
 }
 
 async function startDialog(service: VoiceSessionService, lang = 'zh-CN'): Promise<void> {
   service.handleText(JSON.stringify({ type: 'session.start', sessionId: 's1', lang }))
+  await sleep(5)
+}
+
+/** 以指定自动记忆开关开启一个对话会话（验证抽取是否被触发）。 */
+async function startDialogWithMemory(
+  service: VoiceSessionService,
+  auto: boolean,
+  lang = 'zh-CN'
+): Promise<void> {
+  service.handleText(
+    JSON.stringify({ type: 'session.start', sessionId: 's1', lang, memory: { auto } })
+  )
   await sleep(5)
 }
 
@@ -1351,6 +1405,8 @@ describe('字幕开关指令（绕开 LLM）', () => {
     expect(subs.some((e) => e.close)).toBe(false)
     expect(h.agentCalls()).toBe(0)
     expect(texts(h)).toContain('已开启字幕')
+    // 回归：开启确认只口播一次，不得重复播报两遍
+    expect(texts(h).split('已开启字幕').length - 1).toBe(1)
   })
 })
 
@@ -2496,5 +2552,121 @@ describe('英文会话：选号重问文案本地化', () => {
     expect(spoken(h)).toContain("Didn't catch which project")
     expect(spoken(h)).not.toContain('没听清是第几个')
     expect(h.agentCalls()).toBe(before)
+  })
+})
+
+describe('语音会话：自动记忆（抽取 + 摘要）', () => {
+  it('自动记忆关闭时，普通对话轮次不触发抽取', async () => {
+    const h = createHarness()
+    // 不带 memory.auto，缺省关
+    await startDialogWithMemory(h.service, false)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(20)
+    h.playbackDone()
+    await sleep(30)
+    expect(h.extractCalls()).toBe(0)
+    expect(h.savedMemories()).toHaveLength(0)
+  })
+
+  it('自动记忆开启时，普通对话轮次触发抽取并把结果落库', async () => {
+    const h = createHarness()
+    await startDialogWithMemory(h.service, true)
+    h.setExtractResult([{ key: '作息', value: '七点起床' }])
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(20)
+    h.playbackDone()
+    await sleep(50)
+    expect(h.extractCalls()).toBeGreaterThan(0)
+    // 抽取上下文至少包含本轮用户原话
+    const last = h.lastExtractHistory().at(-1) ?? []
+    expect(last.some((t) => t.includes('今天天气'))).toBe(true)
+    expect(h.savedMemories()).toContainEqual({ key: '作息', value: '七点起床' })
+  })
+
+  it('无值得记的内容时（抽取返回空）不写库', async () => {
+    const h = createHarness()
+    await startDialogWithMemory(h.service, true)
+    h.setExtractResult([])
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(20)
+    h.playbackDone()
+    await sleep(50)
+    expect(h.extractCalls()).toBeGreaterThan(0)
+    expect(h.savedMemories()).toHaveLength(0)
+  })
+
+  it('直连命令（音乐）轮次不触发自动抽取', async () => {
+    const h = createHarness({
+      // 定稿为明确音乐指令，走直连、不进大模型
+      finalizeText: '放一首周杰伦的歌',
+    })
+    await startDialogWithMemory(h.service, true)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+    expect(h.extractCalls()).toBe(0)
+    expect(h.savedMemories()).toHaveLength(0)
+  })
+
+  it('合并（摘要）阈值/频率可由配置覆盖：阈值降到 0、频率 1 时每轮抽取都触发合并', async () => {
+    const h = createHarness({ consolidateThreshold: 0, consolidateEvery: 1 })
+    await startDialogWithMemory(h.service, true)
+    h.setExtractResult([{ key: '作息', value: '七点起床' }])
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(20)
+    h.playbackDone()
+    await sleep(50)
+    expect(h.extractCalls()).toBeGreaterThan(0)
+    // 阈值 0 且频率 1：每轮都满足合并条件 → 合并（摘要）至少被调用一次
+    expect(h.consolidateCalls()).toBeGreaterThan(0)
+  })
+
+  it('合并阈值/频率可由 session.start.memory 逐会话覆盖（不依赖网关配置）', async () => {
+    // 不注入 deps 配置，改用 session.start 的 memory 字段下发阈值/频率
+    const h = createHarness()
+    h.service.handleText(
+      JSON.stringify({
+        type: 'session.start',
+        sessionId: 's1',
+        lang: 'zh-CN',
+        memory: { auto: true, consolidateThreshold: 0, consolidateEvery: 1 },
+      })
+    )
+    await sleep(5)
+    h.setExtractResult([{ key: '作息', value: '七点起床' }])
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(20)
+    h.playbackDone()
+    await sleep(50)
+    expect(h.extractCalls()).toBeGreaterThan(0)
+    expect(h.consolidateCalls()).toBeGreaterThan(0)
+  })
+})
+
+describe('语音会话：音频下发计数（回归：不重复播放）', () => {
+  it('一轮用户对话只下发一次 tts.start', async () => {
+    const h = createHarness({ ttsFrames: [loudFrame(), loudFrame()] })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    // 回归：一轮对话只能有一次 tts.start；多次说明服务端把同一轮回复发了两遍，
+    // 客户端会因此把同一句 TTS 放两遍。
+    expect(h.events.filter((e) => e.type === 'tts.start')).toHaveLength(1)
+  })
+
+  it('一句语音指令只触发一次回复（agent 不被调用两次）', async () => {
+    const h = createHarness()
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    expect(h.agentCalls()).toBe(1)
   })
 })

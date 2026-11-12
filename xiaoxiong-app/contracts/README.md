@@ -49,7 +49,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }, "recommend": { "dealsCount": 3, "opensourceCount": 3 } }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }, "recommend": { "dealsCount": 3, "opensourceCount": 3 }, "mcp": { "servers": [ { "name": "fs", "transport": "stdio", "command": "npx @modelcontextprotocol/server-filesystem", "args": ["/tmp"] } ] } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.end" }
@@ -67,6 +67,16 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 `source` 取值与 `session.start.playback.source` 一致（`baidu` / `netease` / `tencent` / `kugou`）。`autoSubtitle` / `defaultLoop` / `defaultVolume` 同样可随本消息实时刷新（取值与 `session.start.playback` 一致），下次新播放（点歌/换一首）即生效。
 
 `recommend` 为推荐设置（好价商品 / 开源工具的推荐条数），来自客户端设置页，缺省各 3、范围 1–10。网关据此作为好价/开源工具未显式指定条数时的默认（工具上限 1–10）；客户端改了经下一次 `session.start`（重连/重唤醒）生效。
+
+`mcp` 为 MCP 服务器列表，来自客户端设置页（用户自行填写并开启）。网关在会话建连（`session.start`）时逐个连上并把它们的工具注册进助手工具箱，语音助手即可调用这些工具；`rearm` / 下次 `session.start` 同样会重新下发并重建连接，故修改即时生效。`servers` 各项字段：
+- `name`：服务器显示名；
+- `transport`：`stdio`（网关侧按 `command` 拉起本地子进程）/ `sse`（Server-Sent Events）/ `http`（Streamable HTTP），三选一；
+- `command` / `args` / `env`：仅 `stdio` 需要，分别是启动命令、参数数组、子进程环境变量；
+- `url`：仅 `sse` / `http` 需要，服务器地址；
+- `enabledTools` / `disabledTools`：工具白/黑名单（逗号分隔的 tool 名），缺省不限制。
+客户端只下发**已启用**的服务器（`enabled: true`）；单个服务器连接失败不影响会话（网关跳过并继续）。`stdio` 会在网关主机启动本地进程，属用户自有 BYOK 网关、配置由用户本人填写，可接受。
+
+`memory` 为记忆设置，来自客户端设置页：`auto` 为自动记忆（自动抽取）开关（缺省关，手动指令始终生效）；`consolidateThreshold` / `consolidateEvery` 为自动记忆合并（摘要）的阈值与频率（非负整数，0 表示每轮都合并；缺省由网关运行配置决定，环境变量可覆盖）。网关会话建连时读取并用于节流合并，避免无限膨胀。
 `tts.end` 只代表服务端音频帧下发完毕，不代表播完；**队列还有下一句时**网关必须等
 这个回执才消费，否则新一轮 `tts.start` 会掐掉上一轮还没播完的音频。
 队列为空时不等回执，立刻释放，避免用户下一句被误排队。

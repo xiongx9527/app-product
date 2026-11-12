@@ -47,7 +47,7 @@ describe('当前播放曲目注入 LLM 上下文', () => {
   })
 
   it('reply 时把当前曲目拼进系统提示，模型据此答出歌名', async () => {
-    const agent = createAgentService(
+    const agent = await createAgentService(
       { llm: { provider: 'builtin', baseUrl: baseURL, model: 'test', apiKey: 'x', params: {} }, timeZone: 'Asia/Shanghai' },
       'zh-CN',
       () => null,
@@ -82,7 +82,7 @@ describe('当前播放曲目注入 LLM 上下文', () => {
   })
 
   it('没有在播放时（getNowPlaying 返回 null）不注入任何曲目上下文', async () => {
-    const agent = createAgentService(
+    const agent = await createAgentService(
       { llm: { provider: 'builtin', baseUrl: baseURL, model: 'test', apiKey: 'x', params: {} }, timeZone: 'Asia/Shanghai' },
       'zh-CN',
       () => null,

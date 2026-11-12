@@ -14,6 +14,17 @@ let activeTransport: AssistantTransport | null = null
 
 /** 创建真实网关传输（H5 走浏览器 WebSocket 直连 Node 网关 /ws）。 */
 export function createTransport(maxReconnectAttempts = 5): AssistantTransport {
+  // HMR / 重复挂载场景下，旧 transport 可能因其 onUnmounted 未被触发而仍持有活跃 WS 连接，
+  // 导致同一份事件/音频被多个残留实例各处理一遍（听感「双声 / 回声」）。
+  // 建新实例前先关掉旧实例的 WS，保证全局至多一条活跃连接，从根上杜绝叠加；
+  // 旧的 useAssistant 闭包即便因 HMR 未卸载而残留，其 transport 已断开、不会再收到事件。
+  if (activeTransport) {
+    try {
+      activeTransport.close()
+    } catch {
+      // 已关闭的实例忽略
+    }
+  }
   activeTransport = new WebSocketTransport(undefined, 'zh-CN', maxReconnectAttempts)
   return activeTransport
 }

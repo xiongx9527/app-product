@@ -68,6 +68,12 @@ const CUE_MUTE_MS: Record<PromptCue, number> = {
 
 let cueMuteUntil = 0
 
+/** 同一提示音去重窗口（ms）：窗口内重复触发只播一次，规避唤醒词被多路命中导致的「放两遍」。 */
+const CUE_DEDUP_MS = 1000
+/** 上一次实际播放的提示音与时刻，用于去重判断。 */
+let lastCuePlayed: PromptCue | null = null
+let lastCuePlayedAt = 0
+
 /** 当前是否正在播本地提示音：采集回调据此把上行帧清零。 */
 export function isPromptCuePlaying(): boolean {
   return Date.now() < cueMuteUntil
@@ -111,6 +117,16 @@ export function enqueueCue(cue: PromptCue): void {
 export function playPromptCue(cue: PromptCue): void {
   cueMuteUntil = Math.max(cueMuteUntil, Date.now() + CUE_MUTE_MS[cue])
 
+  // 去重：同一提示音 1s 内只播一次。唤醒词常被网关经 asr.partial 与 asr.final
+  // 先后各命中一次，且两条消息到达的间隙里状态机可能还没翻成 listening，导致
+  // playGreeting / playPrompt 连续触发两次，听感就是「我在 / 还在吗 放两遍」。
+  // 正常场景里任何提示音都不需要在 1s 内连播两遍，去重即可消除该现象且不误伤
+  // 正常的不同提示音序列（健康播报等走不同 cue，队列本身也间隔 ≥1.4s）。
+  const now = Date.now()
+  if (cue === lastCuePlayed && now - lastCuePlayedAt < CUE_DEDUP_MS) return
+  lastCuePlayed = cue
+  lastCuePlayedAt = now
+
   // #ifdef H5
   playHtmlAudioCue(cue)
   // #endif
@@ -130,36 +146,37 @@ export function playPromptCueSequence(cues: PromptCue[]): void {
 }
 
 // #ifdef H5
-/** H5 优先播放提示音；网关类提示从网关拉取，失败回退打包内文件，再不行才用合成音兜底。 */
+/** H5 优先播放提示音；网关类提示从网关拉取，失败回退打包内文件，再不行才用合成音兜底。
+ *  关键：兜底（playWebAudioCue / 回退本地文件）必须「只跑一次」。浏览器里 mp3 加载失败时，
+ *  <audio>.play() 的 rejected promise 与元素的 error 事件可能都触发，若各自兜底会合成两次
+ *  （听感就是「我在 / 我在」放两遍）。用 handled 标记收敛成一次性动作。 */
 function playHtmlAudioCue(cue: PromptCue): void {
-  try {
-    const audio = new Audio(cueUrl(cue))
-    const result = audio.play()
-    if (result && typeof result.catch === 'function') {
-      result.catch(() => {
-        if (isGatewayCue(cue) && cueUrl(cue) !== bundledCueUrl(cue)) {
-          // 网关拉取失败：回退到打包内本地文件
-          try {
-            const fallback = new Audio(bundledCueUrl(cue))
-            void fallback.play()
-          } catch {
-            playWebAudioCue(cue)
-          }
-        } else {
-          playWebAudioCue(cue)
-        }
-      })
-    }
-  } catch {
-    if (isGatewayCue(cue)) {
+  let handled = false
+  const fallback = (): void => {
+    if (handled) return
+    handled = true
+    if (isGatewayCue(cue) && cueUrl(cue) !== bundledCueUrl(cue)) {
+      // 网关拉取失败：回退到打包内本地文件，仍失败才用合成音
       try {
-        void new Audio(bundledCueUrl(cue)).play()
+        const f = new Audio(bundledCueUrl(cue))
+        const r = f.play()
+        if (r && typeof r.catch === 'function') r.catch(() => playWebAudioCue(cue))
       } catch {
-        /* 忽略 */
+        playWebAudioCue(cue)
       }
     } else {
       playWebAudioCue(cue)
     }
+  }
+  try {
+    const audio = new Audio(cueUrl(cue))
+    audio.addEventListener('error', fallback)
+    const result = audio.play()
+    if (result && typeof result.catch === 'function') {
+      result.catch(fallback)
+    }
+  } catch {
+    fallback()
   }
 }
 
@@ -201,38 +218,55 @@ function playWebAudioCue(cue: PromptCue): void {
 // #endif
 
 // #ifndef H5
-/** App 端播放提示音：网关类提示从网关 HTTP 拉取，失败（网关挂了 / 拉取异常）回退打包内文件。 */
-function playAppCue(cue: PromptCue): void {
-  const play = (src: string): void => {
-    try {
-      const audio = uni.createInnerAudioContext()
-      audio.src = src
-      audio.onError(() => {
-        audio.destroy()
-        // 网关拉取失败：状态类提示回退到打包内本地文件，仍不阻断状态机
-        if (isGatewayCue(cue) && src !== bundledCueUrl(cue)) {
-          playBundledCue(cue)
-        }
-      })
-      audio.onEnded(() => audio.destroy())
-      audio.play()
-    } catch {
-      if (isGatewayCue(cue)) playBundledCue(cue)
+/**
+ * 播放一个本地/网关音频对象，并保证它一定会被销毁：正常播完（onEnded）或出错（onError）
+ * 都销毁；再额外加一个基于该提示音时长的兜底定时器，万一 App 端 onEnded/onError 都没回调
+ * （某些机型上音频对象静默失败时两个回调都不触发），也能在超时后销毁，避免泄漏累积。
+ * 泄漏的音频对象会在原生音频层继续播放、且 webview 刷新后也关不掉（用户反馈的
+ * 「放两遍 / 关不掉 / 刷新后还在放」正是它导致的）。
+ */
+function playOneCue(cue: PromptCue, src: string, onFail?: () => void): void {
+  let audio: UniApp.InnerAudioContext | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const cleanup = (): void => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
     }
+    if (!audio) return
+    try {
+      audio.destroy()
+    } catch {
+      // 已销毁，忽略
+    }
+    audio = null
   }
-  play(cueUrl(cue))
-}
-
-/** 兜底：直接播打包内的本地提示文件。 */
-function playBundledCue(cue: PromptCue): void {
   try {
-    const audio = uni.createInnerAudioContext()
-    audio.src = bundledCueUrl(cue)
-    audio.onEnded(() => audio.destroy())
-    audio.onError(() => audio.destroy())
+    audio = uni.createInnerAudioContext()
+    audio.src = src
+    audio.onEnded(cleanup)
+    audio.onError(() => {
+      cleanup()
+      if (onFail) onFail()
+    })
     audio.play()
   } catch {
-    // 文件缺失时不阻断状态机
+    cleanup()
+    if (onFail) onFail()
   }
+  // 兜底销毁：提示音本身时长 + 1.5s 余量；即便回调丢失也在此后强制回收。
+  timer = setTimeout(cleanup, CUE_MUTE_MS[cue] + 1500)
 }
+
+/** App 端播放提示音：网关类提示从网关 HTTP 拉取，失败（网关挂了 / 拉取异常）回退打包内文件。 */
+function playAppCue(cue: PromptCue): void {
+  const src = cueUrl(cue)
+  playOneCue(cue, src, () => {
+    if (isGatewayCue(cue) && src !== bundledCueUrl(cue)) {
+      // 网关拉取失败：状态类提示回退到打包内本地文件，仍不阻断状态机
+      playOneCue(cue, bundledCueUrl(cue))
+    }
+  })
+}
+
 // #endif

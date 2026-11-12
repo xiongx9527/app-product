@@ -30,6 +30,18 @@
       "style": {
         "navigationBarTitleText": "开源工具收藏"
       }
+    },
+    {
+      "path": "pages/longmemory/longmemory",
+      "style": {
+        "navigationBarTitleText": "长期记忆"
+      }
+    },
+    {
+      "path": "pages/mcpservers/mcpservers",
+      "style": {
+        "navigationBarTitleText": "MCP 服务器"
+      }
     }
   ],
   "globalStyle": {
