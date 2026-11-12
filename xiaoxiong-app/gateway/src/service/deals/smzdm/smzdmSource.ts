@@ -105,8 +105,61 @@ export function parseDealDetail(html: string): DealDetail {
 }
 
 /**
+ * 解析 tag 搜索页的好价卡片（站内真搜索入口，如 /tag/耳机/）。
+ * 页面无 WAF 时可用；返回 202 挑战页 / 404 时本函数解析不出卡片、自然返回空，
+ * 由 collectDeals 回退到「feed + 本地过滤」。
+ */
+export function parseTagDeals(html: string): Deal[] {
+  const $ = load(html)
+  const out: Deal[] = []
+  $('div.haojia-card-container').each((_, el) => {
+    const card = $(el)
+    const title = card.find('.card-right-box-title').first().text().trim()
+    const price =
+      card.find('.card-right-box-sub-title').first().text().trim() ||
+      (card.attr('priceshow') || '').trim()
+    const link = (card.find('a[href*="/p/"]').first().attr('href') || '').trim()
+    if (!title && !price) return
+    const tags: string[] = []
+    card.find('.tags-item').each((_, t) => {
+      const x = $(t).text().trim()
+      if (x) tags.push(x)
+    })
+    const img = card.find('img.product-img').first()
+    let rawImage = (img.attr('src') || '').trim()
+    if (rawImage.startsWith('data:')) rawImage = ''
+    const image = rawImage
+      ? rawImage.startsWith('//')
+        ? `https:${rawImage}`
+        : rawImage
+      : undefined
+    // 商城：directlink 指向商家落地页，按域名粗分类；认不出留空不编造。
+    const direct = card.attr('directlink') || ''
+    let mall = ''
+    if (/tmall\.com|taobao\.com/i.test(direct)) mall = '天猫/淘宝'
+    else if (/jd\.com/i.test(direct)) mall = '京东'
+    else if (/pinduoduo|yangkeduo/i.test(direct)) mall = '拼多多'
+    out.push({
+      title,
+      price,
+      mall,
+      tags,
+      link,
+      image,
+      // tag 页图片是 _a640，toLargeImage 的 _d800 规则不适用；留空由客户端回退 image
+      imageLarge: undefined,
+      sourceKey: 'smzdm',
+    })
+  })
+  return out
+}
+
+/**
  * 创建「什么值得买 · 精选好价」数据源。baseUrl 缺省读 DEALS_SOURCE_URL 或内置默认。
  * 分页规则：首页 + p2/、p3/……（站点实时更新，约 20 条/页）。
+ * 带关键词时优先走站内 tag 搜索页（真搜索，能搜到 feed 之外的商品）；
+ * tag 搜索拿不到（WAF 挑战页 / 404 / 无结果）由 collectDeals 回退 feed+本地过滤。
+ * 多词复合词的 tag 常被 WAF 拦（实测「蓝牙耳机」202），回退兜底覆盖这些场景。
  */
 export function createSmzdmSource(baseUrl?: string): DealsSource {
   const base =
@@ -120,6 +173,12 @@ export function createSmzdmSource(baseUrl?: string): DealsSource {
       return `${base}${sep}p${page}/`
     },
     parse: parseDeals,
+    // 站内真搜索：tag 页只在第一页有效（翻页结构未验证），返回空串让上层跳过
+    searchUrl(keyword: string, page: number) {
+      if (page > 1) return ''
+      return `https://www.smzdm.com/tag/${encodeURIComponent(keyword)}/`
+    },
+    parseSearch: parseTagDeals,
     // 列表项自带详情页链接，直接复用；没有链接就不补详情
     detailUrl: (deal) => deal.link || undefined,
     parseDetail: parseDealDetail,

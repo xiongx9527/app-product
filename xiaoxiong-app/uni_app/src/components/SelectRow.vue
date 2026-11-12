@@ -193,7 +193,7 @@ function onSearch(e: Event): void {
 }
 
 .option.active {
-  background: rgba(108, 140, 255, 0.16);
+  background: rgba(var(--accent-rgb), 0.16);
 }
 
 .option-label {
@@ -215,7 +215,7 @@ function onSearch(e: Event): void {
   font-size: 11px;
   line-height: 1.4;
   color: #8b91ab;
-  background: rgba(108, 140, 255, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
   border-radius: 6px;
   padding: 1px 6px;
   max-width: 130px;
@@ -226,7 +226,7 @@ function onSearch(e: Event): void {
 
 .check {
   font-size: 13px;
-  color: #6c8cff;
+  color: var(--accent);
 }
 
 /* 搜索框：仅在 searchable 下拉里出现，便于在长模型目录里定位 */

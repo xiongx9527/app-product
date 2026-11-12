@@ -87,6 +87,11 @@ export interface GeneralConfig {
    * 默认关闭——避免一启动就建连/常驻监听，用户按需打开。
    */
   autoConnect: boolean
+  /**
+   * 主题：驱动整体配色（强调色 + 背景辉光），通过 :root 的 CSS 变量即时生效。
+   * 'auto' 跟随系统（当前仅深色设计，回退 default）。
+   */
+  theme: 'auto' | 'default' | 'purple' | 'teal' | 'amber'
 }
 
 /** 记忆设置 */
@@ -132,6 +137,12 @@ export interface McpServerConfig {
   env?: Record<string, string>
   /** sse / http：服务器地址 */
   url?: string
+  /**
+   * sse / http：连接时附带的自定义请求头（鉴权用）。
+   * 覆盖 Bearer / API Key / 自定义头等各种认证方式（如 Authorization: Bearer xxx、x-api-key: yyy）。
+   * stdio 不使用。密钥只落本机，不下发明文到任何第三方。
+   */
+  headers?: Record<string, string>
   /** 仅启用的工具白名单；不填表示全部启用 */
   enabledTools?: string[]
   /** 禁用的工具黑名单 */
@@ -140,6 +151,8 @@ export interface McpServerConfig {
 
 /** MCP 服务器列表配置 */
 export interface McpConfig {
+  /** 总开关：关闭时不把任何 MCP 服务器下发给网关（快捷整体停用，不必逐个改服务器） */
+  enabled: boolean
   servers: McpServerConfig[]
 }
 

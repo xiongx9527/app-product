@@ -626,8 +626,8 @@ function onOrbTap(): void {
   flex-direction: column;
   gap: 20px;
   background:
-    radial-gradient(120% 60% at 50% 0%, rgba(108, 140, 255, 0.22), transparent 60%),
-    #0f1220;
+    radial-gradient(120% 60% at 50% 0%, rgba(var(--accent-rgb), 0.22), transparent 60%),
+    var(--bg-base);
 }
 
 .header {
@@ -671,7 +671,7 @@ function onOrbTap(): void {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at 50% 35%, rgba(108, 140, 255, 0.5), rgba(108, 140, 255, 0.06) 65%);
+  background: radial-gradient(circle at 50% 35%, rgba(var(--accent-rgb), 0.5), rgba(var(--accent-rgb), 0.06) 65%);
   transition: transform 0.2s ease;
 }
 
@@ -725,7 +725,7 @@ function onOrbTap(): void {
 
 .phase.replying {
   color: #cfd8ff;
-  border-color: rgba(108, 140, 255, 0.5);
+  border-color: rgba(var(--accent-rgb), 0.5);
 }
 
 .phase.speaking {
@@ -760,8 +760,8 @@ function onOrbTap(): void {
 }
 
 .card.reply {
-  border-color: rgba(108, 140, 255, 0.28);
-  background: rgba(108, 140, 255, 0.08);
+  border-color: rgba(var(--accent-rgb), 0.28);
+  background: rgba(var(--accent-rgb), 0.08);
 }
 
 .card-label {
@@ -1240,8 +1240,8 @@ function onOrbTap(): void {
   gap: 8px;
   padding: 14px 16px;
   border-radius: 14px;
-  background: rgba(108, 140, 255, 0.07);
-  border: 1px solid rgba(108, 140, 255, 0.22);
+  background: rgba(var(--accent-rgb), 0.07);
+  border: 1px solid rgba(var(--accent-rgb), 0.22);
 }
 
 .subtitle-head {
@@ -1275,7 +1275,7 @@ function onOrbTap(): void {
 }
 
 .subtitle-icon-btn:active {
-  background: rgba(108, 140, 255, 0.18);
+  background: rgba(var(--accent-rgb), 0.18);
 }
 
 .subtitle-icon {
@@ -1550,11 +1550,11 @@ function onOrbTap(): void {
 
 /* 当前高亮行：字号/颜色由设置页（:style 注入）控制，这里只给加粗/底色/左侧亮条做区分 */
 .subtitle-line--active {
-  background: rgba(108, 140, 255, 0.22);
+  background: rgba(var(--accent-rgb), 0.22);
   font-weight: 700;
   line-height: 1.6;
   padding: 6px 10px;
-  box-shadow: inset 3px 0 0 #6c8cff;
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 /* 卡拉OK未唱到的部分：暗一档，与已唱高亮形成逐字递进 */

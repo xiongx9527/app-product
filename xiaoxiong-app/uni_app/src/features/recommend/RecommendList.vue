@@ -132,8 +132,8 @@ function formatTime(ts: number): string {
   flex-direction: column;
   gap: 14px;
   background:
-    radial-gradient(120% 50% at 50% 0%, rgba(108, 140, 255, 0.18), transparent 60%),
-    #0f1220;
+    radial-gradient(120% 50% at 50% 0%, var(--bg-glow), transparent 60%),
+    var(--bg-base);
 }
 
 .head {
@@ -150,8 +150,8 @@ function formatTime(ts: number): string {
 
 .count {
   font-size: 12px;
-  color: #6c8cff;
-  background: rgba(108, 140, 255, 0.14);
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.14);
   border-radius: 10px;
   padding: 1px 8px;
 }
@@ -232,7 +232,7 @@ function formatTime(ts: number): string {
 }
 
 .open {
-  color: #6c8cff;
+  color: var(--accent);
 }
 
 .remove {
@@ -248,7 +248,7 @@ function formatTime(ts: number): string {
 
 .link {
   font-size: 13px;
-  color: #6c8cff;
+  color: var(--accent);
 }
 
 .link.disabled {

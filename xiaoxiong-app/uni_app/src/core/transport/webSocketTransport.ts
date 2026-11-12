@@ -41,12 +41,146 @@ export function resolveGatewayHttpBase(): string {
   return http
 }
 
+/** WebSocket 最小接口：浏览器原生 WebSocket 与 uni SocketTask 适配层共用。 */
+interface WsLike {
+  readyState: number
+  send(data: string | ArrayBuffer): void
+  close(): void
+  onopen: (() => void) | null
+  onmessage: ((ev: { data: unknown }) => void) | null
+  onclose: (() => void) | null
+  onerror: (() => void) | null
+}
+
+/** WebSocket.OPEN = 1（App 端逻辑层没有 WebSocket 全局，常量自备）。 */
+const WS_OPEN = 1
+
+/** uni.connectSocket 的 SocketTask 最小形状（各运行时版本差异大，按需收窄）。 */
+interface UniSocketTask {
+  send: (o: { data: string | ArrayBuffer }) => void
+  close: (o?: { code?: number; reason?: string }) => void
+  onOpen: (cb: () => void) => void
+  onMessage: (cb: (res: { data: unknown }) => void) => void
+  onClose: (cb: () => void) => void
+  onError: (cb: () => void) => void
+}
+
+/** 用 SocketTask 包一层 WsLike；task 形状不符（如返回 Promise/undefined 的运行时）返回 null。 */
+function likeFromTask(task: UniSocketTask | undefined | null): WsLike | null {
+  if (!task || typeof task.onOpen !== 'function' || typeof task.send !== 'function') return null
+  const like: WsLike = {
+    readyState: 0,
+    send: (data) => task.send({ data }),
+    close: () => task.close({}),
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+  }
+  task.onOpen(() => {
+    like.readyState = WS_OPEN
+    like.onopen?.()
+  })
+  task.onMessage((res) => like.onmessage?.({ data: res.data }))
+  task.onClose(() => {
+    like.readyState = 3
+    like.onclose?.()
+  })
+  task.onError(() => like.onerror?.())
+  return like
+}
+
+/**
+ * 全局回调 API 适配（部分 App 运行时 connectSocket 不返回 SocketTask，只提供
+ * uni.onSocketOpen 等全局回调）：单连接语义，正合本传输层的单 socket 用法。
+ * alive 守卫：close 后旧回调不再触发。
+ */
+function likeFromGlobal(url: string): WsLike {
+  const u = uni as unknown as {
+    connectSocket: (o: { url: string }) => void
+    sendSocketMessage: (o: { data: string | ArrayBuffer }) => void
+    closeSocket: (o?: { code?: number; reason?: string }) => void
+    onSocketOpen: (cb: () => void) => void
+    onSocketMessage: (cb: (res: { data: unknown }) => void) => void
+    onSocketClose: (cb: () => void) => void
+    onSocketError: (cb: () => void) => void
+  }
+  let alive = true
+  const like: WsLike = {
+    readyState: 0,
+    send: (data) => u.sendSocketMessage({ data }),
+    close: () => {
+      alive = false
+      u.closeSocket({})
+    },
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+  }
+  u.onSocketOpen(() => {
+    if (!alive) return
+    like.readyState = WS_OPEN
+    like.onopen?.()
+  })
+  u.onSocketMessage((res) => {
+    if (!alive) return
+    like.onmessage?.({ data: res.data })
+  })
+  u.onSocketClose(() => {
+    if (!alive) return
+    like.readyState = 3
+    like.onclose?.()
+  })
+  u.onSocketError(() => {
+    if (!alive) return
+    like.onerror?.()
+  })
+  u.connectSocket({ url })
+  return like
+}
+
+/**
+ * 建 socket：浏览器（H5）用原生 WebSocket；App 端逻辑层（v8 服务上下文）没有 WebSocket
+ * 全局，走 uni.connectSocket——三种返回形态都兼容：SocketTask / Promise<SocketTask> /
+ * undefined（退全局回调 API）。两边都没有才抛「当前环境不支持 WebSocket」。
+ */
+function createSocket(url: string): Promise<WsLike> {
+  if (typeof WebSocket !== 'undefined') {
+    const ws = new WebSocket(url)
+    ws.binaryType = 'arraybuffer'
+    return Promise.resolve(ws as unknown as WsLike)
+  }
+  const connect = (uni as unknown as {
+    connectSocket?: (o: { url: string }) => UniSocketTask | Promise<UniSocketTask> | undefined
+  } | undefined)?.connectSocket
+  if (typeof connect !== 'function') {
+    return Promise.reject(new Error('当前环境不支持 WebSocket'))
+  }
+  let ret: UniSocketTask | Promise<UniSocketTask> | undefined
+  try {
+    ret = connect({ url })
+  } catch (e) {
+    return Promise.reject(e instanceof Error ? e : new Error(String(e)))
+  }
+  if (ret && typeof (ret as UniSocketTask).onOpen === 'function') {
+    const like = likeFromTask(ret as UniSocketTask)
+    return like ? Promise.resolve(like) : Promise.resolve(likeFromGlobal(url))
+  }
+  if (ret && typeof (ret as Promise<UniSocketTask>).then === 'function') {
+    return Promise.resolve(ret as Promise<UniSocketTask>).then(
+      (t) => likeFromTask(t) ?? likeFromGlobal(url),
+    )
+  }
+  return Promise.resolve(likeFromGlobal(url))
+}
+
 /**
  * 真实网关传输：文本帧走 JSON 控制消息，二进制帧走音频（上下行方向天然区分）。
  * 不依赖任何 Mock，直接连 Node 网关的 /ws。
  */
 export class WebSocketTransport implements AssistantTransport {
-  private ws: WebSocket | null = null
+  private ws: WsLike | null = null
   private readonly eventListeners = new Set<(event: ServerEvent) => void>()
   private readonly audioListeners = new Set<(chunk: ArrayBuffer) => void>()
   /** 连接状态订阅：界面据此显示「网关已连 / 未连」，免去开 DevTools 看 WS。 */
@@ -102,9 +236,7 @@ export class WebSocketTransport implements AssistantTransport {
 
   /** 真正的建连逻辑；外部 connect 与内部自动重连共用，外部调用前已清零重连预算。 */
   private async connectInternal(mode: SessionMode): Promise<void> {
-    if (typeof WebSocket === 'undefined') {
-      return Promise.reject(new Error('当前环境不支持 WebSocket'))
-    }
+    // 环境支持判断移入 createSocket：浏览器原生 WebSocket / App 端 uni.connectSocket 二选一
     this.pendingMode = mode
     this.intentionalClose = false
     this.reconnectExhausted = false
@@ -122,16 +254,15 @@ export class WebSocketTransport implements AssistantTransport {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === WS_OPEN) {
       this.sendStart(mode)
       return Promise.resolve()
     }
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(this.deviceWsUrl)
-      ws.binaryType = 'arraybuffer'
-      this.ws = ws
-
+    const ws = await createSocket(this.deviceWsUrl)
+    this.ws = ws
+    return new Promise<void>((resolve, reject) => {
       ws.onopen = () => {
+        if (this.ws !== ws) return // 陈旧 socket 事件（重连后被顶掉的旧连接）忽略
         this.reconnectAttempts = 0
         this.reconnectExhausted = false
         this.setConnecting(false)
@@ -142,11 +273,13 @@ export class WebSocketTransport implements AssistantTransport {
         resolve()
       }
       ws.onerror = () => {
+        if (this.ws !== ws) return
         // 不在此清 connecting：通常随后会触发 onclose，由 onclose 决定是否继续显示「连接中…」
         this.setConnected(false)
         reject(new Error(t('error.gatewayConnectFailed', { url: this.activeUrl })))
       }
       ws.onclose = () => {
+        if (this.ws !== ws) return
         this.ws = null
         this.setConnected(false)
         // 网关重启/网络抖动：继续自动重连，保持「连接中…」直到成功或耗尽，
@@ -154,7 +287,10 @@ export class WebSocketTransport implements AssistantTransport {
         if (!this.intentionalClose) this.scheduleReconnect()
         else this.setConnecting(false)
       }
-      ws.onmessage = (ev: MessageEvent) => this.handleMessage(ev.data)
+      ws.onmessage = (ev: { data: unknown }) => {
+        if (this.ws !== ws) return
+        this.handleMessage(ev.data)
+      }
     })
   }
 
@@ -189,7 +325,7 @@ export class WebSocketTransport implements AssistantTransport {
   }
 
   sendAudioChunk(chunk: ArrayBuffer): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(chunk)
+    if (this.ws && this.ws.readyState === WS_OPEN) this.ws.send(chunk)
   }
 
   startSession(mode: SessionMode): void {
@@ -202,13 +338,13 @@ export class WebSocketTransport implements AssistantTransport {
    * 仅在已连时有效；未连则无会话可重武装，由 connect 自行带最新配置建连。
    */
   rearm(): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === WS_OPEN) {
       this.sendStart(this.pendingMode)
     }
   }
 
   isConnected(): boolean {
-    return !!this.ws && this.ws.readyState === WebSocket.OPEN
+    return !!this.ws && this.ws.readyState === WS_OPEN
   }
 
   /** 订阅连接状态变化（网关 WS 是否当前连通）；订阅时立即回灌一次当前值。 */
@@ -327,20 +463,23 @@ export class WebSocketTransport implements AssistantTransport {
         consolidateEvery: appConfig.memory.consolidateEvery,
       },
       // MCP 服务器列表：来自客户端设置页，仅启用项下发网关。网关据此连上并把其工具注册进助手工具箱。
-      // rearm 也会重新下发，故修改即时生效（下次 start / 重武装即生效）。
+      // rearm 也会重新下发，故修改即时生效（下次 start / 重武装即生效）。总开关关闭时整体不下发。
       mcp: {
-        servers: appConfig.mcp.servers
-          .filter((s) => s.enabled)
-          .map((s) => ({
-            name: s.name,
-            transport: s.transport,
-            command: s.command,
-            args: s.args,
-            env: s.env,
-            url: s.url,
-            enabledTools: s.enabledTools,
-            disabledTools: s.disabledTools,
-          })),
+        servers: appConfig.mcp.enabled
+          ? appConfig.mcp.servers
+              .filter((s) => s.enabled)
+              .map((s) => ({
+                name: s.name,
+                transport: s.transport,
+                command: s.command,
+                args: s.args,
+                env: s.env,
+                url: s.url,
+                headers: s.headers,
+                enabledTools: s.enabledTools,
+                disabledTools: s.disabledTools,
+              }))
+          : [],
       },
       location: this.lastLocation ?? undefined,
       mode,
@@ -407,7 +546,7 @@ export class WebSocketTransport implements AssistantTransport {
   }
 
   private sendJson(payload: Record<string, unknown>): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(payload))
+    if (this.ws && this.ws.readyState === WS_OPEN) this.ws.send(JSON.stringify(payload))
   }
 
   private handleMessage(data: unknown): void {

@@ -71,6 +71,11 @@ export interface McpServerConfig {
   env?: Record<string, string>
   /** sse / http：服务器地址 */
   url?: string
+  /**
+   * sse / http：连接时附带的自定义请求头（鉴权用），如 Authorization: Bearer xxx、x-api-key: yyy。
+   * 网关透传给底层 MCP 传输层（transportOpts.requestInit.headers），stdio 不使用。
+   */
+  headers?: Record<string, string>
   /** 仅启用的工具白名单；不填表示全部启用 */
   enabledTools?: string[]
   /** 禁用的工具黑名单 */

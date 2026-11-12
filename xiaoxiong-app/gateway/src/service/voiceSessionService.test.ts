@@ -451,7 +451,8 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
 
   it('没查到好价也照常播报兜底文案，且不进 LLM', async () => {
     const h = createHarness({
-      finalizeText: '查询商品',
+      // 「查询商品」按用户口径不再直连；这里用好价信号句验证直连兜底
+      finalizeText: '有什么优惠',
       dealsQuery: async () => ({ text: '暂时没有查到好价。', deals: [] }),
     })
     await startDialog(h.service)

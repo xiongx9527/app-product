@@ -210,10 +210,14 @@ export async function registerMcpServers(
         client = new StdioMCPClient({ name: s.name, command: s.command, args: s.args, env: s.env })
       } else {
         if (!s.url) throw new Error('sse/http 传输缺少 url')
+        // 鉴权：把用户填写的自定义请求头透传给底层传输层（覆盖 Bearer / API Key / 自定义头）。
+        // 没有 headers 时不传，行为与之前一致。
+        const headers = s.headers && Object.keys(s.headers).length ? s.headers : undefined
         client = new HTTPMCPClient({
           name: s.name,
           transportType: s.transport === 'sse' ? 'sse' : 'streamable-http',
           url: s.url,
+          transportOpts: headers ? { requestInit: { headers } } : undefined,
         })
       }
       await withTimeout(client.connect(), 5000, s.name)

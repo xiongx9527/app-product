@@ -307,6 +307,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .think { background:#161a22; border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:6px; padding:8px 10px; font-size:12px; color:#c2c9d6; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-all; font-style:italic; }
   table.cfg-table { width:100%; border-collapse:collapse; margin:6px 0 4px; }
   #llmTableWrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  #asrTableWrap, #ttsTableWrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   table.cfg-table th, table.cfg-table td { border:1px solid var(--line); padding:5px 6px; text-align:center; vertical-align:middle; font-size:12px; }
   table.cfg-table th { background:#161a22; color:var(--mut); font-weight:600; white-space:nowrap; }
   table.cfg-table input { width:100%; box-sizing:border-box; background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:5px 7px; font-size:12px; }
@@ -338,11 +339,12 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.cfg-table .asr-builtin td, table.cfg-table .tts-builtin td { text-align:center; }
   table.cfg-table tr.asr-builtin .mini, table.cfg-table tr.tts-builtin .mini { padding:3px 10px; font-size:12px; }
   table.cfg-table tr.asr-builtin .badge, table.cfg-table tr.tts-builtin .badge { margin:0; }
-  table.cfg-table td.env-cell { text-align:left; }
+  table.cfg-table td.env-cell { text-align:left; max-width:240px; }
   table.cfg-table .env-req { color:var(--mut); font-size:11px; margin-top:3px; line-height:1.5; text-align:left; }
   /* 模型子表：提供商拥有哪些模型（多选）、哪个是默认、逐个模型是否可用。
      固定布局 + 定宽列：无论模型名长短，ollama / 自定义 两个子表内部列宽完全一致（已对齐）。 */
-  .model-pick { min-width:200px; max-height:300px; overflow-y:auto; }
+  .model-pick { min-width:150px; max-height:300px; overflow-y:auto; }
+  .proto-tag { color:var(--mut); font-size:10px; line-height:1.3; }
   .model-pick .mp-tools { display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; align-items:center; }
   table.model-sub { width:100%; border-collapse:collapse; table-layout:fixed; }
   table.model-sub th, table.model-sub td { border:1px solid var(--line); padding:2px 5px; font-size:11px; text-align:center; vertical-align:middle; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -356,6 +358,10 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.model-sub .mini { padding:2px 7px; font-size:11px; }
   /* 勾选/单选去掉浏览器默认外边距，否则在单元格里看着偏左不居中 */
   table.model-sub input[type=checkbox], table.model-sub input[type=radio] { margin:0; vertical-align:middle; }
+  /* 只读子表（内置模型）的 disabled 控件：Chrome 会把 disabled+checked 渲染成灰色，
+     暗色主题下选中的圆点几乎不可见，像没选。强制保持 accent 高亮，让「默认选中」看得见。 */
+  table.model-sub input[type=radio]:disabled:checked,
+  table.model-sub input[type=checkbox]:disabled:checked { accent-color: #3b82f6; opacity: 1; }
   table.hdr-table { width:100%; border-collapse:collapse; margin-top:4px; }
   table.hdr-table th, table.hdr-table td { border:1px solid var(--line); padding:4px 6px; font-size:12px; text-align:left; }
   table.hdr-table th { background:#10141b; color:var(--mut); font-weight:600; }
@@ -436,6 +442,20 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="modal-mask" id="provModal">
+  <div class="modal">
+    <h3 id="provModalTitle" data-i18n="cfg.provEditPrefix">编辑提供商</h3>
+    <label data-i18n="cfg.provUrl">服务地址（固定）</label>
+    <input id="provUrl" type="text" readonly title="${t('cfg.provUrlFixed')}" />
+    <label data-i18n="common.apiKey">API Key</label>
+    <input id="provKey" type="password" autocomplete="off" data-i18n-ph="common.blankKeep" placeholder="（留空=不修改）" />
+    <div class="row" style="justify-content:flex-end;margin-top:16px; gap:8px">
+      <button class="sec" id="provCancel" data-i18n="common.cancel">取消</button>
+      <button id="provSave" data-i18n="common.save">保存</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const ASR_SAMPLE_B64 = "__ASR_B64__";  // 内嵌的固定测试音频（mp3 base64），由服务端注入
 const api = (path, opts={}) => fetch(path, {credentials:'same-origin', ...opts});
@@ -475,9 +495,22 @@ const I18N = {
     "body.fieldName": "字段名",
     "body.label": "自定义 body 参数（作为额外字段透传到上游；不保存，本次填写本次生效）",
     "builtin": "内置",
-    "cfg.customApi": "自定义 API",
-    "cfg.customApiOff": "外部 API 后端暂未接通，暂不可设为默认",
-    "cfg.providerPickNote": "单选指定默认提供商（与 LLM 一致）；多提供商切换待后端接入，当前实际仅内置生效。",
+    "cfg.addModelPh": "输入模型名后点添加",
+    "cfg.customApi": "DashScope",
+    "cfg.customNotConfigured": "未配置服务地址（点此填写）",
+    "cfg.provEditPrefix": "编辑提供商（",
+    "cfg.provUrl": "服务地址（固定）",
+    "cfg.provUrlFixed": "服务地址固定为官方入口 https://dashscope.aliyuncs.com（无需填写）；模型用「↻ 刷新」拉取后勾选。",
+    "cfg.provUrlFixedShort": "官方入口",
+    "cfg.provNeedKey": "已选择 DashScope：请先填写 API Key 并保存",
+    "cfg.provNeedKeyShort": "未填写 API Key（点此填写）",
+    "cfg.provUrlFixed": "服务地址固定为官方入口 https://dashscope.aliyuncs.com",
+    "cfg.provUrlFixedShort": "官方入口",
+    "cfg.provNeedKey": "已选择 DashScope：请先填写 API Key 并保存",
+    "cfg.provNeedKeyShort": "未填写 API Key（点此填写）",
+    "cfg.provIncomplete": "已选择上游：请先填写服务地址与模型，再保存",
+    "cfg.providerPickNote": "单选指定默认提供商（与 LLM 一致）；模型可多选并设默认；勾选/协议随保存落库。",
+    "common.blankKeep": "（留空=不修改）",
     "cfg.apiKeyAuth": "是否启用 API-Key 鉴权",
     "cfg.apiKeyList": "API Key 列表（一行一个；填 auto 自动生成）",
     "cfg.ipAllow": "IP 白名单（一行一个 IP 或 CIDR；留空=不限制）",
@@ -506,7 +539,7 @@ const I18N = {
     "common.default": "默认",
     "common.defaultParen": "（默认）",
     "common.delete": "删除",
-    "common.deps": "依赖环境",
+    "common.deps": "依赖环境/API-KEY",
     "common.detecting": "检测中…",
     "common.done": "完成",
     "common.empty": "（空）",
@@ -639,9 +672,18 @@ const I18N = {
     "body.fieldName": "Field name",
     "body.label": "Custom body params (forwarded to upstream as extra fields; not saved, applies to this session)",
     "builtin": "Built-in",
-    "cfg.customApi": "Custom API",
-    "cfg.customApiOff": "External API backend not wired yet; cannot be set as default",
-    "cfg.providerPickNote": "Single-select the default provider (same as LLM); multi-provider switching awaits backend wiring, currently only built-in is effective.",
+    "cfg.addModelPh": "Type a model name, then Add",
+    "cfg.customApi": "DashScope",
+    "cfg.customNotConfigured": "No base URL configured (click to edit)",
+    "cfg.provEditPrefix": "Edit provider (",
+    "cfg.provUrl": "Base URL (fixed)",
+    "cfg.provUrlFixed": "Base URL is fixed to the official endpoint https://dashscope.aliyuncs.com (no need to fill); use ↻ Refresh to fetch models.",
+    "cfg.provUrlFixedShort": "official endpoint",
+    "cfg.provNeedKey": "DashScope selected: fill in the API Key and save first",
+    "cfg.provNeedKeyShort": "API Key missing (click to fill)",
+    "cfg.provIncomplete": "Upstream selected: fill in the base URL and model before saving",
+    "cfg.providerPickNote": "Single-select the default provider (same as LLM); models are multi-select with a default; provider/protocol are persisted on save.",
+    "common.blankKeep": "(blank = keep current)",
     "cfg.apiKeyAuth": "Enable API-Key auth",
     "cfg.apiKeyList": "API Key list (one per line; fill \"auto\" to auto-generate)",
     "cfg.ipAllow": "IP allowlist (one IP or CIDR per line; blank = no restriction)",
@@ -670,7 +712,7 @@ const I18N = {
     "common.default": "Default",
     "common.defaultParen": "(default)",
     "common.delete": "Delete",
-    "common.deps": "Dependencies",
+    "common.deps": "Dependencies/API-Key",
     "common.detecting": "Detecting…",
     "common.done": "Done",
     "common.empty": "(empty)",
@@ -884,9 +926,11 @@ function buildConfigCard(){
     <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">${t('common.loadingX')}</div><div class="row" style="margin-top:12px"><button id="cfgSave_llm">${t('common.save')}</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
     <div id="c-asr" class="cfgpane" hidden>
       <div id="asrTableWrap" class="hint">${t('common.loadingX')}</div>
+      <div class="row" style="margin-top:12px"><button id="cfgSave_asr">${t('common.save')}</button><span class="hint" id="cfgStat_asr" style="margin-left:10px"></span></div>
     </div>
     <div id="c-tts" class="cfgpane" hidden>
       <div id="ttsTableWrap" class="hint">${t('common.loadingX')}</div>
+      <div class="row" style="margin-top:12px"><button id="cfgSave_tts">${t('common.save')}</button><span class="hint" id="cfgStat_tts" style="margin-left:10px"></span></div>
     </div>
     <div id="c-sec" class="cfgpane" hidden><div id="secWrap"></div><div class="row" style="margin-top:12px"><button id="cfgSave_sec">${t('common.save')}</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div></div>
   </div>`);
@@ -898,6 +942,18 @@ async function loadConfig(){
     if(!r.ok) return;
     cfgOrig = await r.json();
     ['llm','asr','tts'].forEach(t=>CFG_TABS[t].forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); }));
+    // ASR/TTS 提供商状态回填：provider、上游地址/模型/模型列表（Key 不回显，留空=不修改）
+    asrProvider = cfgOrig.STT_PROVIDER === 'dashscope' ? 'custom' : 'builtin';
+    ttsProvider = cfgOrig.TTS_PROVIDER === 'dashscope' ? 'custom' : 'builtin';
+    const parseModels = (v) => { try { const a = JSON.parse(v||'[]'); return Array.isArray(a) ? a.filter(x=>typeof x==='string') : []; } catch { return []; } };
+    provEdit.stt.model = cfgOrig.STT_UPSTREAM_MODEL || '';
+    provEdit.stt.cands = parseModels(cfgOrig.STT_UPSTREAM_MODELS);
+    provEdit.stt.sel = new Set(provEdit.stt.cands);
+    provEdit.stt.def = cfgOrig.STT_UPSTREAM_MODEL || provEdit.stt.cands[0] || '';
+    provEdit.tts.model = cfgOrig.TTS_UPSTREAM_MODEL || '';
+    provEdit.tts.cands = parseModels(cfgOrig.TTS_UPSTREAM_MODELS);
+    provEdit.tts.sel = new Set(provEdit.tts.cands);
+    provEdit.tts.def = cfgOrig.TTS_UPSTREAM_MODEL || provEdit.tts.cands[0] || '';
     renderLlmTable();
     paintAsrTable();
     paintTtsTable();
@@ -943,6 +999,8 @@ function wireConfig(){
   ['tts'].forEach(t=>{ const b=document.getElementById('cfgSave_'+t); if(b) b.onclick=()=>save(t,CFG_TABS[t],'cfgStat_'+t); });
   const sb=document.getElementById('cfgSave_sec'); if(sb) sb.onclick=saveSec;
   const lb=document.getElementById('cfgSave_llm'); if(lb) lb.onclick=()=>saveLlmTable();
+  const ab=document.getElementById('cfgSave_asr'); if(ab) ab.onclick=saveSttTable;
+  const tb=document.getElementById('cfgSave_tts'); if(tb) tb.onclick=saveTtsTable;
 }
 
 // ── LLM 上游池表格（按提供商分组；列：默认 | 提供商 | 地址 | API Key | 模型）──
@@ -1125,6 +1183,69 @@ function saveAccModal(){
   document.getElementById('accModal').classList.remove('show');
 }
 
+// ── ASR/TTS 上游（dashscope）的弹框编辑与保存 ──
+// provEdit[kind] 是编辑暂存；Key 不回显（cfgOrig 里是打码值），留空 = 不修改已存的 Key。
+let provModalKind = null;   // 'stt' | 'tts'
+function openProvModal(kind){
+  provModalKind = kind;
+  const e = provEdit[kind];
+  document.getElementById('provModalTitle').textContent =
+    t('cfg.provEditPrefix') + (kind === 'stt' ? 'ASR' : 'TTS');
+  // 服务地址固定为 DashScope 官方入口，只读展示、不可修改
+  document.getElementById('provUrl').value = 'https://dashscope.aliyuncs.com';
+  document.getElementById('provKey').value = e.key || '';
+  document.getElementById('provModal').classList.add('show');
+}
+function saveProvModal(){
+  const kind = provModalKind;
+  if (!kind) return;
+  const e = provEdit[kind];
+  e.url = document.getElementById('provUrl').value.trim();
+  const k = document.getElementById('provKey').value;
+  if (k) e.key = k;          // 留空 = 不修改已存 Key
+  document.getElementById('provModal').classList.remove('show');
+  if (kind === 'stt') paintAsrTable(); else paintTtsTable();
+}
+
+// 保存 ASR/TTS 提供商配置：提供商类型 + 协议 + 协议列表 + 上游地址/Key/模型/模型列表 全部落库。
+// 勾了上游但地址/模型没填时不阻止保存（可以先存一部分），但给出行内提示；语音调用时会如实报错。
+async function saveProvConfig(kind){
+  const stat = document.getElementById(kind === 'stt' ? 'cfgStat_asr' : 'cfgStat_tts');
+  const cap = kind.toUpperCase();
+  const e = provEdit[kind];
+  const prov = (kind === 'stt' ? asrProvider : ttsProvider) === 'custom' ? 'dashscope' : 'builtin';
+  const patch = {};
+  patch[cap + '_PROVIDER'] = prov;
+  // DashScope 提供商的属性（地址/Key/模型）始终落库——与「当前默认用哪个提供商」解耦：
+  // 即使默认是内置，勾选的模型清单也要保存，否则勾选再保存也「没用」。
+  // MODELS 落勾选中的模型；MODEL 落子表默认模型（须被勾选）。
+  if (e.key) patch[cap + '_UPSTREAM_API_KEY'] = e.key;
+  if (Array.isArray(e.cands)) {
+    const picked = e.cands.filter(m => e.sel.has(m));
+    patch[cap + '_UPSTREAM_MODELS'] = JSON.stringify(picked);
+    if (e.def && picked.includes(e.def)) patch[cap + '_UPSTREAM_MODEL'] = e.def;
+  }
+  if (prov !== 'builtin' && !e.key) {
+    if (stat) { stat.className = 'err'; stat.textContent = t('cfg.provNeedKey'); }
+    return;
+  }
+  if (stat) { stat.className = 'hint'; stat.textContent = t('common.saving'); }
+  try{
+    const r = await api('/admin/api/config', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(patch)});
+    const d = await r.json().catch(()=>({}));
+    if (stat) {
+      stat.className = r.ok ? 'hint' : 'err';
+      stat.textContent = r.ok ? t('common.saved') + (d.remote_push && d.remote_push.ok ? t('common.syncedRemote') : '') : t('common.failPrefix') + (d.detail || r.status);
+    }
+    // 和 LLM 一样：保存成功后重拉配置并重绘，表格立即可见落库后的状态
+    if (r.ok) await loadConfig();
+  }catch(err){
+    if (stat) { stat.className = 'err'; stat.textContent = t('common.failPrefix') + err.message; }
+  }
+}
+function saveSttTable(){ return saveProvConfig('stt'); }
+function saveTtsTable(){ return saveProvConfig('tts'); }
+
 async function renderLlmTable(){
   const wrap = document.getElementById('llmTableWrap');
   if(!wrap) return;
@@ -1232,10 +1353,44 @@ async function saveLlmTable(){
 // ── ASR 配置（固定使用内置模型，取决于运行环境；只展示内置一行 + 按需「测试可用」）──
 // 外部上游以后按具体厂商单独接入，暂不在此提供地址/密钥/协议等配置。
 const ASR_BUILTIN = 'builtin';
+let asrProvider = 'builtin';   // 表格当前选中的提供商（radio 状态；保存时落库 STT_PROVIDER）
+let ttsProvider = 'builtin';
 let asrBuiltinAvail = null;   // 内置最近一次按需检测：'ok' / 'err' / null(未测)
 let asrBuiltinDetail = '';    // 内置检测的补充说明（成功/失败原因），在表格下方行内显示
 let ttsBuiltinAvail = null;   // TTS 内置最近一次按需检测：'ok' / 'err' / null(未测)
 let ttsBuiltinDetail = '';    // TTS 内置检测的补充说明，在表格下方行内显示
+let asrUpstreamAvail = null;  // 上游（dashscope）最近一次测试：'ok' / 'err' / null(未测)
+let asrUpstreamDetail = '';
+let ttsUpstreamAvail = null;
+let ttsUpstreamDetail = '';
+// 上游配置的编辑暂存：初始值来自 cfgOrig（loadConfig 回填）；Key 不回显，留空=不修改。
+// builtin 槽是固定白名单（只读子表，结构上与上游行统一，不落库）。
+let provEdit = {
+  stt: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
+  tts: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
+  sttBuiltin: { cands: ['sensevoice-small'], sel: new Set(['sensevoice-small']), def: 'sensevoice-small' },
+  ttsBuiltin: { cands: ['edge-tts'], sel: new Set(['edge-tts']), def: 'edge-tts' },
+};
+
+// 模型 → 支持的调用协议（按模型名分档，对齐 DashScope 官方文档）：
+// qwen-audio-tts 系 HTTP 直回音频；qwen-tts/qwen3-asr HTTP（TTS 回 OSS URL / ASR 两步上传）；
+// paraformer/fun-asr 非实时为 HTTP 异步；cosyvoice / realtime / streaming 系为 WS 流式。
+function modelProtocols(m){
+  const id = (m || '').toLowerCase();
+  if (/cosyvoice/.test(id)) return ['ws'];
+  if (/realtime|streaming/.test(id)) return ['ws'];
+  if (/gummy/.test(id)) return ['ws'];
+  if (/filetrans/.test(id)) return ['http-async'];
+  if (/paraformer|fun-asr/.test(id)) return ['http-async'];
+  if (/sensevoice/.test(id)) return ['http'];
+  return ['http'];
+}
+
+function upstreamBadge(avail) {
+  return avail === 'ok' ? '<span class="badge b-ok">' + t('common.available') + '</span>'
+       : avail === 'err' ? '<span class="badge b-err">' + t('common.unavailable') + '</span>'
+       : '<span class="badge b-mut">' + t('common.notTested') + '</span>';
+}
 
 function paintAsrTable(){
   const wrap=document.getElementById('asrTableWrap');
@@ -1243,35 +1398,174 @@ function paintAsrTable(){
   const bAvail = asrBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('common.available')+'</span>'
                : asrBuiltinAvail==='err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
                : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
+  const uAvail = upstreamBadge(asrUpstreamAvail);
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.status')+'</th><th>'+t('common.action')+'</th>'
+    + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.model')+'</th>'
     + '</tr></thead><tbody>';
-  // 内置：唯一可用提供商，「默认」单选默认勾选；依赖环境/状态/测试可用保持不变。
+  // 内置：唯一可用提供商，「默认」单选默认勾选；模型子表与上游行同构（白名单只读：不可加/不可取消）。
   html += `<tr class="asr-builtin" data-builtin="1">
-    <td class="row-act"><input type="radio" name="asrDefault" value="builtin" checked title="${t('llm.defaultProvider')}" /></td>
+    <td class="row-act"><input type="radio" name="asrDefault" value="builtin" ${asrProvider==='builtin'?'checked':''} title="${t('llm.defaultProvider')}" /></td>
     <td class="prov-cell"><b>${t(ASR_BUILTIN)}</b></td>
     <td class="env-cell">
       <span class="muted">${t('asr.builtinModel')}</span>
       <div class="env-req">${t('asr.modelFile')}</div>
     </td>
-    <td>${bAvail}</td>
-    <td class="row-act"><button class="mini asr-builtin-test" title="${t('asr.detectingTitle')}">${t('common.testAvail')}</button></td>
+    <td class="model-cell">${buildUpstreamModelPick('sttBuiltin', true)}</td>
   </tr>`;
-  // 自定义 API 占位：单选禁用 + 如实标注后端未接通，不假装能用、不放地址/Key/测试假输入。
+  // 阿里云 DashScope（dashscope 上游）：radio 可选；协议固定 http（OpenAI 兼容）；
+  // 模型多选 + 默认单选（与 LLM 同款）；地址/Key 点单元格弹框编辑（Key 不回显），未配置时如实提示。
+  const sttCfg = provEdit.stt.key
+    ? `<span class="acc-url" title="${t('cfg.provUrlFixed')}">${t('cfg.provUrlFixedShort')}</span>`
+    : `<span class="muted">${t('cfg.provNeedKeyShort')}</span>`;
   html += `<tr class="asr-custom">
-    <td class="row-act"><input type="radio" name="asrDefault" value="custom" disabled title="${t('cfg.customApiOff')}" /></td>
-    <td class="prov-cell"><b>${t('cfg.customApi')}</b></td>
-    <td class="env-cell"><span class="muted">${t('cfg.customApiOff')}</span></td>
-    <td><span class="badge b-mut">${t('common.notTested')}</span></td>
-    <td class="row-act"></td>
+    <td class="row-act"><input type="radio" name="asrDefault" value="custom" ${asrProvider==='custom'?'checked':''} title="${t('llm.defaultProvider')}" /></td>
+    <td class="prov-cell"><b>${t('cfg.customApi')}</b> <button class="mini" data-up-refresh="stt" title="${t('llm.refreshModels')}">↻</button></td>
+    <td class="env-cell prov-edit-cell" data-prov="stt" title="${t('cfg.provEditPrefix')}">${sttCfg}</td>
+    <td class="model-cell">${buildUpstreamModelPick('stt')}</td>
   </tr>`;
   html += '</tbody></table>';
   html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('cfg.providerPickNote')+'</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
-  const bt=wrap.querySelector('.asr-builtin-test'); if(bt) bt.onclick=testAsrBuiltin;
+  wrap.querySelectorAll('.asr-builtin-test').forEach(b=> b.onclick=testAsrBuiltin);
+  wrap.querySelectorAll('.up-test').forEach(b=> b.onclick=()=>testAsrUpstream(b.dataset.m));
+  const ec=wrap.querySelector('.prov-edit-cell'); if(ec) ec.onclick=()=>openProvModal('stt');
+  bindUpstreamModelPick('stt');
+  wrap.querySelectorAll('input[name=asrDefault]').forEach(r=> r.onchange=()=>{ asrProvider=r.value; paintAsrTable(); });
   const bh=document.getElementById('asrTableHint');
   if(bh && asrBuiltinDetail){ bh.textContent=asrBuiltinDetail; bh.style.color = asrBuiltinAvail==='err'?'var(--err)':(asrBuiltinAvail==='ok'?'var(--ok)':''); }
+  // 上游测试结果优先显示（它才是刚测的东西）
+  if(bh && asrUpstreamDetail){ bh.textContent=asrUpstreamDetail; bh.style.color = asrUpstreamAvail==='err'?'var(--err)':(asrUpstreamAvail==='ok'?'var(--ok)':''); }
 }
+
+// 上游（dashscope）的模型多选子表：勾选启用 + 默认单选（须勾选），行内输入添加。
+// 结构与 LLM 的模型子表（model-sub）同款；数据存 provEdit[kind] 的 cands/sel/def。
+function buildUpstreamModelPick(kind, readonly, nameLabel){
+  const e = provEdit[kind];
+  if(!Array.isArray(e.cands)) e.cands = [];
+  if(!(e.sel instanceof Set)) e.sel = new Set(e.cands);
+  const dis = readonly ? ' disabled' : '';
+  const noDefault = nameLabel === 'protocol';
+  const colLabel = noDefault ? t('common.protocol') : t('common.model');
+  const defHead = noDefault ? '' : '<th>' + t('common.default') + '</th>';
+  const opHead = noDefault ? '' : '<th>' + t('common.action') + '</th>';
+  const stHead = noDefault ? '' : '<th>' + t('common.status') + '</th>';
+  const thead = '<thead><tr><th></th><th>'+colLabel+'</th>'+defHead+opHead+stHead+'</tr></thead>';
+  let html = '<div class="model-pick"><table class="model-sub">'+thead+'<tbody>';
+  e.cands.forEach(m => {
+    const checked = e.sel.has(m) ? 'checked' : '';
+    const isDef = e.def === m ? 'checked' : '';
+    const defCell = noDefault ? '' :
+      `<td><input type="radio" name="upDef_${kind}" value="${escapeAttr(m)}" ${isDef} title="${t('llm.defaultModel')}"/></td>`;
+    // 测试/状态是模型级的：内置行的测试走内置检测（类名保留 asr/tts-builtin-test），
+    // 上游行的测试带 model 走上游测试端点；状态徽标按模型记录。
+    const av = (e.avail || {})[m];
+    const badge = av === 'ok' ? '<span class="badge b-ok">'+t('common.available')+'</span>'
+                : av === 'err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
+                : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
+    const testBtn = noDefault ? '' :
+      (kind === 'sttBuiltin'
+        ? `<button class="mini asr-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('asr.detectingTitle')}">${t('common.testShort')}</button>`
+        : kind === 'ttsBuiltin'
+        ? `<button class="mini tts-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('tts.synthTitle')}">${t('common.testShort')}</button>`
+        : `<button class="mini up-test" data-kind="${kind}" data-m="${escapeAttr(m)}" title="${t('llm.testAvail')}">${t('common.testShort')}</button>`);
+    const opCell = noDefault ? '' : `<td class="row-act">${testBtn}</td>`;
+    const stCell = noDefault ? '' : `<td>${badge}</td>`;
+    const protoTag = (noDefault ? '' :
+      `<div class="proto-tag">${modelProtocols(m).join('/')}</div>`);
+    html += `<tr>`
+      + `<td><input type="checkbox" class="up-model" data-kind="${kind}" data-m="${escapeAttr(m)}" ${checked}${dis}/></td>`
+      + `<td class="mm" title="${escapeAttr(m)}">${escapeHtml(m)}${protoTag}</td>`
+      + defCell + opCell + stCell
+      + `</tr>`;
+  });
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// 绑定上游模型子表的勾选/默认交互（只对可编辑的槽生效；每次重绘后调用）
+function bindUpstreamModelPick(kind){
+  const e = provEdit[kind];
+  document.querySelectorAll(`.up-model[data-kind="${kind}"]`).forEach(cb => cb.onchange = () => {
+    const m = cb.dataset.m;
+    if (cb.checked) e.sel.add(m);
+    else {
+      e.sel.delete(m);
+      if (e.def === m) { e.def = ''; document.querySelectorAll(`input[name="upDef_${kind}"]`).forEach(r => { if (r.value === m) r.checked = false; }); }
+    }
+  });
+  document.querySelectorAll(`input[name="upDef_${kind}"]`).forEach(r => r.onchange = () => {
+    if (r.checked) { e.def = r.value; e.sel.add(r.value); }
+    // 默认模型必须是勾选中的：设默认时同步勾上
+    const cb = document.querySelector(`.up-model[data-kind="${kind}"][data-m="${r.value}"]`);
+    if (cb) cb.checked = true;
+  });
+}
+
+// 「刷新模型」：从 DashScope 拉全部模型 id，全量并入候选并勾选（不丢已添加/已勾选的）
+document.addEventListener('click', async (ev) => {
+  const rb = ev.target && ev.target.closest ? ev.target.closest('[data-up-refresh]') : null;
+  if (!rb) return;
+  const kind = rb.dataset.upRefresh;
+  const e = provEdit[kind];
+  rb.disabled = true;
+  try{
+    const r = await fetch('/admin/api/dashscope-models', {method:'POST', credentials:'same-origin',
+      headers:{'content-type':'application/json'}, body: JSON.stringify({kind})});
+    const d = await r.json().catch(()=>({}));
+    if (!d.ok) { console.error('[刷新模型]', d.message || r.status); }
+    else {
+      // 刷新语义 = 重新拉取最新清单：候选替换，但**保留已有勾选**——
+      // 之前勾选保存过的模型不能被刷没；新出现的模型只列出、不自动勾。
+      const prevSel = new Set(e.sel);
+      e.cands = (d.models || []).slice();
+      e.sel = new Set(e.cands.filter(m => prevSel.has(m)));
+      if (e.def && !e.cands.includes(e.def)) e.def = '';
+    }
+  }catch(err){ console.error('[刷新模型]', err); }
+  rb.disabled = false;
+  if (kind === 'stt') paintAsrTable(); else paintTtsTable();
+});
+
+// 「刷新模型」：从 DashScope 拉全部模型 id，全量并入候选并勾选（不丢已添加/已勾选的）
+document.addEventListener('click', async (ev) => {
+  const rb = ev.target && ev.target.closest ? ev.target.closest('[data-up-refresh]') : null;
+  if (!rb) return;
+  const kind = rb.dataset.upRefresh;
+  const e = provEdit[kind];
+  rb.disabled = true;
+  try{
+    const r = await fetch('/admin/api/dashscope-models', {method:'POST', credentials:'same-origin',
+      headers:{'content-type':'application/json'}, body: JSON.stringify({kind})});
+    const d = await r.json().catch(()=>({}));
+    if (!d.ok) { console.error('[刷新模型]', d.message || r.status); }
+    else {
+      // 刷新语义 = 重新拉取最新清单：候选替换，但**保留已有勾选**——
+      // 之前勾选保存过的模型不能被刷没；新出现的模型只列出、不自动勾。
+      const prevSel = new Set(e.sel);
+      e.cands = (d.models || []).slice();
+      e.sel = new Set(e.cands.filter(m => prevSel.has(m)));
+      if (e.def && !e.cands.includes(e.def)) e.def = '';
+    }
+  }catch(err){ console.error('[刷新模型]', err); }
+  rb.disabled = false;
+  if (kind === 'stt') paintAsrTable(); else paintTtsTable();
+});
+
+// 行内「添加模型」：非空且不重复才进候选并勾选；第一个自动成为默认
+document.addEventListener('click', (ev) => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest('[data-up-add]') : null;
+  if (!btn) return;
+  const kind = btn.dataset.upAdd;
+  const input = document.querySelector(`.up-add-input[data-kind="${kind}"]`);
+  const e = provEdit[kind];
+  const m = ((input && input.value) || '').trim();
+  if (!m) return;
+  if (!e.cands.includes(m)) e.cands.push(m);
+  e.sel.add(m);
+  if (!e.def) e.def = m;
+  if (input) input.value = '';
+  if (kind === 'stt') paintAsrTable(); else paintTtsTable();
+});
 
 // 内置按需检测：真正加载模型并跑一次推理，启动阶段不做，只在这里点按钮时验证。
 async function testAsrBuiltin(){
@@ -1304,34 +1598,42 @@ function paintTtsTable(){
                : ttsBuiltinAvail==='err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
                : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
   let html='<table class="cfg-table"><thead><tr>'
-    + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.status')+'</th><th>'+t('common.action')+'</th>'
+    + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.model')+'</th>'
     + '</tr></thead><tbody>';
-  // 内置：唯一可用提供商，「默认」单选默认勾选；依赖环境/状态/测试可用保持不变。
+  // 内置：唯一可用提供商，「默认」单选默认勾选；引擎固定 edge-tts（上游是微软 WS，非 HTTP，如实显示「内置」）。
+  // 内置：引擎固定 edge-tts（上游是微软 WS，非 HTTP，如实显示「内置」协议口径 http）；模型子表白名单只读。
   html += `<tr class="tts-builtin" data-builtin="1">
-    <td class="row-act"><input type="radio" name="ttsDefault" value="builtin" checked title="${t('llm.defaultProvider')}" /></td>
+    <td class="row-act"><input type="radio" name="ttsDefault" value="builtin" ${ttsProvider==='builtin'?'checked':''} title="${t('llm.defaultProvider')}" /></td>
     <td class="prov-cell"><b>${t('builtin')}</b></td>
     <td class="env-cell">
       <span class="muted">${t('tts.builtinSynth')}</span>
       <div class="env-req">${t('tts.needNetwork')}</div>
       <div class="env-req">${t('tts.ffmpeg')}</div>
     </td>
-    <td>${bAvail}</td>
-    <td class="row-act"><button class="mini tts-builtin-test" title="${t('tts.synthTitle')}">${t('common.testAvail')}</button></td>
+    <td class="model-cell">${buildUpstreamModelPick('ttsBuiltin', true)}</td>
   </tr>`;
-  // 自定义 API 占位：单选禁用 + 如实标注后端未接通，不假装能用、不放地址/Key/测试假输入。
+  // 阿里云 DashScope（dashscope 上游）：与 ASR 同构——模型多选 + 默认、地址/Key 弹框编辑、真调测试。
+  const ttsCfg = provEdit.tts.key
+    ? `<span class="acc-url" title="${t('cfg.provUrlFixed')}">${t('cfg.provUrlFixedShort')}</span>`
+    : `<span class="muted">${t('cfg.provNeedKeyShort')}</span>`;
   html += `<tr class="tts-custom">
-    <td class="row-act"><input type="radio" name="ttsDefault" value="custom" disabled title="${t('cfg.customApiOff')}" /></td>
-    <td class="prov-cell"><b>${t('cfg.customApi')}</b></td>
-    <td class="env-cell"><span class="muted">${t('cfg.customApiOff')}</span></td>
-    <td><span class="badge b-mut">${t('common.notTested')}</span></td>
-    <td class="row-act"></td>
+    <td class="row-act"><input type="radio" name="ttsDefault" value="custom" ${ttsProvider==='custom'?'checked':''} title="${t('llm.defaultProvider')}" /></td>
+    <td class="prov-cell"><b>${t('cfg.customApi')}</b> <button class="mini" data-up-refresh="tts" title="${t('llm.refreshModels')}">↻</button></td>
+    <td class="env-cell prov-edit-cell" data-prov="tts" title="${t('cfg.provEditPrefix')}">${ttsCfg}</td>
+    <td class="model-cell">${buildUpstreamModelPick('tts')}</td>
   </tr>`;
   html += '</tbody></table>';
   html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('cfg.providerPickNote')+'</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.tts-builtin-test'); if(bt) bt.onclick=testTtsBuiltin;
+  const ut=wrap.querySelector('.tts-upstream-test'); if(ut) ut.onclick=testTtsUpstream;
+  const ec=wrap.querySelector('.prov-edit-cell'); if(ec) ec.onclick=()=>openProvModal('tts');
+  bindUpstreamModelPick('tts');
+  wrap.querySelectorAll('input[name=ttsDefault]').forEach(r=> r.onchange=()=>{ ttsProvider=r.value; paintTtsTable(); });
   const bh=document.getElementById('ttsTableHint');
   if(bh && ttsBuiltinDetail){ bh.textContent=ttsBuiltinDetail; bh.style.color = ttsBuiltinAvail==='err'?'var(--err)':(ttsBuiltinAvail==='ok'?'var(--ok)':''); }
+  // 上游测试结果优先显示（它才是刚测的东西）
+  if(bh && ttsUpstreamDetail){ bh.textContent=ttsUpstreamDetail; bh.style.color = ttsUpstreamAvail==='err'?'var(--err)':(ttsUpstreamAvail==='ok'?'var(--ok)':''); }
 }
 
 // TTS 内置按需检测：真实合成一句，验证 edge-tts 与 ffmpeg 链路，启动阶段不做。
@@ -1353,6 +1655,46 @@ async function testTtsBuiltin(){
   paintTtsTable();
   const h=document.getElementById('ttsTableHint');
   if(h){ h.textContent=ttsBuiltinDetail; h.style.color = ttsBuiltinAvail==='ok'?'var(--ok)':'var(--err)'; }
+}
+
+// 上游（openai_audio）按需测试：后端按当前 DB 配置真调一次上游（TTS 合成一句 / ASR 识别样例语音）。
+// 配置还没保存时测的是「已保存」的状态——提示先保存再测，避免测的和你看到的配置不一致。
+async function testAsrUpstream(model){
+  const e=provEdit.stt;
+  const m = model || e.def || '';
+  if(!m){ return; }
+  const btn=document.querySelector(`.up-test[data-kind="stt"][data-m="${m}"]`);
+  if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
+  try{
+    const r=await fetch('/admin/api/stt-upstream-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:m})});
+    const d=await r.json().catch(()=>({}));
+    e.avail = e.avail || {};
+    e.avail[m] = d.ok ? 'ok' : 'err';
+    e.availMsg = e.availMsg || {};
+    e.availMsg[m] = (d.ok ? t('common.available') : t('common.unavailable')) + '：' + (d.message||'');
+  }catch(err){
+    e.avail = e.avail || {}; e.avail[m]='err';
+  }
+  paintAsrTable();
+}
+
+async function testTtsUpstream(model){
+  const e=provEdit.tts;
+  const m = model || e.def || '';
+  if(!m){ return; }
+  const btn=document.querySelector(`.up-test[data-kind="tts"][data-m="${m}"]`);
+  if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
+  try{
+    const r=await fetch('/admin/api/tts-upstream-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:m})});
+    const d=await r.json().catch(()=>({}));
+    e.avail = e.avail || {};
+    e.avail[m] = d.ok ? 'ok' : 'err';
+    e.availMsg = e.availMsg || {};
+    e.availMsg[m] = (d.ok ? t('common.available') : t('common.unavailable')) + '：' + (d.message||'');
+  }catch(err){
+    e.avail = e.avail || {}; e.avail[m]='err';
+  }
+  paintTtsTable();
 }
 
 // 安全配置：API-Key 鉴权开关 + 多 Key + IP 白名单（多 IP/CIDR）。
@@ -1469,6 +1811,11 @@ document.addEventListener('click',(e)=>{
   if(addBody){ addBodyRow(addBody.dataset.addBody); return; }
   if(t.closest('[data-del-body]')){ const tr=t.closest('tr'); if(tr) tr.remove(); return; }
   if(t.closest('#testModalRun')){ runModalTest(); return; }
+  // ASR/TTS 上游编辑弹框：保存 / 取消 / 点遮罩
+  if(t.closest('#provSave')){ saveProvModal(); return; }
+  if(t.closest('#provCancel')){ const m=document.getElementById('provModal'); if(m) m.classList.remove('show'); return; }
+  const pmask=document.getElementById('provModal');
+  if(pmask && pmask.classList.contains('show') && t===pmask){ pmask.classList.remove('show'); return; }
   const mask=document.getElementById('testModal');
   if(!mask || !mask.classList.contains('show')) return;
   if(t.closest('#testModalClose') || t===mask) closeTestModal();   // 关闭按钮 / 点遮罩
@@ -1477,6 +1824,7 @@ document.addEventListener('keydown',(e)=>{
   if(e.key!=='Escape') return;
   closeTestModal();
   const acc=document.getElementById('accModal'); if(acc) acc.classList.remove('show');
+  const prov=document.getElementById('provModal'); if(prov) prov.classList.remove('show');
 });
 
 async function runLlmChat(opts){
@@ -1999,10 +2347,18 @@ ADMIN_HTML = ADMIN_HTML.replace("__ASR_B64__", _ASR_SAMPLE_B64)
 
 
 # ── 路由注册 ───────────────────────────────────────────────────────
-def register_admin_routes(app, stt_builtin_check=None, tts_builtin_check=None) -> None:
-    global _STT_BUILTIN_CHECK, _TTS_BUILTIN_CHECK
+def register_admin_routes(
+    app,
+    stt_builtin_check=None,
+    tts_builtin_check=None,
+    stt_upstream_test=None,
+    tts_upstream_test=None,
+) -> None:
+    global _STT_BUILTIN_CHECK, _TTS_BUILTIN_CHECK, _STT_UPSTREAM_TEST, _TTS_UPSTREAM_TEST
     _STT_BUILTIN_CHECK = stt_builtin_check
     _TTS_BUILTIN_CHECK = tts_builtin_check
+    _STT_UPSTREAM_TEST = stt_upstream_test
+    _TTS_UPSTREAM_TEST = tts_upstream_test
 
     @app.get("/admin", response_class=HTMLResponse)
     @app.get("/admin/", response_class=HTMLResponse)
@@ -2160,6 +2516,94 @@ def register_admin_routes(app, stt_builtin_check=None, tts_builtin_check=None) -
             return await asyncio.to_thread(_STT_BUILTIN_CHECK)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "exception", "detail": str(exc)}
+
+    # DashScope 语音模型清单（按能力分族），对齐官方文档 model-list：
+    # 合成 https://help.aliyun.com/zh/model-studio/model-list-speech-synthesis
+    # 识别 https://help.aliyun.com/en/model-studio/model-list-speech-recognition/
+    # 不用 /compatible-mode/v1/models 拉目录——那是 LLM 兼容层的，语音模型不在里面。
+    # realtime/filetrans/streaming 变体一并列出，由用户按场景选择；代理当前整段语义
+    # 优先适用非 realtime/filetrans 的型号，realtime 系留作 WS 对接后使用。
+    DASHSCOPE_VOICE_MODELS = {
+        "tts": [
+            # CosyVoice 系
+            "cosyvoice-v1", "cosyvoice-v2", "cosyvoice-v3-flash", "cosyvoice-v3-plus",
+            "cosyvoice-v3.5-flash", "cosyvoice-v3.5-plus", "cosyvoice-clone-v1",
+            # Qwen-TTS 系
+            "qwen-tts", "qwen-tts-latest", "qwen-tts-realtime",
+            "qwen3-tts-flash", "qwen3-tts-flash-realtime",
+            "qwen3-tts-instruct-flash", "qwen3-tts-instruct-flash-realtime",
+            "qwen3-tts-vc-2026-01-22", "qwen3-tts-vd-2026-01-26",
+            "qwen3-tts-vc-realtime-2026-01-15", "qwen3-tts-vd-realtime-2026-01-15",
+            # Qwen-Audio-TTS 系
+            "qwen-audio-3.0-tts-flash", "qwen-audio-3.0-tts-plus",
+            "qwen-audio-3.1-tts-flash", "qwen-audio-3.1-tts-next",
+            # Sambert（快速合成，音色多）
+            "sambert",
+        ],
+        "stt": [
+            # Paraformer 系（实时 + 录音文件）
+            "paraformer-realtime-v2", "paraformer-realtime-v1",
+            "paraformer-realtime-8k-v2", "paraformer-realtime-8k-v1",
+            "paraformer-v2", "paraformer-v1", "paraformer-8k-v2", "paraformer-8k-v1",
+            "paraformer-mtl-v1",
+            # Fun-ASR 系（中英自由切换、噪声鲁棒）
+            "fun-asr", "fun-asr-realtime", "fun-asr-realtime-2026-02-28",
+            "fun-asr-flash-2026-06-15", "fun-asr-flash-8k-realtime", "fun-asr-mtl",
+            # Qwen-ASR 系
+            "qwen3-asr-flash", "qwen3-asr-flash-realtime", "qwen3-asr-flash-filetrans",
+            "qwen-audio-3.0-asr-flash", "qwen-audio-3.0-asr-flash-streaming",
+            "qwen-audio-3.0-asr-flash-filetrans",
+            "qwen-audio-3.1-asr-flash", "qwen-audio-3.1-asr-flash-streaming",
+            "qwen-audio-3.1-asr-flash-filetrans", "qwen-audio-3.1-asr-flash-message",
+            # Gummy 系（识别/翻译）
+            "gummy-realtime-v1", "gummy-chat-v1",
+        ],
+    }
+
+    @app.post("/admin/api/dashscope-models", dependencies=[Depends(require_admin)])
+    async def admin_dashscope_models(request: Request):
+        """返回 DashScope 的语音模型清单（按 kind 分族），供面板「刷新模型」重置候选。
+
+        清单是代码内置的（对齐官方 model-list 文档），不发网络请求：
+        compatible-mode 的 models 目录是 LLM 兼容层的，不含真正的语音模型。
+        """
+        kind = None
+        try:
+            b = await request.json()
+            if isinstance(b, dict):
+                kind = b.get("kind")
+        except Exception:
+            pass
+        kind = (kind or "tts").strip().lower()
+        return {"ok": True, "models": list(DASHSCOPE_VOICE_MODELS.get(kind, []))}
+
+    @app.post("/admin/api/stt-upstream-test", dependencies=[Depends(require_admin)])
+    async def admin_stt_upstream_test(request: Request):
+        """按当前 DB 配置真调一次上游 ASR；可带 {model} 覆盖默认模型（模型级测试）。"""
+        model = None
+        try:
+            b = await request.json()
+            if isinstance(b, dict):
+                model = b.get("model")
+        except Exception:
+            pass
+        if _STT_UPSTREAM_TEST is None:
+            return {"ok": False, "message": "检测能力未注入"}
+        return await _STT_UPSTREAM_TEST(model)
+
+    @app.post("/admin/api/tts-upstream-test", dependencies=[Depends(require_admin)])
+    async def admin_tts_upstream_test(request: Request):
+        """按当前 DB 配置真合成一句验证上游 TTS；可带 {model} 覆盖默认模型。"""
+        model = None
+        try:
+            b = await request.json()
+            if isinstance(b, dict):
+                model = b.get("model")
+        except Exception:
+            pass
+        if _TTS_UPSTREAM_TEST is None:
+            return {"ok": False, "message": "检测能力未注入"}
+        return await _TTS_UPSTREAM_TEST(model)
 
     @app.post("/admin/api/tts-builtin-test", dependencies=[Depends(require_admin)])
     async def admin_tts_builtin_test():

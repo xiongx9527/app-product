@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createDealsTool, DEALS_TOOL_NAME } from '../tools/dealsTool'
 import { createToolkit } from '../tools'
-import { filterDeals, formatDeals, type DealsFetcher } from './types'
-import { createSmzdmSource, parseDeals } from './smzdm'
+import { filterDeals, formatDeals, splitKeywordTerms, type Deal, type DealsFetcher } from './types'
+import { createSmzdmSource, parseDeals, parseTagDeals } from './smzdm'
 
 /** 固定 HTML 片段，覆盖标题/价格/标签/商城/时间/链接的解析。 */
 const SAMPLE_HTML = `
@@ -75,8 +75,58 @@ describe('parseDeals', () => {
   })
 })
 
+describe('parseTagDeals（tag 搜索页）', () => {
+  const TAG_HTML = `
+<div>
+  <div class="haojia-card-container" directlink="https://detail.tmall.com/item.htm?id=981046147710" priceshow="97.2元">
+    <div class="product-img-box"><a href="https://www.smzdm.com/p/185824877/"><img class="product-img" src="https://y.zdmimg.com/202601/29/697b7d4c29d136417.png_a640.jpg"></a></div>
+    <div class="card-right-box">
+      <a href="https://www.smzdm.com/p/185824877/" class="title-normal-box card-right-box-title">华为 FreeBuds SE 4 ANC降噪版 真无线蓝牙降噪耳机</a>
+      <a href="https://www.smzdm.com/p/185824877/" class="sub-title-box card-right-box-sub-title">97.2元</a>
+      <div class="tags-box"><a class="tags-item"> 价格低于618</a><a class="tags-item"> 百亿补贴</a></div>
+    </div>
+  </div>
+  <div class="haojia-card-container">
+    <div class="card-right-box">
+      <a href="https://www.smzdm.com/p/185922391/" class="title-normal-box card-right-box-title">小米 Redmi Buds 6 活力版</a>
+      <a href="https://www.smzdm.com/p/185922391/" class="sub-title-box card-right-box-sub-title">764.07元</a>
+      <div class="tags-box"></div>
+    </div>
+  </div>
+</div>
+`
+
+  it('解析标题/价格/标签/链接/图/商城，price 回退 priceshow', () => {
+    const deals = parseTagDeals(TAG_HTML)
+    expect(deals).toHaveLength(2)
+    const [a, b] = deals
+    expect(a.title).toBe('华为 FreeBuds SE 4 ANC降噪版 真无线蓝牙降噪耳机')
+    expect(a.price).toBe('97.2元')
+    expect(a.mall).toBe('天猫/淘宝')
+    expect(a.link).toBe('https://www.smzdm.com/p/185824877/')
+    expect(a.image).toBe('https://y.zdmimg.com/202601/29/697b7d4c29d136417.png_a640.jpg')
+    expect(a.tags).toEqual(['价格低于618', '百亿补贴'])
+    // 无 directlink 的条目商城留空不编造
+    expect(b.mall).toBe('')
+    expect(b.image).toBeUndefined()
+  })
+
+  it('WAF 挑战页（无卡片）解析为空数组', () => {
+    expect(parseTagDeals('<html><body>安全验证</body></html>')).toHaveLength(0)
+  })
+})
+
 describe('filterDeals', () => {
   const deals = parseDeals(SAMPLE_HTML)
+
+  it('splitKeywordTerms：复合词剥品类后缀，单词/空格词保持', () => {
+    expect(splitKeywordTerms('降噪耳机')).toEqual(['降噪', '耳机'])
+    expect(splitKeywordTerms('蓝牙耳机')).toEqual(['蓝牙', '耳机'])
+    expect(splitKeywordTerms('耳机')).toEqual(['耳机'])
+    expect(splitKeywordTerms('无线 键盘')).toEqual(['无线', '键盘'])
+    expect(splitKeywordTerms('咖啡机')).toEqual(['咖啡机'])
+    expect(splitKeywordTerms('')).toEqual([])
+  })
 
   it('关键词按标题/商城/标签过滤', () => {
     expect(filterDeals(deals, '扳手').map((d) => d.title)).toEqual(['大艺无刷电动扳手'])
@@ -94,6 +144,32 @@ describe('filterDeals', () => {
 
   it('空结果返回空数组', () => {
     expect(filterDeals(deals, '不存在的东西')).toHaveLength(0)
+  })
+
+  it('复合关键词拆词 AND 匹配：拆写标题也能命中（回退场景）', () => {
+    const list = [
+      { title: '真无线降噪 蓝牙耳机', price: '', mall: '京东', tags: [], link: '' },
+      { title: '无线蓝牙耳机', price: '', mall: '天猫', tags: [], link: '' },
+      { title: '降噪充电宝', price: '', mall: '京东', tags: [], link: '' },
+      { title: '蓝牙音箱', price: '', mall: '京东', tags: [], link: '' },
+      { title: '耳机收纳包', price: '', mall: '京东', tags: [], link: '' },
+    ] as Deal[]
+    // 「降噪耳机」→ [降噪, 耳机]：两个词段都要出现，拆写标题不再漏
+    expect(filterDeals(list, '降噪耳机').map((d) => d.title)).toEqual([
+      '真无线降噪 蓝牙耳机',
+    ])
+    // 「蓝牙耳机」→ [蓝牙, 耳机]
+    expect(filterDeals(list, '蓝牙耳机').map((d) => d.title)).toEqual([
+      '真无线降噪 蓝牙耳机',
+      '无线蓝牙耳机',
+    ])
+    // 单词等价整串 includes
+    expect(filterDeals(list, '充电宝').map((d) => d.title)).toEqual(['降噪充电宝'])
+    // 空格分隔的多词同样 AND
+    expect(filterDeals(list, '无线 耳机').map((d) => d.title)).toEqual([
+      '真无线降噪 蓝牙耳机',
+      '无线蓝牙耳机',
+    ])
   })
 })
 
@@ -167,8 +243,8 @@ describe('createDealsTool 抓取与降级', () => {
     const tool = createDealsTool('zh-CN', { source, fetcher: f, keywordPages: 2 })
     const out = await tool.call?.({ keyword: '耳机' })
     expect(out).toContain('暂时查不到好价信息')
-    // 抓了 2 页
-    expect(f).toHaveBeenCalledTimes(2)
+    // 默认搜索优先：tag 1 次（404 失败）+ 回退 feed 2 页，共 3 次
+    expect(f).toHaveBeenCalledTimes(3)
   })
 
   it('TTL 内第二次调用复用 Promise，不再触发 fetcher', async () => {
@@ -186,6 +262,72 @@ describe('createDealsTool 抓取与降级', () => {
     const en = createDealsTool('en-US', { source, fetcher: fetcherFor({}) })
     expect(en.name).toBe('query_deals')
     expect(en.description.toLowerCase()).toContain('deals')
+  })
+
+  // ── tag 搜索（站内真搜索）：能搜到 feed 之外的商品 ──
+
+  const TAG_HTML = `
+<div>
+  <div class="haojia-card-container" directlink="https://detail.tmall.com/item.htm?id=981046147710" priceshow="97.2元">
+    <div class="product-img-box"><a href="https://www.smzdm.com/p/185824877/"><img class="product-img" src="https://y.zdmimg.com/202601/29/697b7d4c29d136417.png_a640.jpg"></a></div>
+    <div class="card-right-box">
+      <a href="https://www.smzdm.com/p/185824877/" class="title-normal-box card-right-box-title">华为 FreeBuds SE 4 ANC降噪版 真无线蓝牙降噪耳机</a>
+      <a href="https://www.smzdm.com/p/185824877/" class="sub-title-box card-right-box-sub-title">97.2元</a>
+      <div class="tags-box"><a class="tags-item"> 价格低于618</a><a class="tags-item"> 百亿补贴</a></div>
+    </div>
+  </div>
+  <div class="haojia-card-container">
+    <div class="product-img-box"><a href="https://www.smzdm.com/p/185922391/"><img class="product-img" src="https://y.zdmimg.com/x.png_a640.jpg"></a></div>
+    <div class="card-right-box">
+      <a href="https://www.smzdm.com/p/185922391/" class="title-normal-box card-right-box-title">小米 Redmi Buds 6 活力版</a>
+      <a href="https://www.smzdm.com/p/185922391/" class="sub-title-box card-right-box-sub-title">764.07元</a>
+      <div class="tags-box"></div>
+    </div>
+  </div>
+</div>
+`
+
+  it('带关键词且 tag 搜索命中：直接用搜索结果，不抓 feed', async () => {
+    // searchUrl 会 encodeURIComponent，测试 key 用编码后的 URL
+    const tagUrl = `https://www.smzdm.com/tag/%E8%80%B3%E6%9C%BA/`
+    const f = vi.fn(fetcherFor({ [tagUrl]: { ok: true, body: TAG_HTML } }))
+    const tool = createDealsTool('zh-CN', { source, fetcher: f })
+    const out = await tool.call?.({ keyword: '耳机', dealsOnly: false })
+    // 只抓了 tag 搜索页一跳，没抓 jingxuan feed
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(f.mock.calls[0][0]).toBe(tagUrl)
+    expect(out).toContain('华为 FreeBuds SE 4')
+    expect(out).not.toContain('全棉时代')
+  })
+
+  it('dealsOnly=true（说了优惠/好价）：限定好价 feed，不打 tag 搜索', async () => {
+    const f = vi.fn(
+      fetcherFor({ 'https://www.smzdm.com/jingxuan/': { ok: true, body: SAMPLE_HTML } })
+    )
+    const tool = createDealsTool('zh-CN', { source, fetcher: f, keywordPages: 1 })
+    const out = await tool.call?.({ keyword: '京东', dealsOnly: true })
+    expect(out).toContain('查到 2 件')
+    // 只抓了 feed 一页
+    expect(f).toHaveBeenCalledTimes(1)
+  })
+
+  it('搜索页 404/WAF 挑战：纯商品搜索回退 feed + 本地过滤（保底不比原来差）', async () => {
+    const f = fetcherFor({ 'https://www.smzdm.com/jingxuan/': { ok: true, body: SAMPLE_HTML } })
+    const tool = createDealsTool('zh-CN', { source, fetcher: f })
+    // 「棉柔巾」tag 大概率不存在（404），回退后命中 feed 里的标题
+    const out = await tool.call?.({ keyword: '棉柔巾', dealsOnly: false })
+    expect(out).toContain('全棉时代婴儿棉柔巾')
+  })
+
+  it('搜索页返回挑战页（202）视同失败，回退 feed', async () => {
+    const f = fetcherFor({
+      'https://www.smzdm.com/tag/%E8%80%B3%E6%9C%BA/': { ok: false, status: 202, body: '' },
+      'https://www.smzdm.com/jingxuan/': { ok: true, body: SAMPLE_HTML },
+    })
+    const tool = createDealsTool('zh-CN', { source, fetcher: f })
+    // 回退后按本地过滤，样例里两条商城都是「京东」
+    const out = await tool.call?.({ keyword: '耳机', dealsOnly: false })
+    expect(out).toContain('没找到')
   })
 })
 

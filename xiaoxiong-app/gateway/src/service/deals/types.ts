@@ -57,6 +57,13 @@ export interface DealsSource {
   detailUrl?(deal: Deal): string | undefined
   /** 解析详情页 HTML 为补充信息（纯函数；解析不出就返回空对象，由上层容忍）。 */
   parseDetail?(html: string): DealDetail
+  /**
+   * 按关键词的站内真搜索页 URL；返回空串表示该页不存在（如超出分页）。
+   * 不实现时带关键词的查询退回「抓 feed + 本地过滤」，只能搜到 feed 里的商品。
+   */
+  searchUrl?(keyword: string, page: number): string
+  /** 解析搜索页 HTML 为 Deal[]；缺省复用 parse（搜索页与 feed 同构时才可省）。 */
+  parseSearch?(html: string): Deal[]
 }
 
 /** 抓取器：测试可注入桩，避免真实联网。 */
@@ -117,7 +124,42 @@ export function formatDeals(
 }
 
 /**
- * 按关键词过滤并截断条数。关键词匹配标题/商城/标签（不区分大小写）。
+ * 常见品类后缀表：把「降噪耳机」这类复合词拆成「降噪 + 耳机」两个词段做 AND 匹配，
+ * 让回退过滤能命中「真无线降噪 蓝牙耳机」这类拆写标题（整串 includes 会漏）。
+ * 按长度降序取最长后缀；只收高频品类词不追求全覆盖——不在表里的词整串匹配（原逻辑）。
+ */
+const CATEGORY_SUFFIXES = [
+  '空气炸锅', '扫地机器人', '无线耳机', '蓝牙耳机', '头戴耳机', '充电宝', '保温杯',
+  '显示器', '洗衣机', '电饭煲', '投影仪', '路由器', '吹风机', '剃须刀', '加湿器',
+  '打印机', '笔记本', '耳机', '音箱', '音响', '键盘', '鼠标', '手机', '电脑',
+  '手表', '电视', '冰箱', '空调', '相机', '镜头', '球鞋', '跑鞋', '运动鞋',
+  '鞋子', '背包', '台灯', '牙刷', '风扇', '雨伞', '杯子',
+].sort((a, b) => b.length - a.length)
+
+/**
+ * 把关键词拆成一组「都必须出现」的词段：按空白拆 token，token 若以品类后缀结尾
+ * 且还有前缀，则拆成 [前缀, 品类]（「降噪耳机」→ [降噪, 耳机]）；否则整串一个词段。
+ * 纯函数，供 filterDeals 与单测使用。
+ */
+export function splitKeywordTerms(keyword: string): string[] {
+  const kw = keyword.trim().toLowerCase()
+  if (!kw) return []
+  const terms: string[] = []
+  for (const t of kw.split(/\s+/).filter(Boolean)) {
+    const suffix = CATEGORY_SUFFIXES.find((s) => t.length > s.length && t.endsWith(s))
+    if (suffix) {
+      // token 比后缀长才有前缀；「耳机」本身长度相等，整串匹配（等价原逻辑）
+      terms.push(t.slice(0, t.length - suffix.length), suffix)
+    } else {
+      terms.push(t)
+    }
+  }
+  return terms
+}
+
+/**
+ * 按关键词过滤并截断条数。复合关键词拆词后做 AND 匹配：每个词段都要在
+ * 标题 / 商城 / 标签任一处出现（不区分大小写）。单词行为与整串 includes 等价。
  * limit 收敛到 1–10（缺省 3）；空结果返回空数组，由调用方决定文案。
  */
 export function filterDeals(
@@ -126,13 +168,15 @@ export function filterDeals(
   limit = 3
 ): Deal[] {
   let list = deals
-  const kw = keyword?.trim().toLowerCase()
-  if (kw) {
-    list = deals.filter(
-      (d) =>
-        d.title.toLowerCase().includes(kw) ||
-        d.mall.toLowerCase().includes(kw) ||
-        d.tags.some((t) => t.toLowerCase().includes(kw))
+  const terms = splitKeywordTerms(keyword ?? '')
+  if (terms.length) {
+    list = deals.filter((d) =>
+      terms.every(
+        (t) =>
+          d.title.toLowerCase().includes(t) ||
+          d.mall.toLowerCase().includes(t) ||
+          d.tags.some((tag) => tag.toLowerCase().includes(t))
+      )
     )
   }
   const lim = Math.min(Math.max(1, Math.floor(limit)), 10)

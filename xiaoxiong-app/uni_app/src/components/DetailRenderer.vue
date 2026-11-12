@@ -81,12 +81,12 @@ function onSelect(index: number): void {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background: rgba(108, 140, 255, 0.14);
+  background: rgba(var(--accent-rgb), 0.14);
   flex-shrink: 0;
 }
 
 .detail-action:active {
-  background: rgba(108, 140, 255, 0.3);
+  background: rgba(var(--accent-rgb), 0.3);
 }
 
 .detail-action--disabled {

@@ -138,7 +138,7 @@ describe('app config', () => {
 
   it('默认 mcp 为空列表', () => {
     const config = createDefaultConfig()
-    expect(config.mcp).toEqual({ servers: [] })
+    expect(config.mcp).toEqual({ enabled: true, servers: [] })
   })
 
   it('记忆合并阈值/频率收敛为非负整数，非法回退默认（30 / 5）', () => {
@@ -178,6 +178,6 @@ describe('app config', () => {
 
   it('normalizeMcp 对缺失/非数组回落到空列表', () => {
     const config = normalizeConfig({ mcp: 'not-an-object' })
-    expect(config.mcp).toEqual({ servers: [] })
+    expect(config.mcp).toEqual({ enabled: true, servers: [] })
   })
 })

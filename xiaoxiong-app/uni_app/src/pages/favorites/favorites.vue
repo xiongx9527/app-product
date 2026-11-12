@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import { t } from '@/core/i18n'
 import { useFavorites } from '@/features/favorites/favoritesStore'
 import { playMusic } from '@/core/audio/musicPlayer'
+import { useSubPageBack } from '@/core/composables/useSubPageBack'
+import SubPageNav from '@/components/SubPageNav.vue'
 
 const { favorites, removeFavorite } = useFavorites()
 
@@ -23,12 +25,15 @@ function onPlay(url: string, title: string): void {
 function onRemove(url: string): void {
   removeFavorite(url)
 }
+
+const { goBack } = useSubPageBack()
 </script>
 
 <template>
   <view class="page">
+    <SubPageNav :title="t('favorites.title')" @back="goBack" />
+
     <view class="head">
-      <text class="title">{{ t('favorites.title') }}</text>
       <text v-if="!empty" class="count">{{ favorites.length }}</text>
     </view>
 
@@ -55,8 +60,8 @@ function onRemove(url: string): void {
   flex-direction: column;
   gap: 14px;
   background:
-    radial-gradient(120% 50% at 50% 0%, rgba(108, 140, 255, 0.18), transparent 60%),
-    #0f1220;
+    radial-gradient(120% 50% at 50% 0%, var(--bg-glow), transparent 60%),
+    var(--bg-base);
 }
 
 .head {
@@ -65,16 +70,10 @@ function onRemove(url: string): void {
   gap: 8px;
 }
 
-.title {
-  font-size: 17px;
-  font-weight: 600;
-  color: #e8eaf6;
-}
-
 .count {
   font-size: 12px;
-  color: #6c8cff;
-  background: rgba(108, 140, 255, 0.14);
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.14);
   border-radius: 10px;
   padding: 1px 8px;
 }
@@ -129,7 +128,7 @@ function onRemove(url: string): void {
 }
 
 .play {
-  color: #6c8cff;
+  color: var(--accent);
 }
 
 .remove {

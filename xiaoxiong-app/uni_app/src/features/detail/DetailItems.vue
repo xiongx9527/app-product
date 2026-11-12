@@ -121,7 +121,7 @@ function listFields(item: DetailItem): DetailField[] {
 .deal-index {
   font-size: 13px;
   line-height: 1.45;
-  color: #6c8cff;
+  color: var(--accent);
   flex-shrink: 0;
 }
 .deal-title {

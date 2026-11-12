@@ -66,6 +66,7 @@
 """
 
 from __future__ import annotations
+import base64
 
 import argparse
 import asyncio
@@ -963,6 +964,12 @@ def voice_health_route():
     return voice_health()
 
 
+# 内置语音引擎的有效模型白名单：与 /voice/v1/models 目录同源，防两处漂移。
+# 请求里 model 为空/不传 = 用内置默认；传了必须是白名单里的值，传错直接 400（不静默忽略）。
+BUILTIN_TTS_MODELS = {"edge-tts"}
+BUILTIN_STT_MODELS = {"sensevoice-small"}
+
+
 @app.get("/voice/v1/models")
 def voice_models():
     """语音模型目录：覆盖 TTS 与 STT 两个端口（对齐 fw-plus-ai-native 的三端口目录）。
@@ -972,11 +979,12 @@ def voice_models():
     """
     data = [
         model_catalog.ModelInfo(
-            id="edge-tts", owned_by="local", type=model_catalog.ModelType.TTS
-        ).to_openai(),
-        model_catalog.ModelInfo(
-            id="sensevoice-small", owned_by="local", type=model_catalog.ModelType.STT
-        ).to_openai(),
+            id=model_id, owned_by="local", type=model_type
+        ).to_openai()
+        for model_id, model_type in (
+            *[(m, model_catalog.ModelType.TTS) for m in sorted(BUILTIN_TTS_MODELS)],
+            *[(m, model_catalog.ModelType.STT) for m in sorted(BUILTIN_STT_MODELS)],
+        )
     ]
     return {"object": "list", "data": data}
 
@@ -989,6 +997,83 @@ class SpeechBody(BaseModel):
     response_format: str = "wav"
     speed: float = 1.0
     instructions: str = ""  # OpenAI 新 TTS 字段，内置模式忽略
+
+
+def _openai_audio_url(base: str, path: str) -> str:
+    """拼 OpenAI 兼容音频端点 URL：兼容用户填 / 不填 /v1（与 LLM 拼法同一风格）。"""
+    url = base.rstrip("/")
+    if not url.endswith("/v1"):
+        url += "/v1"
+    return url + path
+
+
+async def forward_speech_openai(
+    text: str, voice: str, speed: float, fmt: str, model: str
+) -> bytes:
+    """TTS_PROVIDER=openai_audio 时把合成请求转发到 OpenAI 兼容上游。
+
+    返回上游音频原始字节（content-type 不保证 mp3；ffmpeg 转码按内容探测，不看扩展名）。
+    失败抛 RuntimeError，由调用方转 502——已选上游就如实报错，不回落内置。
+    """
+    # 服务地址固定为 DashScope 官方入口（语音只能走云端，同 gateway 的约定）
+    base = (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
+    key = (config_value("TTS_UPSTREAM_API_KEY") or "").strip()
+    url = _openai_audio_url(base, "/audio/speech")
+    payload = {
+        "model": model,
+        "input": text,
+        "voice": voice,
+        "response_format": fmt,
+        "speed": speed,
+    }
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(url, json=payload, headers=headers)
+    if r.status_code >= 400:
+        raise RuntimeError(f"上游 TTS 失败（{r.status_code}）: {r.text[:200]}")
+    return r.content
+
+
+async def stt_upstream_test(model_override: str | None = None) -> dict:
+    """管理面板 ASR 行点「测试可用」：真识别一次样例语音（与正式转发同源）。"""
+    base = (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
+    model = (model_override or "").strip() or (config_value("STT_UPSTREAM_MODEL") or "").strip()
+    if not model:
+        return {"ok": False, "message": "请先在 DashScope 行刷新模型并勾选（STT_UPSTREAM_MODEL）"}
+    key = (config_value("STT_UPSTREAM_API_KEY") or "").strip() or (
+        config_value("TTS_UPSTREAM_API_KEY") or ""
+    ).strip()
+    b64_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr_sample.b64")
+    audio = base64.b64decode(open(b64_path, encoding="utf-8").read().strip())
+    is_dashscope = "dashscope.aliyuncs.com" in base
+    try:
+        if is_dashscope:
+            text = await dashscope_asr_text(base, key, model, audio, audio_fmt(audio))
+        else:
+            text = await forward_transcriptions_openai(audio, "a.mp3", "audio/mpeg", model)
+        return ({"ok": True, "message": f"识别成功：{text[:60]}"} if text
+                else {"ok": True, "message": "上游已响应（空文本）"})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": str(exc)[:200]}
+
+
+async def tts_upstream_test(model_override: str | None = None) -> dict:
+    """管理面板 TTS 行点「测试可用」：真合成一句验证上游 TTS（与正式转发同源）。"""
+    base = (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
+    model = (model_override or "").strip() or (config_value("TTS_UPSTREAM_MODEL") or "").strip()
+    if not model:
+        return {"ok": False, "message": "请先在 DashScope 行刷新模型并勾选（TTS_UPSTREAM_MODEL）"}
+    key = (config_value("TTS_UPSTREAM_API_KEY") or "").strip()
+    is_dashscope = "dashscope.aliyuncs.com" in base
+    try:
+        if is_dashscope:
+            raw = await dashscope_tts_bytes(base, key, model, "你好，语音合成测试。", _dashscope_default_voice(model))
+        else:
+            voice = (config_value("TTS_VOICE") or "").strip() or resolve_voice("")
+            raw = await forward_speech_openai("你好，语音合成测试。", voice, 1.0, "wav", model)
+        return {"ok": True, "message": f"合成成功（{model}，{len(raw)} 字节音频）"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "message": str(exc)[:200]}
 
 
 @app.post("/voice/v1/audio/speech")
@@ -1005,7 +1090,28 @@ async def speech(body: SpeechBody):
     voice = resolve_voice(body.voice)
     rate = tts_rate(body.speed)
     # 助手常重复“我在 / 还在吗”这类短句，缓存能省掉一次云端合成和 ffmpeg 转码。
-    cache_key = (text, voice, rate, fmt)
+    tts_provider = (config_value("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
+    upstream_model = ""
+    if tts_provider == "builtin":
+        # 内置模式：model 可为空，但传了必须是有效模型——传错直接拒绝，不静默吞掉。
+        requested = (body.model or "").strip()
+        if requested and requested not in BUILTIN_TTS_MODELS:
+            return error_response(
+                400,
+                f"内置 TTS 模型只有 {'/'.join(sorted(BUILTIN_TTS_MODELS))}，收到 {requested!r}；"
+                "如需其它模型请配置上游（TTS_PROVIDER）",
+            )
+    else:
+        # 上游模式：model 优先取请求参数，缺省回退 TTS_UPSTREAM_MODEL 配置
+        upstream_model = (body.model or "").strip() or (
+            config_value("TTS_UPSTREAM_MODEL") or ""
+        ).strip()
+        if not upstream_model:
+            return error_response(
+                400,
+                "已选择上游 TTS（dashscope），请在请求里带 model 或配置 TTS_UPSTREAM_MODEL",
+            )
+    cache_key = (tts_provider, upstream_model, text, voice, rate, fmt)
     cached = tts_cache.get(cache_key)
     if cached is not None:
         media_type = {
@@ -1018,11 +1124,31 @@ async def speech(body: SpeechBody):
         )
 
     try:
-        mp3 = await synthesize_edge_mp3(text, voice, rate)
-        if fmt == "mp3":
-            audio, media_type = mp3, "audio/mpeg"
+        if tts_provider == "dashscope":
+            # DashScope：音色体系不同——请求未显式指定时按模型族给默认音色（避免 edge 音色串进来 418）
+            ds_voice = (body.voice or "").strip() or _dashscope_default_voice(upstream_model)
+            key = (config_value("TTS_UPSTREAM_API_KEY") or "").strip()
+            raw = await dashscope_tts_bytes(
+                (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com",
+                key, upstream_model, text, ds_voice,
+            )
+            if fmt == "wav":
+                audio, media_type = raw, "audio/wav"
+            else:
+                audio, media_type = transcode_mp3(raw, fmt)
+        elif tts_provider == "openai_audio":
+            # 上游返回的音频格式以 content 为准；ffmpeg 转码按内容探测，不看扩展名
+            raw = await forward_speech_openai(text, voice, body.speed, fmt, upstream_model)
+            if fmt == "mp3":
+                audio, media_type = raw, "audio/mpeg"
+            else:
+                audio, media_type = transcode_mp3(raw, fmt)
         else:
-            audio, media_type = transcode_mp3(mp3, fmt)
+            mp3 = await synthesize_edge_mp3(text, voice, rate)
+            if fmt == "mp3":
+                audio, media_type = mp3, "audio/mpeg"
+            else:
+                audio, media_type = transcode_mp3(mp3, fmt)
     except Exception as exc:  # noqa: BLE001
         # 这里不抛 500：网关遇到 4xx/5xx 会自己回退静音，会话不中断。
         return error_response(502, str(exc))
@@ -1042,6 +1168,30 @@ async def list_voices():
     return {"default": tts_voice(), "voices": VOICE_CATALOG}
 
 
+async def forward_transcriptions_openai(
+    payload: bytes, filename: str, content_type: str, model: str
+) -> str:
+    """STT_PROVIDER=openai_audio 时把转写请求转发到 OpenAI 兼容上游。
+
+    返回识别文本（取响应 JSON 的 text 字段）。失败抛 RuntimeError，由调用方转 502
+    ——已选上游就如实报错，不回落内置。
+    """
+    base = (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
+    key = (config_value("STT_UPSTREAM_API_KEY") or "").strip()
+    url = _openai_audio_url(base, "/audio/transcriptions")
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    files = {"file": (filename, payload, content_type or "audio/wav")}
+    data = {"model": model}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(url, files=files, data=data, headers=headers)
+    if r.status_code >= 400:
+        raise RuntimeError(f"上游 ASR 失败（{r.status_code}）: {r.text[:200]}")
+    try:
+        return (r.json().get("text") or "").strip()
+    except ValueError:
+        raise RuntimeError(f"上游 ASR 响应不是 JSON: {r.text[:200]}")
+
+
 @app.post("/voice/v1/audio/transcriptions")
 async def transcriptions(
     request: Request,
@@ -1055,6 +1205,48 @@ async def transcriptions(
     payload = await file.read()
     if not payload:
         return error_response(400, "上传的音频为空")
+
+    stt_provider = (config_value("STT_PROVIDER", "builtin") or "builtin").strip().lower()
+    if stt_provider == "builtin":
+        # 内置模式：model 可为空/默认值，但传了别的（如上游模型名）直接拒绝——不静默吞掉。
+        requested = (model or "").strip()
+        if requested and requested not in BUILTIN_STT_MODELS:
+            return error_response(
+                400,
+                f"内置 ASR 模型只有 {'/'.join(sorted(BUILTIN_STT_MODELS))}，收到 {requested!r}；"
+                "如需其它模型请配置上游（STT_PROVIDER）",
+            )
+    else:
+        # 上游模式：model 优先取请求参数，缺省回退 STT_UPSTREAM_MODEL 配置；
+        # 不做 WAV 前置校验（上游接受 mp3/wav 等，网关上行仍是 16k WAV）。
+        upstream_model = (model or "").strip()
+        if upstream_model in ("", "sensevoice-small"):
+            upstream_model = (config_value("STT_UPSTREAM_MODEL") or "").strip()
+        if not upstream_model:
+            return error_response(
+                400, "已选择上游 ASR（dashscope），请配置 STT_UPSTREAM_MODEL 或在请求里带 model"
+            )
+        key = (config_value("STT_UPSTREAM_API_KEY") or "").strip() or (
+            config_value("TTS_UPSTREAM_API_KEY") or ""
+        ).strip()
+        try:
+            if stt_provider == "dashscope":
+                text = await dashscope_asr_text(
+                    (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com",
+                    key, upstream_model, payload, audio_fmt(payload),
+                )
+            else:
+                text = await forward_transcriptions_openai(
+                    payload,
+                    file.filename or "audio.wav",
+                    file.content_type or "audio/wav",
+                    upstream_model,
+                )
+        except Exception as exc:  # noqa: BLE001
+            return error_response(502, str(exc))
+        if response_format == "text":
+            return Response(content=text, media_type="text/plain; charset=utf-8")
+        return {"text": text}
 
     # ASR 固定走本地 SenseVoice（无上游概念），先挡掉非 WAV：
     # SenseVoice 的接入口只认 RIFF/WAVE，直接交给它只会得到空文本。
@@ -1654,7 +1846,11 @@ def main(argv=None) -> None:
     # 与语音 / LLM 接口同进程，但走 /admin 前缀且单独鉴权，不干扰推理接口。
     admin_panel.init_admin(_config_path, VOICE_HOME)
     admin_panel.register_admin_routes(
-        app, stt_builtin_check=sensevoice_check, tts_builtin_check=tts_builtin_check
+        app,
+        stt_builtin_check=sensevoice_check,
+        tts_builtin_check=tts_builtin_check,
+        stt_upstream_test=stt_upstream_test,
+        tts_upstream_test=tts_upstream_test,
     )
     print(
         f"[local-ai] 管理 : http://{host}:{port}/admin "

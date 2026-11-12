@@ -87,15 +87,20 @@ export function createDefaultConfig(): AppConfig {
 
 /** 通用设置默认值：自动连接网关默认开启（开屏即连网关进入待唤醒，免去手动点开关）。 */
 function createDefaultGeneral(): GeneralConfig {
-  return { autoConnect: true }
+  return { autoConnect: true, theme: 'default' }
 }
+
+const THEME_IDS = ['auto', 'default', 'purple', 'teal', 'amber'] as const
 
 /** 归一化通用设置：autoConnect 只认 boolean，缺省/非法回退默认（开）。 */
 function normalizeGeneral(raw: unknown): GeneralConfig {
   const source = isRecord(raw) ? raw : {}
   const autoConnect =
     typeof source.autoConnect === 'boolean' ? source.autoConnect : createDefaultGeneral().autoConnect
-  return { autoConnect }
+  const theme = THEME_IDS.includes(source.theme as (typeof THEME_IDS)[number])
+    ? (source.theme as GeneralConfig['theme'])
+    : createDefaultGeneral().theme
+  return { autoConnect, theme }
 }
 
 /** 记忆设置默认值：自动记忆（自动抽取）默认关闭，手动指令不受此开关影响。 */
@@ -122,9 +127,9 @@ function normalizeMemory(raw: unknown): MemoryConfig {
   }
 }
 
-/** MCP 服务器列表默认值：空列表（不连接任何 MCP 服务器）。 */
+/** MCP 服务器列表默认值：总开关默认开启（保持与历史行为一致：列表里有启用项即连接），列表为空。 */
 function createDefaultMcp(): McpConfig {
-  return { servers: [] }
+  return { enabled: true, servers: [] }
 }
 
 const MCP_TRANSPORTS: McpTransport[] = ['stdio', 'sse', 'http']
@@ -158,15 +163,24 @@ function normalizeMcpServer(raw: unknown): McpServerConfig | null {
   if (!url) return null
   const enabledTools = Array.isArray(source.enabledTools) ? source.enabledTools.filter((t) => typeof t === 'string') : undefined
   const disabledTools = Array.isArray(source.disabledTools) ? source.disabledTools.filter((t) => typeof t === 'string') : undefined
-  return { id, name, enabled, transport, url, enabledTools, disabledTools }
+  // sse/http 的鉴权头：仅保留 string→string 的键值对，避免脏数据把请求带崩。
+  const headers: Record<string, string> | undefined = isRecord(source.headers)
+    ? Object.fromEntries(
+        Object.entries(source.headers)
+          .filter(([, v]) => typeof v === 'string')
+          .map(([k, v]) => [k, v as string])
+      )
+    : undefined
+  return { id, name, enabled, transport, url, headers, enabledTools, disabledTools }
 }
 
 /** 归一化 MCP 配置：servers 逐项校验，非法项丢弃；非数组/缺省回退空列表。 */
 function normalizeMcp(raw: unknown): McpConfig {
   const source = isRecord(raw) ? raw : {}
+  const enabled = typeof source.enabled === 'boolean' ? source.enabled : true
   const list = Array.isArray(source.servers) ? source.servers : []
   const servers = list.map(normalizeMcpServer).filter((s): s is McpServerConfig => s !== null)
-  return { servers }
+  return { enabled, servers }
 }
 
 function normalizeProviderSettings(

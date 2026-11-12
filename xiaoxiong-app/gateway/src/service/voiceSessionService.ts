@@ -847,8 +847,9 @@ export class VoiceSessionService {
       (async (): Promise<DealsSnapshot> => {
         // DealsOptions.source 必需（数据源由调用方注入，工具本身不绑定站点）。
         const tool = createDealsTool(this.lang, { source: createSmzdmSource() })
+        // 直连句都是好价信号（打折/优惠/便宜…），显式限定好价 feed；
         // 多抓一些候选：下面要按长期记忆偏好挑 3 条，只取 3 条就没有挑选余地。
-        return tool.snapshot({ limit: 10 })
+        return tool.snapshot({ limit: 10, dealsOnly: true })
       })
     try {
       const { text, deals } = await query()

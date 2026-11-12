@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
+import { onPullDownRefresh } from '@dcloudio/uni-app'
 import { t } from '@/core/i18n'
 import { useLongMemory, type MemoryItem } from '@/features/memory/memoryStore'
+import { useSubPageBack } from '@/core/composables/useSubPageBack'
+import SubPageNav from '@/components/SubPageNav.vue'
 
 const mem = useLongMemory()
-const { items, total, page, totalPages, hasPrev, hasNext, loading, hint, query, formatTime, load, prev, next, search, remove, clearAll } = mem
+const { items, total, page, totalPages, hasPrev, hasNext, loading, hint, query, formatTime, load, refresh, prev, next, search, remove, clearAll } = mem
 
 const empty = computed(() => !loading.value && items.value.length === 0 && !hint.value)
 const showHint = computed(() => !!hint.value)
@@ -35,17 +38,41 @@ function onClear(): void {
 }
 
 onMounted(() => {
-  uni.setNavigationBarTitle({ title: t('settings.memory.openLong') })
   void load()
 })
+
+/** 下拉刷新（在列表顶部向下拉）：回到第 1 页重新加载，结束系统下拉指示器。 */
+onPullDownRefresh(() => {
+  void refresh().finally(() => uni.stopPullDownRefresh())
+})
+
+const { goBack } = useSubPageBack()
 </script>
 
 <template>
   <view class="page">
+    <SubPageNav :title="t('settings.memory.openLong')" @back="goBack" />
+
     <view class="head">
-      <text class="title">{{ t('settings.memory.openLong') }}</text>
       <text v-if="total" class="count">{{ t('settings.memory.total', { n: total }) }}</text>
-      <text v-if="items.length" class="link clear" @tap="onClear">{{ t('settings.memory.clearAll') }}</text>
+      <view
+        v-if="items.length"
+        class="act clear"
+        @tap="onClear"
+        :aria-label="t('settings.memory.clearAll')"
+      >
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 6.5 17.5 8" />
+          <path d="M13 2.5 11.5 4" />
+          <path d="M21 11.5 19.5 13" />
+          <path d="M13 7.5 11.5 9" />
+          <path d="M15.5 9.5 14 11" />
+          <path d="M19 14.5 17.5 16" />
+          <path d="M15.5 18.5 14 20" />
+          <path d="M4 21 13.5 11.5" />
+          <path d="M4 21 5.5 19.5" />
+        </svg>
+      </view>
     </view>
 
     <input
@@ -68,7 +95,15 @@ onMounted(() => {
           <text class="time">{{ t('settings.memory.updated') }} {{ formatTime(item.updatedAt) }}</text>
         </view>
       </view>
-      <text class="link" @tap="onDelete(item)">{{ t('settings.memory.delete') }}</text>
+      <view class="act del" @tap="onDelete(item)" :aria-label="t('settings.memory.delete')">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          <line x1="10" y1="11" x2="10" y2="17" />
+          <line x1="14" y1="11" x2="14" y2="17" />
+          <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+        </svg>
+      </view>
     </view>
 
     <view v-if="totalPages > 1" class="pager">
@@ -80,8 +115,6 @@ onMounted(() => {
         {{ loading ? '…' : t('settings.memory.next') }}
       </text>
     </view>
-
-    <text class="refresh" :class="{ disabled: loading }" @tap="load">{{ loading ? '…' : t('settings.memory.refresh') }}</text>
   </view>
 </template>
 
@@ -93,8 +126,8 @@ onMounted(() => {
   flex-direction: column;
   gap: 14px;
   background:
-    radial-gradient(120% 50% at 50% 0%, rgba(108, 140, 255, 0.18), transparent 60%),
-    #0f1220;
+    radial-gradient(120% 50% at 50% 0%, var(--bg-glow), transparent 60%),
+    var(--bg-base);
 }
 
 .head {
@@ -103,21 +136,15 @@ onMounted(() => {
   gap: 8px;
 }
 
-.title {
-  font-size: 17px;
-  font-weight: 600;
-  color: #e8eaf6;
-}
-
 .count {
   font-size: 12px;
-  color: #6c8cff;
-  background: rgba(108, 140, 255, 0.14);
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.14);
   border-radius: 10px;
   padding: 1px 8px;
 }
 
-.clear {
+.act.clear {
   margin-left: auto;
   color: #ff8a8a;
 }
@@ -188,12 +215,31 @@ onMounted(() => {
 
 .link {
   font-size: 13px;
-  color: #6c8cff;
+  color: var(--accent);
   flex-shrink: 0;
 }
 
 .link.disabled {
   opacity: 0.4;
+}
+
+/* 列表项右侧删除：垃圾桶图标（替代原来的「删除」文字按钮） */
+.act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.act.del {
+  color: #ff8a8a;
+}
+
+.act .ico {
+  width: 18px;
+  height: 18px;
 }
 
 .pager {
@@ -207,16 +253,5 @@ onMounted(() => {
 .page-ind {
   font-size: 12px;
   color: #b8bdd4;
-}
-
-.refresh {
-  align-self: center;
-  font-size: 13px;
-  color: #6c8cff;
-  padding: 8px 0;
-}
-
-.refresh.disabled {
-  opacity: 0.4;
 }
 </style>

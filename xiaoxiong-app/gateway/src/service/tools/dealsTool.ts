@@ -24,7 +24,8 @@ const USER_AGENT =
 /** collectDeals 的运行上下文：由 createDealsTool 构造，共享同一份 fetchPage 缓存。 */
 export interface DealsContext {
   source: DealsSource
-  fetchPage: (url: string) => Promise<Deal[]>
+  /** 第二参可选：搜索页用 source.parseSearch，缺省 source.parse（缓存 key 仍是 URL）。 */
+  fetchPage: (url: string, parse?: (html: string) => Deal[]) => Promise<Deal[]>
   keywordPages: number
 }
 
@@ -41,13 +42,48 @@ export interface DealsSnapshot {
  */
 export async function collectDeals(
   ctx: DealsContext,
-  args: { keyword?: string; limit?: number } = {},
+  args: { keyword?: string; limit?: number; dealsOnly?: boolean } = {},
 ): Promise<{ deals: Deal[]; anyOk: boolean }> {
   const keyword = args.keyword?.trim() || undefined
   const limit = typeof args.limit === 'number' ? args.limit : 3
   const pages = keyword ? ctx.keywordPages : 1
+  // 意图：dealsOnly=true（用户明确说优惠/打折/折扣/好价）→ 限定好价 feed；
+  // 纯商品搜索（默认）→ 优先站内 tag 真搜索，能搜到 feed 之外的商品。
+  // 默认走搜索：LLM 纯商品查询不传参数时就是真搜索，不会悄悄退回「只有好价」；
+  // 语音直连（dealsControl）拦的都是好价信号句，显式传 dealsOnly=true 限定好价。
+  const dealsOnly = args.dealsOnly === true
+  // tag 搜索页结果已与关键词相关，跳过本地二次过滤，只去重 + 截断。
+  if (!dealsOnly && keyword && ctx.source.searchUrl) {
+    const searchUrls: string[] = []
+    for (let i = 1; i <= pages; i++) {
+      const u = ctx.source.searchUrl(keyword, i)
+      if (u) searchUrls.push(u)
+    }
+    const settled = await Promise.allSettled(
+      searchUrls.map((u) => ctx.fetchPage(u, ctx.source.parseSearch ?? ctx.source.parse))
+    )
+    const merged: Deal[] = []
+    const seen = new Set<string>()
+    let anyOk = false
+    for (const s of settled) {
+      if (s.status === 'fulfilled') {
+        anyOk = true
+        for (const d of s.value) {
+          const key = d.link || d.title
+          if (seen.has(key)) continue
+          seen.add(key)
+          merged.push(d)
+        }
+      }
+    }
+    if (merged.length) {
+      return { deals: merged.slice(0, limit), anyOk }
+    }
+    // tag 页 404 / WAF 挑战 / 无结果：回退「feed + 本地过滤」兜底（结果仍与关键词相关）。
+  }
   const urls = Array.from({ length: pages }, (_, i) => ctx.source.pageUrl(i + 1))
-  const settled = await Promise.allSettled(urls.map(ctx.fetchPage))
+  // 注意不能直接 map(ctx.fetchPage)：map 会把 index 传进第二参 parse，数字不是函数
+  const settled = await Promise.allSettled(urls.map((u) => ctx.fetchPage(u)))
   const merged: Deal[] = []
   const seen = new Set<string>()
   let anyOk = false
@@ -93,7 +129,10 @@ export function createDealsTool(
   const fetcher = options.fetcher ?? (globalThis.fetch as unknown as DealsFetcher)
   const cache = new Map<string, CacheEntry>()
 
-  function fetchPage(url: string): Promise<Deal[]> {
+  function fetchPage(
+    url: string,
+    parse: (html: string) => Deal[] = source.parse
+  ): Promise<Deal[]> {
     const now = Date.now()
     const hit = cache.get(url)
     if (hit && hit.expires > now) return hit.promise
@@ -106,7 +145,7 @@ export function createDealsTool(
           },
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return source.parse(await res.text())
+        return parse(await res.text())
       } catch (e) {
         // 失败不缓存，下次调用可重试；并发复用仍走当前 promise。
         cache.delete(url)
@@ -121,10 +160,13 @@ export function createDealsTool(
 
   /** 一次查询 → 口播文本 + 结构化列表。call 与语音直连都复用它，零二次抓取。 */
   async function snapshot(
-    args: { keyword?: string; limit?: number } = {},
+    args: { keyword?: string; limit?: number; dealsOnly?: boolean } = {},
   ): Promise<DealsSnapshot> {
     const keyword = args.keyword?.trim() || undefined
-    const resolved = { ...args, limit: typeof args.limit === 'number' ? args.limit : defaultLimit }
+    const resolved = {
+      ...args,
+      limit: typeof args.limit === 'number' ? args.limit : defaultLimit,
+    }
     const { deals, anyOk } = await collectDeals(ctx, resolved)
     const text =
       !deals.length && !anyOk
@@ -136,8 +178,8 @@ export function createDealsTool(
   }
 
   const descriptions: Record<string, string> = {
-    zh: '查询 / 搜索商品与实时打折好价。只要用户在问商品、东西、买卖、打折、优惠、折扣、便宜的东西、好价、特价、划不划算，或说「查询商品」「搜索商品」「有什么优惠」「XX 多少钱」等购物相关问题时都要调用——即使可能没有好价也要查，工具会返回「暂无」文案，不要因为怕没结果就不调用。可传 keyword 按商品关键词（如「耳机」「咖啡机」）在最近几页里筛选；不传则返回最新好价。返回页面上的现价与优惠标签，不要自行计算折扣率，也不要编造页面没有的信息。结果用于语音播报。',
-    en: 'Query / search products and live deals. Call whenever the user asks about products, items, stuff, buying or selling, discounts, deals, bargains, cheap stuff, good prices, or says "search products", "any deals today", "what is on sale", "how much is X" — even if there may be no deals: the tool returns a "none found" message, so never skip the call. Pass keyword to filter recent pages by product (e.g. "headphones"); omit it to get the latest deals. Returns the prices and tags shown on the page — do not compute discounts yourself and never invent info not on the page. Use the result for a spoken reply.',
+    zh: '查询商品 / 搜索商品 / 查好价。用户问商品、东西、买卖、XX 多少钱，或说「搜索耳机」「查询商品」这类纯商品查询时调用：走站内真搜索，能搜到普通商品，不限于是好价商品——此时不要传 dealsOnly。用户明确说优惠、打折、折扣、好价、特价、促销、秒杀、划算、便宜时才传 dealsOnly=true，限定查好价商品（没有好价就返回「暂无」，不要因为怕没结果就不调用）。keyword 传商品核心词（如「耳机」「咖啡机」）；不传 keyword 且 dealsOnly=true 返回最新好价。返回页面上的现价与优惠标签，不要自行计算折扣率，也不要编造页面没有的信息。结果用于语音播报。',
+    en: 'Search products / query deals. Call whenever the user asks about products, items, stuff, "how much is X", "search headphones" or other plain product searches: this hits the on-site search and can find ordinary products, not only deals — do NOT pass dealsOnly then. Pass dealsOnly=true ONLY when the user explicitly says discount/deal/on sale/bargain words (优惠/打折/折扣/好价/特价/促销) to restrict to deal items; if none found the tool returns a "none" message, so never skip the call. keyword is the product term (e.g. "headphones"); omit keyword with dealsOnly=true to get the latest deals. Returns the prices and tags shown on the page — do not compute discounts yourself and never invent info not on the page. Use the result for a spoken reply.',
   }
 
   return {
@@ -147,7 +189,11 @@ export function createDealsTool(
       keyword: z
         .string()
         .optional()
-        .describe('商品关键词，如「耳机」「咖啡机」；为空则返回最新好价'),
+        .describe('商品关键词，如「耳机」「咖啡机」；为空且 dealsOnly=true 则返回最新好价'),
+      dealsOnly: z
+        .boolean()
+        .optional()
+        .describe('仅当用户明确提到优惠/打折/折扣/好价/特价/促销等优惠意图时传 true（限定好价商品）；纯商品搜索不要传'),
       limit: z
         .number()
         .int()
@@ -157,8 +203,9 @@ export function createDealsTool(
         .describe('返回条数，1–10，默认 3'),
     }),
     /** LLM function-call 入口：只返回本地化文本（契约不变）。 */
-    call: async (args: { keyword?: string; limit?: number } = {}) =>
-      (await snapshot(args)).text,
+    call: async (
+      args: { keyword?: string; limit?: number; dealsOnly?: boolean } = {},
+    ) => (await snapshot(args)).text,
     /** 语音直连入口：同一份查询同时拿到文本与结构化列表，供编号选择/详情卡片使用。 */
     snapshot,
   }

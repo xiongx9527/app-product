@@ -149,6 +149,43 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * 直接探测网关 HTTP 端口可达性（ws://127.0.0.1:8787/ws → http://127.0.0.1:8787/）。
+ * 真机实测 plus.io 各 root 均读不到原生写出的 gateway.url（getFilesDir 无对应 root），
+ * 故就绪判定不能只依赖文件：任何 HTTP 响应（含 404）都证明网关已在监听。
+ * 用 uni.request（原生网络栈，无 webview CORS/明文限制），无 uni 环境返回 false。
+ */
+function probeGatewayHttp(httpUrl: string, timeoutMs = 1000): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const u = (uni as unknown as {
+        request?: (o: {
+          url: string
+          method: string
+          timeout?: number
+          success?: () => void
+          fail?: () => void
+        }) => void
+      } | undefined)?.request
+      if (typeof u !== 'function') return resolve(false)
+      u({
+        url: httpUrl,
+        method: 'GET',
+        timeout: timeoutMs,
+        success: () => resolve(true),
+        fail: () => resolve(false),
+      })
+    } catch {
+      resolve(false)
+    }
+  })
+}
+
+/** ws://host:port/ws → http://host:port/（探活用根路径即可，任何响应都算监听中）。 */
+function wsToHttpBase(wsUrl: string): string {
+  return wsUrl.replace(/^ws/i, 'http').replace(/\/ws\/?$/, '/')
+}
+
 export interface WaitGatewayOptions {
   /** 最长等待内嵌网关就绪的时间，默认 15s。 */
   timeoutMs?: number
@@ -171,7 +208,11 @@ export async function waitForEmbeddedGateway(
   const pollMs = Math.max(50, options.pollMs ?? 300)
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
+    // 通道①：原生写出的 gateway.url（plus.io 读得到时优先用真实地址）
     if (await readEmbeddedGatewayUrl()) return true
+    // 通道②：直接探 HTTP 端口（固定端口部署下文件通道不可用，可达性即就绪）
+    const fallback = fallbackWsUrl()
+    if (fallback && (await probeGatewayHttp(wsToHttpBase(fallback)))) return true
     await delay(pollMs)
   }
   return false

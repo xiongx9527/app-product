@@ -20,6 +20,9 @@ import { getDeviceId } from '@/core/config/deviceId'
 import { activeVoiceConfig } from '@/core/config'
 import { fetchHealthReport, toHealthItems, type HealthItem } from '@/features/assistant/useHealth'
 import SelectRow from '@/components/SelectRow.vue'
+import { useSubPageBack } from '@/core/composables/useSubPageBack'
+import SubPageNav from '@/components/SubPageNav.vue'
+import { THEME_IDS, THEME_VARS, applyTheme } from '@/core/theme'
 
 /** 时区下拉选项：值用 IANA 名，展示文案按当前语言本地化。 */
 const timezoneOptions = computed(() =>
@@ -55,6 +58,25 @@ function setSubtitleFontSize(value: string): void {
 }
 function setSubtitleColor(value: string): void {
   appConfig.playback.subtitleColor = value
+}
+
+/** 主题色板：选项来自 core/theme 的 THEME_IDS/THEME_VARS（颜色单一来源），标签按语言本地化。
+ *  auto 用「蓝/深色各半」表达「跟随系统」；其余用各自 bgBase 打底、accent 作圆点。 */
+const themeOptions = computed(() =>
+  THEME_IDS.map((id) => {
+    const v = THEME_VARS[id === 'auto' ? 'default' : id]
+    return {
+      value: id,
+      label: t(`settings.theme.${id}`),
+      bg: id === 'auto' ? 'linear-gradient(135deg, #6c8cff 50%, #0f1220 50%)' : v.bgBase,
+      dot: v.accent,
+    }
+  }),
+)
+/** 选中主题：先实时预览（立即改写 :root 变量），保存时再随 appConfig 落盘。 */
+function setTheme(value: string): void {
+  appConfig.general.theme = value as typeof appConfig.general.theme
+  applyTheme(appConfig.general.theme)
 }
 
 const saving = ref(false)
@@ -108,9 +130,10 @@ function setConsolidateEvery(e: any): void {
   appConfig.memory.consolidateEvery = Number.isFinite(n) && n >= 0 ? n : 5
 }
 
-/** 设置分组手风琴：默认全部收起；同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。 */
+/** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
+ * MCP 设置默认展开，让「打开设置即可见、可添加」；样式与其余分区一致（标题右侧带收起/展开箭头）。 */
 type SettingsGroup = 'general' | 'memory' | 'voice' | 'playback' | 'recommend' | 'mcp'
-const expanded = ref<SettingsGroup | null>(null)
+const expanded = ref<SettingsGroup | null>('mcp')
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
 }
@@ -282,13 +305,10 @@ function openLongMemory(): void {
   uni.navigateTo({ url: '/pages/longmemory/longmemory' })
 }
 
-function syncNavTitle(): void {
-  // 导航栏标题随当前语言本地化（pages.json 里的静态标题无法 i18n，这里动态覆盖）。
-  uni.setNavigationBarTitle({ title: t('app.settings') })
-}
+// 返回：有上一级（如从首页进入）走 navigateBack；直链/刷新进入（无上一级）兜底回首页。
+const { goBack } = useSubPageBack({ fallbackUrl: '/pages/index/index' })
 
 onMounted(() => {
-  syncNavTitle()
   void loadLlmModels()
   void loadTtsVoices()
   // 播放源目前仅百度一种（隐藏选择器），旧配置若存过其它源（netease/tencent/kugou）静默回退到百度。
@@ -297,11 +317,10 @@ onMounted(() => {
   }
 })
 
-// 语言切换时：导航栏标题与（服务端本地化的）音色标签都要跟着变。
+// 语言切换时：（服务端本地化的）音色标签要跟着变；导航栏标题走模板 t()，自动响应式更新。
 watch(
   () => appConfig.language,
   () => {
-    syncNavTitle()
     void loadTtsVoices()
   },
 )
@@ -309,6 +328,7 @@ watch(
 
 <template>
   <view class="page">
+    <SubPageNav :title="t('app.settings')" @back="goBack" />
     <!-- 通用设置（语言 / 时区） -->
     <view class="group">
       <view class="group-head" @tap="toggleGroup('general')">
@@ -349,6 +369,56 @@ watch(
             color="#6c8cff"
             @change="(e: any) => (appConfig.general.autoConnect = e.detail.value)"
           />
+        </view>
+
+        <!-- 主题：选中即实时预览，保存时随 appConfig 落盘 -->
+        <view class="setting-row column theme-row">
+          <text class="row-label">{{ t('settings.theme.title') }}</text>
+          <text class="hint">{{ t('settings.theme.hint') }}</text>
+          <view class="theme-swatches">
+            <view
+              v-for="opt in themeOptions"
+              :key="opt.value"
+              class="theme-swatch"
+              :class="{ active: appConfig.general.theme === opt.value }"
+              :style="{ background: opt.bg }"
+              :aria-label="opt.label"
+              @tap="setTheme(opt.value)"
+            >
+              <view class="swatch-dot" :style="{ background: opt.dot }" />
+              <text class="swatch-label">{{ opt.label }}</text>
+            </view>
+          </view>
+        </view>
+      </template>
+    </view>
+
+    <!-- MCP 服务器：用户自行填写，网关据此连上并把其工具注册进助手工具箱。
+         与其它分区一样走折叠逻辑（标题右侧带收起/展开箭头），默认展开，打开设置即可见、一点直达配置页。 -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('mcp')">
+        <text class="group-title">{{ t('settings.mcp.title') }}</text>
+        <text class="group-chevron">{{ isOpen('mcp') ? '▾' : '▸' }}</text>
+      </view>
+      <template v-if="isOpen('mcp')">
+        <!-- 总开关：关闭则整体停用 MCP，不向网关下发任何服务器 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.mcp.enabled') }}</text>
+            <text class="hint">{{ t('settings.mcp.enabledHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.mcp.enabled"
+            color="#6c8cff"
+            @change="(e: any) => (appConfig.mcp.enabled = e.detail.value)"
+          />
+        </view>
+        <view class="entry" @tap="openMcpServers">
+          <view class="row-text">
+            <text class="row-label">{{ t('settings.mcp.open') }}</text>
+            <text class="hint">{{ t('settings.mcp.openHint') }}</text>
+          </view>
+          <text class="entry-arrow">›</text>
         </view>
       </template>
     </view>
@@ -709,25 +779,6 @@ watch(
       </template>
     </view>
 
-    <!-- MCP 服务器（用户自行填写，网关据此连上并把其工具注册进助手工具箱），置于推荐设置之后 -->
-    <view class="group">
-      <view class="group-head" @tap="toggleGroup('mcp')">
-        <text class="group-title">{{ t('settings.mcp.title') }}</text>
-        <text class="group-chevron">{{ isOpen('mcp') ? '▾' : '▸' }}</text>
-      </view>
-      <template v-if="isOpen('mcp')">
-        <text class="hint">{{ t('settings.mcp.sub') }}</text>
-        <!-- 进入独立分页：增删一组 MCP 服务器（stdio / sse / http），保存后随下次会话下发网关 -->
-        <view class="entry" @tap="openMcpServers">
-          <view class="row-text">
-            <text class="row-label">{{ t('settings.mcp.open') }}</text>
-            <text class="hint">{{ t('settings.mcp.openHint') }}</text>
-          </view>
-          <text class="entry-arrow">›</text>
-        </view>
-      </template>
-    </view>
-
     <!-- 记忆设置 -->
     <button class="save" :disabled="saving" @tap="onSave">{{ t('settings.save') }}</button>
     <text class="foot">{{ t('settings.foot') }}</text>
@@ -747,8 +798,8 @@ watch(
   flex-direction: column;
   gap: 14px;
   background:
-    radial-gradient(120% 50% at 50% 0%, rgba(108, 140, 255, 0.18), transparent 60%),
-    #0f1220;
+    radial-gradient(120% 50% at 50% 0%, var(--bg-glow), transparent 60%),
+    var(--bg-base);
 }
 
 .group {
@@ -799,8 +850,8 @@ watch(
 }
 
 .provider.active {
-  border-color: rgba(108, 140, 255, 0.6);
-  background: rgba(108, 140, 255, 0.12);
+  border-color: rgba(var(--accent-rgb), 0.6);
+  background: rgba(var(--accent-rgb), 0.12);
 }
 
 .radio {
@@ -815,14 +866,14 @@ watch(
 }
 
 .provider.active .radio {
-  border-color: #6c8cff;
+  border-color: var(--accent);
 }
 
 .radio-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #6c8cff;
+  background: var(--accent);
 }
 
 .provider-name {
@@ -848,7 +899,7 @@ watch(
   font-size: 12px;
   font-weight: 600;
   color: #fff;
-  background: linear-gradient(135deg, #6c8cff, #8a6cff);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
   border: none;
 }
 
@@ -932,7 +983,7 @@ watch(
 
 .link {
   font-size: 12px;
-  color: #6c8cff;
+  color: var(--accent);
 }
 
 .link.disabled {
@@ -976,6 +1027,49 @@ picker {
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
+}
+
+/* 主题色板：横排若干圆角色卡，选中项加强调描边 */
+.theme-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.theme-swatch {
+  position: relative;
+  width: 92px;
+  height: 56px;
+  border-radius: 12px;
+  border: 2px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.theme-swatch.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.swatch-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
+}
+
+.swatch-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
 }
 
 .setting-text {
@@ -1087,7 +1181,7 @@ picker {
   font-size: 15px;
   font-weight: 600;
   color: #fff;
-  background: linear-gradient(135deg, #6c8cff, #8a6cff);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
   border: none;
 }
 
@@ -1112,7 +1206,7 @@ picker {
   width: 34px;
   height: 34px;
   border: 3px solid rgba(255, 255, 255, 0.25);
-  border-top-color: #6c8cff;
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: save-spin 0.8s linear infinite;
 }

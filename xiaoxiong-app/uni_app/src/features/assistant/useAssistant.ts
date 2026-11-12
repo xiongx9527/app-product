@@ -193,6 +193,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     if (!enabled.value) return
     resetGatewayDownAnnounce()
     announceGatewayDown()
+    // 原则：网关不正常就不允许停留在唤醒态。重连耗尽（网关确实不可达）时强制下线：
+    // 停采集/停播报/关连接并回到「未开启」，不保留「正在听」的假象；重开后重走唤醒门槛。
+    disable()
   })
   /** 正在建连状态（含自动重连每次尝试）：用于连接状态胶囊显示「连接中…」，且不弹独立标签 */
   const connecting = ref(false)
@@ -733,9 +736,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     dispatch({ type: 'CANCEL' })
   }
 
-  /** 点中间圆球手动开始一轮：等同说「小熊小熊」唤醒，仅待唤醒(standby)态有效。 */
+  /** 点中间圆球手动开始一轮：等同说「小熊小熊」唤醒，仅待唤醒(standby)态有效。
+   * 原则：网关正常才允许唤醒——没连上网关就不放行 WAKE（连不上则 ASR/TTS 都不工作，
+   * 「唤醒了但说不了话」是不诚实的状态），此时诚实提示并顺手触发重连。 */
   function wake(): void {
     if (state.value !== 'standby') return
+    if (!transport.isConnected()) {
+      errorMessage.value = t('gateway.notConnected')
+      void retry()
+      return
+    }
     dispatch({ type: 'WAKE' })
   }
 

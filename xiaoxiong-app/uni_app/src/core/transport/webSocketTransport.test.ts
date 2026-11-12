@@ -48,6 +48,8 @@ describe('WebSocketTransport.onEvent 反订阅（HMR 重挂载双音频根因回
 
     // 先拿到建连 promise，再手动触发 onopen（transport 已注册好处理器），最后 await
     const p = transport.connect('wake')
+    // createSocket 现为异步：先让 socket 实例在本宏任务里建出来，再触发 onopen
+    await new Promise((r) => setTimeout(r, 0))
     MockWebSocket.last!.onopen!()
     await p
 
@@ -69,6 +71,7 @@ describe('WebSocketTransport.onEvent 反订阅（HMR 重挂载双音频根因回
     const seen: string[] = []
 
     const p = transport.connect('wake')
+    await new Promise((r) => setTimeout(r, 0))
     MockWebSocket.last!.onopen!()
     await p
 

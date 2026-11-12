@@ -82,6 +82,12 @@ export function useLongMemory() {
     }
   }
 
+  /** 下拉刷新：回到第 1 页重新拉取（保留当前检索词）。 */
+  async function refresh(): Promise<void> {
+    page.value = 1
+    await load()
+  }
+
   /** 仅刷新总数（设置页入口角标用），不拉取整页，轻量。 */
   async function loadTotal(): Promise<void> {
     try {
@@ -161,6 +167,7 @@ export function useLongMemory() {
     hint,
     formatTime,
     load,
+    refresh,
     loadTotal,
     goto,
     prev,
