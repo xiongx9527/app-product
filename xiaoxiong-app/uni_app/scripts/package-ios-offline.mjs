@@ -1,0 +1,310 @@
+#!/usr/bin/env node
+/**
+ * 把 `npm run build:app` 产出的本地打包资源（dist/build/app）接入 DCloud iOS 离线 SDK（自定义基座），
+ * 并把内嵌网关（gateway.bundle.mjs + 提示音 + digidem 的 NodeMobile.xcframework）一并接入，生成离线打包所需的
+ * 目录结构、配置与 Xcode 集成清单，省去手动拷贝出错。
+ *
+ * 用法：
+ *   node scripts/package-ios-offline.mjs \
+ *     --sdk /path/to/HBuilder-Hello \          # iOS 离线 SDK 工程根目录（含 .xcodeproj 与 Pandora/）
+ *     --appid __UNI_XXXXXXXX \                  # DCloud 开发者中心的 appid（必须非空，且与 AppKey 对应）
+ *     [--appkey xxxxxxxx]                       # 可选：AppKey 字符串，写入 Info.plist 的 dcloud_appkey
+ *     [--plist /path/Info.plist]                # 可选：覆盖主目标 Info.plist 路径
+ *     [--node-ios /path/to/digidem-ios]         # 可选：digidem ios 包解压目录（内含 NodeMobile.xcframework）
+ *     [--gateway-bundle /path/bundle.mjs]       # 可选：覆盖默认 <gateway>/dist/gateway.bundle.mjs
+ *     [--gateway-cues /path/cues]               # 可选：覆盖默认 <gateway>/static/cues
+ *     [--no-gateway]                            # 可选：跳过内嵌网关资产接入
+ *
+ * 脚本自动完成（文件/plist 级，无需 Xcode）：
+ *   1. 资源 → Pandora/apps/<appid>/www（并修正 manifest.json 的 id 与 dcloud_control.xml）
+ *   2. AppKey → 主目标 Info.plist 的 <key>dcloud_appkey</key>
+ *   3. UIBackgroundModes: audio → Info.plist（网关常驻 + 退后台保活，必需）
+ *   4. 网关资产 → <工程目录>/gateway/（gateway.bundle.mjs + static/cues，首启由 GatewayNode.swift 解包）
+ *   5. NodeMobile.xcframework → <工程目录>/Frameworks/NodeMobile.xcframework（digidem iOS full 包）
+ *   6. 生成 GATEWAY_INTEGRATION.md（Xcode 里还需手动点几下的步骤清单）
+ *
+ * 脚本不负责（需 Xcode 手动或在 IDE 里做，详见生成的 GATEWAY_INTEGRATION.md）：
+ *   - 把 gateway/ 与 NodeMobile.xcframework 加入主 target（Embedded Binaries / Copy Bundle Resources）
+ *   - 把 GatewayNode.swift + AppDelegate+Gateway.swift 加入主 target
+ *   - 在 AppDelegate.application(didFinishLaunching) 里调用 GatewayNode.shared.start() / xiaoxiong_startEmbeddedGateway()
+ *   - 选 Team / 证书 / 描述文件、设 Bundle Identifier（必须与 DCloud AppKey 申请时一致）
+ *   - 接入 app-product-wake 原生插件（否则唤醒与 PCM 采集不可用）
+ *
+ * 注意：Archive 出 IPA 不需要 appid/AppKey；只有装到设备上「能启动运行」才需要，且 appid、Bundle Identifier、
+ * 证书三者必须与 DCloud 开发者中心申请 AppKey 时填的一致，否则启动报「未配置appkey或配置错误」。
+ *
+ * 已知待确认（拿到真实 iOS 基座后可能需微调）：
+ *   - Pandora/ 相对 sdk 根的路径（有的在 <sdk>/Pandora，有的 <sdk>/HBuilder/Pandora）。
+ *   - .xcodeproj / 主目标源目录 / 主目标 Info.plist 的具体路径（脚本用搜索兜底）。
+ *   脚本已用常见默认值 + 搜索兜底，如不符请用 --plist / --proj 指定。
+ */
+import { existsSync, mkdirSync, readdirSync, copyFileSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs'
+import { join, resolve, basename, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = fileURLToPath(new URL('.', import.meta.url))
+const root = resolve(__dirname, '..')
+const gatewayRoot = resolve(root, '..', 'gateway') // xiaoxiong-app/gateway
+
+function parseArgs(argv) {
+  const out = { gateway: true }
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i]
+    if (a === '--sdk') out.sdk = argv[++i]
+    else if (a === '--appid') out.appid = argv[++i]
+    else if (a === '--appkey') out.appkey = argv[++i]
+    else if (a === '--plist') out.plist = argv[++i]
+    else if (a === '--proj') out.proj = argv[++i]
+    else if (a === '--node-ios') out.nodeIos = argv[++i]
+    else if (a === '--gateway-bundle') out.gatewayBundle = argv[++i]
+    else if (a === '--gateway-cues') out.gatewayCues = argv[++i]
+    else if (a === '--no-gateway') out.gateway = false
+  }
+  return out
+}
+
+function copyDir(src, dest) {
+  mkdirSync(dest, { recursive: true })
+  for (const name of readdirSync(src)) {
+    const s = join(src, name)
+    const d = join(dest, name)
+    if (statSync(s).isDirectory()) copyDir(s, d)
+    else copyFileSync(s, d)
+  }
+}
+
+/** 递归找出目录下所有同名文件 */
+function findFiles(dir, filename, acc = []) {
+  if (!existsSync(dir)) return acc
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name)
+    if (statSync(p).isDirectory()) findFiles(p, filename, acc)
+    else if (name === filename) acc.push(p)
+  }
+  return acc
+}
+
+/** 递归找出目录下所有匹配子目录名（如 .xcodeproj / NodeMobile.xcframework） */
+function findDirs(dir, dirnameMatch, acc = []) {
+  if (!existsSync(dir)) return acc
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name)
+    if (!statSync(p).isDirectory()) continue
+    if (name === dirnameMatch) acc.push(p)
+    else findDirs(p, dirnameMatch, acc)
+  }
+  return acc
+}
+
+const args = parseArgs(process.argv.slice(2))
+if (!args.sdk || !args.appid) {
+  console.error('用法: node scripts/package-ios-offline.mjs --sdk <iOS SDK 工程路径> --appid <appid> [--appkey <AppKey>] [--node-ios <digidem ios 包>] [--no-gateway]')
+  process.exit(1)
+}
+if (!existsSync(args.sdk)) {
+  console.error(`iOS SDK 工程不存在: ${args.sdk}`)
+  process.exit(1)
+}
+const bundle = join(root, 'dist', 'build', 'app')
+if (!existsSync(bundle)) {
+  console.error(`未找到构建产物 ${bundle}，请先运行 npm run build:app`)
+  process.exit(1)
+}
+const appid = args.appid.trim()
+
+// ── 工程主目录（放 gateway/ 与 Frameworks/ 资源的位置，默认取 .xcodeproj 同级目录）──
+function resolveProjectDir() {
+  if (args.proj) return args.proj
+  const xcodeprojs = findDirs(args.sdk, '.xcodeproj')
+  if (xcodeprojs.length) return dirname(xcodeprojs[0])
+  return args.sdk
+}
+const projDir = resolveProjectDir()
+console.log(`[info] 工程主目录: ${projDir}`)
+
+// ── 1) 资源 → Pandora/apps/<appid>/www ──
+function resolvePandora() {
+  const candidates = [join(args.sdk, 'Pandora'), join(args.sdk, 'HBuilder', 'Pandora')]
+  for (const c of candidates) if (existsSync(c)) return c
+  const found = findDirs(args.sdk, 'Pandora')
+  if (found.length) return found[0]
+  console.error(`未在 ${args.sdk} 下找到 Pandora 目录（期望 <sdk>/Pandora 或 <sdk>/HBuilder/Pandora）`)
+  process.exit(1)
+}
+const pandora = resolvePandora()
+const appsDir = join(pandora, 'apps')
+const dataDir = join(pandora, 'data')
+
+// 清掉 apps/ 下旧的 demo 应用目录，避免多个 app 并存让引擎读到错的那个
+if (existsSync(appsDir)) {
+  for (const name of readdirSync(appsDir)) rmSync(join(appsDir, name), { recursive: true, force: true })
+}
+const wwwDir = join(appsDir, appid, 'www')
+copyDir(bundle, wwwDir)
+console.log(`[ok] 资源已接入: ${wwwDir}`)
+
+// ── 2) manifest.json 的 id 必须与 appid 一致 ──
+const manifestPath = join(wwwDir, 'manifest.json')
+const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+manifest.id = appid
+writeFileSync(manifestPath, JSON.stringify(manifest, null, 2))
+console.log(`[ok] manifest.json id 已设为 ${appid}`)
+
+// ── 3) dcloud_control.xml → Pandora/data/ ──
+mkdirSync(dataDir, { recursive: true })
+writeFileSync(join(dataDir, 'dcloud_control.xml'),
+  `<?xml version="1.0" encoding="utf-8"?>
+<hbuilder>
+  <apps>
+    <app appid="${appid}" appver=""/>
+  </apps>
+</hbuilder>
+`)
+console.log('[ok] 已写入 dcloud_control.xml -> Pandora/data/')
+
+// ── 4) AppKey + UIBackgroundModes:audio → 主目标 Info.plist ──
+/** 递归收集所有以 nameEndsWith 结尾的文件 */
+function findFilesEndsWith(dir, nameEndsWith, acc = []) {
+  if (!existsSync(dir)) return acc
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name)
+    if (!statSync(p).isDirectory()) {
+      if (name.endsWith(nameEndsWith)) acc.push(p)
+    } else {
+      findFilesEndsWith(p, nameEndsWith, acc)
+    }
+  }
+  return acc
+}
+function findInfoPlist() {
+  if (args.plist) return args.plist
+  // 主 target plist 可能叫 Info.plist 或 <Target>-Info.plist；优先匹配含 dcloud_appkey 的那个
+  const candidates = [
+    ...findFiles(args.sdk, 'Info.plist'),
+    ...findFilesEndsWith(args.sdk, 'Info.plist'),
+  ].filter((p, i, a) => a.indexOf(p) === i) // 去重
+  const withAppKey = candidates.find((p) => /dcloud_appkey/.test(readFileSync(p, 'utf8')))
+  if (withAppKey) return withAppKey
+  const withBundleId = candidates.find((p) => /CFBundleIdentifier/.test(readFileSync(p, 'utf8')))
+  return withBundleId || candidates[0] || null
+}
+const plistPath = findInfoPlist()
+if (!plistPath) {
+  console.error('[error] 未找到主目标 Info.plist，请用 --plist 指定')
+  process.exit(1)
+}
+console.log(`[info] 主目标 Info.plist: ${plistPath}`)
+let plist = readFileSync(plistPath, 'utf8')
+
+if (args.appkey) {
+  const appkey = args.appkey.trim()
+  const keyRe = /<key>dcloud_appkey<\/key>\s*<string>[^<]*<\/string>/
+  if (keyRe.test(plist)) {
+    plist = plist.replace(keyRe, `<key>dcloud_appkey</key>\n\t<string>${appkey}</string>`)
+  } else {
+    plist = plist.replace(/<\/dict>\s*<\/plist>/,
+      `\t<key>dcloud_appkey</key>\n\t<string>${appkey}</string>\n</dict>\n</plist>`)
+  }
+  console.log(`[ok] AppKey 已写入 Info.plist 的 dcloud_appkey: ${plistPath}`)
+} else {
+  console.warn('[warn] 未提供 --appkey：IPA 可 Archive，但装到设备会因 AppKey 校验失败无法启动')
+}
+
+// UIBackgroundModes: audio（网关常驻 + 退后台保活，必需）
+if (/<key>UIBackgroundModes<\/key>/.test(plist)) {
+  if (!/UIBackgroundModes<\/key>\s*<array>[\s\S]*<string>audio<\/string>/.test(plist)) {
+    plist = plist.replace(/(<key>UIBackgroundModes<\/key>\s*<array>)/,
+      `$1\n\t\t<string>audio</string>`)
+    console.log('[ok] Info.plist UIBackgroundModes 已追加 audio')
+  } else {
+    console.log('[info] Info.plist 已有 UIBackgroundModes:audio，跳过')
+  }
+} else {
+  plist = plist.replace(/<\/dict>\s*<\/plist>/,
+    `\t<key>UIBackgroundModes</key>\n\t<array>\n\t\t<string>audio</string>\n\t</array>\n</dict>\n</plist>`)
+  console.log('[ok] Info.plist 已新增 UIBackgroundModes:audio')
+}
+writeFileSync(plistPath, plist)
+
+// ── 5) 内嵌网关资产 → <projDir>/gateway/ ──
+if (args.gateway) {
+  const bundleFile = args.gatewayBundle ? resolve(args.gatewayBundle) : join(gatewayRoot, 'dist', 'gateway.bundle.mjs')
+  const cuesDir = args.gatewayCues ? resolve(args.gatewayCues) : join(gatewayRoot, 'static', 'cues')
+  if (!existsSync(bundleFile)) {
+    console.error(`[error] 未找到网关 bundle: ${bundleFile}\n       先在 gateway 目录跑 npm run build:bundle，或用 --no-gateway 跳过`)
+    process.exit(1)
+  }
+  const gwDir = join(projDir, 'gateway')
+  rmSync(gwDir, { recursive: true, force: true })
+  mkdirSync(gwDir, { recursive: true })
+  copyFileSync(bundleFile, join(gwDir, 'gateway.bundle.mjs'))
+  console.log(`[ok] 网关 bundle -> ${gwDir}/gateway.bundle.mjs`)
+  if (existsSync(cuesDir)) {
+    copyDir(cuesDir, join(gwDir, 'static', 'cues'))
+    console.log(`[ok] 提示音 -> ${gwDir}/static/cues/ (${readdirSync(join(gwDir, 'static', 'cues')).length} 个)`)
+  } else {
+    console.warn(`[warn] 未找到提示音目录 ${cuesDir}：/static/cues/* 会 404（不影响网关启动）`)
+  }
+} else {
+  console.log('[info] --no-gateway：已跳过网关资产接入')
+}
+
+// ── 6) NodeMobile.xcframework → <projDir>/Frameworks/ ──
+if (args.nodeIos) {
+  const nodeIosRoot = resolve(args.nodeIos)
+  if (!existsSync(nodeIosRoot)) {
+    console.error(`[error] --node-ios 目录不存在: ${nodeIosRoot}`)
+    process.exit(1)
+  }
+  const xcf = findDirs(nodeIosRoot, 'NodeMobile.xcframework')
+  if (xcf.length === 0) {
+    console.error(`[error] 在 ${nodeIosRoot} 下未找到 NodeMobile.xcframework（应为 digidem ios 包解压目录）`)
+    process.exit(1)
+  }
+  const fwDir = join(projDir, 'Frameworks')
+  mkdirSync(fwDir, { recursive: true })
+  const dest = join(fwDir, 'NodeMobile.xcframework')
+  rmSync(dest, { recursive: true, force: true })
+  copyDir(xcf[0], dest)
+  console.log(`[ok] NodeMobile.xcframework -> ${dest}`)
+} else {
+  console.warn('[warn] 未提供 --node-ios：IPA 不含 Node 运行时，内嵌网关无法启动（下载 digidem ios 包后用 --node-ios 指向其解压目录）')
+}
+
+// ── 7) 生成 Xcode 集成清单 ──
+const integrationMd = `# iOS 内嵌网关 —— Xcode 手动集成清单
+
+本文件由 package-ios-offline.mjs 生成。脚本已完成的文件/plist 级接入见上方日志；
+以下需在 Xcode 里手动点几下（无法纯脚本改 .pbxproj，且需你本机的签名）。
+
+## A. 加入原生代码（主 target）
+1. 把 \`xiaoxiong-app/native/ios/GatewayNode.swift\` 与 \`AppDelegate+Gateway.swift\` 拖入工程主 target（勾选 target membership）。
+2. 打开工程 AppDelegate（类名通常 \`AppDelegate\`），在 \`application(_:didFinishLaunchingWithOptions:)\` 返回前加：
+   \`\`\`swift
+   GatewayNode.shared.start()
+   GatewayNode.shared.awaitPort { url in NSLog("[gateway] 内嵌网关就绪: \\(url)") }
+   // 或用分类方法：self.xiaoxiong_startEmbeddedGateway()
+   \`\`\`
+
+## B. 加入网关资产（主 target，Copy Bundle Resources）
+3. 把工程目录下的 \`gateway/\` 文件夹（含 gateway.bundle.mjs + static/cues）拖入工程，**选「Create folder references」**，
+   保证构建后出现在 App Bundle 的 gateway/ 子目录（GatewayNode.swift 从 \`Bundle.main\` 的 subdirectory:"gateway" 读取）。
+
+## C. 接入 Node 运行时（主 target，Embedded Binaries）
+4. 把工程目录下的 \`Frameworks/NodeMobile.xcframework\` 拖入工程，在 Signing & Capabilities → **Frameworks, Libraries, and Embedded Content** 里设为 **Embed & Sign**。
+   - 必须用 digidem 的 **full** flavour（含 full-icu，网关 \`\\p{...}\` 正则才不会崩）；lite 不行。
+   - 仅 arm64 真机 + arm64 模拟器切片，**无 x86_64 模拟器切片** → 本机 Intel Mac 模拟器跑不了，须真机（arm64 iPad）或 Apple Silicon Mac。
+
+## D. 签名与运行
+5. Signing & Capabilities：选你的 Team / 证书 / 描述文件（描述文件须含 iPad UDID）。
+6. Bundle Identifier 设为 \`com.xiaoxiong.assistant\`（须与 DCloud 开发者中心申请 AppKey 时填的一致）。
+7. AppKey 已写入 Info.plist 的 \`dcloud_appkey\`；若未提供 --appkey，先补上再跑。
+8. 选设备/Generic iOS Device → Archive 出 IPA，或 Xcode 直接 Run 到 iPad。
+9. （语音唤醒/采集）接入 app-product-wake 原生插件，否则唤不醒、采不到 PCM。
+`
+writeFileSync(join(args.sdk, 'GATEWAY_INTEGRATION.md'), integrationMd)
+console.log(`[ok] 已生成 Xcode 集成清单: ${join(args.sdk, 'GATEWAY_INTEGRATION.md')}`)
+
+console.log('\n下一步：')
+console.log('  1. 打开上面的 GATEWAY_INTEGRATION.md，在 Xcode 里完成 A~D 手动步骤')
+console.log('  2. 设备联调：iPad 装好后，门户首屏会等 _documents/gateway.url 出现再连 ws://127.0.0.1:<port>/ws')

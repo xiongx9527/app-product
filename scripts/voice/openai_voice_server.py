@@ -2435,6 +2435,19 @@ async def chat_completions(request: Request):
     return StreamingResponse(body_gen(), media_type="text/event-stream")
 
 
+def _embed_cap() -> str:
+    """嵌入优先用独立的 EMBED 上游池（与 LLM 数据独立、结构一致）；未配置则退回 LLM 池。
+
+    这样嵌入和对话各自存各自的地址池，互不影响（改一个不会同步/覆盖另一个）。
+    """
+    try:
+        if upstream_pool.load_pool("EMBED"):
+            return "EMBED"
+    except Exception:
+        pass
+    return "LLM"
+
+
 @app.post("/llm/v1/embeddings")
 async def embeddings(request: Request):
     """OpenAI 兼容嵌入（向量）接口：入站固定 OpenAI /v1/embeddings 格式，出站按上游
@@ -2473,6 +2486,7 @@ async def embeddings(request: Request):
     # 这里不按目录回退到默认对话模型（那会让 ollama 用 chat 模型去 embed 而 501），
     # 而是交给下方「上游模型存在性校验（404）」这一权威关卡——真实存在的模型放行，
     # 不存在的由上游报错或这里 404 拦截。bypass_catalog 仍生效（跳过下方存在性校验）。
+    cap = _embed_cap()
     if req_base_url:
         entry = {
             "base_url": req_base_url,
@@ -2483,9 +2497,9 @@ async def embeddings(request: Request):
         }
     else:
         if req_vendor:
-            entry = upstream_pool.pick_by_vendor("LLM", req_vendor)
+            entry = upstream_pool.pick_by_vendor(cap, req_vendor)
         elif req_model:
-            matched = [e for e in upstream_pool.load_pool("LLM") if e.get("model") == req_model]
+            matched = [e for e in upstream_pool.load_pool(cap) if e.get("model") == req_model]
             if not matched:
                 return error_response(
                     400,
@@ -2493,21 +2507,21 @@ async def embeddings(request: Request):
                 )
             vendors = sorted({e.get("vendor") for e in matched})
             if len(vendors) > 1:
-                default_vendor = (config_value("LLM_UPSTREAM_VENDOR", "") or "").strip().lower()
+                default_vendor = (config_value(f"{cap}_UPSTREAM_VENDOR", "") or "").strip().lower()
                 if not default_vendor or default_vendor not in vendors:
                     return error_response(
                         400,
                         f"模型 {req_model} 命中多个提供商 {vendors}，"
-                        f"但未配置默认提供商或默认提供商不含该模型（LLM_UPSTREAM_VENDOR）",
+                        f"但未配置默认提供商或默认提供商不含该模型（{cap}_UPSTREAM_VENDOR）",
                     )
                 target_vendor = default_vendor
             else:
                 target_vendor = vendors[0]
-            entry = upstream_pool.pick_by_vendor("LLM", target_vendor)
+            entry = upstream_pool.pick_by_vendor(cap, target_vendor)
         else:
-            default_vendor = (config_value("LLM_UPSTREAM_VENDOR", "") or "").strip().lower()
-            entry = (upstream_pool.pick_by_vendor("LLM", default_vendor)
-                     if default_vendor else upstream_pool.pick_by_model("LLM", None))
+            default_vendor = (config_value(f"{cap}_UPSTREAM_VENDOR", "") or "").strip().lower()
+            entry = (upstream_pool.pick_by_vendor(cap, default_vendor)
+                     if default_vendor else upstream_pool.pick_by_model(cap, None))
     if entry is None:
         return llm_disabled_response()
 
@@ -2533,13 +2547,14 @@ async def embeddings(request: Request):
     if req_model:
         effective_model = req_model
     else:
-        # 优先用专门的向量模型配置（LLM_EMBED_MODEL），避免回退到对话模型去 embed 而 501
-        embed_model = (config_value("LLM_EMBED_MODEL") or "").strip()
+        # 优先用专门的向量模型配置（EMBED_UPSTREAM_MODEL / LLM_EMBED_MODEL），
+        # 避免回退到对话模型去 embed 而 501。
+        embed_model = (config_value(f"{cap}_UPSTREAM_MODEL", "") or "").strip()
         if embed_model:
             effective_model = embed_model
         else:
             vendor_models = [
-                e.get("model") for e in upstream_pool.load_pool("LLM")
+                e.get("model") for e in upstream_pool.load_pool(cap)
                 if e.get("vendor") == entry.get("vendor") and e.get("model")
             ]
             effective_model = (

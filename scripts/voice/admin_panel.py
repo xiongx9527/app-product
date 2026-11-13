@@ -51,6 +51,7 @@ MASKED_KEYS = {
     "VOICE_API_KEY",  # 鉴权开启后这里存的是多个真实 Key，绝不回传明文
     "VOICE_API_KEY_FILE",
     "LLM_UPSTREAM_POOL",
+    "EMBED_UPSTREAM_POOL",  # 向量上游池（含 api_key 的 JSON，整串打码），与 LLM 池数据独立
 }
 HIDDEN = "********"
 
@@ -285,8 +286,9 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   button.danger { background:#3a1f24; color:#ff8a8a; }
   button.full { width:100%; }
   button:disabled { opacity:.5; cursor:default; }
-  input[type=text], input[type=password] { background:#0f1115; border:1px solid var(--line); color:var(--fg);
+  input[type=text], input[type=password], input[type=number] { background:#0f1115; border:1px solid var(--line); color:var(--fg);
            border-radius:8px; padding:8px 10px; font-size:13px; width:100%; box-sizing:border-box; }
+  input::placeholder, textarea::placeholder { color:var(--mut); opacity:1; }
   label { display:block; color:var(--mut); margin:10px 0 4px; font-size:12px; }
   textarea { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:8px;
              padding:9px 11px; font-size:14px; font-family:inherit; line-height:1.5; resize:vertical; width:100%; box-sizing:border-box; }
@@ -328,7 +330,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .modal h3 { margin:0 0 12px; font-size:14px; }
   .modal label { color:var(--mut); font-size:12px; margin:12px 0 4px; }
   .modal label:first-of-type { margin-top:0; }
-  .modal input[type=text], .modal input[type=password], .modal select {
+  .modal input[type=text], .modal input[type=password], .modal input[type=number], .modal select {
     width:100%; box-sizing:border-box; background:#0f1115; border:1px solid var(--line); color:var(--fg);
     border-radius:8px; padding:8px 10px; font-size:13px; }
   .modal input:focus, .modal select:focus { outline:none; border-color:var(--acc); }
@@ -350,9 +352,9 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .model-pick .mp-tools { display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap; align-items:center; }
   table.model-sub { width:100%; border-collapse:collapse; table-layout:fixed; }
   table.model-sub th, table.model-sub td { border:1px solid var(--line); padding:2px 5px; font-size:11px; text-align:center; vertical-align:middle; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  table.model-sub th { background:#10141b; color:var(--mut); font-weight:600; position:sticky; top:0; z-index:1; }
+  table.model-sub th { background:#10141b; color:var(--mut); font-weight:600; position:sticky; top:0; z-index:1; white-space:normal; line-height:1.15; }
   table.model-sub th:nth-child(1) { width:24px; }   /* 勾选 */
-  table.model-sub th:nth-child(3) { width:42px; }   /* 默认 */
+  table.model-sub th:nth-child(3) { width:58px; }   /* 默认（LLM/向量 通用） */
   table.model-sub th:nth-child(4) { width:46px; }   /* 操作 */
   table.model-sub th:nth-child(5) { width:54px; }   /* 状态 */
   table.model-sub td.mm { color:var(--fg); }         /* 模型列自适应，过长省略号（与上方定宽列配合，两表列宽一致） */
@@ -391,6 +393,12 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   #panelLoading .spinner { width:30px; height:30px; border:3px solid rgba(205,211,222,.2);
     border-top-color:var(--acc); border-radius:50%; animation:panel-spin .7s linear infinite; }
   @keyframes panel-spin { to { transform:rotate(360deg); } }
+  /* 通用小号加载环（弹框状态、表格内可用作 loading） */
+  .spinner { display:inline-block; width:13px; height:13px; vertical-align:-2px; margin-right:6px;
+    border:2px solid rgba(205,211,222,.25); border-top-color:var(--acc); border-radius:50%;
+    animation:panel-spin .7s linear infinite; }
+  /* 测试进行中的状态行：带加载环，明确区别于最终「可用/不可用」 */
+  .status-loading { color:var(--acc); font-weight:600; }
   /* 语言切换：顶部两个小按钮（中 | EN） */
   .lang-switch { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
   .lang-switch .ls { background:#1b1f27; color:var(--mut); border:0; border-radius:0; padding:5px 10px;
@@ -427,6 +435,20 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     <pre class="m-out" id="testModalOut" style="margin-top:2px" data-i18n="modal.replyPlaceholder">回复将在这里显示。</pre>
     <div class="hint" id="testModalStatus" style="margin-top:8px"></div>
     <div class="row" style="justify-content:flex-end;margin-top:12px; gap:8px"><button id="testModalRun" data-i18n="common.test">测试</button><button class="sec" id="testModalClose" data-i18n="common.close">关闭</button></div>
+  </div>
+</div>
+
+<div class="modal-mask" id="embedTestModal">
+  <div class="modal">
+    <h3 id="embedTestModalTitle">向量模型测试</h3>
+    <label data-i18n="llm.embeddingText">待向量化文本</label>
+    <textarea id="embedTestModalInput" rows="3">你好，世界</textarea>
+    <label style="margin-top:10px" data-i18n="llm.expectDim">期望维度（可选）</label>
+    <input id="embedTestModalDim" type="number" min="1" placeholder="如 768" style="width:160px" />
+    <div class="hint" style="margin-top:10px" data-i18n="llm.embeddingResult">结果</div>
+    <pre class="m-out" id="embedTestModalOut" style="margin-top:2px"></pre>
+    <div class="hint" id="embedTestModalStatus" style="margin-top:8px"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px; gap:8px"><button id="embedTestModalRun" data-i18n="common.test">测试</button><button class="sec" id="embedTestModalClose" data-i18n="common.close">关闭</button></div>
   </div>
 </div>
 
@@ -469,13 +491,13 @@ const I18N = {
   'zh-CN': {
     "app.logout": "退出登录",
     "app.title": "语音助手模型代理管理",
-    "asr.builtinModel": "内置模型（离线推理，无需外部服务）",
+    "asr.builtinModel": "内置离线模型（无需外部服务）",
     "asr.builtinNote": "当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。",
     "asr.cannotRecord": "无法录音：",
     "asr.detectFailed": "检测失败",
     "asr.detecting": "正在真实加载内置模型并跑一次推理…",
     "asr.detectingTitle": "真实加载内置模型并跑一次推理",
-    "asr.modelFile": "模型文件：model.int8.onnx + tokens.txt（放在 ~/.app-product/voice/models/sensevoice/，约 240MB，由 install-voice 下载）",
+    "asr.modelFile": "模型文件：model.int8.onnx + tokens.txt（~240MB，install-voice 下载至 models/sensevoice/）",
     "asr.noAudio": "未内嵌音频",
     "asr.ok": "内置可用：模型加载与推理均正常",
     "asr.outPlaceholder": "识别结果将显示在这里。",
@@ -511,7 +533,6 @@ const I18N = {
     "cfg.provNeedKey": "已选择 DashScope：请先填写 API Key 并保存",
     "cfg.provNeedKeyShort": "未填写 API Key（点此填写）",
     "cfg.provIncomplete": "已选择上游：请先填写服务地址与模型，再保存",
-    "cfg.providerPickNote": "单选指定默认提供商（与 LLM 一致）；模型可多选并设默认；勾选/协议随保存落库。",
     "common.blankKeep": "（留空=不修改）",
     "cfg.apiKeyAuth": "是否启用 API-Key 鉴权",
     "cfg.apiKeyList": "API Key 列表（一行一个；填 auto 自动生成）",
@@ -522,7 +543,7 @@ const I18N = {
     "cfg.llmProtocol": "协议（openai/ollama/...）",
     "cfg.llmUpstreamUrl": "上游地址（OpenAI 兼容）",
     "cfg.llmVendor": "厂商（ollama/deepseek/...）",
-    "cfg.llmEmbedModel": "向量模型（embeddings，如 nomic-embed-text:latest）",
+    "llm.embedDefault": "向量默认",
     "cfg.ttsDedicatedKey": "TTS 专属 Key（留空用共享）",
     "cfg.ttsDedicatedUrl": "TTS 专属地址（留空用共享）",
     "cfg.ttsDefaultVoice": "默认音色",
@@ -605,11 +626,15 @@ const I18N = {
     "llm.modeChat": "对话（chat/completions）",
     "llm.modeEmbed": "向量嵌入（embeddings）",
     "llm.embeddingText": "待嵌入文本（一行一条，可多行）",
-    "llm.embedModelHint": "留空则 embeddings 测试需在测试页指定模型；填了则作为默认向量模型（如 nomic-embed-text:latest）",
     "llm.embedModelTabHint": "模型留空时，使用配置页设置的默认向量模型；指定后优先使用所选模型",
     "llm.apiChat": "将调用：POST /llm/v1/chat/completions",
     "llm.apiEmbed": "将调用：POST /llm/v1/embeddings",
     "llm.embeddingResult": "嵌入结果：",
+    "llm.expectDim": "请求维度（可选）：部分模型支持自定义向量维度（如 OpenAI 3 系、Ollama），不填则用模型默认维度",
+    "llm.dimMismatchShort": "维度不匹配",
+    "llm.embeddingModel": "向量模型（LLM_EMBED_MODEL）",
+    "config.embedHint": "向量模型与对话共用同一上游（Ollama / 自定义地址），只需选择用哪个模型做嵌入，无需单独配置地址与密钥。",
+    "llm.pickModelFirst": "请先在上方选择一个向量模型",
     "llm.protoDescSuffix": "；是否流式由下方「流式」勾选框单独控制，与协议无关。",
     "llm.refreshModels": "刷新该提供商的模型列表",
     "llm.testAvail": "测可用性",
@@ -653,9 +678,9 @@ const I18N = {
     "test.tabEmbed": "向量嵌入 Embed",
     "test.tabTts": "语音合成 TTS",
     "tts.builtinNote": "当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。",
-    "tts.builtinSynth": "内置合成（edge-tts 在线服务）",
-    "tts.ffmpeg": "ffmpeg：wav 输出需要（由 install-voice 安装）",
-    "tts.needNetwork": "需联网访问微软语音服务，无需本地模型文件",
+    "tts.builtinSynth": "内置合成（edge-tts 在线）",
+    "tts.ffmpeg": "ffmpeg：wav 输出需安装（install-voice）",
+    "tts.needNetwork": "需联网，无需本地模型",
     "tts.ok": "可用：合成成功",
     "tts.synthTitle": "真实合成一句验证内置 TTS 是否可用",
     "tts.synthcing": "正在按配置合成一句…",
@@ -668,13 +693,13 @@ const I18N = {
   'en': {
     "app.logout": "Log out",
     "app.title": "Voice Assistant Model Proxy Admin",
-    "asr.builtinModel": "Built-in model (offline inference, no external service)",
+    "asr.builtinModel": "Built-in offline model (no external service)",
     "asr.builtinNote": "ASR is fixed to the built-in model; whether it works depends on the runtime (click \"Test availability\" to verify on demand); external upstreams will be added per vendor later.",
     "asr.cannotRecord": "Cannot record: ",
     "asr.detectFailed": "detection failed",
     "asr.detecting": "Loading the built-in model and running one inference…",
     "asr.detectingTitle": "Load the built-in model and run one inference",
-    "asr.modelFile": "Model files: model.int8.onnx + tokens.txt (place under ~/.app-product/voice/models/sensevoice/, ~240MB, downloaded by install-voice)",
+    "asr.modelFile": "Model files: model.int8.onnx + tokens.txt (~240MB, install-voice downloads to models/sensevoice/)",
     "asr.noAudio": "No embedded audio",
     "asr.ok": "Built-in OK: model loads and infers normally",
     "asr.outPlaceholder": "Recognition result will appear here.",
@@ -706,7 +731,6 @@ const I18N = {
     "cfg.provNeedKey": "DashScope selected: fill in the API Key and save first",
     "cfg.provNeedKeyShort": "API Key missing (click to fill)",
     "cfg.provIncomplete": "Upstream selected: fill in the base URL and model before saving",
-    "cfg.providerPickNote": "Single-select the default provider (same as LLM); models are multi-select with a default; provider/protocol are persisted on save.",
     "common.blankKeep": "(blank = keep current)",
     "cfg.apiKeyAuth": "Enable API-Key auth",
     "cfg.apiKeyList": "API Key list (one per line; fill \"auto\" to auto-generate)",
@@ -717,7 +741,7 @@ const I18N = {
     "cfg.llmProtocol": "Protocol (openai/ollama/...)",
     "cfg.llmUpstreamUrl": "Upstream URL (OpenAI-compatible)",
     "cfg.llmVendor": "Vendor (ollama/deepseek/...)",
-    "cfg.llmEmbedModel": "Embedding model (embeddings, e.g. nomic-embed-text:latest)",
+    "llm.embedDefault": "Embed default",
     "cfg.ttsDedicatedKey": "TTS dedicated Key (blank = shared)",
     "cfg.ttsDedicatedUrl": "TTS dedicated URL (blank = shared)",
     "cfg.ttsDefaultVoice": "Default voice",
@@ -800,11 +824,15 @@ const I18N = {
     "llm.modeChat": "Chat (chat/completions)",
     "llm.modeEmbed": "Embeddings",
     "llm.embeddingText": "Text to embed (one per line, multiple lines allowed)",
-    "llm.embedModelHint": "Blank = specify model on the test page; set it (e.g. nomic-embed-text:latest) as the default embedding model",
     "llm.embedModelTabHint": "Model blank = use the default embedding model set on the config page; otherwise the selected model takes priority",
     "llm.apiChat": "Will call: POST /llm/v1/chat/completions",
     "llm.apiEmbed": "Will call: POST /llm/v1/embeddings",
     "llm.embeddingResult": "Embedding result: ",
+    "llm.expectDim": "Requested dimension (optional): some models support a custom vector dimension (e.g. OpenAI 3-series, Ollama); leave blank to use the model default",
+    "llm.dimMismatchShort": "dimension mismatch",
+    "llm.embeddingModel": "Embedding model (LLM_EMBED_MODEL)",
+    "config.embedHint": "Embeddings share the same upstream as chat (Ollama / custom address). Just pick which model to embed with; no separate address/key config needed.",
+    "llm.pickModelFirst": "Please select an embedding model above first",
     "llm.protoDescSuffix": "; streaming is controlled separately by the \"Streaming\" checkbox below and is independent of the protocol.",
     "llm.refreshModels": "Refresh this provider's model list",
     "llm.testAvail": "Test availability",
@@ -848,9 +876,9 @@ const I18N = {
     "test.tabEmbed": "Embeddings",
     "test.tabTts": "Speech Synthesis TTS",
     "tts.builtinNote": "TTS is fixed to built-in edge-tts; whether it works depends on the runtime (click \"Test availability\" to verify on demand); external upstreams will be added per vendor later.",
-    "tts.builtinSynth": "Built-in synthesis (edge-tts online service)",
-    "tts.ffmpeg": "ffmpeg: required for wav output (installed by install-voice)",
-    "tts.needNetwork": "Requires network access to Microsoft's speech service; no local model file needed",
+    "tts.builtinSynth": "Built-in synthesis (edge-tts online)",
+    "tts.ffmpeg": "ffmpeg: needed for wav output (install-voice)",
+    "tts.needNetwork": "Internet required; no local model",
     "tts.ok": "Available: synthesis succeeded",
     "tts.synthTitle": "Synthesize one sentence to verify built-in TTS",
     "tts.synthcing": "Synthesizing one sentence per config…",
@@ -989,12 +1017,7 @@ function buildConfigCard(){
     <div id="c-sec" class="cfgpane" hidden><div id="secWrap"></div><div class="row" style="margin-top:12px"><button id="cfgSave_sec">${t('common.save')}</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div></div>
     <div id="c-embed" class="cfgpane" hidden>
       <div id="embedTableWrap" class="hint">${t('common.loadingX')}</div>
-      <div class="row" style="margin-top:14px">
-        <label style="display:block">${t('cfg.llmEmbedModel')}</label>
-        <input id="cfg_LLM_EMBED_MODEL" placeholder="nomic-embed-text:latest" />
-        <div class="hint">${t('llm.embedModelHint')}</div>
-        <div style="margin-top:8px"><button id="cfgSave_embed">${t('common.save')}</button><span class="hint" id="cfgStat_embed" style="margin-left:10px"></span></div>
-      </div>
+      <div class="row" style="margin-top:12px"><button id="cfgSave_embed">${t('common.save')}</button><span class="hint" id="cfgStat_embed" style="margin-left:10px"></span></div>
     </div>
   </div>`);
 }
@@ -1005,8 +1028,8 @@ async function loadConfig(){
     if(!r.ok) return;
     cfgOrig = await r.json();
     ['llm','asr','tts'].forEach(t=>CFG_TABS[t].forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); }));
-    // 默认向量模型回填（embeddings 测试兜底；注意拼写如 nomic-embed-text:latest）
-    const embedInput=document.getElementById('cfg_LLM_EMBED_MODEL'); if(embedInput) embedInput.value=(cfgOrig.LLM_EMBED_MODEL||'').trim();
+    // 向量默认模型（embeddings 测试兜底；向后兼容旧的 LLM_EMBED_MODEL）
+    embedDefModel = (cfgOrig.EMBED_UPSTREAM_MODEL || cfgOrig.LLM_EMBED_MODEL || '').trim();
     // ASR/TTS 提供商状态回填：provider、上游地址/模型/模型列表（Key 不回显，留空=不修改）
     asrProvider = cfgOrig.STT_PROVIDER === 'dashscope' ? 'custom' : 'builtin';
     ttsProvider = cfgOrig.TTS_PROVIDER === 'dashscope' ? 'custom' : 'builtin';
@@ -1066,26 +1089,55 @@ function wireConfig(){
   };
   ['tts'].forEach(t=>{ const b=document.getElementById('cfgSave_'+t); if(b) b.onclick=()=>save(t,CFG_TABS[t],'cfgStat_'+t); });
   const sb=document.getElementById('cfgSave_sec'); if(sb) sb.onclick=saveSec;
-  // 向量模型（embeddings）配置：与 LLM 共用同一份上游池（抄 LLM 表），额外保存默认向量模型
+  // 向量模型（embeddings）配置：与 LLM 结构完全一致（同一套 provider/地址/Key/模型字段），
+  // 但数据独立存储（EMBED_UPSTREAM_POOL / EMBED_UPSTREAM_MODEL），互不干扰、不会同步覆盖。
+  // 调用时（embeddings 路由）只取「向量默认」指向的模型，不走对方（LLM）的地址池。
   const eb=document.getElementById('cfgSave_embed'); if(eb) eb.onclick=()=> savePoolTable('embed','cfgStat_embed');
   const lb=document.getElementById('cfgSave_llm'); if(lb) lb.onclick=()=>saveLlmTable();
   const ab=document.getElementById('cfgSave_asr'); if(ab) ab.onclick=saveSttTable;
   const tb=document.getElementById('cfgSave_tts'); if(tb) tb.onclick=saveTtsTable;
 }
 
-// ── LLM 上游池表格（按提供商分组；列：默认 | 提供商 | 地址 | API Key | 模型）──
-let llmGroups = [];        // 最近一次拉取的池，供保存时重建 JSON
-let llmDefVendor = '';     // 全局默认供应商（LLM_UPSTREAM_VENDOR）
-let llmDefModel = '';      // 全局默认模型（LLM_UPSTREAM_MODEL）
+// ── 上游池表格（按提供商分组；列：默认 | 提供商 | 地址 | API Key | 模型）──
+// LLM 与 向量 各用各的池：结构完全一致（同一套 vendor/model/base_url/api_key/protocol），
+// 但数据独立存储（LLM_UPSTREAM_POOL vs EMBED_UPSTREAM_POOL），互不影响、不会同步覆盖。
+let llmGroups = [];        // LLM 池（cap=LLM）
+let llmDefVendor = '';     // LLM 全局默认供应商（LLM_UPSTREAM_VENDOR）
+let llmDefModel = '';      // LLM 全局默认模型（LLM_UPSTREAM_MODEL，对话用）
+let embedGroups = [];      // 向量池（cap=EMBED），独立数据
+let embedDefVendor = '';   // 向量默认供应商（EMBED_UPSTREAM_VENDOR）
+let embedDefModel = '';    // 向量默认模型（EMBED_UPSTREAM_MODEL，embeddings 用，独立）
 // 5 个线协议（与 llm_protocols.WIRE_PROTOCOLS 对齐）
 const LLM_PROTOCOLS = [
   'openai_chat_completions', 'azure_openai_chat_completions',
   'openai_responses', 'anthropic_messages', 'gemini'
 ];
 
+// 每个 prefix 一套完全独立的上游池：结构（vendor/model/base_url/api_key/protocol）与 LLM 一致，
+// 但数据各自存储（LLM_UPSTREAM_POOL vs EMBED_UPSTREAM_POOL），互不干扰、不会同步覆盖。
+// 调用方（embeddings 路由 / 测试）按 cap 取自己的池，不走对方的地址池。
+function poolConf(prefix){
+  if(prefix==='embed') return {
+    cap:'EMBED', wrapId:'embedTableWrap',
+    groups:()=>embedGroups, setGroups:(g)=>{ embedGroups=g; },
+    defVendor:()=>embedDefVendor, setDefVendor:(v)=>{ embedDefVendor=v; },
+    defModel:()=>embedDefModel, setDefModel:(v)=>{ embedDefModel=v; },
+    poolKey:'EMBED_UPSTREAM_POOL', defVendorKey:'EMBED_UPSTREAM_VENDOR', defModelKey:'EMBED_UPSTREAM_MODEL',
+    endpoint:'/admin/api/embed-pool'
+  };
+  return {
+    cap:'LLM', wrapId:'llmTableWrap',
+    groups:()=>llmGroups, setGroups:(g)=>{ llmGroups=g; },
+    defVendor:()=>llmDefVendor, setDefVendor:(v)=>{ llmDefVendor=v; },
+    defModel:()=>llmDefModel, setDefModel:(v)=>{ llmDefModel=v; },
+    poolKey:'LLM_UPSTREAM_POOL', defVendorKey:'LLM_UPSTREAM_VENDOR', defModelKey:'LLM_UPSTREAM_MODEL',
+    endpoint:'/admin/api/llm-pool'
+  };
+}
+
 // 从提供商首个账号（含编辑后的值）拉取真实模型列表，供「刷新模型」用
-async function probeProviderModels(gi){
-  const g=llmGroups[gi]; const a=g.accounts[0];
+async function probeProviderModels(gi, prefix){
+  const S=poolConf(prefix); const g=S.groups()[gi]; const a=g.accounts[0];
   const base = a ? (a.base_url||'') : '';
   const key  = a ? (a.api_key||'') : '';
   if(!base) return null;
@@ -1098,19 +1150,22 @@ async function probeProviderModels(gi){
 }
 
 // 模型子表 HTML：多选（_sel）、默认模型单选（_def）、逐模型「测试」
-// prefix 用于区分 LLM 表与「向量模型」表（同一份上游池，两套 radio 名避免冲突）
+// prefix 用于区分 LLM 表与「向量模型」表（各自独立上游池，两套 radio 名避免冲突）
 function buildModelPick(gi, prefix){
   prefix = prefix||'lp';
-  const g=llmGroups[gi];
+  const S=poolConf(prefix); const g=S.groups()[gi];
   if(!g._cands) g._cands=[...g.models];
   if(!g._sel)   g._sel=new Set(g.models);
   if(!g._avail) g._avail={};   // 各模型最近一次测试结果：'ok' / 'err'
-  if(g._def===undefined) g._def = (g.vendor===llmDefVendor && llmDefModel && g.models.includes(llmDefModel)) ? llmDefModel : (g.models[0]||'');
+  if(g._def===undefined) g._def = (g.vendor===S.defVendor() && S.defModel() && g.models.includes(S.defModel())) ? S.defModel() : (g.models[0]||'');
+  const isEmbed = prefix==='embed';
+  const defModel = S.defModel() || (prefix==='lp' ? g._def : '');
   let html='<div class="model-pick">';
+  // 默认列：LLM 表 = 对话默认；向量表 = 向量默认，统一叫「默认」（用户要求去掉「向量」前缀）。
   html+='<table class="model-sub"><thead><tr><th></th><th>'+t('common.model')+'</th><th>'+t('common.default')+'</th><th>'+t('common.action')+'</th><th>'+t('common.status')+'</th></tr></thead><tbody>';
   g._cands.forEach(m=>{
     const checked=g._sel.has(m)?'checked':'';
-    const isDef=(llmDefModel||g._def)===m?'checked':'';
+    const isDef=defModel===m?'checked':'';
     const av=g._avail[m];
     const badge = av==='ok' ? '<span class="b-ok">'+t('common.available')+'</span>'
                 : av==='err' ? '<span class="b-err">'+t('common.unavailable')+'</span>'
@@ -1136,31 +1191,36 @@ function refreshModelCell(gi){
 
 function bindModelCell(gi, prefix){
   prefix = prefix||'lp';
-  const cell=document.querySelector(`#${prefix==='lp'?'llmTableWrap':'embedTableWrap'} .lp-modelcell[data-g="${gi}"]`);
+  const S=poolConf(prefix);
+  const cell=document.querySelector(`#${S.wrapId} .lp-modelcell[data-g="${gi}"]`);
   if(!cell) return;
   // 多选切换：勾选哪些模型进入提供商；取消勾选时若该模型恰是默认，则清空默认并取消其默认单选
   cell.querySelectorAll('.lp-model').forEach(cb=> cb.onchange=()=>{
-    const g=llmGroups[gi], m=cb.dataset.m;
+    const g=S.groups()[gi], m=cb.dataset.m;
     if(cb.checked) g._sel.add(m);
     else {
       g._sel.delete(m);
-      if((llmDefModel||g._def)===m){ llmDefModel=''; g._def=''; cell.querySelectorAll(`input[name="${prefix}Def_${gi}"]`).forEach(r=>{ if(r.value===m) r.checked=false; }); }
+      const isDef = S.defModel()===m || (prefix==='lp' && g._def===m);
+      if(isDef){ S.setDefModel(''); if(prefix==='lp'){ g._def=''; } cell.querySelectorAll(`input[name="${prefix}Def_${gi}"]`).forEach(r=>{ if(r.value===m) r.checked=false; }); }
     }
   });
-  // 默认模型单选：设为默认时必须同时勾选（默认模型必须是选中的），并同步勾选框
+  // 默认模型单选：设为默认时必须同时勾选（默认模型必须是选中的），并同步勾选框。
+  // LLM 表→对话默认（llmDefModel）；向量表→向量默认（embedDefModel），两者相互独立。
   cell.querySelectorAll(`input[name="${prefix}Def_${gi}"]`).forEach(r=> r.onchange=()=>{
     if(r.checked){
-      const g=llmGroups[gi];
-      llmDefModel=r.value; g._def=r.value; g._sel.add(r.value);
+      const g=S.groups()[gi];
+      g._sel.add(r.value);
       const cb=r.closest('tr') && r.closest('tr').querySelector('.lp-model');
       if(cb) cb.checked=true;
+      S.setDefModel(r.value);
+      if(prefix!=='embed'){ g._def=r.value; }
     }
   });
-  // 逐模型可用性测试：弹窗复用对话测试，按 供应商+模型 直连代理跑一次轻量对话
+  // 逐模型可用性测试：LLM 表→对话测试弹窗；向量表→向量（embeddings）测试弹窗
   cell.querySelectorAll('[data-test]').forEach(b=> b.onclick=()=>{
-    const g=llmGroups[gi], m=b.dataset.m;
+    const g=S.groups()[gi], m=b.dataset.m;
     if(!g._sel.has(m)) g._sel.add(m);  // 测试即视为选中该模型
-    openTestModal(gi, m);
+    if(prefix==='embed') openEmbedTestModal(gi, m); else openTestModal(gi, m);
   });
 }
 
@@ -1201,11 +1261,50 @@ function openTestModal(gi, m){
   out.textContent=t('modal.replyPlaceholder');  // 回复框每次打开重置（占位提示，不显示为回复内容）
   mask.classList.add('show');
 }
+let embedTestGi=-1, embedTestM='', embedTestG=null;
+function openEmbedTestModal(gi, m){
+  const g=embedGroups[gi];
+  const mask=document.getElementById('embedTestModal');
+  const title=document.getElementById('embedTestModalTitle');
+  const out=document.getElementById('embedTestModalOut');
+  const stat=document.getElementById('embedTestModalStatus');
+  const input=document.getElementById('embedTestModalInput');
+  if(!mask||!title||!out||!stat||!input||!g) return;
+  embedTestGi=gi; embedTestM=m; embedTestG=g;
+  title.textContent = t('test.tabEmbed') + ' · ' + vendorLabel(g.vendor) + ' / ' + m;
+  if(!input.value.trim()) input.value='你好，世界';
+  out.textContent=''; stat.textContent=''; stat.className='hint';
+  mask.classList.add('show');
+}
+// 向量模型测试：复用 runLlmEmbeddings（与测试页「向量嵌入」同一链路，调 /llm/v1/embeddings）
+function runEmbedModalTest(){
+  const g=embedTestG, m=embedTestM, gi=embedTestGi;
+  if(!g||!m) return;
+  const out=document.getElementById('embedTestModalOut');
+  const stat=document.getElementById('embedTestModalStatus');
+  const runBtn=document.getElementById('embedTestModalRun');
+  const dimEl=document.getElementById('embedTestModalDim');
+  const raw=dimEl?dimEl.value.trim():'';
+  const dims=raw?parseInt(raw,10):null;
+  const dimensions=(dims!=null && !Number.isNaN(dims))?dims:null;
+  if(runBtn){ runBtn.disabled=true; runBtn.textContent=t('common.loading'); }
+  runLlmEmbeddings({
+    vendor:g.vendor, model:m, dimensions, inputId:'embedTestModalInput',
+    statusEl: stat, outEl: out,
+    onDone:(ok)=>{
+      if(runBtn){ runBtn.disabled=false; runBtn.textContent=t('common.test'); }
+      stat.textContent = ok ? t('common.available') : t('common.unavailable');
+      stat.className = ok ? 'hint' : 'err';
+      if(g && m){ g._avail[m] = ok ? 'ok':'err'; if(gi>=0) refreshModelCell(gi); }
+    }
+  });
+}
 function runModalTest(){
   const g=testModalG, m=testModalM, gi=testModalGi;
   if(!g||!m) return;
   const out=document.getElementById('testModalOut');
   const stat=document.getElementById('testModalStatus');
+  const runBtn=document.getElementById('testModalRun');
   const stream=document.getElementById('testModalStream') ? document.getElementById('testModalStream').checked : true;
   const needThink=document.getElementById('testModalThinkMode') ? document.getElementById('testModalThinkMode').checked : false;
   const protoSel=document.getElementById('testModalProto');
@@ -1216,12 +1315,14 @@ function runModalTest(){
   const acc=g.accounts[0]||{};
   const directUrl=acc.base_url||'';
   const directKey=authKey||acc.api_key||'';
+  if(runBtn){ runBtn.disabled=true; runBtn.textContent=t('common.loading'); }
   const opts={ vendor:g.vendor, model:m, protocol:proto, stream, think:needThink, bypassCatalog:true, kind:'modal', authKey,
     direct:true, directUrl, directKey,
     messages:[{role:'user',content:TEST_PROMPT}],
     statusEl: stat, outEl: out,
     thinkEl: document.getElementById('testModalThink'), thinkWrapEl: document.getElementById('testModalThinkWrap'),
     onDone:(ok)=>{
+      if(runBtn){ runBtn.disabled=false; runBtn.textContent=t('common.test'); }
       stat.textContent = ok ? t('common.available') : t('common.unavailable'); stat.className = ok ? 'hint' : 'err';
       // 记录测试结果到该模型，刷新子表徽标（可用/不可用/未测）
       if(g && m){ g._avail[m] = ok ? 'ok':'err'; if(gi>=0) refreshModelCell(gi); }
@@ -1229,31 +1330,35 @@ function runModalTest(){
   runLlmChat(opts);
 }
 
-// 地址 / API Key 弹框编辑：避免表格过宽，点单元格弹窗填写
-let editAccGi=-1, editAccAi=-1;
-function openAccModal(gi, ai){
-  const g=llmGroups[gi], a=g && g.accounts[ai];
+// 地址 / API Key 弹框编辑：避免表格过宽，点单元格弹窗填写（LLM / 向量 各自的池，互不影响）
+let editAccGi=-1, editAccAi=-1, editAccPrefix='lp';
+function openAccModal(gi, ai, prefix){
+  prefix=prefix||'lp';
+  const S=poolConf(prefix);
+  const g=S.groups()[gi], a=g && g.accounts[ai];
   if(!a) return;
-  editAccGi=gi; editAccAi=ai;
+  editAccGi=gi; editAccAi=ai; editAccPrefix=prefix;
   document.getElementById('accModalTitle').textContent = t('modal.editPrefix') + vendorLabel(g.vendor) + '（' + t('login.account') + ' ' + (ai+1) + '）';
   document.getElementById('accUrl').value = a.base_url||'';
   document.getElementById('accKey').value = a.api_key||'';
   document.getElementById('accModal').classList.add('show');
 }
-function refreshAccCells(gi, ai){
-  const a=llmGroups[gi] && llmGroups[gi].accounts[ai]; if(!a) return;
-  document.querySelectorAll(`#llmTableWrap .acc-cell[data-g="${gi}"][data-a="${ai}"]`).forEach(td=>{
+function refreshAccCells(gi, ai, prefix){
+  const S=poolConf(prefix);
+  const a=S.groups()[gi] && S.groups()[gi].accounts[ai]; if(!a) return;
+  document.querySelectorAll(`#${S.wrapId} .acc-cell[data-g="${gi}"][data-a="${ai}"]`).forEach(td=>{
     const key=td.querySelector('.acc-key');
     if(key) key.textContent = a.api_key ? '••••••' : t('common.empty');
     else { const u=td.querySelector('.acc-url'); if(u) u.textContent = a.base_url||''; }
   });
 }
 function saveAccModal(){
-  const g=llmGroups[editAccGi], a=g && g.accounts[editAccAi];
+  const S=poolConf(editAccPrefix);
+  const g=S.groups()[editAccGi], a=g && g.accounts[editAccAi];
   if(a){
     a.base_url = document.getElementById('accUrl').value.trim();
     a.api_key  = document.getElementById('accKey').value;
-    refreshAccCells(editAccGi, editAccAi);
+    refreshAccCells(editAccGi, editAccAi, editAccPrefix);
   }
   document.getElementById('accModal').classList.remove('show');
 }
@@ -1322,40 +1427,46 @@ function saveSttTable(){ return saveProvConfig('stt'); }
 function saveTtsTable(){ return saveProvConfig('tts'); }
 
 async function renderPoolTable(wrapId, prefix){
+  const S=poolConf(prefix);
   const wrap = document.getElementById(wrapId);
   if(!wrap) return;
   wrap.className='hint'; wrap.textContent=t('common.loadingX');
   try{
-    const r = await fetch('/admin/api/llm-pool',{credentials:'same-origin'});
+    const r = await fetch(S.endpoint,{credentials:'same-origin'});
     if(!r.ok){ wrap.className='err'; wrap.textContent=t('common.loadFailedX')+r.status; return; }
     const data = await r.json();
-    // LLM 固定两个提供商：ollama（预填本机地址）+ 自定义（留空由用户填写）。
+    // 固定两个提供商：ollama（预填本机地址）+ 自定义（留空由用户填写）。
     // 池里已有的数据按 vendor 合并进这两行；没有就给默认行。其余 vendor 不展示、保存时不再写回。
     const FIXED_VENDORS = ['ollama', '自定义'];
     const byV = {};
     (data.groups||[]).forEach(g => { byV[g.vendor] = g; });
-    llmGroups = FIXED_VENDORS.map(v => {
+    const groups = FIXED_VENDORS.map(v => {
       const g = byV[v];
       if (g) return { vendor: v, protocol: g.protocol||'', models: g.models||[], accounts: g.accounts||[] };
       if (v === 'ollama') return { vendor:'ollama', protocol:'openai_chat_completions', models:[], accounts:[{ base_url:'http://127.0.0.1:11434', api_key:'' }] };
       return { vendor:'自定义', protocol:'openai_chat_completions', models:[], accounts:[{ base_url:'', api_key:'' }] };
     });
     // 每个账号补上协议字段（后端只给组级 protocol），默认沿用组协议
-    llmGroups.forEach(g=> g.accounts.forEach(a=>{ if(!('protocol' in a)) a.protocol = g.protocol; }));
-    llmDefVendor = data.default_vendor||'';
-    llmDefModel  = data.default_model||'';
+    groups.forEach(g=> g.accounts.forEach(a=>{ if(!('protocol' in a)) a.protocol = g.protocol; }));
+    S.setGroups(groups);
+    S.setDefVendor(data.default_vendor||'');
+    S.setDefModel(data.default_model||'');
     let html = '<table class="cfg-table"><thead><tr>'
-      + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.url')+'</th><th>API Key</th><th>'+t('common.model')+'</th>'
+      // 左列「默认」= 默认提供商（EMBED_UPSTREAM_VENDOR / LLM_UPSTREAM_VENDOR），LLM 与向量一致；
+      // 模型子表的「默认」= 默认模型（EMBED_UPSTREAM_MODEL / LLM_UPSTREAM_MODEL）。两者粒度不同、互不干扰。
+      + '<th>'+t('common.default')+'</th>'
+      + '<th>'+t('common.provider')+'</th><th>'+t('common.url')+'</th><th>API Key</th><th>'+t('common.model')+'</th>'
       + '</tr></thead><tbody>';
-    llmGroups.forEach((g, gi)=>{
+    groups.forEach((g, gi)=>{
       const n = g.accounts.length;
       g.accounts.forEach((a, ai)=>{
         const first = ai===0;
         html += '<tr>';
         if(first){
-          html += `<td rowspan="${n}" class="row-act"><input type="radio" name="${prefix}Default" value="${escapeAttr(g.vendor)}" ${g.vendor===llmDefVendor?'checked':''} title="${t('llm.defaultProvider')}" /></td>`;
-          html += `<td class="prov-cell" rowspan="${n}"><b>${escapeHtml(vendorLabel(g.vendor))}</b> <button class="mini ${prefix}-refresh" data-g="${gi}" title="${t('llm.refreshModels')}">↻</button></td>`;
+          const provChecked = g.vendor===S.defVendor();
+          html += `<td rowspan="${n}" class="row-act"><input type="radio" name="${prefix}Default" value="${escapeAttr(g.vendor)}" ${provChecked?'checked':''} title="${t('llm.defaultProvider')}" /></td>`;
         }
+        html += `<td class="prov-cell" rowspan="${n}"><b>${escapeHtml(vendorLabel(g.vendor))}</b> <button class="mini ${prefix}-refresh" data-g="${gi}" title="${t('llm.refreshModels')}">↻</button></td>`;
         html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-url">${escapeHtml(a.base_url||'')}</span></td>`;
         html += `<td class="acc-cell" data-g="${gi}" data-a="${ai}"><span class="acc-key">${a.api_key?'••••••':t('common.empty')}</span></td>`;
         if(first){
@@ -1366,35 +1477,37 @@ async function renderPoolTable(wrapId, prefix){
     });
     html += '</tbody></table>';
     wrap.className=''; wrap.innerHTML = html;
-    llmGroups.forEach((g, gi)=> bindModelCell(gi, prefix));
-    wrap.querySelectorAll('.acc-cell').forEach(td=> td.onclick=()=> openAccModal(+td.dataset.g, +td.dataset.a));
-    wrap.querySelectorAll('.'+prefix+'-refresh').forEach(b=> b.onclick=()=> refreshProviderModels(+b.dataset.g));
+    groups.forEach((g, gi)=> bindModelCell(gi, prefix));
+    wrap.querySelectorAll('.acc-cell').forEach(td=> td.onclick=()=> openAccModal(+td.dataset.g, +td.dataset.a, prefix));
+    wrap.querySelectorAll('.'+prefix+'-refresh').forEach(b=> b.onclick=()=> refreshProviderModels(+b.dataset.g, prefix));
   }catch(e){ wrap.className='err'; wrap.textContent=t('common.errorPrefix')+e.message; }
 }
 function renderLlmTable(){ return renderPoolTable('llmTableWrap','lp'); }
 function renderEmbedTable(){ return renderPoolTable('embedTableWrap','embed'); }
 
 // 只刷新指定提供商（gi）的模型列表；不刷新其它行，避免误刷无关上游
-async function refreshProviderModels(gi){
-  const btn=document.querySelector(`.lp-refresh[data-g="${gi}"]`);
+async function refreshProviderModels(gi, prefix){
+  prefix=prefix||'lp';
+  const btn=document.querySelector(`.${prefix}-refresh[data-g="${gi}"]`);
   if(btn){ btn.disabled=true; btn.textContent=t('common.refreshing'); }
   try{
-    const g=llmGroups[gi];
+    const S=poolConf(prefix); const g=S.groups()[gi];
     if(!g){ return; }
-    const models=await probeProviderModels(gi);
+    const models=await probeProviderModels(gi, prefix);
     if(models){ models.forEach(m=>{ if(!g._cands.includes(m)) g._cands.push(m); }); refreshModelCell(gi); }
   }finally{
     if(btn){ btn.disabled=false; btn.textContent='↻'; }
   }
 }
 
-// 从共享的 llmGroups 重建上游池（LLM 与「向量模型」同一份池），返回要提交的 patch
+// 从各 prefix 自己的上游池重建 patch（LLM / 向量 各自独立存储，互不干扰）
 function buildLlmPoolPatch(prefix){
+  const S=poolConf(prefix);
   const defRadio=document.querySelector(`input[name="${prefix}Default"]:checked`);
   const defaultVendor = defRadio ? defRadio.value : '';
   // 重建为扁平数组：每个「勾选的模型 × 每个账号地址」各生成一条入口（共享 base_url/Key）
   const pool=[];
-  llmGroups.forEach((g, gi)=>{
+  S.groups().forEach((g, gi)=>{
     const sel=[...g._sel].filter(Boolean);
     g.accounts.forEach((a, ai)=>{
       const base_url = a.base_url||'';
@@ -1409,12 +1522,17 @@ function buildLlmPoolPatch(prefix){
       }
     });
   });
-  const patch={ LLM_UPSTREAM_POOL: JSON.stringify(pool) };
-  if(defaultVendor) patch['LLM_UPSTREAM_VENDOR']=defaultVendor;
-  // 默认模型 = 默认供应商里「选中且设为默认」的模型（默认模型必须是选中的）
-  if(defaultVendor){
-    const g=llmGroups.find(x=>x.vendor===defaultVendor);
-    if(g && g._def && g._sel.has(g._def)) patch['LLM_UPSTREAM_MODEL']=g._def;
+  const patch={};
+  patch[S.poolKey]= JSON.stringify(pool);
+  // 两个能力都把「默认提供商」落库（LLM_UPSTREAM_VENDOR / EMBED_UPSTREAM_VENDOR），数据各自独立。
+  if(defaultVendor) patch[S.defVendorKey]=defaultVendor;
+  if(prefix==='embed'){
+    // 向量表：保存「向量默认模型」（EMBED_UPSTREAM_MODEL），数据独立，不影响对话默认
+    patch[S.defModelKey]= S.defModel()||'';
+  } else if(defaultVendor){
+    // 默认模型 = 默认供应商里「选中且设为默认」的模型（默认模型必须是选中的）
+    const g=S.groups().find(x=>x.vendor===defaultVendor);
+    if(g && g._def && g._sel.has(g._def)) patch[S.defModelKey]=g._def;
   }
   return patch;
 }
@@ -1423,11 +1541,6 @@ async function savePoolTable(prefix, statId){
   stat.className='hint'; stat.textContent=t('common.saving');
   try{
     const patch=buildLlmPoolPatch(prefix);
-    // 「向量模型」表额外保存默认向量模型（LLM_EMBED_MODEL），作为 embeddings 测试的兜底
-    if(prefix==='embed'){
-      const em=document.getElementById('cfg_LLM_EMBED_MODEL');
-      if(em) patch['LLM_EMBED_MODEL']=(em.value||'').trim();
-    }
     const r=await fetch('/admin/api/config',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify(patch)});
     const d=await r.json().catch(()=>({}));
     if(!r.ok){ stat.className='err'; stat.textContent=t('common.failPrefix')+(d.detail||r.status); return; }
@@ -1442,14 +1555,6 @@ function saveLlmTable(){ return savePoolTable('lp','cfgStat_llm'); }
 const ASR_BUILTIN = 'builtin';
 let asrProvider = 'builtin';   // 表格当前选中的提供商（radio 状态；保存时落库 STT_PROVIDER）
 let ttsProvider = 'builtin';
-let asrBuiltinAvail = null;   // 内置最近一次按需检测：'ok' / 'err' / null(未测)
-let asrBuiltinDetail = '';    // 内置检测的补充说明（成功/失败原因），在表格下方行内显示
-let ttsBuiltinAvail = null;   // TTS 内置最近一次按需检测：'ok' / 'err' / null(未测)
-let ttsBuiltinDetail = '';    // TTS 内置检测的补充说明，在表格下方行内显示
-let asrUpstreamAvail = null;  // 上游（dashscope）最近一次测试：'ok' / 'err' / null(未测)
-let asrUpstreamDetail = '';
-let ttsUpstreamAvail = null;
-let ttsUpstreamDetail = '';
 // 上游配置的编辑暂存：初始值来自 cfgOrig（loadConfig 回填）；Key 不回显，留空=不修改。
 // builtin 槽是固定白名单（只读子表，结构上与上游行统一，不落库）。
 let provEdit = {
@@ -1473,19 +1578,9 @@ function modelProtocols(m){
   return ['http'];
 }
 
-function upstreamBadge(avail) {
-  return avail === 'ok' ? '<span class="badge b-ok">' + t('common.available') + '</span>'
-       : avail === 'err' ? '<span class="badge b-err">' + t('common.unavailable') + '</span>'
-       : '<span class="badge b-mut">' + t('common.notTested') + '</span>';
-}
-
 function paintAsrTable(){
   const wrap=document.getElementById('asrTableWrap');
   if(!wrap) return;
-  const bAvail = asrBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('common.available')+'</span>'
-               : asrBuiltinAvail==='err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
-               : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
-  const uAvail = upstreamBadge(asrUpstreamAvail);
   let html='<table class="cfg-table"><thead><tr>'
     + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.model')+'</th>'
     + '</tr></thead><tbody>';
@@ -1511,17 +1606,12 @@ function paintAsrTable(){
     <td class="model-cell">${buildUpstreamModelPick('stt')}</td>
   </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('cfg.providerPickNote')+'</span><span class="hint" id="asrTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   wrap.querySelectorAll('.asr-builtin-test').forEach(b=> b.onclick=testAsrBuiltin);
   wrap.querySelectorAll('.up-test').forEach(b=> b.onclick=()=>testAsrUpstream(b.dataset.m));
   const ec=wrap.querySelector('.prov-edit-cell'); if(ec) ec.onclick=()=>openProvModal('stt');
   bindUpstreamModelPick('stt');
   wrap.querySelectorAll('input[name=asrDefault]').forEach(r=> r.onchange=()=>{ asrProvider=r.value; paintAsrTable(); });
-  const bh=document.getElementById('asrTableHint');
-  if(bh && asrBuiltinDetail){ bh.textContent=asrBuiltinDetail; bh.style.color = asrBuiltinAvail==='err'?'var(--err)':(asrBuiltinAvail==='ok'?'var(--ok)':''); }
-  // 上游测试结果优先显示（它才是刚测的东西）
-  if(bh && asrUpstreamDetail){ bh.textContent=asrUpstreamDetail; bh.style.color = asrUpstreamAvail==='err'?'var(--err)':(asrUpstreamAvail==='ok'?'var(--ok)':''); }
 }
 
 // 上游（dashscope）的模型多选子表：勾选启用 + 默认单选（须勾选），行内输入添加。
@@ -1655,35 +1745,25 @@ document.addEventListener('click', (ev) => {
 });
 
 // 内置按需检测：真正加载模型并跑一次推理，启动阶段不做，只在这里点按钮时验证。
+// 结果只翻「状态」列的徽标（builtin 子表的 状态 列），不写额外文字。
 async function testAsrBuiltin(){
   const wrap=document.getElementById('asrTableWrap');
   const btn=wrap && wrap.querySelector('.asr-builtin-test');
-  const hint=document.getElementById('asrTableHint');
   if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
-  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent=t('asr.detecting'); }
-  const REASON={ model_missing:t('asr.reasonModelMissing'), dep_missing:t('asr.reasonDepMissing'), infer_failed:t('asr.reasonInferFailed'), not_wired:t('asr.reasonNotWired'), exception:t('asr.reasonException') };
   try{
     const r=await fetch('/admin/api/stt-builtin-test',{method:'POST',credentials:'same-origin'});
     const d=await r.json().catch(()=>({}));
-    asrBuiltinAvail = d.ok ? 'ok' : 'err';
-    asrBuiltinDetail = d.ok
-      ? t('asr.ok')
-      : t('asr.unavailPrefix') + (REASON[d.reason]||t('asr.detectFailed')) + (d.detail?('（'+d.detail+'）'):'');
+    const av = d.ok ? 'ok' : 'err';
+    (provEdit.sttBuiltin.cands||[]).forEach(m => { (provEdit.sttBuiltin.avail=provEdit.sttBuiltin.avail||{})[m] = av; });
   }catch(e){
-    asrBuiltinAvail='err';
-    asrBuiltinDetail=t('asr.requestFailed')+e.message;
+    (provEdit.sttBuiltin.cands||[]).forEach(m => { (provEdit.sttBuiltin.avail=provEdit.sttBuiltin.avail||{})[m] = 'err'; });
   }
   paintAsrTable();
-  const h=document.getElementById('asrTableHint');
-  if(h){ h.textContent=asrBuiltinDetail; h.style.color = asrBuiltinAvail==='ok'?'var(--ok)':'var(--err)'; }
 }
 
 function paintTtsTable(){
   const wrap=document.getElementById('ttsTableWrap');
   if(!wrap) return;
-  const bAvail = ttsBuiltinAvail==='ok' ? '<span class="badge b-ok">'+t('common.available')+'</span>'
-               : ttsBuiltinAvail==='err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
-               : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
   let html='<table class="cfg-table"><thead><tr>'
     + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.model')+'</th>'
     + '</tr></thead><tbody>';
@@ -1710,7 +1790,6 @@ function paintTtsTable(){
     <td class="model-cell">${buildUpstreamModelPick('tts')}</td>
   </tr>`;
   html += '</tbody></table>';
-  html += '<div class="row" style="margin-top:8px"><span class="hint">'+t('cfg.providerPickNote')+'</span><span class="hint" id="ttsTableHint" style="margin-left:10px"></span></div>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.tts-builtin-test'); if(bt) bt.onclick=testTtsBuiltin;
   // 模型级测试按钮与 ASR 同构：类名是 .up-test（buildUpstreamModelPick 渲染），逐个绑定
@@ -1718,31 +1797,23 @@ function paintTtsTable(){
   const ec=wrap.querySelector('.prov-edit-cell'); if(ec) ec.onclick=()=>openProvModal('tts');
   bindUpstreamModelPick('tts');
   wrap.querySelectorAll('input[name=ttsDefault]').forEach(r=> r.onchange=()=>{ ttsProvider=r.value; paintTtsTable(); });
-  const bh=document.getElementById('ttsTableHint');
-  if(bh && ttsBuiltinDetail){ bh.textContent=ttsBuiltinDetail; bh.style.color = ttsBuiltinAvail==='err'?'var(--err)':(ttsBuiltinAvail==='ok'?'var(--ok)':''); }
-  // 上游测试结果优先显示（它才是刚测的东西）
-  if(bh && ttsUpstreamDetail){ bh.textContent=ttsUpstreamDetail; bh.style.color = ttsUpstreamAvail==='err'?'var(--err)':(ttsUpstreamAvail==='ok'?'var(--ok)':''); }
 }
 
 // TTS 内置按需检测：真实合成一句，验证 edge-tts 与 ffmpeg 链路，启动阶段不做。
+// 结果只翻「状态」列徽标，不写额外文字。
 async function testTtsBuiltin(){
   const wrap=document.getElementById('ttsTableWrap');
   const btn=wrap && wrap.querySelector('.tts-builtin-test');
-  const hint=document.getElementById('ttsTableHint');
   if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
-  if(hint){ hint.className='hint'; hint.style.color=''; hint.textContent=t('tts.synthcing'); }
   try{
     const r=await fetch('/admin/api/tts-builtin-test',{method:'POST',credentials:'same-origin'});
     const d=await r.json().catch(()=>({}));
-    ttsBuiltinAvail = d.ok ? 'ok' : 'err';
-    ttsBuiltinDetail = d.ok ? t('tts.ok') : t('common.unavailPrefix')+(d.detail||d.reason||t('asr.detectFailed'));
+    const av = d.ok ? 'ok' : 'err';
+    (provEdit.ttsBuiltin.cands||[]).forEach(m => { (provEdit.ttsBuiltin.avail=provEdit.ttsBuiltin.avail||{})[m] = av; });
   }catch(e){
-    ttsBuiltinAvail='err';
-    ttsBuiltinDetail=t('common.unavailReqFail')+e.message;
+    (provEdit.ttsBuiltin.cands||[]).forEach(m => { (provEdit.ttsBuiltin.avail=provEdit.ttsBuiltin.avail||{})[m] = 'err'; });
   }
   paintTtsTable();
-  const h=document.getElementById('ttsTableHint');
-  if(h){ h.textContent=ttsBuiltinDetail; h.style.color = ttsBuiltinAvail==='ok'?'var(--ok)':'var(--err)'; }
 }
 
 // 上游（openai_audio）按需测试：后端按当前 DB 配置真调一次上游（TTS 合成一句 / ASR 识别样例语音）。
@@ -1758,8 +1829,6 @@ async function testAsrUpstream(model){
     const d=await r.json().catch(()=>({}));
     e.avail = e.avail || {};
     e.avail[m] = d.ok ? 'ok' : 'err';
-    e.availMsg = e.availMsg || {};
-    e.availMsg[m] = (d.ok ? t('common.available') : t('common.unavailable')) + '：' + (d.message||'');
   }catch(err){
     e.avail = e.avail || {}; e.avail[m]='err';
   }
@@ -1777,8 +1846,6 @@ async function testTtsUpstream(model){
     const d=await r.json().catch(()=>({}));
     e.avail = e.avail || {};
     e.avail[m] = d.ok ? 'ok' : 'err';
-    e.availMsg = e.availMsg || {};
-    e.availMsg[m] = (d.ok ? t('common.available') : t('common.unavailable')) + '：' + (d.message||'');
   }catch(err){
     e.avail = e.avail || {}; e.avail[m]='err';
   }
@@ -1900,11 +1967,17 @@ document.addEventListener('click',(e)=>{
   if(addBody){ addBodyRow(addBody.dataset.addBody); return; }
   if(t.closest('[data-del-body]')){ const tr=t.closest('tr'); if(tr) tr.remove(); return; }
   if(t.closest('#testModalRun')){ runModalTest(); return; }
+  if(t.closest('#embedTestModalRun')){ runEmbedModalTest(); return; }
   // ASR/TTS 上游编辑弹框：保存 / 取消 / 点遮罩
   if(t.closest('#provSave')){ saveProvModal(); return; }
   if(t.closest('#provCancel')){ const m=document.getElementById('provModal'); if(m) m.classList.remove('show'); return; }
   const pmask=document.getElementById('provModal');
   if(pmask && pmask.classList.contains('show') && t===pmask){ pmask.classList.remove('show'); return; }
+  const emask=document.getElementById('embedTestModal');
+  if(emask && emask.classList.contains('show')){
+    if(t.closest('#embedTestModalClose') || t===emask){ emask.classList.remove('show'); if(embedCtrl){ try{ embedCtrl.abort(); }catch(_){} embedCtrl=null; } }
+    return;
+  }
   const mask=document.getElementById('testModal');
   if(!mask || !mask.classList.contains('show')) return;
   if(t.closest('#testModalClose') || t===mask) closeTestModal();   // 关闭按钮 / 点遮罩
@@ -1912,6 +1985,7 @@ document.addEventListener('click',(e)=>{
 document.addEventListener('keydown',(e)=>{
   if(e.key!=='Escape') return;
   closeTestModal();
+  const em=document.getElementById('embedTestModal'); if(em) em.classList.remove('show');
   const acc=document.getElementById('accModal'); if(acc) acc.classList.remove('show');
   const prov=document.getElementById('provModal'); if(prov) prov.classList.remove('show');
 });
@@ -1927,7 +2001,7 @@ async function runLlmChat(opts){
   const setStatus = (t,c)=>{ statusEl.textContent=t; statusEl.className=c; };
   if(outEl) outEl.textContent='';
   if(thinkEl){ thinkEl.textContent=''; if(thinkWrapEl) thinkWrapEl.hidden=true; }
-  setStatus(t('common.loading'),'hint');
+  statusEl.innerHTML='<span class="spinner"></span>'+t('common.loading'); statusEl.className='status-loading';
   const ctrl = new AbortController();
   llmCtrl = ctrl;
   let done=false;
@@ -1999,13 +2073,13 @@ async function runLlmChat(opts){
 // 向量嵌入测试：与对话共用提供商 / 协议 / 模型选择，但打 /llm/v1/embeddings，
 // 把多行文本逐个嵌入，展示维度与条数（Anthropic / Responses 线协议会被代理返回 501）。
 async function runLlmEmbeddings(opts){
-  const { vendor, model, protocol, statusEl, outEl, inputId, onDone } = opts;
+  const { vendor, model, protocol, statusEl, outEl, inputId, dimensions, onDone } = opts;
   if(!statusEl){ if(onDone) onDone(false); return; }
   const setStatus=(t,c)=>{ statusEl.textContent=t; statusEl.className=c; };
   if(outEl) outEl.textContent='';
-  setStatus(t('common.loading'),'hint');
+  statusEl.innerHTML='<span class="spinner"></span>'+t('common.loading'); statusEl.className='status-loading';
   try{
-    const k=(document.getElementById('testKey').value||'').trim();
+    const tkEl=document.getElementById('testKey'); const k=(tkEl?tkEl.value:'').trim();
     const auth = k?{'Authorization':'Bearer '+k}:{};
     const input = ((document.getElementById(inputId||'llmEmbedInput').value)||'').split('\n')
       .map(s=>s.trim()).filter(Boolean);
@@ -2014,6 +2088,10 @@ async function runLlmEmbeddings(opts){
     if(model) body.model=model;
     if(vendor) body.vendor=vendor;
     if(protocol) body.protocol=protocol;
+    // 请求维度（可选）：部分模型支持自定义向量维度（OpenAI 3 系 / Ollama / Gemini），
+    // 服务端会按线协议翻译成 dimensions / embedding_length / outputDimensionality；
+    // 不支持的模型会忽略或报错，由返回的实际维度来暴露。
+    if(dimensions!=null && !Number.isNaN(dimensions)) body.dimensions = dimensions;
     const ctrl=new AbortController(); embedCtrl=ctrl;
     const r=await fetch(testOrigin+'/llm/v1/embeddings',{method:'POST',credentials:'same-origin',
       signal:ctrl.signal,
@@ -2029,9 +2107,17 @@ async function runLlmEmbeddings(opts){
     const dims = list.length ? (list[0].embedding||[]).length : 0;
     const preview = list.length ? (list[0].embedding||[]).slice(0,5).map(n=>+n.toFixed(4)) : [];
     const head = t('llm.embeddingResult')+' 维度 '+dims+'，共 '+list.length+' 条';
+    // 请求维度：填了就对比返回维度——一致说明模型支持该维度；不一致说明模型忽略/不支持。
+    let dimInfo='';
+    if(dimensions!=null && !Number.isNaN(dimensions)){
+      dimInfo = (dims===dimensions) ? '；维度匹配 ✓' : ('；维度不匹配（请求 '+dimensions+'，实际 '+dims+'）✗');
+    }
     const tail = preview.length ? '；首条前 5 维: ['+preview.join(', ')+']' : '';
-    if(outEl) outEl.textContent = head + tail;
-    setStatus(t('common.done'),'hint'); if(onDone) onDone(true);
+    if(outEl) outEl.textContent = head + dimInfo + tail;
+    // 模型可用即标记 ok；维度不符请求时给出警告，但不掩盖「模型可用」事实
+    if(dimInfo.indexOf('不匹配')>=0){ setStatus(t('common.done')+'，'+t('llm.dimMismatchShort')+'（请求 '+dimensions+' 实际 '+dims+'）','err'); }
+    else { setStatus(t('common.done'),'hint'); }
+    if(onDone) onDone(true);
   }catch(e){ embedCtrl=null; if(e.name==='AbortError'){ setStatus(t('common.stopped'),'hint'); } else { setStatus(t('common.errorPrefix')+e.message,'err'); } if(onDone) onDone(false); }
 }
 
@@ -2102,6 +2188,8 @@ async function renderDashboard(){
       <div class="hint">${t('llm.embedModelTabHint')}</div>
       <label>${t('llm.embeddingText')}</label>
       <textarea id="embedInput" rows="3" style="width:100%">你好，世界</textarea>
+      <label style="margin-top:10px">${t('llm.expectDim')}</label>
+      <input id="embedDim" type="number" min="1" placeholder="如 768" style="width:160px" />
       <div class="muted" style="margin-top:10px">${t('common.reply')}</div>
       <pre id="embedOut" class="muted">${t('test.replyStream')}</pre>
       <div class="row" style="margin-top:12px">
@@ -2355,7 +2443,11 @@ async function renderDashboard(){
   document.getElementById('embedGo').onclick = ()=>{
     const vendor=document.getElementById('embedProvider').value.trim();
     const model=document.getElementById('embedModel').value.trim();
-    runLlmEmbeddings({ vendor, model, inputId:'embedInput', statusEl: document.getElementById('embedStatus'), outEl: document.getElementById('embedOut') });
+    const dimEl=document.getElementById('embedDim');
+    const raw=dimEl?dimEl.value.trim():'';
+    const dims=raw?parseInt(raw,10):null;
+    const dimensions=(dims!=null && !Number.isNaN(dims))?dims:null;
+    runLlmEmbeddings({ vendor, model, dimensions, inputId:'embedInput', statusEl: document.getElementById('embedStatus'), outEl: document.getElementById('embedOut') });
   };
   document.getElementById('embedStop').onclick = ()=>{ if(embedCtrl) embedCtrl.abort(); };
   // 底部测试：思考过程折叠 + 思考模式开关（与模型测试弹窗一致）
@@ -2469,7 +2561,7 @@ async function renderDashboard(){
   // ── WS 真连分支：协议=ws 时测试页直接打 /voice/ws/inference（DashScope 协议形状）──
   // 浏览器原生 WebSocket 同源自动带 session cookie；API-Key 走 query 参数（WS 不能带自定义头）。
   function voiceWsUrl(){
-    const k=(document.getElementById('testKey').value||'').trim();
+    const tkEl=document.getElementById('testKey'); const k=(tkEl?tkEl.value:'').trim();
     let u=testOrigin.replace(/^http/, 'ws')+'/voice/ws/inference';
     if(k) u+='?api_key='+encodeURIComponent(k);
     return u;
@@ -2851,10 +2943,22 @@ def register_admin_routes(
 
     @app.get("/admin/api/llm-pool", dependencies=[Depends(require_admin)])
     def admin_llm_pool():
-        """LLM 上游按提供商分组返回：每组含厂商、协议、去重模型列表、账号清单（地址/Key/本账号模型）。
+        """LLM 上游按提供商分组返回。详见 admin_pool。"""
+        return admin_pool("LLM", "LLM_UPSTREAM_VENDOR", "LLM_UPSTREAM_MODEL")
+
+    @app.get("/admin/api/embed-pool", dependencies=[Depends(require_admin)])
+    def admin_embed_pool():
+        """向量（embeddings）上游按提供商分组返回：与 LLM 结构完全一致，但数据独立存储
+        （EMBED_UPSTREAM_POOL），互不影响——改一个不会同步/覆盖另一个。"""
+        return admin_pool("EMBED", "EMBED_UPSTREAM_VENDOR", "EMBED_UPSTREAM_MODEL")
+
+    def admin_pool(cap: str, def_vendor_key: str, def_model_key: str):
+        """上游池按提供商分组返回：每组含厂商、协议、去重模型列表、账号清单（地址/Key/本账号模型）。
         供配置页表格渲染（提供商上下合并、模型映射）使用。账号里的 api_key 为明文（管理端点，
-        仅本地同源可达），前端预填进密码框，留空即视为「清空该 Key」。"""
-        entries = upstream_pool.load_pool("LLM")
+        仅本地同源可达），前端预填进密码框，留空即视为「清空该 Key」。
+        cap 区分 LLM / EMBED，两者各自读各自的池（LLM_UPSTREAM_POOL / EMBED_UPSTREAM_POOL），
+        保证 embeddings 配置数据与对话配置数据完全独立。"""
+        entries = upstream_pool.load_pool(cap)
         groups: dict[str, Any] = {}
         order: list[str] = []
         for e in entries:
@@ -2881,8 +2985,8 @@ def register_admin_routes(
             }
             for v in order
         ]
-        default_vendor = config_store.instance().get("LLM_UPSTREAM_VENDOR", "") or ""
-        default_model = config_store.instance().get("LLM_UPSTREAM_MODEL", "") or ""
+        default_vendor = config_store.instance().get(def_vendor_key, "") or ""
+        default_model = config_store.instance().get(def_model_key, "") or ""
         return {"groups": out, "default_vendor": default_vendor, "default_model": default_model}
 
     @app.post("/admin/api/stt-builtin-test", dependencies=[Depends(require_admin)])

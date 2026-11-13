@@ -29,6 +29,7 @@
         ]
       },
       "ios": {
+        "bundle": "com.xiaoxiong.assistant",
         "privacyDescription": {
           "NSMicrophoneUsageDescription": "需要使用麦克风持续监听唤醒词并进行语音对话",
           "NSLocationWhenInUseUsageDescription": "需要获取位置以提供本地天气、附近信息与本地化服务"

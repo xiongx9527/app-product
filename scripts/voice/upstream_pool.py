@@ -75,8 +75,16 @@ def _pool_config_key(cap: str) -> str:
     return f"{cap}_UPSTREAM_POOL"
 
 
-def _legacy_single() -> Optional[dict]:
-    """没有池配置时，用旧的单个地址配置拼一个入口（向后兼容）。仅 LLM 支持单地址写法。"""
+def _legacy_single(cap: str) -> Optional[dict]:
+    """没有池配置时，用旧的单个地址配置拼一个入口（向后兼容）。仅 LLM 支持单地址写法。
+
+    cap 不是 LLM 时一律返回 None：每个能力只在自己的池键为空时才退到「单地址」兜底，
+    不能把 LLM 的单地址配置借给别的 cap 当默认值——那样会让 EMBED 等独立能力的面板
+    凭空显示出 LLM 的入口，与「各能力数据相互独立」相悖。调用时刻的兜底（如
+    embeddings 在 EMBED 池为空时改打 LLM 池）由各自的路由逻辑负责，不在池解析里借数据。
+    """
+    if cap != "LLM":
+        return None
     try:
         store = config_store.instance()
     except RuntimeError:
@@ -192,7 +200,7 @@ def load_pool(cap: str) -> list[dict]:
     except Exception:
         entries = []
     if not entries:
-        single = _legacy_single()
+        single = _legacy_single(cap)
         if single:
             entries.append(single)
     with _lock:

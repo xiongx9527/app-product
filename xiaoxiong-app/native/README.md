@@ -79,11 +79,28 @@ node xiaoxiong-app/uni_app/scripts/package-android-offline.mjs \
 
 ## iOS 集成（DCloud 离线 SDK `HBuilder-Hello`，需另行获取）
 
-1. 把 `NodeMobile.xcframework`（digidem `ios` 包 **full**）加入工程 Embedded Binaries。
-2. `GatewayNode.swift` 加入工程；`AppDelegate` 启动后（引擎就绪回调里）调 `GatewayNode.shared.start()`。
-3. `Info.plist` 加 `UIBackgroundModes: audio`（保活 + 唤醒后继续跑网关）。
-4. 首启把 `gateway.bundle.mjs` + `cues` 从 App Bundle 拷到 `Library/Application Support/gateway`（即 `GATEWAY_HOME`）。
-5. **本机 Intel Mac 无法在模拟器联调**（无 x86_64 切片），用真机（arm64 iPad）+ 开发者签名。
+脚本 `uni_app/scripts/package-ios-offline.mjs` 已对齐 Android 版的「资源 + 网关同包」接入，自动完成文件/plist 级工作并生成 Xcode 手动清单：
+
+```sh
+node xiaoxiong-app/uni_app/scripts/package-ios-offline.mjs \
+  --sdk ~/Downloads/latest/5.34/HBuilder-Hello \   # iOS 离线 SDK 工程根（含 .xcodeproj 与 Pandora/）
+  --appid __UNI_XXXXXXXX \
+  --appkey <AppKey> \
+  --node-ios <digidem-ios 包解压目录>             # nodejs-mobile-ios-24.20.0-0，内含 NodeMobile.xcframework（full）
+```
+
+脚本自动做：① 资源 → `Pandora/apps/<appid>/www`（修正 manifest id + `dcloud_control.xml`）；② AppKey → 主目标 `Info.plist` 的 `dcloud_appkey`；③ `UIBackgroundModes: audio` → `Info.plist`；④ 网关资产 → `<工程>/gateway/`（gateway.bundle.mjs + static/cues，首启由 `GatewayNode.swift` 从 App Bundle 解包到 `GATEWAY_HOME`）；⑤ `NodeMobile.xcframework` → `<工程>/Frameworks/`；⑥ 生成 `GATEWAY_INTEGRATION.md`（Xcode 手动步骤清单）。
+
+**Xcode 里仍需手动点几下**（脚本无法改 .pbxproj，且需本机签名），详见生成的 `GATEWAY_INTEGRATION.md`：
+1. 把 `native/ios/GatewayNode.swift` + `AppDelegate+Gateway.swift` 拖入主 target。
+2. 在 AppDelegate 的 `application(_:didFinishLaunchingWithOptions:)` 调用 `GatewayNode.shared.start()` / `xiaoxiong_startEmbeddedGateway()`。
+3. 把 `<工程>/gateway/` 作为 **folder reference** 加入主 target（Copy Bundle Resources）；`GatewayNode.swift` 从 `Bundle.main` 的 `subdirectory:"gateway"` 读取。
+4. 把 `<工程>/Frameworks/NodeMobile.xcframework` 加入 Embedded Binaries 并 **Embed & Sign**（必须用 **full** flavour，lite 会让网关 `\p{...}` 正则崩溃）。
+5. 真机（arm64 iPad）+ 开发者签名；Bundle Identifier 设 `com.xiaoxiong.assistant`（须与 AppKey 申请时一致）。
+
+端口回传：bundle 写 `GATEWAY_HOME/.gateway_port` → `GatewayNode.awaitPort` 轮询后写出 `Documents/gateway.url`（`ws://127.0.0.1:<port>/ws`），客户端经 `plus.io` 读 `_documents/gateway.url` 注入 WS。
+
+**本机 Intel Mac 无法在模拟器联调**（digidem iOS 包无 x86_64 切片），用真机（arm64 iPad）或 Apple Silicon Mac。
 
 ## 已知风险 / TODO
 
