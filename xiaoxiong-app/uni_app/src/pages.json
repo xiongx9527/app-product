@@ -24,12 +24,14 @@
     {
       "path": "pages/deals/deals",
       "style": {
+        "navigationStyle": "custom",
         "navigationBarTitleText": "好价商品收藏"
       }
     },
     {
       "path": "pages/opensource/opensource",
       "style": {
+        "navigationStyle": "custom",
         "navigationBarTitleText": "开源工具收藏"
       }
     },
