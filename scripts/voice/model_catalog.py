@@ -36,6 +36,7 @@ class ModelInfo:
     type: str = ModelType.LLM
     context_length: int = 0  # 未知用 0（与 Java 约定一致）
     dimension: int = 0
+    protocol: Optional[str] = None  # 线协议：local / http / ws / http-async；语音上游模型需要
 
     def to_openai(self) -> dict:
         """转成 OpenAI /v1/models 的条目形状，并附上端口类型与能力字段。"""
@@ -43,10 +44,11 @@ class ModelInfo:
             "id": self.id,
             "object": "model",
             "owned_by": self.owned_by or "local",
-            # 扩展字段：让网关 / 测试界面能直接区分端口类型与能力，不影响 OpenAI 客户端。
+            # 扩展字段：让网关 / 测试界面能直接区分端口类型、能力与线协议，不影响 OpenAI 客户端。
             "type": self.type,
             "context_length": self.context_length,
             "dimension": self.dimension,
+            "protocol": self.protocol or "",
         }
 
 

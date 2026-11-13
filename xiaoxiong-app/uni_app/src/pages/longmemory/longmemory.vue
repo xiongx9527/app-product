@@ -5,6 +5,9 @@ import { t } from '@/core/i18n'
 import { useLongMemory, type MemoryItem } from '@/features/memory/memoryStore'
 import { useSubPageBack } from '@/core/composables/useSubPageBack'
 import SubPageNav from '@/components/SubPageNav.vue'
+import { useThemeStyle } from '@/core/composables/useTheme'
+
+const { themeStyle, dataTheme } = useThemeStyle()
 
 const mem = useLongMemory()
 const { items, total, page, totalPages, hasPrev, hasNext, loading, hint, query, formatTime, load, refresh, prev, next, search, remove, clearAll } = mem
@@ -50,7 +53,7 @@ const { goBack } = useSubPageBack()
 </script>
 
 <template>
-  <view class="page">
+  <view class="page" :style="themeStyle" :data-theme="dataTheme">
     <SubPageNav :title="t('settings.memory.openLong')" @back="goBack" />
 
     <view class="head">

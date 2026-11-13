@@ -3,6 +3,8 @@ import { computed, ref } from 'vue'
 import { t } from '@/core/i18n'
 import type { DetailItem } from '@/core/transport/types'
 import type { RecommendEntry } from './recommendStore'
+import { useThemeStyle } from '@/core/composables/useTheme'
+import { readScreenInfo } from '@/core/adaptation/screen'
 
 /**
  * 推荐列表通用视图（好价商品 / 开源工具共用）：分页展示持久化的推荐条目。
@@ -11,12 +13,29 @@ import type { RecommendEntry } from './recommendStore'
  */
 const props = defineProps<{
   entries: RecommendEntry[]
-  title: string
+  /** 仅 showHead=true 时需要（自带头部标题）。 */
+  title?: string
   emptyText: string
   openLabel: string
   removeLabel: string
   clearLabel: string
+  /** 是否渲染自带头部（标题+计数+返回）。作为子页嵌入时由外层 SubPageNav 接管，传 false 隐藏。 */
+  showHead?: boolean
 }>()
+
+const showHead = props.showHead !== false
+
+// 根元素响应式绑定主题变量：deals / opensource 两个列表页共用本组件，主题自动生效
+const { themeStyle, dataTheme } = useThemeStyle()
+
+// 顶部留白内联注入（与 SubPageNav 同一来源 statusBarHeight + 12），不依赖 scoped CSS：
+// 这两页已开 navigationStyle: custom，状态栏让位必须由本组件自己处理，否则标题会顶进状态栏。
+const pageStyle = { paddingTop: `${readScreenInfo().statusBarHeight + 12}px` }
+
+/** 返回：列表页均由设置页 navigateTo 进入，直接 navigateBack 即可；异常时兜底回首页。 */
+function goBack(): void {
+  uni.navigateBack({ fail: () => uni.reLaunch({ url: '/pages/index/index' }) })
+}
 
 const emit = defineEmits<{
   open: [item: DetailItem]
@@ -86,8 +105,9 @@ function formatTime(ts: number): string {
 </script>
 
 <template>
-  <view class="page">
-    <view class="head">
+  <view :class="showHead ? 'page' : 'list'" :style="showHead ? [pageStyle, themeStyle] : undefined" :data-theme="showHead ? dataTheme : undefined">
+    <view v-if="showHead" class="head">
+      <view class="nav-back" @tap="goBack">‹</view>
       <text class="title">{{ title }}</text>
       <text v-if="entries.length" class="count">{{ entries.length }}</text>
     </view>
@@ -127,7 +147,8 @@ function formatTime(ts: number): string {
 <style scoped>
 .page {
   min-height: 100vh;
-  padding: 16px 16px calc(32px + env(safe-area-inset-bottom));
+  /* 顶部留白由 :style 的 pageStyle 注入（statusBarHeight + 12），此处不再定义 padding-top */
+  padding: 0 16px calc(32px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -136,16 +157,33 @@ function formatTime(ts: number): string {
     var(--bg-base);
 }
 
+/* 作为子页嵌入（外层 SubPageNav 已处理状态栏让位与标题）时的纯内容容器：不再重复 .page 的
+   背景/最小高度/顶部留白，只承接布局，主题变量由外层 .page 继承。 */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .head {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
+.nav-back {
+  width: 28px;
+  flex-shrink: 0;
+  font-size: 24px;
+  line-height: 1;
+  color: var(--accent);
+  text-align: center;
+}
+
 .title {
   font-size: 17px;
   font-weight: 600;
-  color: #e8eaf6;
+  color: var(--accent);
 }
 
 .count {

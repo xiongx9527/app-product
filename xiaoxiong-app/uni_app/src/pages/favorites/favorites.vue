@@ -5,6 +5,9 @@ import { useFavorites } from '@/features/favorites/favoritesStore'
 import { playMusic } from '@/core/audio/musicPlayer'
 import { useSubPageBack } from '@/core/composables/useSubPageBack'
 import SubPageNav from '@/components/SubPageNav.vue'
+import { useThemeStyle } from '@/core/composables/useTheme'
+
+const { themeStyle, dataTheme } = useThemeStyle()
 
 const { favorites, removeFavorite } = useFavorites()
 
@@ -30,7 +33,7 @@ const { goBack } = useSubPageBack()
 </script>
 
 <template>
-  <view class="page">
+  <view class="page" :style="themeStyle" :data-theme="dataTheme">
     <SubPageNav :title="t('favorites.title')" @back="goBack" />
 
     <view class="head">

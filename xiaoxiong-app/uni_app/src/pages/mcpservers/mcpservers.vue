@@ -5,6 +5,9 @@ import type { McpServerConfig, McpTransport } from '@/core/config/types'
 import { t } from '@/core/i18n'
 import { useSubPageBack } from '@/core/composables/useSubPageBack'
 import SubPageNav from '@/components/SubPageNav.vue'
+import { useThemeStyle } from '@/core/composables/useTheme'
+
+const { themeStyle, dataTheme } = useThemeStyle()
 
 const TRANSPORTS: McpTransport[] = ['sse', 'http']
 
@@ -170,7 +173,7 @@ const { goBack } = useSubPageBack({
 </script>
 
 <template>
-  <view class="page">
+  <view class="page" :style="themeStyle" :data-theme="dataTheme">
     <SubPageNav :title="t('settings.mcp.pageTitle')" @back="goBack" />
 
     <!-- 列表态（非编辑）：标题下信息行 + 空状态提示 + 服务器列表 + 底部常驻添加入口 -->

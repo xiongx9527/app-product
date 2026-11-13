@@ -37,16 +37,33 @@ function isGatewayCue(cue: PromptCue): boolean {
   return GATEWAY_CUES.includes(cue)
 }
 
+/** 临时排查埋点：把提示音链路事件暴露给 UI（useAssistant 注册 sink，显示到行内错误条）。 */
+let cueDebugSink: ((msg: string) => void) | null = null
+export function setCueDebugSink(fn: ((msg: string) => void) | null): void {
+  cueDebugSink = fn
+}
+function cueDebug(msg: string): void {
+  console.log('[cue]', msg)
+  try {
+    cueDebugSink?.(msg)
+  } catch {
+    // sink 异常不影响播放
+  }
+}
+
 /** 打包内的本地文件地址（App / H5 同路径），作为网关拉取失败时的兜底。 */
 function bundledCueUrl(cue: PromptCue): string {
   return `/static/audio/${CUE_FILE[cue]}.mp3`
 }
 
-/** 提示音实际地址：网关类提示走网关 HTTP（与助手说话同链路、同音色），其余走本地打包。 */
+/** 提示音实际地址。App 端一律播打包内本地文件：能力不可用提示更不该依赖网关 HTTP
+ * （网关刚启动、能力挂掉时正是要播的时候）；H5 保留网关 HTTP 优先，同链路同音色。 */
 function cueUrl(cue: PromptCue): string {
+  // #ifdef H5
   if (isGatewayCue(cue)) {
     return `${resolveGatewayHttpBase()}/static/cues/${CUE_FILE[cue]}.mp3`
   }
+  // #endif
   return bundledCueUrl(cue)
 }
 
@@ -244,13 +261,19 @@ function playOneCue(cue: PromptCue, src: string, onFail?: () => void): void {
   try {
     audio = uni.createInnerAudioContext()
     audio.src = src
-    audio.onEnded(cleanup)
+    audio.onEnded(() => {
+      cueDebug(`播放完成: ${cue}`)
+      cleanup()
+    })
     audio.onError(() => {
+      cueDebug(`播放失败: ${cue} src=${src}`)
       cleanup()
       if (onFail) onFail()
     })
     audio.play()
+    cueDebug(`开始播放: ${cue} src=${src}`)
   } catch {
+    cueDebug(`播放异常(同步): ${cue}`)
     cleanup()
     if (onFail) onFail()
   }

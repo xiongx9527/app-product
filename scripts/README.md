@@ -78,12 +78,30 @@ Linux 也顺带可用（见文末）。
 |---|---|---|---|
 | LLM | `POST /llm/v1/chat/completions` | 不提供（无本地模型） | 任意 OpenAI 兼容 LLM，原样转发 |
 | LLM | `GET /llm/v1/models` | 不提供 | 原样转发上游模型列表 |
-| STT | `POST /voice/v1/audio/transcriptions` | SenseVoice-small（sherpa-onnx，离线） | 任意 OpenAI 兼容 STT |
-| TTS | `POST /voice/v1/audio/speech` | edge-tts（微软在线神经音色） | 任意 OpenAI 兼容 TTS |
+| STT | `POST /voice/v1/audio/transcriptions` | SenseVoice-small（sherpa-onnx，离线） | DashScope / 任意 OpenAI 兼容 STT |
+| TTS | `POST /voice/v1/audio/speech` | edge-tts（微软在线神经音色） | DashScope / 任意 OpenAI 兼容 TTS |
 | 健康检查 | `GET /health`、`/llm/health`、`/voice/health` | 返回后端、模型、ffmpeg、鉴权、缓存状态 | 同左 |
 
 > 语音相关接口的前缀是 `/voice`，网关的 `ASR_BASE_URL` /
 > `TTS_BASE_URL` 要带上它；LLM 接口前缀是 `/llm/v1`。
+> `STT` / `TTS` 请求可带 `provider`、`model`、`protocol` 覆盖默认路由（管理面板
+> 底部「测试」页用），不传则完全沿用配置；协议必填且取自模型的协议字段。
+
+### 对外接口规划（参照 DashScope，尚未实现）
+
+下一步的对外接口体系**按 DashScope 的形态来，接口名称也与 DashScope 一致**，
+不按 ASR/TTS 分一级路径（DashScope 的 WS 就是 ASR/TTS 共用同一端点、靠消息体区分）：
+
+| 用途 | 规划中的接口（与 DashScope 同名） |
+|---|---|
+| HTTP 合成 | `POST /api/v1/services/aigc/multimodal-generation/generation` |
+| HTTP 识别 | `POST /compatible-mode/v1/chat/completions`（`input_audio`） |
+| WS 实时 ASR/TTS 共用 | `wss://<host>/api-ws/v1/inference`，靠 `payload.task`（`asr` / `tts`）+ `task_group: audio` 区分；消息为 run-task / continue-task / finish-task JSON + 二进制音频帧，事件 task-started / result-generated / task-failed / task-finished |
+| 额外管理接口（DashScope 没有，我们要提供） | 提供商列表、模型列表（按 asr / tts / llm 分类） |
+
+这样网关/客户端换 baseUrl 即可在「内置代理」与「DashScope 云端」之间切换。
+**当前阶段这些接口均未提供**：HTTP 仍走上表 `/voice/*`；ws 协议仍走 `/voice/*`，
+由代理内部按 `protocol` 参数转成对上游的 WS 调用。
 
 服务脚本 `voice/openai_voice_server.py` 参照 Orca 本地语音服务里的
 `openai-voice-server.py` 整理，去掉了 Docker 与 faster-whisper 回退，

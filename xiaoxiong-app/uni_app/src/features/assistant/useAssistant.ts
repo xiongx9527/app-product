@@ -2,7 +2,6 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import {
   playPromptCue,
   playPromptCueSequence,
-  enqueueCue,
   isPromptCuePlaying,
   type PromptCue,
 } from '@/core/audio/promptPlayer'
@@ -92,7 +91,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 网关判定回声兜底中：播报期间不拾音，只能点「打断」
   const halfDuplex = ref(false)
   const errorMessage = ref('')
-  /** 内嵌网关启动中（enable 时轮询 gateway.url 直到原生进程写出），用于界面显示「启动中…」而非假死 */
+  /** 内嵌网关启动中（enable 时轮询 gateway.url 直到原生进程写出）；启动阶段界面静默，不显示也不播报 */
   const gatewayPreparing = ref(false)
   /** 队列已满（排队数超上限）的专用话术，显示在页面顶部横幅，不进「你说」卡片 */
   const queueFullMsg = ref('')
@@ -177,15 +176,35 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     gatewayDownAnnounced = false
   }
   function announceGatewayDown(): void {
-    if (!enabled.value || gatewayDownAnnounced) return
+    // 只在「确认连不上」时播报：网关等待超时 / 自动重连耗尽。
+    // 网关启动中、连接抖动、掉线瞬间都不报——那是正常过程，不打扰。只做去重。
+    if (gatewayDownAnnounced) return
     gatewayDownAnnounced = true
     playPromptCue('gatewayDown')
   }
   // 连接状态 / 重连耗尽 / 建连中 三个订阅同样要保存反订阅，避免 HMR 重挂载叠加
   const offStatus = transport.onStatusChange((connected) => {
     wsConnected.value = connected
-    if (connected) resetGatewayDownAnnounce()
-    else announceGatewayDown()
+    if (connected) {
+      resetGatewayDownAnnounce()
+      // 连接恢复：清掉「网关未连接/暂时无法唤醒」等过期提示——网关已恢复，旧红字不能一直挂着误导用户
+      if (errorMessage.value) errorMessage.value = ''
+      // 自动开启语音助手开着时，网关恢复后自动重新进入待唤醒（此前因连不上而停在「未开启」）
+      if (appConfig.general.autoConnect && state.value === 'idle') {
+        void enable()
+        return
+      }
+      // 原则：网关恢复后若处于待机，按待唤醒语义重武装会话（掉线时已退回待机）
+      if (enabled.value && state.value === 'standby') transport.startSession('wake')
+      return
+    }
+    // 掉线瞬间静默：自动重连马上会尝试，连不上由「重连耗尽」统一播报。
+    // 原则：网关不正常不允许停留在唤醒态——监听/对话中掉线立即退回待机，
+    // 不保留「正在听」的假象。
+    if (enabled.value && state.value !== 'standby') {
+      mode = 'wake'
+      dispatch({ type: 'CANCEL' })
+    }
   })
   // 自动重连次数耗尽：不再静默，用本地语音提示「网关连不上」（断网也能出声），
   // 并提示用户可手动点页面「重试连接」；重置播报标记以便这次能再念一次。
@@ -216,24 +235,45 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const { health } = useHealth(wsConnected)
   // 设备权限只读检测（不弹授权框）：麦克风未授权要出声提示，定位只显示状态。
   const { permissions, refreshPermissions } = usePermissions(wsConnected)
-  // 定时检测结果：只在某能力「ok → down」时念一次；down→down / down→ok / ok→ok 都静默。
-  // 前提是网关连通（断开时 useHealth 清空 health，不触发）。首次拿到报告 prev 为空、不念，
-  // 那种「一开始就不可用」的情形由网关 client.cue 负责播报，避免漏报。
+  // 能力不可用播报以客户端健康报告为唯一来源：连上后 useHealth 主动拉 /api/health，时序确定、每次连接都会跑。
+  // 首次报告把「一开始就 down」的能力（ASR/TTS/LLM）**逐条独立定时**播报：真机上共享串行队列
+  // 只推进第一条就卡住，导致只剩 ASR 一条；改为各自 setTimeout，间隔 > 各 mp3 时长，不叠音也不漏。
+  // 之后只在「ok → down」变化时补播。不再依赖网关 client.cue（真机时有时无），避免双份提示音。
   let prevHealthStatus: Partial<Record<HealthItem['key'], HealthStatus>> = {}
+  let firstReportHandled = false
+  let initialCueTimers: ReturnType<typeof setTimeout>[] = []
+  function clearInitialCueTimers(): void {
+    initialCueTimers.forEach(clearTimeout)
+    initialCueTimers = []
+  }
   watch(health, (report) => {
     if (!report) {
       prevHealthStatus = {}
+      firstReportHandled = false
       return
     }
     if (!wsConnected.value) return
-    const downKeys: HealthItem['key'][] = []
-    for (const item of toHealthItems(report)) {
-      if (prevHealthStatus[item.key] === 'ok' && item.status === 'down') downKeys.push(item.key)
-      prevHealthStatus[item.key] = item.status
+    const items = toHealthItems(report)
+    if (!firstReportHandled) {
+      firstReportHandled = true
+      const keys = HEALTH_PRIORITY.filter((k) =>
+        items.some((i) => i.key === k && i.status === 'down'),
+      )
+      clearInitialCueTimers()
+      keys.forEach((k, idx) => {
+        initialCueTimers.push(setTimeout(() => playPromptCue(HEALTH_CUE[k]), idx * 4600))
+      })
+      for (const item of items) prevHealthStatus[item.key] = item.status
+      return
     }
+    const changed: HealthItem['key'][] = []
+    for (const item of items) {
+      if (prevHealthStatus[item.key] === 'ok' && item.status === 'down') changed.push(item.key)
+    }
+    for (const item of items) prevHealthStatus[item.key] = item.status
+    const downKeys = HEALTH_PRIORITY.filter((k) => changed.includes(k))
     if (!downKeys.length) return
-    const cues = HEALTH_PRIORITY.filter((k) => downKeys.includes(k)).map((k) => HEALTH_CUE[k])
-    if (cues.length) playPromptCueSequence(cues)
+    playPromptCueSequence(downKeys.map((k) => HEALTH_CUE[k]))
   })
 
   // 麦克风是核心能力：仅当「已授权 → 未授权/未知」变化时补播一次提示；
@@ -478,21 +518,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         cancelPendingIdle()
         dispatch({ type: 'ERROR' })
         break
-      case 'client.cue': {
-        // 网关在建连即探测到 ASR/TTS/LLM 不可用，下发预录提示音；
-        // 此时网关没法用语音播报，只能靠提示音让用户「听得见地」知道能力缺失。
-        // 事件里的 cue 是文件名（kebab-case，如 asr-down），需转成 PromptCue（camelCase，如 asrDown）。
-        const map: Record<string, PromptCue> = {
-          'asr-down': 'asrDown',
-          'tts-down': 'ttsDown',
-          'llm-down': 'llmDown',
-          'network-down': 'networkDown',
-        }
-        const cue = map[event.cue]
-        // 网关可能一次性下发多条 client.cue（如 ASR/TTS/LLM 全不可达），串行播放，避免叠音
-        if (cue) enqueueCue(cue)
+      case 'client.cue':
+        // 能力不可用提示音统一由本地 health 报告驱动（watch health 里的 playPromptCueSequence）。
+        // 网关这条 client.cue 在真机上时有时无，不能作为唯一触发源；此处刻意不播，避免与 health 双份叠音。
         break
-      }
     }
   }
 
@@ -509,7 +538,42 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     cancelPlaybackIdle = null
   }
 
+  /** 网关是否真正可用：WS 连通且不在建连/重连中。网关指 WS 本身，与 ASR/LLM/TTS 上游无关。 */
+  function gatewayUsable(): boolean {
+    return transport.isConnected() && !connecting.value
+  }
+
+  /** ASR 是否就绪：语音唤醒完全依赖它，没好就不该唤醒。健康报告没拿到也视为未就绪（不确认好就不放行）。 */
+  function asrReady(): boolean {
+    const r = health.value
+    return !!r && r.asr.configured && r.asr.reachable
+  }
+
+  /** 唤醒前置条件（原则）：网关 WS 正常 + ASR 可用，两者缺一不可。 */
+  function canWake(): boolean {
+    return gatewayUsable() && asrReady()
+  }
+
+  /** 被拦时播哪条提示音：优先说清「听不见」的原因，健康报告未到则报网关未连好。 */
+  function wakeBlockedCue(): PromptCue {
+    const r = health.value
+    if (!r) return 'gatewayDown'
+    if (!r.asr.configured || !r.asr.reachable) return 'asrDown'
+    if (!r.tts.configured || !r.tts.reachable) return 'ttsDown'
+    if (!r.llm.configured || !r.llm.reachable) return 'llmDown'
+    return 'gatewayDown'
+  }
+
   function dispatch(event: AssistantEvent): void {
+    // 原则（硬保证）：网关或 ASR 没好时，任何「进入唤醒/对话」的事件——手动点球 WAKE、
+    // 语音唤醒词 WAKE、REWAKE——一律不放行，绝不进入 listening。统一在派发处拦截，
+    // 所有路径都绕不过去。提示音由点击入口负责，不在派发处重复播。
+    if (
+      (event.type === 'WAKE' || event.type === 'REWAKE') &&
+      !canWake()
+    ) {
+      return
+    }
     const result = transition(state.value, event)
     state.value = result.state
     result.effects.forEach(applyEffect)
@@ -614,10 +678,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     try {
       await transport.connect('wake')
       void announceMicIfNeeded()
-    } catch (err) {
-      errorMessage.value = (err as Error).message
-      // 开启唤醒但首次就建连失败（网关一直不可达）：主动念一次「网络不通」
-      announceGatewayDown()
+    } catch {
+      // 建连失败交给自动重连；确认连不上由「重连耗尽」统一播报，此处静默
     }
   }
 
@@ -630,10 +692,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
     try {
       await transport.connect('dialog')
-    } catch (err) {
-      errorMessage.value = (err as Error).message
-      // 唤醒后切到对话时建连失败，同样提示一次网络不通
-      announceGatewayDown()
+    } catch {
+      // 切到对话时建连失败：自动重连兜底，静默；连不上由「重连耗尽」统一播报
     }
   }
 
@@ -715,17 +775,36 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 未就绪（超时）时显示 i18n 提示并出声，不静默、不继续连默认回退地址。
    * 非内嵌（H5 / 外部网关）下 waitForEmbeddedGateway 立即返回 true，行为不变。
    */
+  let enabling = false
   async function enable(): Promise<void> {
-    gatewayPreparing.value = true
-    errorMessage.value = ''
-    const ready = await waitForEmbeddedGateway()
-    gatewayPreparing.value = false
-    if (!ready) {
-      errorMessage.value = t('gateway.notReady')
-      playPromptCue('gatewayDown')
-      return
+    if (enabling) return // 防重入：connect 触发的连接恢复回调会试图自动重开
+    enabling = true
+    try {
+      gatewayPreparing.value = true
+      errorMessage.value = ''
+      const ready = await waitForEmbeddedGateway()
+      gatewayPreparing.value = false
+      if (!ready) {
+        // 等待网关启动超时＝确认连不上，才播报一次（带去重），不显示文字
+        announceGatewayDown()
+        return
+      }
+      // 网关进程就绪 ≠ WS 已连通。必须先确认 WS 真的连上，才允许进入「待唤醒」；
+      // 连不上就当场播报并停在「未开启」，绝不进 standby 让用户以为可以点球/喊唤醒词。
+      if (!transport.isConnected()) {
+        try {
+          await transport.connect('wake')
+        } catch {
+          // 首次连不上：交给自动重连；连不上由「重连耗尽」统一播报，此处静默
+          return
+        }
+      }
+      // connect 返回却仍未连通（如还在握手中）：同样不进 standby
+      if (!transport.isConnected()) return
+      dispatch({ type: 'ENABLE' })
+    } finally {
+      enabling = false
     }
-    dispatch({ type: 'ENABLE' })
   }
 
   function disable(): void {
@@ -741,9 +820,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 「唤醒了但说不了话」是不诚实的状态），此时诚实提示并顺手触发重连。 */
   function wake(): void {
     if (state.value !== 'standby') return
-    if (!transport.isConnected()) {
-      errorMessage.value = t('gateway.notConnected')
-      void retry()
+    if (!canWake()) {
+      // 原则：网关/ASR 没好时手动点球不放行；但要提示，不静默——播对应原因的提示音
+      playPromptCue(wakeBlockedCue())
       return
     }
     dispatch({ type: 'WAKE' })
@@ -753,13 +832,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 前提是开启了唤醒（助手处于启用状态），否则无需重连。 */
   async function retry(): Promise<void> {
     if (!enabled.value || transport.isConnected() || connecting.value) return
-    // 重新武装掉线播报，连不上能再提示一次
-    resetGatewayDownAnnounce()
     try {
       await transport.connect(mode)
-    } catch (err) {
-      errorMessage.value = (err as Error).message
-      announceGatewayDown()
+    } catch {
+      // 手动重连失败：自动重连兜底，静默；连不上由「重连耗尽」统一播报
     }
   }
 
@@ -773,8 +849,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     transport.reportVolume(volume)
   }
 
-  /** 重新唤醒：对话进行中再次叫「小熊小熊」时，停掉当前轮次并重新招呼。 */
+  /** 重新唤醒：对话进行中再次叫「小熊小熊」时，停掉当前轮次并重新招呼。
+   * 网关不可用时 dispatch 已拦截 REWAKE，此处不得再单独把阶段设成 listening 造成假象。 */
   function reWake(): void {
+    if (!canWake()) return
     dispatch({ type: 'REWAKE' })
     phase.value = 'listening'
   }

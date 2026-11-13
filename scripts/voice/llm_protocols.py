@@ -714,3 +714,138 @@ def ollama_tags_to_openai(obj: dict) -> dict:
         for m in obj.get("models", [])
     ]
     return {"object": "list", "data": models}
+
+
+# ── 嵌入（embeddings）请求构建与响应翻译 ───────────────────────────────
+# OpenAI 嵌入契约：POST /v1/embeddings，请求体 {input: str|list[str], model,
+# encoding_format?, dimensions?}，响应 {object:"list", data:[{object:"embedding",
+# index, embedding:[...]}], model, usage:{...}}。各厂商路径不同，由本模块统一翻译。
+#
+# 不支持嵌入的线协议（Anthropic / OpenAI Responses）由路由层直接返回 501，
+# 不进这里——它们根本没有向量接口。
+SUPPORTED_EMBED_WIRES = {
+    "openai_chat_completions",
+    "azure_openai_chat_completions",
+    "gemini",
+}
+
+
+def ollama_embed_to_openai(obj: dict) -> dict:
+    """Ollama /api/embed 响应 -> OpenAI embeddings 形状。
+
+    Ollama 返回 {model, embeddings:[[...],[...]], total_duration?}，逐个包成
+    OpenAI 的 data[].embedding；index 按数组顺序。
+    """
+    embs = obj.get("embeddings") or []
+    model = obj.get("model", "")
+    data = [
+        {"object": "embedding", "index": i, "embedding": e}
+        for i, e in enumerate(embs)
+    ]
+    return {"object": "list", "data": data, "model": model}
+
+
+def gemini_embed_to_openai(obj: dict) -> dict:
+    """Gemini embedContent 单条响应 -> OpenAI embeddings 形状。
+
+    {embedding:{values:[...]}} 包成 data[0]；batchEmbedContents 的
+    {embeddings:[{values:[...]}]} 也能解析（取 embedding 或 embeddings 任一）。
+    """
+    values = (obj.get("embedding") or {}).get("values")
+    if values is None:
+        # batchEmbedContents：embeddings:[{values:[...]}, ...]
+        multi = obj.get("embeddings") or []
+        data = [
+            {"object": "embedding", "index": i, "embedding": (e.get("values") or [])}
+            for i, e in enumerate(multi)
+        ]
+    else:
+        data = [{"object": "embedding", "index": 0, "embedding": values}]
+    model = obj.get("model", "")
+    return {"object": "list", "data": data, "model": model}
+
+
+def _build_openai_embeddings(base: str, api_key: str, model: str, body: dict, path: str) -> UpstreamRequest:
+    payload = dict(body)
+    if model:
+        payload["model"] = model
+    payload.pop("think", None)
+    payload.pop("bypass_catalog", None)
+    payload.pop("vendor", None)
+    payload.pop("protocol", None)
+    payload.pop("base_url", None)
+    payload.pop("api_key", None)
+    payload.pop("direct_upstream", None)
+    payload.pop("extra_body", None)
+    url = base.rstrip("/") + path
+    headers = {"Content-Type": "application/json", **_bearer(api_key), "Accept-Encoding": "identity"}
+    return UpstreamRequest(url, headers, payload)
+
+
+def _build_ollama_embeddings(base: str, api_key: str, model: str, body: dict) -> UpstreamRequest:
+    """Ollama 原生 /api/embed：input 接受单条字符串或字符串数组。"""
+    inp = body.get("input", "")
+    payload: dict[str, Any] = {"model": model, "input": inp}
+    if "dimensions" in body:
+        payload.setdefault("options", {})["embedding_length"] = int(body["dimensions"])
+    url = base.rstrip("/") + "/api/embed"
+    headers = {"Content-Type": "application/json", **_bearer(api_key), "Accept-Encoding": "identity"}
+    return UpstreamRequest(url, headers, payload)
+
+
+def _build_gemini_embeddings(base: str, api_key: str, model: str, body: dict) -> UpstreamRequest:
+    """Gemini embedContent / batchEmbedContents。
+
+    input 为单条文本走 embedContent；多条文本走 batchEmbedContents（Gemini 没有
+    批量嵌入的 OpenAI 式单接口，只有批接口）。
+    """
+    inputs = body.get("input", "")
+    texts = inputs if isinstance(inputs, list) else [inputs]
+    contents = [{"content": {"parts": [{"text": t}]}} for t in texts]
+    gencfg: dict[str, Any] = {}
+    if "dimensions" in body:
+        gencfg["outputDimensionality"] = int(body["dimensions"])
+    payload: dict[str, Any] = {}
+    if gencfg:
+        payload["generationConfig"] = gencfg
+    if len(contents) == 1:
+        payload["content"] = contents[0]["content"]
+        url = base.rstrip("/") + f"/models/{model}:embedContent"
+    else:
+        payload["requests"] = contents
+        url = base.rstrip("/") + f"/models/{model}:batchEmbedContents"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["x-goog-api-key"] = api_key
+    return UpstreamRequest(url, headers, payload)
+
+
+def prepare_embeddings(
+    protocol: str, base: str, api_key: str, model_override: str, api_version: str, body: dict,
+) -> tuple[UpstreamRequest, callable]:
+    """嵌入请求构建：返回（上游请求, 响应翻译函数）。
+
+    线协议只由 protocol 决定；vendor 仅影响 OpenAI 兼容路径下的 dashscope
+    /compatible-mode/v1 变体（与对话一致）。不支持嵌入的线协议（anthropic_messages /
+    openai_responses）不在此处理，由路由层返回 501。
+    """
+    wire = normalize_protocol(protocol)
+    vendor = protocol_vendor(protocol)
+
+    if uses_ollama_native(protocol):
+        req = _build_ollama_embeddings(base, api_key, model_override, body)
+        return req, ollama_embed_to_openai
+    if wire == "azure_openai_chat_completions":
+        model = model_override or body.get("model") or ""
+        req = _build_openai_embeddings(
+            base, api_key, model, body, f"/openai/deployments/{model}/embeddings"
+        )
+        if api_version:
+            req.url += f"?api-version={api_version}"
+        return req, _identity
+    if wire == "gemini":
+        return _build_gemini_embeddings(base, api_key, model_override or body.get("model") or "", body), gemini_embed_to_openai
+    # 其余 OpenAI 兼容（含 dashscope / deepseek / openai / ollama 的 /v1/embeddings）
+    path = "/compatible-mode/v1/embeddings" if vendor == "dashscope" else "/v1/embeddings"
+    req = _build_openai_embeddings(base, api_key, model_override, body, path)
+    return req, _identity

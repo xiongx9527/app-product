@@ -12,6 +12,7 @@ export interface ScreenInfo {
   height: number
   breakpoint: Breakpoint
   safeTop: number
+  statusBarHeight: number
   safeBottom: number
   platform: string
   model: string
@@ -25,6 +26,7 @@ export function readScreenInfo(): ScreenInfo {
     height: info.windowHeight,
     breakpoint: getBreakpoint(info.windowWidth),
     safeTop: safeArea ? safeArea.top : 0,
+    statusBarHeight: info.statusBarHeight ?? 0,
     safeBottom: safeArea ? info.screenHeight - safeArea.bottom : 0,
     platform: info.platform,
     model: info.model ?? '',

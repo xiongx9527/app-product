@@ -1,12 +1,8 @@
 <script setup lang="ts">
 import { onLaunch } from '@dcloudio/uni-app'
-import { appConfig } from '@/core/config'
-import { applyTheme } from '@/core/theme'
 
 onLaunch(() => {
-  // 应用启动：这里只做基础初始化，音频/唤醒能力由 features/assistant 按需启动。
-  // 应用已保存的主题（默认 default），写到 :root 的 CSS 变量上，全局即时生效。
-  applyTheme(appConfig.general.theme)
+  // 应用启动基础初始化；主题由各页面根元素的 :style 响应式绑定驱动，无需在此操作 document。
   console.log('[app-product] launch')
 })
 </script>

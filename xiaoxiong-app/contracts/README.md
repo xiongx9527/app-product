@@ -295,6 +295,74 @@ RSA 只能加密小块数据，故采用混合加密：每次随机生成 `AES-2
 
 REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 事件。
 
+## 本地语音代理（9529）接口
+
+> 本节是 **Node 网关 → 本地语音代理**（Python 服务，端口 9529）的调用契约；客户端一律不直接访问，只与 Node 网关通信。
+
+### 现状（已实现）
+
+| 能力 | 接口 | 说明 |
+|---|---|---|
+| ASR | `POST /voice/v1/audio/transcriptions` | `multipart/form-data` 上传 16k/16bit 单声道 WAV，返回 `{ "text": "..." }` |
+| TTS | `POST /voice/v1/audio/speech` | JSON（`input` / `voice` / `response_format` / `speed`），返回 WAV / MP3 / PCM |
+| TTS | `GET /voice/v1/audio/voices` | 音色目录 `{ default, voices: [{ id, lang, desc }] }` |
+| 翻译 | `POST /voice/v1/audio/translations` | `multipart/form-data` 上传音频，先 ASR 识别原文、再经 LLM 代理翻译成 `target_lang`（默认英语）文本；无 LLM 上游时如实返回 503，不把识别原文冒充翻译 |
+| 服务级 | `GET /voice/health`、`GET /voice/v1/models` | 整体健康状态 / 统一模型目录 |
+| LLM 对话 | `POST /llm/v1/chat/completions` | OpenAI 兼容，流式/非流式同一端点（`stream` 字段区分，SSE 或单个 JSON） |
+| LLM 嵌入 | `POST /llm/v1/embeddings` | OpenAI 兼容向量接口：`{ input, model, encoding_format?, dimensions? }` → `{ object:"list", data:[{ index, embedding }] }`；Ollama / DashScope / Gemini 走各自路径，Anthropic 与 OpenAI Responses 线协议不提供向量接口（501） |
+| LLM 模型 | `GET /llm/v1/models` | OpenAI 风格模型目录（配置并集） |
+| LLM 提供商 | `GET /llm/v1/providers` | 已配置提供商清单（脱敏、无密钥） |
+
+- 语音接口统一在 `/voice` 前缀下，**不按 ASR/TTS 分一级路径**（与 DashScope 形态一致）。
+- 业务请求可带 `provider`、`model`、`protocol` 覆盖默认路由（管理面板底部「测试」页用）；不传则完全沿用配置。`protocol` 为**对上游的线协议**（`http` / `ws` / `http-async`），必填，取自模型的协议字段。
+
+### 对外 WS 实时接口 `/voice/ws/inference`（已实现）
+
+实时 ASR / TTS 共用一个 WebSocket 入口，协议形状对齐 DashScope `/api-ws/v1/inference`（网关换 base_url 即用）。与 `/voice/*` HTTP 接口的区别：**HTTP 是一次性 request/response；WS 是长连接、可复用、流式收发音频帧**。
+
+- **端点**：`WS /voice/ws/inference`（如 `ws://127.0.0.1:9529/voice/ws/inference`）。
+- **鉴权**：与 `/voice` 数据接口一致——IP 白名单 + API-Key；API-Key 走 query 参数 `?api_key=`（浏览器 WebSocket 不能带自定义头），管理面板同源自动带 session cookie。两者默认都关闭。
+- **协议**：文本帧为 JSON（`header.action` 驱动），二进制帧为音频。事件序列：
+
+| 方向 | 事件 | 关键字段 |
+|---|---|---|
+| C→S | `run-task` | `payload.task` = `asr` / `tts`；`payload.model`（上游模型，如 `paraformer-realtime-v2` / `cosyvoice-v2`，可空沿用配置）；`payload.parameters.voice`（TTS 音色） |
+| S→C | `task-started` | `streaming: "duplex"` |
+| C→S | 二进制音频帧（ASR）/ `continue-task`（`payload.input.text`，TTS） | — |
+| C→S | `finish-task` | 结束本次输入 |
+| S→C | `result-generated`（ASR）/ 二进制音频帧（TTS） | ASR：`payload.output.sentence.text` |
+| S→C | `task-finished` | 本次任务结束 |
+| S→C | `task-failed` | `error_code: "INVALID_REQUEST"` + `error_message` |
+| C→S | `ping` / `heartbeat` | S→C 回 `pong` |
+
+- **ASR 流程**：`run-task` →（收 `task-started`）→ 发二进制音频（建议 WAV / 16k / 16bit / 单声道）+ `finish-task` → 收 `result-generated`（文本）+ `task-finished`。
+- **TTS 流程**：`run-task` →（收 `task-started`）→ 发 `continue-task`(文本) + `finish-task` → 收二进制音频帧 + `task-finished`。
+- **错误处理**：`task-failed` **不关闭连接**，可继续发下一个 `run-task` 复用连接。常见原因：`task` 非法（非 `asr`/`tts`）、内置 ASR 收到非 WAV、或「模型与提供商对不上」（内置模式下传了上游 ws 模型，提示去配置上游提供商）。
+- **协议判定**：`protocol`（ws / http）由 `model` 名字推断（`_model_uses_ws`：含 `cosyvoice` / `realtime` / `streaming` / `gummy` 即 ws），与上游线协议一致。
+
+> HTTP 形态统一为 **OpenAI 音频 API 标准形状**（`/voice/v1/audio/transcriptions`、`/speech`、`/translations`），不再单独提供 DashScope 形状的 HTTP 端点（原 `/api/v1/services/aigc/...` 与 `/compatible-mode/v1/chat/completions` 已移除，收敛到一套路径）。需要实时流式再走下面的 WS。
+
+> 注意：OpenAPI 3.0 不描述 WebSocket，所以本 WS 接口**不会出现在 `/docs`（Swagger UI）**。HTTP 接口（符合 OpenAI 音频 API 标准的 `/voice/v1/audio/transcriptions`、`/speech`、`/translations` 等）在 `/docs` 自动生成、可直接调试。
+
+### LLM 代理接口（/llm/v1）
+
+本地 LLM 代理是**纯 OpenAI 兼容反向代理**：入站固定 OpenAI `chat/completions` 形状，出站按 `LLM_UPSTREAM_PROTOCOL` 翻译到上游（Ollama / DashScope / OpenAI 等），网关换 `base_url` 即用。与语音接口不同，LLM 没有独立的 WS 形态，全部走 HTTP。
+
+> 为什么只有一个 `/chat/completions`：OpenAI 的约定就是**流式与非流式共用同一个端点**，靠请求体里的 `stream: true/false` 区分——`true` 走 SSE 分块返回，`false` 返回单个 JSON。多数上游（Ollama / DashScope / OpenAI）都遵循这一形状，所以代理只需暴露这一个对话接口，无需为流式另开 URL。语音助手只走对话，不需要旧的 `/completions`（非对话补全）。向量（embeddings）是 OpenAI 兼容的**独立端点** `POST /llm/v1/embeddings`（见下表），与对话分开。
+
+| 能力 | 接口 | 说明 |
+|---|---|---|
+| 对话 | `POST /llm/v1/chat/completions` | OpenAI 兼容；`stream:true` 走 SSE 字节透传，`false` 走单个 JSON。请求体即标准 `chat/completions`（`model` / `messages` / `stream` 等） |
+| 嵌入（向量） | `POST /llm/v1/embeddings` | OpenAI 兼容：`{input, model, encoding_format?, dimensions?}` → `{object:"list", data:[{index, embedding}], model}`。Ollama 走 `/v1/embeddings`（或原生 `/api/embed`）、DashScope 走 `/compatible-mode/v1/embeddings`、Gemini 走 `embedContent` / `batchEmbedContents`；**Anthropic 与 OpenAI Responses 线协议不提供向量接口，返回 501**。嵌入模型（如 `nomic-embed-text`）通常不在对话模型目录里，网关按上游真实模型存在性放行，不按对话目录回退默认模型（否则会拿对话模型去 embed 而 501） |
+| 模型目录 | `GET /llm/v1/models` | OpenAI 风格 `{object:"list", data:[{id, owned_by, ...}]}`；返回「所有分组的模型并集」，无配置时退回上游真实 `/models` |
+| 提供商 | `GET /llm/v1/providers` | 列出已配置 LLM 提供商（`vendor` / `protocol` / `model` / `host` 脱敏），**不含任何密钥** |
+| 健康 | `GET /llm/health`、根 `GET /llm` | 仅 LLM 的健康状态；`/llm` 用于网关建连时打 baseUrl 本身做探测 |
+
+- **鉴权**：与语音接口一致——IP 白名单 + API-Key（走请求头，由配置决定是否开启），默认都关闭。
+- **思考控制**：对外固定用请求头 `X-Proxy-Think`（取值 `1/true/yes/on`），代理读入后转成内部统一字段，再翻译成上游厂商原生的 body 参数（如 ollama `think=false`）真正生效；**不落存储**，客户端每次自带，且不会原样透传给上游。
+- **按模型路由**：请求 `model` 命中某个配置分组（提供商）时，用该分组的模型与上游；未命中任何分组时退回全局「健康优先 + 轮询」，且不再用入口 `model` 覆盖，避免把请求模型偷偷改掉。组内多账号间轮询在代理内部消化。
+- **测试入口**：对话/模型接口允许显式带 `vendor` / `protocol`（测试页覆盖路由与线协议，不影响上游配置）；`base_url` 仅填代理地址时可自动补 `/llm` 前缀命中本代理，填真实上游地址需带 `direct_upstream:true` 直连（避免自转发递归）。
+
 ## 约束
 
 - 所有时间戳为毫秒。

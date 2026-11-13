@@ -18,6 +18,10 @@ import {
   totalLabel,
 } from '@/core/audio/musicProgress'
 import { t } from '@/core/i18n'
+import { useThemeStyle } from '@/core/composables/useTheme'
+
+// 根元素响应式绑定主题变量：设置页改主题并落盘后，返回本页会自动同步换色
+const { themeStyle, dataTheme } = useThemeStyle()
 
 const {
   state,
@@ -141,6 +145,22 @@ const lyricFontSize = computed(() => {
 // 网关连接状态仍由 useAssistant 内部消费（断线提示、健康播报等），仅不再渲染到页面右上角。
 
 const screen = ref<ScreenInfo>(readScreenInfo())
+
+// 内边距全部由 :style 内联注入，不依赖 scoped CSS 规则：
+// uni-app 视图层在子页（如好价商品推荐/开源工具推荐共用的 RecommendList）↔ 主页往返时，
+// 偶尔会丢失主页 scoped 的 .page 规则，导致 paddingTop 归零、齿轮顶到状态栏（回归 bug）。
+// 内联样式不受该问题影响，故 padding 全走这里。竖屏顶部让出状态栏（statusBarHeight）后只留
+// 6px 极小间距，让设置按钮贴近状态栏；横屏状态栏转到侧边、顶部无障碍，只留 4px 极小间距。
+const isLandscape = computed(() => screen.value.width > screen.value.height)
+const pageStyle = computed(() => {
+  const top = isLandscape.value ? 4 : screen.value.statusBarHeight + 6
+  return {
+    paddingTop: `${top}px`,
+    paddingLeft: '20px',
+    paddingRight: '20px',
+    paddingBottom: 'calc(24px + env(safe-area-inset-bottom))',
+  }
+})
 
 const isActive = computed(() => state.value === 'listening' || state.value === 'confirming')
 // 模型回复可能是 Markdown 或 HTML，统一转成 rich-text 能渲染的安全 HTML
@@ -379,7 +399,7 @@ function onOrbTap(): void {
 </script>
 
 <template>
-  <view class="page" :class="`bp-${screen.breakpoint}`">
+  <view class="page" :class="`bp-${screen.breakpoint}`" :style="[pageStyle, themeStyle]" :data-theme="dataTheme">
     <view class="header">
       <view class="header-actions">
         <view class="gear" @tap="openSettings">⚙</view>
@@ -401,10 +421,11 @@ function onOrbTap(): void {
       <text class="hint">{{ hint }}</text>
       <text class="phase" :class="phase">{{ phaseLabel }}</text>
       <text v-if="liveText" class="live-text">{{ liveText }}</text>
-      <text v-if="gatewayPreparing" class="hint">{{ t('gateway.preparing') }}</text>
+      <!-- 网关启动是正常过程，不显示「网关启动中」：启动阶段静默等待，确认连不上才播报 -->
       <text v-if="errorMessage" class="error">{{ errorMessage }}</text>
     </view>
 
+    <view class="info-col">
     <view class="cards">
       <view class="card">
         <view class="card-head">
@@ -613,6 +634,7 @@ function onOrbTap(): void {
         {{ t('talk.echo') }}
       </text>
     </view>
+    </view>
 
   </view>
 </template>
@@ -620,8 +642,8 @@ function onOrbTap(): void {
 <style scoped>
 .page {
   min-height: 100vh;
-  padding: 24px 20px calc(24px + env(safe-area-inset-bottom));
-  padding-top: calc(24px + env(safe-area-inset-top));
+  /* padding 全部由 :style 内联注入（见 pageStyle），此处不再定义，
+     以避免 uni-app 视图层往返子页时 scoped .page 规则丢失导致布局错乱。 */
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -1578,6 +1600,48 @@ function onOrbTap(): void {
 
 .page.bp-expanded .card {
   flex: 1;
+}
+
+/* 竖屏：info-col 仅作分组，透明不参与布局，子元素直接进 .page 流，不影响竖屏表现 */
+.info-col {
+  display: contents;
+}
+
+/* 横屏两栏：左侧语音球、右侧信息卡片，铺满屏幕且一眼看全（尽量不滚动）。
+   注意：仅重排布局，music-bar 等内部样式保持原样，不在此特殊处理。 */
+@media (orientation: landscape) {
+  .page.bp-compact,
+  .page.bp-medium,
+  .page.bp-expanded {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "header header"
+      "stage  info";
+    max-width: none;
+    margin: 0;
+    gap: 12px 32px;
+    align-items: stretch;
+  }
+  .header {
+    grid-area: header;
+  }
+  .stage {
+    grid-area: stage;
+    /* 横屏左栏：语音球顶部对齐，与右栏卡片顶部齐平（比居中更靠上） */
+    justify-content: flex-start;
+  }
+  .info-col {
+    grid-area: info;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .queue-full-banner {
+    grid-column: 1 / -1;
+  }
 }
 
 @keyframes pulse {

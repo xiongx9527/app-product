@@ -10,11 +10,16 @@
         POST /llm/v1/chat/completions       原样转发到上游（流式 SSE 字节透传）
         GET  /llm/v1/models                 原样转发上游模型列表
         GET  /llm/health                    仅 LLM 的健康状态
-    Voice:
+    Voice（统一前缀，不按 ASR/TTS 分一级路径——与 DashScope 的形态一致）:
         POST /voice/v1/audio/transcriptions multipart/form-data -> {"text": "..."}
+        POST /voice/v1/audio/translations   multipart/form-data -> {"text": "..."}（先 ASR 识别原文，再经 LLM 翻译成 target_lang，默认英语；无 LLM 上游返回 503）
         POST /voice/v1/audio/speech         application/json     -> WAV / MP3 / PCM
-        GET  /voice/v1/models               语音后端模型列表
+        GET  /voice/v1/audio/voices         可选音色目录
+        GET  /voice/v1/models               语音后端模型列表（内置 + 已配置上游，动态）
+        GET  /voice/v1/providers            语音提供商列表（STT / TTS 两个端口，含协议）
         GET  /voice/health                  仅语音的健康状态
+    Voice WebSocket（/voice/ws 前缀，与 /voice/v1 平行，区分 WS 与 HTTP）:
+        WS   /voice/ws/inference    实时 ASR / TTS 统一入口（run-task/finish-task + 二进制帧，task 区分）
     全局:
         GET  /                              服务与后端概览
         GET  /health                        全部能力状态
@@ -67,6 +72,8 @@
 
 from __future__ import annotations
 import base64
+import uuid
+import websockets
 
 import argparse
 import asyncio
@@ -79,8 +86,10 @@ import re
 import secrets
 import shutil
 import subprocess
+import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 import wave
 import gzip
 import zlib
@@ -99,8 +108,8 @@ import voice_sync  # 远程数据库同步（Postgres）
 import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库的门面
 import upstream_pool  # 上游地址池：多地址 + 账号池，健康探测 + 轮询
 import model_catalog  # 统一模型目录（LLM / TTS / STT 三端口，对齐 fw-plus-ai-native）
-from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 # 与网关契约保持一致：上行 16k，下行 24k；两边都是 16bit 单声道。
@@ -510,7 +519,16 @@ async def fetch_json(url: str, headers: dict[str, str] | None = None):
         return error_response(502, "上游 LLM 返回的不是 JSON")
 
 
-app = FastAPI(title="openai-voice-server")
+app = FastAPI(
+    title="openai-voice-server",
+    description=(
+        "本地 AI 语音服务。HTTP 语音接口（/voice/v1/audio/transcriptions、/speech、/translations、"
+        "/voices、/models、/providers）符合 OpenAI 音频 API 标准，可直接在下方调试；"
+        "LLM 代理（/llm/v1/chat/completions、/embeddings、/models、/providers）同为 OpenAI 兼容层，"
+        "网关换 base_url 即用。实时 WebSocket 接口 /voice/ws/inference 协议见 /docs/ws"
+        "（OpenAPI 不描述 WebSocket，故独立文档页；也可在仓库 xiaoxiong-app/contracts/README.md 查看）。"
+    ),
+)
 
 # 管理面板「测其它实例」是浏览器直连对方代理，对方必须允许跨域，否则 ASR/TTS
 # 会在浏览器侧被 CORS 拦掉（表现为 Failed to fetch）。
@@ -853,24 +871,39 @@ async def synthesize_edge_mp3(text: str, voice: str, rate: str) -> bytes:
     raise RuntimeError(f"edge-tts 合成失败: {last_error}")
 
 
-def transcode_mp3(mp3: bytes, fmt: str):
-    """把 edge-tts 的 MP3 转成网关需要的 WAV / 裸 PCM。
+def _looks_like_mp3(data: bytes) -> bool:
+    """粗略判断字节是否已是 MP3（ID3 标签头或 MPEG 音频帧同步字）。"""
+    if data[:3] == b"ID3":
+        return True
+    if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        return True
+    return False
 
-    这里强行指定 24kHz / 单声道 / 16bit，和网关 tts.start 声明的
-    pcm16@24000 对齐，网关拿到后不需要再重采样，直接按二进制帧下发。
-    wav 输出带 RIFF 头，pcm 输出裸 s16le。
+
+def transcode_mp3(mp3: bytes, fmt: str):
+    """把上游音频字节（edge-tts / DashScope 的 MP3 或 WAV）转成网关需要的 WAV / 裸 PCM / MP3。
+
+    强行指定 24kHz / 单声道 / 16bit，和网关 tts.start 声明的 pcm16@24000 对齐，
+    网关拿到后不需要再重采样，直接按二进制帧下发。wav 输出带 RIFF 头，pcm 输出裸 s16le，
+    mp3 用 libmp3lame 编码；若输入已是 MP3 则直接透传，省去重编码。
     """
     binary = ffmpeg_path()
     if not binary:
         raise RuntimeError(
-            "未找到 ffmpeg，无法把 edge-tts 的 MP3 转成 WAV；"
+            "未找到 ffmpeg，无法把音频转成目标格式；"
             "macOS 可执行 brew install ffmpeg，Windows 可执行 winget install Gyan.FFmpeg"
         )
 
+    # 已是 MP3 则透传，避免把 MP3 又重新编码一遍（也兼容上游直接返回 MP3 的情况）。
+    if fmt == "mp3" and _looks_like_mp3(mp3):
+        return mp3, "audio/mpeg"
+
     if fmt == "wav":
-        out_format, media_type = "wav", "audio/wav"
+        out_format, codec, media_type = "wav", "pcm_s16le", "audio/wav"
     elif fmt == "pcm":
-        out_format, media_type = "s16le", "audio/pcm"
+        out_format, codec, media_type = "s16le", "pcm_s16le", "audio/pcm"
+    elif fmt == "mp3":
+        out_format, codec, media_type = "mp3", "libmp3lame", "audio/mpeg"
     else:
         raise ValueError(f"unsupported response_format: {fmt}")
 
@@ -884,7 +917,7 @@ def transcode_mp3(mp3: bytes, fmt: str):
         "-f",
         out_format,
         "-acodec",
-        "pcm_s16le",
+        codec,
         "-ar",
         str(TTS_SAMPLE_RATE),
         "-ac",
@@ -969,23 +1002,142 @@ def voice_health_route():
 BUILTIN_TTS_MODELS = {"edge-tts"}
 BUILTIN_STT_MODELS = {"sensevoice-small"}
 
+# STT / TTS 上游 provider 的默认上游地址（与转发分支里的兜底保持一致）。
+_UPSTREAM_DEFAULT_BASE = "https://dashscope.aliyuncs.com"
+
+
+def _host_of(base_url: str) -> str:
+    """从上游 base_url 取出主机名（脱敏，不暴露路径 / 密钥）；解析失败原样返回。"""
+    base = (base_url or "").strip()
+    if not base:
+        return ""
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(base).netloc or base
+    except Exception:  # noqa: BLE001
+        return base
+
+
+def _json_model_list(raw: str) -> list[str]:
+    """DB 里 *_UPSTREAM_MODELS 可能是 JSON 数组字符串或空；安全解析成去空白模型名列表。"""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        import json as _json
+
+        val = _json.loads(raw)
+        if isinstance(val, list):
+            return [str(m).strip() for m in val if str(m).strip()]
+    except Exception:  # noqa: BLE001
+        pass
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def _edge_tts_available() -> bool:
+    """内置 TTS 是否可用：edge-tts 能 import 且 ffmpeg 在 PATH（或 FFMPEG_BIN 指向文件）。"""
+    try:
+        import edge_tts  # noqa: F401
+
+        return ffmpeg_path() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _voice_provider_entries() -> list[dict]:
+    """枚举 STT / TTS 两个端口的可用提供商，供 /voice/v1/providers 与 /voice/v1/models 共用。
+
+    每个端口始终含 builtin（本地引擎）；若 DB 配置了上游 provider（dashscope / openai_audio），
+    再追加一条上游条目，含 base_url 主机、默认模型、候选模型列表、协议推断。任何密钥都不出现。
+    """
+    out: list[dict] = []
+
+    def add(capability, vendor, model, host, ready, models, protocol):
+        out.append(
+            {
+                "capability": capability,  # stt / tts
+                "vendor": vendor,  # builtin / dashscope / openai_audio
+                "protocol": protocol,  # local / http / ws / http-async
+                "model": model,  # 该 provider 当前默认模型
+                "host": host,  # 上游主机（脱敏）
+                "ready": ready,  # builtin 为布尔；上游为 None（需点测）
+                "models": models,  # 候选模型列表（用于下拉）
+            }
+        )
+
+    # ---- STT ----
+    stt_provider = (config_value("STT_PROVIDER", "builtin") or "builtin").strip().lower()
+    stt_base = (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or _UPSTREAM_DEFAULT_BASE
+    stt_model = (config_value("STT_UPSTREAM_MODEL") or "").strip()
+    stt_models = _json_model_list(config_value("STT_UPSTREAM_MODELS")) or (
+        [stt_model] if stt_model else []
+    )
+    add("stt", "builtin", "sensevoice-small", "", sensevoice_ready(),
+        sorted(BUILTIN_STT_MODELS), "local")
+    if stt_provider and stt_provider != "builtin":
+        add("stt", stt_provider, stt_model, _host_of(stt_base), None,
+            stt_models, "ws" if _model_uses_ws(stt_model) else "http")
+
+    # ---- TTS ----
+    tts_provider = (config_value("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
+    tts_base = (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or _UPSTREAM_DEFAULT_BASE
+    tts_model = (config_value("TTS_UPSTREAM_MODEL") or "").strip()
+    tts_models = _json_model_list(config_value("TTS_UPSTREAM_MODELS")) or (
+        [tts_model] if tts_model else []
+    )
+    add("tts", "builtin", "edge-tts", "", _edge_tts_available(),
+        sorted(BUILTIN_TTS_MODELS), "local")
+    if tts_provider and tts_provider != "builtin":
+        add("tts", tts_provider, tts_model, _host_of(tts_base), None,
+            tts_models, "ws" if _model_uses_ws(tts_model) else "http")
+    return out
+
+
+@app.get("/voice/v1/providers")
+def voice_providers():
+    """对外公开：列出当前已配置的语音提供商（STT / TTS 两个端口）。
+
+    形状对齐 /llm/v1/providers，但增加 capability / protocol / host / ready / models 等语音专属字段。
+    每个端口恒含 builtin（本地引擎），若配置了上游 provider（dashscope / openai_audio）则追加其条目。
+    仅含 vendor / protocol / host（脱敏）/ 模型，不含任何密钥。
+    """
+    return {"providers": _voice_provider_entries()}
+
 
 @app.get("/voice/v1/models")
 def voice_models():
-    """语音模型目录：覆盖 TTS 与 STT 两个端口（对齐 fw-plus-ai-native 的三端口目录）。
+    """语音模型目录：覆盖 STT 与 TTS 两个端口（对齐 fw-plus-ai-native 的三端口目录）。
 
-    TTS / STT 固定本地后端（edge-tts / sensevoice-small），没有上游。
-    统一用 model_catalog.ModelInfo，方便网关按 type 归类与校验。
+    模型来自当前激活的提供商：builtin 固定（sensevoice-small / edge-tts），上游（dashscope /
+    openai_audio）取 DB 配置的候选模型列表（*_UPSTREAM_MODELS），不再写死 2 个。
+    统一用 model_catalog.ModelInfo，方便网关按 type / protocol 归类与校验。
     """
-    data = [
-        model_catalog.ModelInfo(
-            id=model_id, owned_by="local", type=model_type
-        ).to_openai()
-        for model_id, model_type in (
-            *[(m, model_catalog.ModelType.TTS) for m in sorted(BUILTIN_TTS_MODELS)],
-            *[(m, model_catalog.ModelType.STT) for m in sorted(BUILTIN_STT_MODELS)],
+    data = []
+    for entry in _voice_provider_entries():
+        mtype = (
+            model_catalog.ModelType.STT
+            if entry["capability"] == "stt"
+            else model_catalog.ModelType.TTS
         )
-    ]
+        owned = "local" if entry["vendor"] == "builtin" else entry["vendor"]
+        models = entry["models"] or ([entry["model"]] if entry["model"] else [])
+        for mid in models:
+            if not mid:
+                continue
+            # 协议按每个模型名判定：builtin 恒 local；上游模型名含 cosyvoice /
+            # realtime / streaming / gummy 的走 ws，其余 http（对齐面板协议标签）。
+            protocol = "local" if entry["vendor"] == "builtin" else (
+                "ws" if _model_uses_ws(mid) else "http"
+            )
+            data.append(
+                model_catalog.ModelInfo(
+                    id=mid,
+                    owned_by=owned,
+                    type=mtype,
+                    protocol=protocol,
+                ).to_openai()
+            )
     return {"object": "list", "data": data}
 
 
@@ -997,6 +1149,9 @@ class SpeechBody(BaseModel):
     response_format: str = "wav"
     speed: float = 1.0
     instructions: str = ""  # OpenAI 新 TTS 字段，内置模式忽略
+    # 底部测试页可显式覆盖默认路由：留空=沿用 DB 配置，行为与不带这两个字段时完全一致。
+    provider: str = ""  # builtin / dashscope / openai_audio
+    protocol: str = ""  # 上游线协议：http / ws / http-async；留空按模型自动推断
 
 
 def _openai_audio_url(base: str, path: str) -> str:
@@ -1034,6 +1189,125 @@ async def forward_speech_openai(
     return r.content
 
 
+async def _ws_asr_test(base: str, key: str, model: str, audio: bytes, fmt: str) -> str:
+    """DashScope WS 实时识别测试：run-task → 发音频 → finish → 收识别文本。"""
+    url = base.rstrip("/").replace("https://", "wss://").replace("http://", "ws://") + "/api-ws/v1/inference"
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    task_id = uuid.uuid4().hex
+    text = ""
+    async with websockets.connect(url, additional_headers=headers, close_timeout=5) as ws:
+        await ws.send(json.dumps({
+            "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
+            "payload": {"task_group": "audio", "task": "asr", "function": "recognition",
+                        "model": model, "input": {},
+                        "parameters": {"format": fmt, "sample_rate": 16000}},
+        }))
+        started = False
+        async for msg in ws:
+            if isinstance(msg, (bytes, bytearray)):
+                continue
+            ev = (json.loads(msg).get("header") or {})
+            e = ev.get("event")
+            if e == "task-started":
+                started = True
+                await ws.send(audio)
+                await ws.send(json.dumps({
+                    "header": {"action": "finish-task", "task_id": task_id, "streaming": "duplex"},
+                    "payload": {"input": {}},
+                }))
+            elif e == "result-generated":
+                payload = json.loads(msg).get("payload") or {}
+                out = payload.get("output") or payload
+                sentence = out.get("sentence") or {}
+                if isinstance(sentence, dict) and sentence.get("text"):
+                    text = sentence["text"].strip()
+            elif e == "task-failed":
+                raise RuntimeError(f"WS 任务失败: {ev.get('error_message') or ev.get('error_code')}")
+            elif e == "task-finished":
+                break
+        if not started:
+            raise RuntimeError("WS 连接未进入 task-started")
+    return text
+
+
+async def _ws_tts_test(base: str, key: str, model: str, text: str, voice: str) -> bytes:
+    """DashScope WS 实时合成测试：run-task → 发文本 → 收二进制音频帧 → finished。"""
+    url = base.rstrip("/").replace("https://", "wss://").replace("http://", "ws://") + "/api-ws/v1/inference"
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    task_id = uuid.uuid4().hex
+    frames = bytearray()
+    async with websockets.connect(url, additional_headers=headers, close_timeout=5) as ws:
+        await ws.send(json.dumps({
+            "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
+            "payload": {"task_group": "audio", "task": "tts", "function": "SpeechSynthesizer",
+                        "model": model, "input": {},
+                        "parameters": {"text_type": "PlainText", "voice": voice}},
+        }))
+        started = False
+        async for msg in ws:
+            if isinstance(msg, (bytes, bytearray)):
+                frames.extend(msg)
+                continue
+            ev = (json.loads(msg).get("header") or {})
+            e = ev.get("event")
+            if e == "task-started" and not started:
+                started = True
+                await ws.send(json.dumps({
+                    "header": {"action": "continue-task", "task_id": task_id, "streaming": "duplex"},
+                    "payload": {"input": {"text": text}},
+                }))
+                await ws.send(json.dumps({
+                    "header": {"action": "finish-task", "task_id": task_id, "streaming": "duplex"},
+                    "payload": {"input": {}},
+                }))
+            elif e == "task-failed":
+                raise RuntimeError(f"WS 任务失败: {ev.get('error_message') or ev.get('error_code')}")
+            elif e == "task-finished":
+                break
+        if not started:
+            raise RuntimeError("WS 连接未进入 task-started")
+    if not frames:
+        raise RuntimeError("WS 合成未收到音频帧")
+    return bytes(frames)
+
+
+def _model_uses_ws(model: str) -> bool:
+    """模型是否只支持 WS（cosyvoice / realtime / streaming / gummy 系）——对齐面板协议标签。"""
+    m = (model or "").lower()
+    return bool(re.search(r"cosyvoice|realtime|streaming|gummy", m))
+
+
+def resolve_voice_protocol(requested: str, model: str, provider: str) -> str:
+    """把测试页的协议选择收敛成 http / ws / http-async；留空按模型自动推断。
+
+    内置（本地 SenseVoice / edge-tts）只有 http；上游模型按 _model_uses_ws 推断。
+    """
+    p = (requested or "").strip().lower()
+    if p:
+        return p
+    if provider == "builtin":
+        return "http"
+    return "ws" if _model_uses_ws(model) else "http"
+
+
+def pcm16_to_wav(pcm: bytes, sample_rate: int = TTS_SAMPLE_RATE) -> bytes:
+    """WS 实时合成返回裸 s16le PCM 帧，包成 WAV 供播放器与后续转码使用。"""
+    if pcm[:4] == b"RIFF" and pcm[8:12] == b"WAVE":
+        return pcm
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
+def is_edge_voice(voice: str) -> bool:
+    """音色是否属于内置 edge-tts 目录（与 DashScope 音色体系不通用）。"""
+    return any(v.get("id") == voice for v in VOICE_CATALOG)
+
+
 async def stt_upstream_test(model_override: str | None = None) -> dict:
     """管理面板 ASR 行点「测试可用」：真识别一次样例语音（与正式转发同源）。"""
     base = (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
@@ -1047,7 +1321,9 @@ async def stt_upstream_test(model_override: str | None = None) -> dict:
     audio = base64.b64decode(open(b64_path, encoding="utf-8").read().strip())
     is_dashscope = "dashscope.aliyuncs.com" in base
     try:
-        if is_dashscope:
+        if is_dashscope and _model_uses_ws(model):
+            text = await _ws_asr_test(base, key, model, audio, audio_fmt(audio))
+        elif is_dashscope:
             text = await dashscope_asr_text(base, key, model, audio, audio_fmt(audio))
         else:
             text = await forward_transcriptions_openai(audio, "a.mp3", "audio/mpeg", model)
@@ -1066,7 +1342,9 @@ async def tts_upstream_test(model_override: str | None = None) -> dict:
     key = (config_value("TTS_UPSTREAM_API_KEY") or "").strip()
     is_dashscope = "dashscope.aliyuncs.com" in base
     try:
-        if is_dashscope:
+        if is_dashscope and _model_uses_ws(model):
+            raw = await _ws_tts_test(base, key, model, "你好，语音合成测试。", _dashscope_default_voice(model))
+        elif is_dashscope:
             raw = await dashscope_tts_bytes(base, key, model, "你好，语音合成测试。", _dashscope_default_voice(model))
         else:
             voice = (config_value("TTS_VOICE") or "").strip() or resolve_voice("")
@@ -1074,6 +1352,169 @@ async def tts_upstream_test(model_override: str | None = None) -> dict:
         return {"ok": True, "message": f"合成成功（{model}，{len(raw)} 字节音频）"}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "message": str(exc)[:200]}
+
+
+def _dashscope_default_voice(model: str) -> str:
+    """按模型族给一个官方默认音色（音色必须属于所选模型，否则云端 418）。
+
+    音色与模型绑定（官方音色列表 model-studio/cosyvoice-voice-list）：
+    cosyvoice-v3 系用 *_v3/longanyang 等 v3 音色；v2 用 *_v2；v1 用无后缀。
+    """
+    m = (model or "").lower()
+    if m.startswith("cosyvoice-v3"):
+        return "longanyang"          # v3 标杆音色（龙安洋，v3 系通用）
+    if m.startswith("cosyvoice-v2"):
+        return "longxiaochun_v2"
+    if m.startswith("cosyvoice"):
+        return "longxiaochun"
+    return "Cherry"
+
+
+async def dashscope_tts_bytes(base: str, key: str, model: str, text: str, voice: str) -> bytes:
+    """DashScope 官方 HTTP 合成：multimodal-generation → 响应带 OSS 音频 URL → 下载。
+
+    返回音频原始字节（wav）。失败抛 RuntimeError，由调用方转 502。
+    """
+    url = base.rstrip("/") + "/api/v1/services/aigc/multimodal-generation/generation"
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=headers, json={
+            "model": model, "input": {"text": text, "voice": voice},
+        })
+        if r.status_code >= 400:
+            raise RuntimeError(f"DashScope TTS 失败（{r.status_code}）: {r.text[:200]}")
+        audio_url = ((r.json().get("output") or {}).get("audio") or {}).get("url") or ""
+        if not audio_url:
+            raise RuntimeError(f"DashScope TTS 已响应但没有音频 URL: {r.text[:150]}")
+        dl = await client.get(audio_url, timeout=30)
+        if dl.status_code >= 400 or not dl.content:
+            raise RuntimeError(f"DashScope 音频下载失败（{dl.status_code}）")
+        return dl.content
+
+
+async def dashscope_asr_text(base: str, key: str, model: str, audio: bytes, fmt: str) -> str:
+    """DashScope 识别：OpenAI 兼容 chat + input_audio（base64 data URL 直传，免上传）。
+
+    返回识别文本。失败抛 RuntimeError，由调用方转 502。
+    """
+    url = base.rstrip("/") + "/compatible-mode/v1/chat/completions"
+    audio_b64 = base64.b64encode(audio).decode()
+    # qwen3-asr 系吃 data URL；qwen-audio 系要 data/format 分开的 base64
+    if model.lower().startswith("qwen-audio"):
+        audio_part = {"type": "input_audio", "input_audio": {"data": audio_b64, "format": fmt}}
+    else:
+        audio_part = {"type": "input_audio", "input_audio": {"data": f"data:audio/{fmt};base64,{audio_b64}"}}
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=headers, json={
+            "model": model, "messages": [{"role": "user", "content": [audio_part]}],
+        })
+        if r.status_code >= 400:
+            raise RuntimeError(f"DashScope ASR 失败（{r.status_code}）: {r.text[:200]}")
+        return ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+
+
+def audio_fmt(payload: bytes) -> str:
+    """按魔数探测音频格式（dashscope input_audio 的 format 字段用）。"""
+    if payload[:4] == b"RIFF" and payload[8:12] == b"WAVE":
+        return "wav"
+    if payload[:3] == b"ID3":
+        return "mp3"
+    return "wav"
+
+
+async def _tts_synthesize(
+    text: str, voice: str, rate: str, fmt: str,
+    tts_provider: str, protocol: str, upstream_model: str, speed: float = 1.0,
+) -> tuple[bytes, str]:
+    """合成核心：根据 provider / protocol / model 调对应引擎，返回 (音频字节, media_type)。
+
+    抽出自 /voice/v1/audio/speech 路由（OpenAI 形状）与 WS /voice/ws/inference 共用，
+    避免两套重复逻辑。
+    """
+    if tts_provider == "dashscope":
+        # DashScope 音色体系与 edge-tts 不通用：传来的 edge 目录音色视为「未指定」，
+        # 按模型族回退官方默认音色（否则云端 418 Invalid voice）。
+        ds_voice = (voice or "").strip()
+        if not ds_voice or is_edge_voice(ds_voice):
+            ds_voice = _dashscope_default_voice(upstream_model)
+        key = (config_value("TTS_UPSTREAM_API_KEY") or "").strip()
+        base = (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
+        if protocol == "ws":
+            raw = pcm16_to_wav(await _ws_tts_test(base, key, upstream_model, text, ds_voice))
+        else:
+            raw = await dashscope_tts_bytes(base, key, upstream_model, text, ds_voice)
+        if fmt == "wav":
+            return raw, "audio/wav"
+        return transcode_mp3(raw, fmt)
+    if tts_provider == "openai_audio":
+        raw = await forward_speech_openai(text, voice, speed, fmt, upstream_model)
+        if fmt == "mp3":
+            return raw, "audio/mpeg"
+        return transcode_mp3(raw, fmt)
+    # 内置：本地 edge-tts
+    mp3 = await synthesize_edge_mp3(text, voice, rate)
+    if fmt == "mp3":
+        return mp3, "audio/mpeg"
+    return transcode_mp3(mp3, fmt)
+
+
+async def _asr_recognize(
+    payload: bytes, filename: str, content_type: str,
+    stt_provider: str, protocol: str, model: str, language: str = "",
+) -> tuple[str, float, str]:
+    """识别核心：返回 (文本, 时长秒, 语种)。失败抛异常，由调用方决定 4xx / 5xx。
+
+    - 客户端错误（不支持的格式 / 协议）抛 ValueError → 调用方转 400；
+    - 引擎 / 上游失败抛 RuntimeError → 调用方转 502（内置未就绪转 503）。
+    抽出自 transcriptions() 路由（OpenAI 形状）与 WS /voice/ws/inference 共用。
+    注意：当前 ASR 引擎（SenseVoice / Paraformer）只做识别不清翻译，translations 也走这里，
+    返回的是识别原文而非英文翻译（详见 translations 路由说明）。
+    """
+    if stt_provider == "builtin":
+        # 本地 SenseVoice 只认 WAV：直接交给它只会得到空文本，先挡掉非 WAV。
+        if payload[:4] != b"RIFF" or payload[8:12] != b"WAVE":
+            raise ValueError("只支持 WAV 音频（网关上行会补 WAV 头）")
+        text, duration, lang = await asyncio.to_thread(transcribe_sensevoice, payload, language)
+        return text, duration, lang
+    upstream_model = (model or "").strip()
+    if not upstream_model:
+        raise RuntimeError("已选择上游 ASR，请在请求里带 model 或配置 STT_UPSTREAM_MODEL")
+    if protocol not in ("http", "ws", "http-async"):
+        raise ValueError(f"不支持的协议 {protocol!r}（可用 http / ws / http-async）")
+    if protocol == "http-async":
+        raise ValueError("http-async 是录音文件异步转写协议，实时识别接口不支持（需公网 URL 提交+轮询）")
+    key = (config_value("STT_UPSTREAM_API_KEY") or "").strip() or (
+        config_value("TTS_UPSTREAM_API_KEY") or ""
+    ).strip()
+    base = (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
+    if stt_provider == "dashscope":
+        if protocol == "ws":
+            text = await _ws_asr_test(base, key, upstream_model, payload, audio_fmt(payload))
+        else:
+            text = await dashscope_asr_text(base, key, upstream_model, payload, audio_fmt(payload))
+    else:
+        text = await forward_transcriptions_openai(payload, filename, content_type, upstream_model)
+    return text, 0.0, ""
+
+
+def _asr_response(text: str, response_format: str, duration: float = 0.0, language: str = "") -> Any:
+    """把识别文本按 OpenAI 形状格式化（transcriptions / translations 共用）。"""
+    if response_format == "text":
+        return Response(content=text, media_type="text/plain; charset=utf-8")
+    if response_format == "verbose_json":
+        return {
+            "task": "transcribe",
+            "language": language,
+            "duration": duration,
+            "text": text,
+            "segments": (
+                [{"id": 0, "start": 0.0, "end": duration, "text": text}]
+                if text
+                else []
+            ),
+        }
+    return {"text": text}
 
 
 @app.post("/voice/v1/audio/speech")
@@ -1090,7 +1531,10 @@ async def speech(body: SpeechBody):
     voice = resolve_voice(body.voice)
     rate = tts_rate(body.speed)
     # 助手常重复“我在 / 还在吗”这类短句，缓存能省掉一次云端合成和 ffmpeg 转码。
-    tts_provider = (config_value("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
+    # 底部测试页可显式覆盖默认提供商/协议；不传则完全沿用 DB 配置，行为不变。
+    tts_provider = (body.provider or "").strip().lower() or (
+        config_value("TTS_PROVIDER", "builtin") or "builtin"
+    ).strip().lower()
     upstream_model = ""
     if tts_provider == "builtin":
         # 内置模式：model 可为空，但传了必须是有效模型——传错直接拒绝，不静默吞掉。
@@ -1111,7 +1555,14 @@ async def speech(body: SpeechBody):
                 400,
                 "已选择上游 TTS（dashscope），请在请求里带 model 或配置 TTS_UPSTREAM_MODEL",
             )
-    cache_key = (tts_provider, upstream_model, text, voice, rate, fmt)
+    protocol = resolve_voice_protocol(body.protocol, upstream_model, tts_provider)
+    if protocol not in ("http", "ws", "http-async"):
+        return error_response(400, f"不支持的协议 {protocol!r}（可用 http / ws / http-async）")
+    if protocol == "http-async":
+        return error_response(400, "http-async 是录音文件异步转写协议，实时合成接口不支持")
+    if tts_provider == "builtin" and protocol != "http":
+        return error_response(400, "内置 TTS 为本地合成，只支持 http 协议")
+    cache_key = (tts_provider, protocol, upstream_model, text, voice, rate, fmt)
     cached = tts_cache.get(cache_key)
     if cached is not None:
         media_type = {
@@ -1124,31 +1575,9 @@ async def speech(body: SpeechBody):
         )
 
     try:
-        if tts_provider == "dashscope":
-            # DashScope：音色体系不同——请求未显式指定时按模型族给默认音色（避免 edge 音色串进来 418）
-            ds_voice = (body.voice or "").strip() or _dashscope_default_voice(upstream_model)
-            key = (config_value("TTS_UPSTREAM_API_KEY") or "").strip()
-            raw = await dashscope_tts_bytes(
-                (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com",
-                key, upstream_model, text, ds_voice,
-            )
-            if fmt == "wav":
-                audio, media_type = raw, "audio/wav"
-            else:
-                audio, media_type = transcode_mp3(raw, fmt)
-        elif tts_provider == "openai_audio":
-            # 上游返回的音频格式以 content 为准；ffmpeg 转码按内容探测，不看扩展名
-            raw = await forward_speech_openai(text, voice, body.speed, fmt, upstream_model)
-            if fmt == "mp3":
-                audio, media_type = raw, "audio/mpeg"
-            else:
-                audio, media_type = transcode_mp3(raw, fmt)
-        else:
-            mp3 = await synthesize_edge_mp3(text, voice, rate)
-            if fmt == "mp3":
-                audio, media_type = mp3, "audio/mpeg"
-            else:
-                audio, media_type = transcode_mp3(mp3, fmt)
+        audio, media_type = await _tts_synthesize(
+            text, voice, rate, fmt, tts_provider, protocol, upstream_model, body.speed
+        )
     except Exception as exc:  # noqa: BLE001
         # 这里不抛 500：网关遇到 4xx/5xx 会自己回退静音，会话不中断。
         return error_response(502, str(exc))
@@ -1200,13 +1629,22 @@ async def transcriptions(
     language: str = Form(""),
     response_format: str = Form("json"),
     temperature: float = Form(0.0),
+    provider: str = Form(""),
+    protocol: str = Form(""),
 ):
-    """OpenAI 兼容的语音转写；网关只会提交 16k / 16bit / 单声道 WAV。"""
+    """OpenAI 兼容的语音转写；网关只会提交 16k / 16bit / 单声道 WAV。
+
+    provider / protocol 只用于底部测试页显式覆盖默认路由；不传则沿用 DB 配置。
+    """
     payload = await file.read()
     if not payload:
         return error_response(400, "上传的音频为空")
 
-    stt_provider = (config_value("STT_PROVIDER", "builtin") or "builtin").strip().lower()
+    stt_provider = (provider or "").strip().lower() or (
+        config_value("STT_PROVIDER", "builtin") or "builtin"
+    ).strip().lower()
+    upstream_model = ""
+    proto = (protocol or "").strip().lower()
     if stt_provider == "builtin":
         # 内置模式：model 可为空/默认值，但传了别的（如上游模型名）直接拒绝——不静默吞掉。
         requested = (model or "").strip()
@@ -1216,69 +1654,409 @@ async def transcriptions(
                 f"内置 ASR 模型只有 {'/'.join(sorted(BUILTIN_STT_MODELS))}，收到 {requested!r}；"
                 "如需其它模型请配置上游（STT_PROVIDER）",
             )
+        if proto in ("ws", "http-async"):
+            return error_response(400, f"内置 ASR 为本地推理，只支持 http 协议（收到 {proto}）")
+        if not proto:
+            proto = "http"
     else:
         # 上游模式：model 优先取请求参数，缺省回退 STT_UPSTREAM_MODEL 配置；
         # 不做 WAV 前置校验（上游接受 mp3/wav 等，网关上行仍是 16k WAV）。
         upstream_model = (model or "").strip()
         if upstream_model in ("", "sensevoice-small"):
             upstream_model = (config_value("STT_UPSTREAM_MODEL") or "").strip()
-        if not upstream_model:
-            return error_response(
-                400, "已选择上游 ASR（dashscope），请配置 STT_UPSTREAM_MODEL 或在请求里带 model"
-            )
-        key = (config_value("STT_UPSTREAM_API_KEY") or "").strip() or (
-            config_value("TTS_UPSTREAM_API_KEY") or ""
-        ).strip()
-        try:
-            if stt_provider == "dashscope":
-                text = await dashscope_asr_text(
-                    (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com",
-                    key, upstream_model, payload, audio_fmt(payload),
-                )
-            else:
-                text = await forward_transcriptions_openai(
-                    payload,
-                    file.filename or "audio.wav",
-                    file.content_type or "audio/wav",
-                    upstream_model,
-                )
-        except Exception as exc:  # noqa: BLE001
-            return error_response(502, str(exc))
-        if response_format == "text":
-            return Response(content=text, media_type="text/plain; charset=utf-8")
-        return {"text": text}
-
-    # ASR 固定走本地 SenseVoice（无上游概念），先挡掉非 WAV：
-    # SenseVoice 的接入口只认 RIFF/WAVE，直接交给它只会得到空文本。
-    if payload[:4] != b"RIFF" or payload[8:12] != b"WAVE":
-        return error_response(400, "只支持 WAV 音频（网关上行会补 WAV 头）")
+        if not proto:
+            proto = resolve_voice_protocol(protocol, upstream_model, stt_provider)
 
     try:
-        # 模型加载和推理都是 CPU 阻塞操作，放到线程里避免卡住其他请求。
-        text, duration, lang = await asyncio.to_thread(
-            transcribe_sensevoice, payload, language
+        text, duration, lang = await _asr_recognize(
+            payload,
+            file.filename or "audio.wav",
+            file.content_type or "audio/wav",
+            stt_provider,
+            proto,
+            upstream_model,
+            language,
         )
+    except ValueError as exc:  # 客户端错误（格式 / 协议）→ 400
+        return error_response(400, str(exc))
     except Exception as exc:  # noqa: BLE001
-        # 模型没下载 → 503（重试安装有意义）；模型在但推理失败 → 502。
-        status = 503 if not sensevoice_ready() else 502
+        # 模型没下载 → 503（重试安装有意义）；模型在但推理失败 / 上游失败 → 502。
+        status = 503 if (stt_provider == "builtin" and not sensevoice_ready()) else 502
         return error_response(status, f"转写失败: {exc}")
 
-    # 网关默认只要 json；保留 text / verbose_json 是为了兼容 OpenAI 客户端调试。
+    return _asr_response(text, response_format, duration, lang)
+
+
+def _lang_matches(lang: str, target_lang: str) -> bool:
+    """粗略判断识别语种是否与目标语种一致，一致则无需翻译（避免无意义翻译）。
+
+    只做保守判定：目标为英语且识别语种也像英语时才算一致；其余一律认为不一致、
+    需要翻译，宁可多翻译一次也不漏翻。
+    """
+    target_is_en = ("en" in (target_lang or "").lower()) or ("英" in (target_lang or ""))
+    lang_l = (lang or "").lower()
+    if target_is_en and (lang_l.startswith("en") or lang in ("英语", "english")):
+        return True
+    return False
+
+
+async def _translate_text(text: str, target_lang: str) -> tuple[str | None, str | None]:
+    """把文本翻译成目标语言；返回 (译文, 错误信息)。无 LLM 上游或上游失败返回 (None, 错误)。
+
+    走本地 LLM 代理的选路（upstream_pool.pick + llm_protocols.prepare），复用对话路由的
+    协议翻译，不重复实现；不需要知道服务自身的 host/port。
+    """
+    if not llm_enabled():
+        return None, "翻译需要 LLM 上游，当前未启用（请在 voice.conf 配置 LLM_UPSTREAM_BASE_URL）"
+    entry = upstream_pool.pick("LLM")
+    if entry is None:
+        return None, "翻译需要 LLM 上游，当前未配置可用提供商"
+    protocol = entry["protocol"] or "openai_chat_completions"
+    api_version = llm_api_version()
+    model = entry.get("model") or llm_model_override() or ""
+    body = {
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    f"你是一个翻译助手。请把用户发来的文本翻译成{target_lang}，"
+                    "只输出译文本身，不要任何解释、引号或多余文字。"
+                ),
+            },
+            {"role": "user", "content": text},
+        ],
+        "stream": False,
+    }
+    req, _, transform = llm_protocols.prepare(
+        protocol, entry["base_url"], entry["api_key"], model, api_version, body, entry.get("vendor")
+    )
+    try:
+        async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
+            r = await client.post(req.url, headers=req.headers, json=req.payload)
+    except httpx.HTTPError as exc:
+        return None, f"翻译上游请求失败: {exc}"
+    if r.status_code >= 400:
+        return None, f"翻译上游失败（{r.status_code}）: {upstream_error(r)}"
+    try:
+        data = r.json()
+    except ValueError:
+        return None, "翻译上游返回的不是 JSON"
+    data = transform(data)
+    content = (data.get("choices", [{}])[0].get("message", {}).get("content", "") or "").strip()
+    return content, None
+
+
+@app.post("/voice/v1/audio/translations")
+async def translations(
+    request: Request,
+    file: UploadFile = File(...),
+    model: str = Form("sensevoice-small"),
+    response_format: str = Form("json"),
+    temperature: float = Form(0.0),
+    provider: str = Form(""),
+    protocol: str = Form(""),
+    target_lang: str = Form("英语"),
+):
+    """OpenAI 兼容的语音翻译：任意语言音频 → 目标语言文本（默认英语）。
+
+    实现：先 ASR 识别原文，再把原文交给 LLM 代理翻译成目标语言（复用 /llm/v1/chat/completions
+    的路由与协议翻译，不重复实现）。没有 LLM 上游时，如实返回 503，不把识别原文冒充翻译。
+    """
+    payload = await file.read()
+    if not payload:
+        return error_response(400, "上传的音频为空")
+
+    stt_provider = (provider or "").strip().lower() or (
+        config_value("STT_PROVIDER", "builtin") or "builtin"
+    ).strip().lower()
+    upstream_model = ""
+    proto = (protocol or "").strip().lower()
+    if stt_provider == "builtin":
+        if proto in ("ws", "http-async"):
+            return error_response(400, f"内置 ASR 为本地推理，只支持 http 协议（收到 {proto}）")
+        if not proto:
+            proto = "http"
+    else:
+        upstream_model = (model or "").strip()
+        if upstream_model in ("", "sensevoice-small"):
+            upstream_model = (config_value("STT_UPSTREAM_MODEL") or "").strip()
+        if not proto:
+            proto = resolve_voice_protocol(protocol, upstream_model, stt_provider)
+    try:
+        text, duration, lang = await _asr_recognize(
+            payload,
+            file.filename or "audio.wav",
+            file.content_type or "audio/wav",
+            stt_provider,
+            proto,
+            upstream_model,
+            "",
+        )
+    except ValueError as exc:
+        return error_response(400, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        status = 503 if (stt_provider == "builtin" and not sensevoice_ready()) else 502
+        return error_response(status, f"识别失败: {exc}")
+
+    # 翻译：交给 LLM 上游。识别原文即目标语言时不调用，直接透传（避免无意义翻译）。
+    if text and not _lang_matches(lang, target_lang):
+        translated, err = await _translate_text(text, target_lang)
+        if err:
+            # 诚实：翻译不可用就如实说，绝把识别原文冒充翻译。
+            return error_response(503, err)
+        text = translated or text
+
     if response_format == "text":
         return Response(content=text, media_type="text/plain; charset=utf-8")
     if response_format == "verbose_json":
-        return {
-            "task": "transcribe",
-            "language": lang,
-            "duration": duration,
-            "text": text,
-            "segments": (
-                [{"id": 0, "start": 0.0, "end": duration, "text": text}]
-                if text
-                else []
-            ),
-        }
+        return _asr_response(text, "verbose_json", duration, lang)
     return {"text": text}
+
+
+# ── WebSocket 实时接口（/voice/ws，与 /voice/v1 平行，区分 WS 与 HTTP） ──
+# 一个入口靠 payload.task 区分 asr / tts，协议复用 DashScope 的
+# run-task / continue-task / finish-task + 二进制帧；上游为 dashscope 时由
+# _asr_recognize / _tts_synthesize 内部转发到 DashScope WS（真流式），
+# 内置（SenseVoice / edge-tts）为本地批处理，按同一协议形状回一个结果块。
+
+
+def _ws_client_ip(websocket: WebSocket) -> str:
+    return websocket.client.host if websocket.client else ""
+
+
+def _ws_auth_ok(websocket: WebSocket, path: str) -> bool:
+    """WS 握手阶段鉴权：与 HTTP 安全中间件同逻辑（IP 白名单 + API-Key），默认都关闭。"""
+    allow = _parse_ip_allow()
+    if allow:
+        ip = _ws_client_ip(websocket)
+        if not is_loopback(ip) and not ip_allowed(ip, allow):
+            return False
+    if (
+        api_key_auth_enabled()
+        and _path_needs_api_key(path)
+        and not admin_panel.valid_session(websocket.cookies.get(admin_panel.SESSION_COOKIE))
+    ):
+        keys = resolve_api_keys()
+        if keys:
+            token = _bearer_token(websocket.headers.get("authorization")) or (
+                websocket.query_params.get("api_key") or ""
+            )
+            if not (
+                token
+                and any(
+                    hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in keys
+                )
+            ):
+                return False
+    return True
+
+
+async def _ws_send_fail(websocket: WebSocket, task_id: str | None, message: str) -> None:
+    try:
+        await websocket.send_text(json.dumps({
+            "header": {
+                "action": "task-failed",
+                "task_id": task_id,
+                "error_code": "INVALID_REQUEST",
+                "error_message": message,
+            },
+            "payload": {},
+        }))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ws_safe_json(text: str | None) -> dict | None:
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+async def _ws_handle_asr(websocket: WebSocket, task_id: str, model: str, payload: dict) -> bool:
+    """ASR 子流程：收二进制音频 + finish-task，识别后回 result-generated + task-finished。"""
+    stt_provider = (config_value("STT_PROVIDER", "builtin") or "builtin").strip().lower()
+    upstream_model = ""
+    proto = "http"
+    if stt_provider != "builtin":
+        upstream_model = (model or "").strip() or (config_value("STT_UPSTREAM_MODEL") or "").strip()
+        if not upstream_model:
+            await _ws_send_fail(websocket, task_id, "dashscope ASR 需要 model 或配置 STT_UPSTREAM_MODEL")
+            return False
+        proto = "ws" if _model_uses_ws(upstream_model) else "http"
+    else:
+        # 内置模式只认内置模型；传了上游（尤其 ws）模型属于「模型与提供商对不上」，直接报错，
+        # 不让它静默落到 SenseVoice（识别不出还误导用户以为测的是上游模型）。
+        if (model or "").strip() and (model or "").strip() not in BUILTIN_STT_MODELS:
+            await _ws_send_fail(
+                websocket, task_id,
+                f"模型 {model} 是上游模型，但当前 STT_PROVIDER=builtin（内置模式）；"
+                f"请在测试页选择内置模型，或先配置上游提供商再测 ws。",
+            )
+            return False
+    fmt = ((payload.get("parameters") or {}).get("format") or "wav").strip().lower()
+
+    audio = bytearray()
+    while True:
+        msg = await websocket.receive()
+        if msg["type"] == "websocket.disconnect":
+            return False
+        if msg.get("bytes") is not None:
+            audio.extend(msg["bytes"])
+        else:
+            d = _ws_safe_json(msg.get("text"))
+            if d is None:
+                continue
+            act = ((d.get("header") or {}).get("action") or "").lower()
+            if act == "finish-task":
+                break
+            # 其它控制消息（如 ping）忽略
+    # 内置 SenseVoice 只认 WAV（与 HTTP 内置接口一致）；非 WAV 直接拒，不把垃圾喂给识别引擎。
+    audio_bytes = bytes(audio)
+    if stt_provider == "builtin" and not (
+        audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE"
+    ):
+        await _ws_send_fail(websocket, task_id, "内置 ASR 只支持 WAV 音频（网关上行会补 WAV 头）")
+        return False
+
+    try:
+        text, _duration, _lang = await _asr_recognize(
+            audio_bytes, "audio.wav", f"audio/{fmt}", stt_provider, proto, upstream_model, ""
+        )
+    except ValueError as exc:
+        await _ws_send_fail(websocket, task_id, str(exc))
+        return False
+    except Exception as exc:  # noqa: BLE001
+        status = 503 if (stt_provider == "builtin" and not sensevoice_ready()) else 502
+        await _ws_send_fail(websocket, task_id, f"ASR 失败: {exc}" if status != 503 else "SenseVoice 模型未就绪")
+        return False
+    await websocket.send_text(json.dumps({
+        "header": {"action": "result-generated", "task_id": task_id},
+        "payload": {"output": {"sentence": {"text": text}, "task_id": task_id}},
+    }))
+    await websocket.send_text(json.dumps({
+        "header": {"action": "task-finished", "task_id": task_id},
+        "payload": {"output": {}},
+    }))
+    return True
+
+
+async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload: dict) -> bool:
+    """TTS 子流程：收 continue-task(文本) + finish-task，合成后回二进制音频 + task-finished。"""
+    tts_provider = (config_value("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
+    upstream_model = ""
+    if tts_provider != "builtin":
+        upstream_model = (model or "").strip() or (config_value("TTS_UPSTREAM_MODEL") or "").strip()
+        if not upstream_model:
+            await _ws_send_fail(websocket, task_id, "dashscope TTS 需要 model 或配置 TTS_UPSTREAM_MODEL")
+            return False
+    else:
+        # 内置模式只认内置模型；传了上游（尤其 ws）模型属于「模型与提供商对不上」，直接报错。
+        if (model or "").strip() and (model or "").strip() not in BUILTIN_TTS_MODELS:
+            await _ws_send_fail(
+                websocket, task_id,
+                f"模型 {model} 是上游模型，但当前 TTS_PROVIDER=builtin（内置模式）；"
+                f"请在测试页选择内置模型，或先配置上游提供商再测 ws。",
+            )
+            return False
+    proto = "ws" if _model_uses_ws(upstream_model) else "http"
+
+    text = ""
+    finished = False
+    while True:
+        msg = await websocket.receive()
+        if msg["type"] == "websocket.disconnect":
+            return False
+        if msg.get("bytes") is not None:
+            continue
+        d = _ws_safe_json(msg.get("text"))
+        if d is None:
+            continue
+        h = d.get("header") or {}
+        act = (h.get("action") or "").lower()
+        if act == "continue-task":
+            text = (((d.get("payload") or {}).get("input") or {}).get("text") or "").strip()
+        elif act == "finish-task":
+            finished = True
+            break
+    if not text:
+        await _ws_send_fail(websocket, task_id, "TTS 未收到文本")
+        return False
+    ds_voice = ((payload.get("parameters") or {}).get("voice") or "").strip()
+    try:
+        audio, _mt = await _tts_synthesize(
+            text, resolve_voice(ds_voice), tts_rate(1.0), "wav", tts_provider, proto, upstream_model
+        )
+    except Exception as exc:  # noqa: BLE001
+        await _ws_send_fail(websocket, task_id, f"TTS 失败: {exc}")
+        return False
+    await websocket.send_bytes(audio)
+    await websocket.send_text(json.dumps({
+        "header": {"action": "task-finished", "task_id": task_id},
+        "payload": {"output": {}},
+    }))
+    return True
+
+
+@app.websocket("/voice/ws/inference")
+async def ws_inference(websocket: WebSocket):
+    """WebSocket 实时 ASR / TTS 统一入口（对外，DashScope 协议形状）。
+
+    连接后客户端发 run-task（payload.task=asr|tts，model 仅上游模式生效）：
+    - ASR：客户端随后发二进制音频帧、再发 finish-task；服务端回 result-generated + task-finished。
+    - TTS：客户端随后发 continue-task（input.text）+ finish-task；服务端回二进制音频 + task-finished。
+    协议/事件形状对齐 DashScope /api-ws/v1/inference，第三方换 base_url 即用；网关也走这里。
+    """
+    path = websocket.url.path
+    if not _ws_auth_ok(websocket, path):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    task_id: str | None = None
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            data = _ws_safe_json(msg.get("text"))
+            if data is None:
+                # 协议要求控制消息走 JSON；裸二进制只在子流程循环里处理
+                continue
+            header = data.get("header") or {}
+            action = (header.get("action") or "").lower()
+            if action == "run-task":
+                task_id = header.get("task_id") or uuid.uuid4().hex
+                pl = data.get("payload") or {}
+                task = (pl.get("task") or "").lower()
+                model = (pl.get("model") or "").strip()
+                # 先校验 task 合法再回 task-started；非法直接 task-failed，不断连。
+                if task not in ("asr", "tts"):
+                    await _ws_send_fail(websocket, task_id, f"未知的 task: {task}（仅支持 asr / tts）")
+                    continue
+                await websocket.send_text(json.dumps({
+                    "header": {
+                        "action": "task-started",
+                        "task_id": task_id,
+                        "streaming": "duplex",
+                    },
+                    "payload": {"task": task, "function": pl.get("function", "")},
+                }))
+                # 子流程出错时已发过 task-failed；保持连接继续等下一个 run-task。
+                if task == "tts":
+                    await _ws_handle_tts(websocket, task_id, model, pl)
+                else:
+                    await _ws_handle_asr(websocket, task_id, model, pl)
+            elif action in ("ping", "heartbeat"):
+                await websocket.send_text(json.dumps({"header": {"action": "pong", "task_id": task_id}}))
+            else:
+                await _ws_send_fail(websocket, task_id, f"非预期的 action: {action}")
+                continue
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        await _ws_send_fail(websocket, task_id, str(exc))
 
 
 # ── LLM 路由 ─────────────────────────────────────────────────────
@@ -1657,6 +2435,153 @@ async def chat_completions(request: Request):
     return StreamingResponse(body_gen(), media_type="text/event-stream")
 
 
+@app.post("/llm/v1/embeddings")
+async def embeddings(request: Request):
+    """OpenAI 兼容嵌入（向量）接口：入站固定 OpenAI /v1/embeddings 格式，出站按上游
+    线协议翻译。Embeddings 只支持非流式；Anthropic / OpenAI Responses 线协议没有向量
+    接口，直接返回 501。
+
+    路由、模型校验、多账号轮询逻辑与 /llm/v1/chat/completions 共用同一套入口选择。
+    """
+    if not llm_enabled():
+        return llm_disabled_response()
+    try:
+        body = await request.json()
+    except ValueError:
+        return error_response(400, "请求体不是合法 JSON")
+    if not isinstance(body, dict):
+        return error_response(400, "请求体必须是 JSON 对象")
+
+    req_model = body.get("model") if isinstance(body.get("model"), str) else None
+    req_vendor = body.get("vendor") if isinstance(body.get("vendor"), str) else None
+    req_protocol = body.get("protocol") if isinstance(body.get("protocol"), str) else None
+    req_base_url = body.get("base_url") if isinstance(body.get("base_url"), str) else None
+    direct_upstream = body.get("direct_upstream") is True and bool(req_base_url)
+    if req_base_url and not direct_upstream and "/llm" not in req_base_url:
+        req_base_url = req_base_url.rstrip("/") + "/llm"
+    if req_base_url and _is_self_proxy_base(req_base_url):
+        req_base_url = None
+        body.pop("base_url", None)
+        body.pop("api_key", None)
+
+    # 不支持嵌入的线协议（Anthropic / OpenAI Responses）：它们没有向量接口。
+    eff_wire = llm_protocols.normalize_protocol(req_protocol or "")
+    if eff_wire in ("anthropic_messages", "openai_responses"):
+        return error_response(501, f"所选线协议 {eff_wire} 不提供 embeddings 向量接口")
+
+    # 嵌入模型（如 nomic-embed-text）通常不在对话模型目录里，目录校验会误杀；
+    # 这里不按目录回退到默认对话模型（那会让 ollama 用 chat 模型去 embed 而 501），
+    # 而是交给下方「上游模型存在性校验（404）」这一权威关卡——真实存在的模型放行，
+    # 不存在的由上游报错或这里 404 拦截。bypass_catalog 仍生效（跳过下方存在性校验）。
+    if req_base_url:
+        entry = {
+            "base_url": req_base_url,
+            "api_key": (body.get("api_key") or "") if isinstance(body.get("api_key"), str) else "",
+            "protocol": req_protocol or "openai_chat_completions",
+            "model": req_model or "",
+            "vendor": "",
+        }
+    else:
+        if req_vendor:
+            entry = upstream_pool.pick_by_vendor("LLM", req_vendor)
+        elif req_model:
+            matched = [e for e in upstream_pool.load_pool("LLM") if e.get("model") == req_model]
+            if not matched:
+                return error_response(
+                    400,
+                    f"模型 {req_model} 未在已配置的提供商中找到（请检查模型名或刷新模型列表）",
+                )
+            vendors = sorted({e.get("vendor") for e in matched})
+            if len(vendors) > 1:
+                default_vendor = (config_value("LLM_UPSTREAM_VENDOR", "") or "").strip().lower()
+                if not default_vendor or default_vendor not in vendors:
+                    return error_response(
+                        400,
+                        f"模型 {req_model} 命中多个提供商 {vendors}，"
+                        f"但未配置默认提供商或默认提供商不含该模型（LLM_UPSTREAM_VENDOR）",
+                    )
+                target_vendor = default_vendor
+            else:
+                target_vendor = vendors[0]
+            entry = upstream_pool.pick_by_vendor("LLM", target_vendor)
+        else:
+            default_vendor = (config_value("LLM_UPSTREAM_VENDOR", "") or "").strip().lower()
+            entry = (upstream_pool.pick_by_vendor("LLM", default_vendor)
+                     if default_vendor else upstream_pool.pick_by_model("LLM", None))
+    if entry is None:
+        return llm_disabled_response()
+
+    # 上游模型存在性校验（同 chat 路由）。
+    if req_model:
+        try:
+            upstream_models = await upstream_pool.list_provider_models(
+                entry["base_url"], entry["api_key"],
+                req_protocol or entry["protocol"] or "openai_chat_completions",
+                entry.get("vendor"),
+            )
+        except Exception:
+            upstream_models = None
+        if upstream_models is not None and not any(
+            m.lower() == req_model.lower() for m in upstream_models
+        ):
+            return error_response(
+                404,
+                f"模型不存在：{req_model}（该提供商未提供此模型，请检查名称或刷新模型列表）",
+            )
+
+    override_model = llm_model_override()
+    if req_model:
+        effective_model = req_model
+    else:
+        # 优先用专门的向量模型配置（LLM_EMBED_MODEL），避免回退到对话模型去 embed 而 501
+        embed_model = (config_value("LLM_EMBED_MODEL") or "").strip()
+        if embed_model:
+            effective_model = embed_model
+        else:
+            vendor_models = [
+                e.get("model") for e in upstream_pool.load_pool("LLM")
+                if e.get("vendor") == entry.get("vendor") and e.get("model")
+            ]
+            effective_model = (
+                override_model if (override_model and override_model in vendor_models) else
+                (entry.get("model") or next(iter(vendor_models), "") or override_model)
+            )
+
+    wire = llm_protocols.normalize_protocol(req_protocol or entry["protocol"] or "openai_chat_completions")
+    if wire in ("anthropic_messages", "openai_responses"):
+        return error_response(501, f"所选线协议 {wire} 不提供 embeddings 向量接口")
+
+    req, resp_transform = llm_protocols.prepare_embeddings(
+        req_protocol or entry["protocol"] or "openai_chat_completions",
+        entry["base_url"], entry["api_key"], effective_model, llm_api_version(), body,
+    )
+    req.headers.update(extra_upstream_headers(request))
+    req.headers["Accept-Encoding"] = "identity"
+
+    try:
+        async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
+            response = await client.post(req.url, headers=req.headers, json=req.payload)
+    except httpx.HTTPError as exc:
+        upstream_pool.mark_failure("LLM", entry)
+        if req_base_url:
+            return error_response(502, f"无法连接 base_url 指定的上游（{entry['base_url']}）：{exc}；请检查地址是否正确、该代理/服务是否已启动。")
+        return error_response(502, f"上游 LLM 请求失败: {exc}")
+    if response.status_code >= 400:
+        upstream_pool.mark_failure("LLM", entry, response.status_code)
+        return error_response(502, f"上游 LLM 失败（{response.status_code}）: {upstream_error(response)}")
+    upstream_pool.mark_success("LLM", entry)
+    try:
+        data = response.json()
+    except ValueError:
+        return Response(content=response.content, status_code=response.status_code,
+                        media_type=response.headers.get("content-type"))
+    data = resp_transform(data)
+    return Response(
+        content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+        status_code=200, media_type="application/json",
+    )
+
+
 @app.get("/llm/v1/providers")
 async def list_llm_providers():
     """对外公开：列出当前已配置的 LLM 提供商（vendor），供测试界面下拉框与第三方拉取。
@@ -1684,6 +2609,133 @@ async def list_llm_providers():
         seen.add(key)
         out.append({"vendor": vendor or "(未指定)", "protocol": protocol, "model": model, "host": host})
     return {"providers": out}
+
+
+def _ws_doc_markdown() -> str:
+    """从 contracts/README.md 抽取 WS 章节原文，避免与契约文档漂移。"""
+    readme = Path(__file__).resolve().parents[2] / "xiaoxiong-app" / "contracts" / "README.md"
+    if not readme.exists():
+        return "# WS 实时接口文档\n\n未找到 contracts/README.md（应为本仓库 xiaoxiong-app/contracts/README.md）。"
+    text = readme.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("### 对外 WS 实时接口")), None)
+    if start is None:
+        return "# WS 实时接口文档\n\n未找到 WS 章节。"
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        # 遇到下一个任意级别的标题即结束：WS 章节内部的同级/下级标题不会误并入。
+        if lines[j].startswith("#"):
+            end = j
+            break
+    return "\n".join(lines[start:end])
+
+
+def _md_esc(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _md_inline(s: str) -> str:
+    s = _md_esc(s)
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
+    return s
+
+
+def _md_to_html(md: str) -> str:
+    """极简 markdown→HTML，覆盖 WS 章节用到的子集：标题 / 表格 / 引用 / 列表 / 代码块 / 段落。"""
+    lines = md.split("\n")
+    out: list[str] = []
+    i = 0
+    in_list = False
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            out.append("</ul>")
+            in_list = False
+
+    while i < len(lines):
+        line = lines[i]
+        if line.strip().startswith("```"):
+            i += 1
+            buf = []
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                buf.append(lines[i])
+                i += 1
+            i += 1
+            out.append("<pre><code>" + _md_esc("\n".join(buf)) + "</code></pre>")
+            continue
+        m = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if m:
+            close_list()
+            lv = len(m.group(1))
+            out.append(f"<h{lv}>{_md_inline(m.group(2))}</h{lv}>")
+            i += 1
+            continue
+        if line.startswith(">"):
+            close_list()
+            buf = []
+            while i < len(lines) and lines[i].startswith(">"):
+                buf.append(lines[i].lstrip(">").strip())
+                i += 1
+            out.append("<blockquote>" + _md_inline(" ".join(buf)) + "</blockquote>")
+            continue
+        if "|" in line and i + 1 < len(lines) and re.match(r"^\s*\|?[\s:|-]+\|?\s*$", lines[i + 1]):
+            close_list()
+            header = [c.strip() for c in line.strip().strip("|").split("|")]
+            i += 2
+            rows = []
+            while i < len(lines) and lines[i].strip() and "|" in lines[i]:
+                rows.append([c.strip() for c in lines[i].strip().strip("|").split("|")])
+                i += 1
+            th = "".join(f"<th>{_md_inline(h)}</th>" for h in header)
+            trs = "".join(
+                "<tr>" + "".join(f"<td>{_md_inline(c)}</td>" for c in r) + "</tr>" for r in rows
+            )
+            out.append(f"<table><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table>")
+            continue
+        if re.match(r"^\s*-\s+", line):
+            if not in_list:
+                out.append("<ul>")
+                in_list = True
+            out.append("<li>" + _md_inline(line.strip()[2:].strip()) + "</li>")
+            i += 1
+            continue
+        if not line.strip():
+            close_list()
+            i += 1
+            continue
+        close_list()
+        out.append("<p>" + _md_inline(line) + "</p>")
+        i += 1
+    close_list()
+    return "\n".join(out)
+
+
+@app.get("/docs/ws", include_in_schema=False)
+async def ws_doc():
+    """WS 实时接口文档页：从 contracts/README.md 的 WS 章节渲染（OpenAPI 不描述 WS，故独立页面）。"""
+    page = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WS 实时接口文档 · 本地语音代理</title>
+<style>
+  body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;max-width:880px;margin:32px auto;padding:0 16px;color:#1f2329;line-height:1.7;background:#fff}}
+  h2{{border-bottom:1px solid #eaecef;padding-bottom:.3em;margin-top:1.6em}}
+  h3{{margin-top:1.4em;color:#2c3e50}}
+  code{{background:#f3f4f6;padding:.15em .4em;border-radius:4px;font-size:.9em}}
+  pre{{background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;overflow:auto}}
+  pre code{{background:none;color:inherit;padding:0}}
+  blockquote{{border-left:4px solid #d0d7de;margin:1em 0;padding:.2em 1em;color:#57606a;background:#f6f8fa}}
+  table{{border-collapse:collapse;width:100%;margin:1em 0;font-size:.92em}}
+  th,td{{border:1px solid #d0d7de;padding:6px 10px;text-align:left;vertical-align:top}}
+  th{{background:#f6f8fa}}
+  a{{color:#2563eb}}
+  .back{{margin-bottom:18px;display:inline-block}}
+</style></head><body>
+<a class="back" href="/docs">← 返回 Swagger 文档</a>
+{_md_to_html(_ws_doc_markdown())}
+</body></html>"""
+    return HTMLResponse(content=page)
 
 
 def parse_args(argv=None):
@@ -1852,6 +2904,16 @@ def main(argv=None) -> None:
         stt_upstream_test=stt_upstream_test,
         tts_upstream_test=tts_upstream_test,
     )
+
+    # 非对外 API 的内部/运维端点从 Swagger/OpenAPI 文档隐藏，只保留真正的语音/LLM 接口：
+    # /admin/* 是管理面板页面与配置接口，/ 是根信息页，/health 是健康检查；隐藏只影响文档展示，
+    # 不影响实际路由可用性。WS 接口（/voice/ws/inference）OpenAPI 本就不描述，无需处理。
+    _HIDE_PATH_EXACT = {"/", "/health"}
+    for _r in app.routes:
+        _p = getattr(_r, "path", "")
+        if _p.startswith("/admin") or _p in _HIDE_PATH_EXACT:
+            _r.include_in_schema = False
+
     print(
         f"[local-ai] 管理 : http://{host}:{port}/admin "
         f"（账号密码见 {os.path.join(VOICE_HOME, 'admin.conf')}）",

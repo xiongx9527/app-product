@@ -1517,6 +1517,17 @@ export class VoiceSessionService {
     if (!report.tts.reachable) down.push('tts-down')
     if (!report.llm.reachable) down.push('llm-down')
     if (!report.network.reachable) down.push('network-down')
+    // 临时排查埋点：把探测结果落文件，真机上可经 run-as 读取，定位「发没发 cue」
+    try {
+      const { appendFileSync } = await import('node:fs')
+      const home = process.env.GATEWAY_HOME ?? '.'
+      appendFileSync(
+        `${home}/gateway-debug.log`,
+        `${new Date().toISOString()} probe down=${JSON.stringify(down)} report=${JSON.stringify(report)}\n`,
+      )
+    } catch {
+      // 调试文件写失败不影响主流程
+    }
     for (const cue of down) this.deps.send({ type: 'client.cue', cue })
   }
 

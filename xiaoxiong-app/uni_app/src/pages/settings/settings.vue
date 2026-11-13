@@ -22,7 +22,8 @@ import { fetchHealthReport, toHealthItems, type HealthItem } from '@/features/as
 import SelectRow from '@/components/SelectRow.vue'
 import { useSubPageBack } from '@/core/composables/useSubPageBack'
 import SubPageNav from '@/components/SubPageNav.vue'
-import { THEME_IDS, THEME_VARS, applyTheme } from '@/core/theme'
+import { THEME_IDS, THEME_VARS } from '@/core/theme'
+import { useThemeStyle } from '@/core/composables/useTheme'
 
 /** 时区下拉选项：值用 IANA 名，展示文案按当前语言本地化。 */
 const timezoneOptions = computed(() =>
@@ -73,11 +74,15 @@ const themeOptions = computed(() =>
     }
   }),
 )
-/** 选中主题：先实时预览（立即改写 :root 变量），保存时再随 appConfig 落盘。 */
+/** 选中主题：改内存配置并立即落盘。页面根元素的 :style 已响应式绑定主题变量，
+ * 落盘后所有已打开页面（含本页实时预览、返回的首页）会自动同步换色，无需手动广播。 */
 function setTheme(value: string): void {
   appConfig.general.theme = value as typeof appConfig.general.theme
-  applyTheme(appConfig.general.theme)
+  persistConfig()
 }
+
+// 本页根元素绑定响应式主题变量（见模板 :style）
+const { themeStyle, dataTheme } = useThemeStyle()
 
 const saving = ref(false)
 
@@ -133,7 +138,7 @@ function setConsolidateEvery(e: any): void {
 /** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
  * MCP 设置默认展开，让「打开设置即可见、可添加」；样式与其余分区一致（标题右侧带收起/展开箭头）。 */
 type SettingsGroup = 'general' | 'memory' | 'voice' | 'playback' | 'recommend' | 'mcp'
-const expanded = ref<SettingsGroup | null>('mcp')
+const expanded = ref<SettingsGroup | null>(null)
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
 }
@@ -308,6 +313,8 @@ function openLongMemory(): void {
 // 返回：有上一级（如从首页进入）走 navigateBack；直链/刷新进入（无上一级）兜底回首页。
 const { goBack } = useSubPageBack({ fallbackUrl: '/pages/index/index' })
 
+// 状态栏让位已收口到 SubPageNav（统一用系统 statusBarHeight 注入顶部留白），本页无需再处理。
+
 onMounted(() => {
   void loadLlmModels()
   void loadTtsVoices()
@@ -327,13 +334,13 @@ watch(
 </script>
 
 <template>
-  <view class="page">
+  <view class="page" :style="themeStyle" :data-theme="dataTheme">
     <SubPageNav :title="t('app.settings')" @back="goBack" />
     <!-- 通用设置（语言 / 时区） -->
     <view class="group">
       <view class="group-head" @tap="toggleGroup('general')">
         <text class="group-title">{{ t('settings.general.title') }}</text>
-        <text class="group-chevron">{{ isOpen('general') ? '▾' : '▸' }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('general') }" />
       </view>
       <template v-if="isOpen('general')">
         <!-- 语言（跟随全局；唤醒/ASR/TTS 默认语言都继承它） -->
@@ -398,7 +405,7 @@ watch(
     <view class="group">
       <view class="group-head" @tap="toggleGroup('mcp')">
         <text class="group-title">{{ t('settings.mcp.title') }}</text>
-        <text class="group-chevron">{{ isOpen('mcp') ? '▾' : '▸' }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('mcp') }" />
       </view>
       <template v-if="isOpen('mcp')">
         <!-- 总开关：关闭则整体停用 MCP，不向网关下发任何服务器 -->
@@ -427,7 +434,7 @@ watch(
     <view class="group">
       <view class="group-head" @tap="toggleGroup('memory')">
         <text class="group-title">{{ t('settings.memory.title') }}</text>
-        <text class="group-chevron">{{ isOpen('memory') ? '▾' : '▸' }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('memory') }" />
       </view>
       <template v-if="isOpen('memory')">
       <text class="hint">{{ t('settings.memory.sub') }}</text>
@@ -485,7 +492,7 @@ watch(
     <view class="group">
       <view class="group-head" @tap="toggleGroup('voice')">
         <text class="group-title">{{ t('settings.voice.title') }}</text>
-        <text class="group-chevron">{{ isOpen('voice') ? '▾' : '▸' }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('voice') }" />
       </view>
       <template v-if="isOpen('voice')">
       <text class="row-label">{{ t('settings.voice.provider') }}</text>
@@ -615,7 +622,7 @@ watch(
     <view class="group">
       <view class="group-head" @tap="toggleGroup('playback')">
         <text class="group-title">{{ t('settings.playback.title') }}</text>
-        <text class="group-chevron">{{ isOpen('playback') ? '▾' : '▸' }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('playback') }" />
       </view>
       <template v-if="isOpen('playback')">
         <!-- 播放源目前仅百度一种，隐藏选择器，无需用户选择；其余设置与播放源无关，全局生效 -->
@@ -738,7 +745,7 @@ watch(
     <view class="group">
       <view class="group-head" @tap="toggleGroup('recommend')">
         <text class="group-title">{{ t('settings.recommend.title') }}</text>
-        <text class="group-chevron">{{ isOpen('recommend') ? '▾' : '▸' }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('recommend') }" />
       </view>
       <template v-if="isOpen('recommend')">
         <!-- 好价商品推荐条数：1–10，默认 3；经 session.start.recommend 下发网关作为工具默认条数 -->
@@ -781,7 +788,6 @@ watch(
 
     <!-- 记忆设置 -->
     <button class="save" :disabled="saving" @tap="onSave">{{ t('settings.save') }}</button>
-    <text class="foot">{{ t('settings.foot') }}</text>
 
     <!-- 保存中的加载遮罩 -->
     <view v-if="saving" class="save-mask">
@@ -815,10 +821,15 @@ watch(
 .group-title {
   font-size: 13px;
   font-weight: 600;
-  color: #9be8cd;
+  letter-spacing: 0.3px;
+  color: var(--accent);
 }
 
 .group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px;
   cursor: pointer;
 }
 
@@ -829,8 +840,18 @@ watch(
 }
 
 .group-chevron {
-  font-size: 12px;
-  color: #9be8cd;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--accent);
+  border-bottom: 1.5px solid var(--accent);
+  transform: rotate(-45deg);
+  transition: transform 0.2s ease;
+  opacity: 0.85;
+  flex-shrink: 0;
+}
+
+.group-chevron.open {
+  transform: rotate(45deg);
 }
 
 .providers {
@@ -1029,23 +1050,25 @@ picker {
   gap: 8px;
 }
 
-/* 主题色板：横排若干圆角色卡，选中项加强调描边 */
+/* 主题色板：等分铺满整行，不留右侧空白；auto-fit + minmax(0,1fr) 让若干色卡在一行内均分宽度，
+   主题数量变化时也自动铺满（不出现定宽导致的右侧留白）。 */
 .theme-swatches {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   gap: 10px;
   margin-top: 4px;
 }
 
 .theme-swatch {
   position: relative;
-  width: 92px;
+  width: 100%;
   height: 56px;
   border-radius: 12px;
   border: 2px solid transparent;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   overflow: hidden;
   cursor: pointer;
 }
@@ -1056,12 +1079,10 @@ picker {
 }
 
 .swatch-dot {
-  position: absolute;
-  top: 8px;
-  right: 8px;
   width: 12px;
   height: 12px;
   border-radius: 50%;
+  flex-shrink: 0;
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.4);
 }
 
@@ -1161,9 +1182,9 @@ picker {
   padding: 0 14px;
   border-radius: 10px;
   font-size: 12px;
-  color: #b8bdd4;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.1);
+  border: 1px solid rgba(var(--accent-rgb), 0.4);
 }
 
 .reset::after {
@@ -1217,10 +1238,10 @@ picker {
   }
 }
 
-.foot {
-  font-size: 11px;
-  line-height: 1.6;
-  color: #6f7691;
-  text-align: center;
+/* 横屏：确保页面铺满宽度，避免左右留白 */
+@media (orientation: landscape) {
+  .page {
+    max-width: none;
+  }
 }
 </style>

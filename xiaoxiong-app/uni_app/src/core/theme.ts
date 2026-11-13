@@ -63,15 +63,23 @@ function resolveVars(id: ThemeId): ThemeVars {
   return THEME_VARS[id === 'auto' ? resolveAuto() : id]
 }
 
-/** 把主题变量写到 :root，全局即时生效（供设置页实时预览与启动时应用）。 */
-export function applyTheme(id: ThemeId): void {
-  if (typeof document === 'undefined') return
+/**
+ * 取某主题的 CSS 变量对象（key 为 --xxx）。用于在各页面根元素上以 `:style` 响应式绑定，
+ * 经 uni-app 桥接到视图层 DOM（App 平台「逻辑层」无 document，直接操作 document 是空操作，
+ * 只有 Vue 的 :style 绑定能真正落到可见页面上）。CSS 变量会向下层叠，整页配色随之变化。
+ */
+export function themeVarStyle(id: ThemeId): Record<string, string> {
   const v = resolveVars(id)
-  const root = document.documentElement
-  root.style.setProperty('--accent', v.accent)
-  root.style.setProperty('--accent-2', v.accent2)
-  root.style.setProperty('--accent-rgb', v.accentRgb)
-  root.style.setProperty('--bg-base', v.bgBase)
-  root.style.setProperty('--bg-glow', v.bgGlow)
-  root.setAttribute('data-theme', id === 'auto' ? resolveAuto() : id)
+  return {
+    '--accent': v.accent,
+    '--accent-2': v.accent2,
+    '--accent-rgb': v.accentRgb,
+    '--bg-base': v.bgBase,
+    '--bg-glow': v.bgGlow,
+  }
+}
+
+/** 主题对应的 data-theme 取值（auto 解析为实际主题，供需要时按属性区分样式）。 */
+export function dataThemeValue(id: ThemeId): string {
+  return id === 'auto' ? resolveAuto() : id
 }
