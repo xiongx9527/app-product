@@ -7,8 +7,11 @@
 //    lite 无 Intl 会让网关正则崩溃 → 必须用 full 包。
 //  - iOS 已设好 TMPDIR/HOME，无需像 Android 那样补；仅需设 GATEWAY_* 与 NODE_COMPILE_CACHE
 //    （PORTABLE=1，避免容器路径 UUID 变化导致缓存失效）。
-//  - 端口回传：bundle（src/embedded/entry.ts）把实际端口写进 GATEWAY_PORT_FILE，本类轮询后写出
-//    ws URL 文件（Documents/gateway.url），客户端经 plus.io 读取并注入 WS 地址（回环，不暴露局域网）。
+//  - 端口固定为 8787（与前端 DEFAULT_GATEWAY_PORT / 网关 .env 的 PORT 对齐）：uni-app 客户端的
+//    HTTP 探活（waitForEmbeddedGateway 通道②）与 WS 回退地址都指向 8787，而 plus.io 在本工程真机上
+//    读不到 Documents/gateway.url，动态端口会让两边永远碰不上、卡在「等网关」直到超时。回环端口冲突概率极低。
+//  - 端口回传：bundle 把实际端口写进 GATEWAY_PORT_FILE，本类轮询后写出 ws URL 文件
+//    （Documents/gateway.url），客户端经 plus.io 读取并注入 WS 地址（回环，不暴露局域网）。
 //
 // 集成位置：DCloud iOS 离线工程（HBuilder-Hello）的 AppDelegate 启动后调用 GatewayNode.shared.start()，
 // 并把 NodeMobile.xcframework 加入工程 Embedded Binaries。注意本机 Intel Mac 无 x86_64 模拟器切片，
@@ -33,6 +36,8 @@ final class GatewayNode {
     static let shared = GatewayNode()
     /// 端口就绪后写出的 WS URL 文件名（落 Documents 目录，客户端 plus.io 可读为 `_documents/gateway.url`）。
     private static let URL_FILE = "gateway.url"
+    /// 固定回环端口，与前端 DEFAULT_GATEWAY_PORT / 网关 .env 的 PORT 保持一致。
+    private static let PORT = 8787
     private let queue = DispatchQueue(label: "com.xiaoxiong.gateway.node")
     private var started = false
 
@@ -40,6 +45,12 @@ final class GatewayNode {
     func start() {
         guard !started else { return }
         started = true
+        // 必须在 dispatch 之前同步删掉上次运行残留的 .gateway_port：awaitPort 紧随 start() 调用，
+        // 若等后台线程再删，轮询会先读到旧端口并写出错误的 gateway.url（真机日志曾出现写出 52170、
+        // 而本次网关实际监听另一端口）。删干净后 awaitPort 只会读到本次网关写出的端口。
+        let home = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("gateway", isDirectory: true)
+        try? FileManager.default.removeItem(at: home.appendingPathComponent(".gateway_port"))
         queue.async { [weak self] in
             self?.runNode()
         }
@@ -71,12 +82,15 @@ final class GatewayNode {
             return
         }
 
+        let portFile = home.appendingPathComponent(".gateway_port")
+
         // 1) 启动前设环境（node_start 读取一次）
         setenv("GATEWAY_HOME", home.path, 1)
         setenv("GATEWAY_MODE", "embedded", 1)
         setenv("DOCS_ENABLED", "false", 1)
-        setenv("GATEWAY_PORT", "0", 1)
-        setenv("GATEWAY_PORT_FILE", home.appendingPathComponent(".gateway_port").path, 1)
+        // 固定 8787：与前端 HTTP 探活 / WS 回退地址对齐；回环端口由本 App 独占，冲突概率极低。
+        setenv("GATEWAY_PORT", String(GatewayNode.PORT), 1)
+        setenv("GATEWAY_PORT_FILE", portFile.path, 1)
         setenv("HOME", home.path, 1)
 
         // 2) V8 代码缓存放 Caches，PORTABLE=1 适配容器路径 UUID 变化
@@ -132,16 +146,18 @@ final class GatewayNode {
     }
 
     /// 轮询端口文件，读到后写出 ws URL 到 Documents/gateway.url 并回调。
-    /// 客户端（uni-app）经 plus.io 读取 `_documents/gateway.url` 拿到 `ws://127.0.0.1:<port>/ws`。
+    /// 端口文件仅作为「网关已 listen」的就绪信号；写出的地址固定为 PORT（8787），
+    /// 不用文件里的值，避免任何残留/时序问题让客户端连到错误端口。
+    /// 客户端（uni-app）经 plus.io 读取 `_documents/gateway.url` 拿到该地址。
     func awaitPort(timeoutMs: Int = 60_000, onReady: ((String) -> Void)? = nil) {
         let portFile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("gateway/.gateway_port")
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
         DispatchQueue.global().async {
             while Date() < deadline {
-                if let raw = try? String(contentsOf: portFile, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                if let raw = try? String(contentsOf: portFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
                    let port = Int(raw), port > 0 {
-                    let url = "ws://127.0.0.1:\(port)/ws"
+                    let url = "ws://127.0.0.1:\(GatewayNode.PORT)/ws"
                     self.writeUrlFile(url)
                     onReady?(url)
                     return

@@ -1,0 +1,130 @@
+[
+  {
+    "kind": "stt",
+    "provider": "builtin",
+    "protocol": "http",
+    "model": "sensevoice-small",
+    "default": true,
+    "sort": 0
+  },
+  {
+    "kind": "tts",
+    "provider": "builtin",
+    "protocol": "http",
+    "model": "edge-tts",
+    "default": true,
+    "sort": 0
+  },
+  {
+    "kind": "stt",
+    "provider": "dashscope",
+    "protocol": "ws",
+    "model": "paraformer-realtime-v2",
+    "default": true,
+    "sort": 100
+  },
+  {
+    "kind": "stt",
+    "provider": "dashscope",
+    "protocol": "ws",
+    "model": "paraformer-realtime-v1",
+    "default": false,
+    "sort": 101
+  },
+  {
+    "kind": "stt",
+    "provider": "dashscope",
+    "protocol": "http-async",
+    "model": "paraformer-v2",
+    "default": false,
+    "sort": 102
+  },
+  {
+    "kind": "stt",
+    "provider": "dashscope",
+    "protocol": "http-async",
+    "model": "paraformer-8k-v2",
+    "default": false,
+    "sort": 103
+  },
+  {
+    "kind": "stt",
+    "provider": "dashscope",
+    "protocol": "ws",
+    "model": "fun-asr-realtime",
+    "default": false,
+    "sort": 104
+  },
+  {
+    "kind": "stt",
+    "provider": "dashscope",
+    "protocol": "http-async",
+    "model": "fun-asr",
+    "default": false,
+    "sort": 105
+  },
+  {
+    "kind": "stt",
+    "provider": "dashscope",
+    "protocol": "ws",
+    "model": "gummy-realtime-v1",
+    "default": false,
+    "sort": 106
+  },
+  {
+    "kind": "tts",
+    "provider": "dashscope",
+    "protocol": "ws",
+    "model": "cosyvoice-v3-flash",
+    "default": true,
+    "sort": 100
+  },
+  {
+    "kind": "tts",
+    "provider": "dashscope",
+    "protocol": "ws",
+    "model": "cosyvoice-v3-plus",
+    "default": false,
+    "sort": 101
+  },
+  {
+    "kind": "tts",
+    "provider": "dashscope",
+    "protocol": "ws",
+    "model": "cosyvoice-v2",
+    "default": false,
+    "sort": 102
+  },
+  {
+    "kind": "tts",
+    "provider": "dashscope",
+    "protocol": "http",
+    "model": "qwen-tts",
+    "default": false,
+    "sort": 103
+  },
+  {
+    "kind": "tts",
+    "provider": "dashscope",
+    "protocol": "http",
+    "model": "qwen-audio-tts",
+    "default": false,
+    "sort": 104
+  },
+  {
+    "kind": "stt",
+    "provider": "deepseek",
+    "protocol": "http",
+    "model": "deepseek-asr",
+    "default": true,
+    "sort": 200
+  },
+  {
+    "kind": "tts",
+    "provider": "deepseek",
+    "protocol": "http",
+    "model": "deepseek-tts",
+    "default": true,
+    "sort": 200
+  }
+]

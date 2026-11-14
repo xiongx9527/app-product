@@ -41,6 +41,23 @@ export const userMemory = sqliteTable(
   (t) => ({ uniq: uniqueIndex('uq_user_memory_device_key').on(t.deviceId, t.key) })
 )
 
+/**
+ * 客户端设置页「保存配置」落库的整份 AppConfig（JSON 字符串），按设备维度一份。
+ * 保存配置时经 POST /api/admin/config 写入网关 SQLite，作为本机持久化副本
+ * （本机 setStorageSync 仍是运行时真相源，网关这份用于重装恢复 / 审计 / 跨端读取）。
+ */
+export const appConfig = sqliteTable(
+  'app_config',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    deviceId: text('device_id'),
+    config: text('config').notNull(),
+    updatedAt: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
+  },
+  (t) => ({ uniq: uniqueIndex('uq_app_config_device').on(t.deviceId) })
+)
+
 export type SessionRow = typeof sessions.$inferSelect
 export type CommandLogRow = typeof commandLogs.$inferSelect
 export type UserMemoryRow = typeof userMemory.$inferSelect
+export type AppConfigRow = typeof appConfig.$inferSelect

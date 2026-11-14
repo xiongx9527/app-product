@@ -14,6 +14,10 @@
  *     [--gateway-bundle /path/bundle.mjs]       # 可选：覆盖默认 <gateway>/dist/gateway.bundle.mjs
  *     [--gateway-cues /path/cues]               # 可选：覆盖默认 <gateway>/static/cues
  *     [--no-gateway]                            # 可选：跳过内嵌网关资产接入
+ *     [--no-launch-storyboard]                  # 可选：本机 Xcode 缺 iOS 平台登记、ibtool 报 "Platform Not Installed" 时启用：
+ *                                              #   启动图改用 iOS14+ 纯配置 UILaunchScreen，并把两个 LaunchScreen*.storyboard
+ *                                              #   移出 Copy Bundle Resources（不再经 ibtool 编译），让完整工程能在这台机器上 BUILD SUCCEEDED。
+ *                                              #   代价：启动屏变为系统默认纯色、不再有 DCloud 品牌启动图；平台装齐后可改回 storyboard。
  *
  * 脚本自动完成（文件/plist 级，无需 Xcode）：
  *   1. 资源 → Pandora/apps/<appid>/www（并修正 manifest.json 的 id 与 dcloud_control.xml）
@@ -21,7 +25,8 @@
  *   3. UIBackgroundModes: audio → Info.plist（网关常驻 + 退后台保活，必需）
  *   4. 网关资产 → <工程目录>/gateway/（gateway.bundle.mjs + static/cues，首启由 GatewayNode.swift 解包）
  *   5. NodeMobile.xcframework → <工程目录>/Frameworks/NodeMobile.xcframework（digidem iOS full 包）
- *   6. 生成 GATEWAY_INTEGRATION.md（Xcode 里还需手动点几下的步骤清单）
+ *   6. [--no-launch-storyboard] 启动图改 UILaunchScreen 纯配置 + storyboard 移出 Resources（见上方参数说明）
+ *   7. 生成 GATEWAY_INTEGRATION.md（Xcode 里还需手动点几下的步骤清单）
  *
  * 脚本不负责（需 Xcode 手动或在 IDE 里做，详见生成的 GATEWAY_INTEGRATION.md）：
  *   - 把 gateway/ 与 NodeMobile.xcframework 加入主 target（Embedded Binaries / Copy Bundle Resources）
@@ -59,6 +64,7 @@ function parseArgs(argv) {
     else if (a === '--gateway-bundle') out.gatewayBundle = argv[++i]
     else if (a === '--gateway-cues') out.gatewayCues = argv[++i]
     else if (a === '--no-gateway') out.gateway = false
+    else if (a === '--no-launch-storyboard') out.noLaunchStoryboard = true
   }
   return out
 }
@@ -162,6 +168,21 @@ writeFileSync(join(dataDir, 'dcloud_control.xml'),
 `)
 console.log('[ok] 已写入 dcloud_control.xml -> Pandora/data/')
 
+// ── 3.5) 根目录 control.xml 的 appid 必须同步 ──
+// iOS 引擎启动读的是 app bundle 根目录的 control.xml（随 Copy Bundle Resources 打进包），
+// 不是 Pandora/data/dcloud_control.xml（那份是 Android/运行时用的）。SDK 示例默认 __UNI__2302A5F，
+// 不改就会去 Pandora/apps/<旧 appid>/www 找资源，导致装到真机后白屏。
+const ctrlCandidates = [join(projDir, 'control.xml'), ...findFiles(args.sdk, 'control.xml')]
+  .filter((p, i, a) => a.indexOf(p) === i && existsSync(p) && !p.includes('/build/'))
+for (const ctrl of ctrlCandidates) {
+  const s = readFileSync(ctrl, 'utf8')
+  const re = /(<app\s+appid=")[^"]*("[^>]*\/>)/g
+  if (re.test(s)) {
+    writeFileSync(ctrl, s.replace(re, `$1${appid}$2`))
+    console.log(`[ok] control.xml appid 已设为 ${appid}: ${ctrl}`)
+  }
+}
+
 // ── 4) AppKey + UIBackgroundModes:audio → 主目标 Info.plist ──
 /** 递归收集所有以 nameEndsWith 结尾的文件 */
 function findFilesEndsWith(dir, nameEndsWith, acc = []) {
@@ -224,7 +245,35 @@ if (/<key>UIBackgroundModes<\/key>/.test(plist)) {
     `\t<key>UIBackgroundModes</key>\n\t<array>\n\t\t<string>audio</string>\n\t</array>\n</dict>\n</plist>`)
   console.log('[ok] Info.plist 已新增 UIBackgroundModes:audio')
 }
+// 可选：本机 Xcode 缺配套 iOS 平台登记、ibtool 编 storyboard 报 "iOS x.x Platform Not Installed" 时启用。
+// 启动图改用 iOS14+ 纯配置 UILaunchScreen（不再引用 storyboard），让完整工程无需装平台即可 BUILD SUCCEEDED。
+if (args.noLaunchStoryboard) {
+  const sbKeyRe = /<key>UILaunchStoryboardName<\/key>\s*<string>[^<]*<\/string>/
+  if (sbKeyRe.test(plist)) {
+    plist = plist.replace(sbKeyRe, '<key>UILaunchScreen</key>\n\t<dict/>')
+  } else if (!/<key>UILaunchScreen<\/key>/.test(plist)) {
+    plist = plist.replace(/<\/dict>\s*<\/plist>/,
+      '\t<key>UILaunchScreen</key>\n\t<dict/>\n</dict>\n</plist>')
+  }
+  console.log('[ok] 启动图: Info.plist 已改用 UILaunchScreen 纯配置')
+}
 writeFileSync(plistPath, plist)
+
+// 同步把两个 LaunchScreen*.storyboard 移出 Copy Bundle Resources：只要它们还留在 Resources phase，
+// Xcode 就会调 ibtool 编译 storyboard，从而触发 "Platform Not Installed"。PBXFileReference 与 group 引用
+// 都保留（文件在 Xcode 里仍可见），平台装齐后把 Resources 两行加回即可恢复 DCloud 品牌启动图。
+if (args.noLaunchStoryboard) {
+  for (const pbx of findFiles(args.sdk, 'project.pbxproj')) {
+    let s = readFileSync(pbx, 'utf8')
+    const before = s
+    s = s.replace(/^[ \t]*[0-9A-Fa-f]{24} \/\* LaunchScreen(?:AD)?\.storyboard in Resources \*\/ = \{[^\n]*\};\n/gm, '')
+    s = s.replace(/^[ \t]*[0-9A-Fa-f]{24} \/\* LaunchScreen(?:AD)?\.storyboard in Resources \*\/,\n/gm, '')
+    if (s !== before) {
+      writeFileSync(pbx, s)
+      console.log(`[ok] 启动图: 已把 storyboard 移出 Copy Bundle Resources: ${pbx}`)
+    }
+  }
+}
 
 // ── 5) 内嵌网关资产 → <projDir>/gateway/ ──
 if (args.gateway) {

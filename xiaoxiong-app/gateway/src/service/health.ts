@@ -2,6 +2,7 @@ import type { GatewayConfig } from '../config'
 import { resolveCapabilityConfig } from '../voiceConfig'
 import type { VoiceConfig } from '../voiceConfig'
 import { DashScopeWsTts } from '../tts/dashscopeWs'
+import { listLlmModels } from './llmModels'
 
 /** 单个能力（ASR / LLM / TTS）的就绪状态，供界面直接展示 */
 export interface ProviderStatus {
@@ -171,7 +172,12 @@ function tinySilentWav(): Uint8Array {
  * DashScope ASR 是 WebSocket（wss://host/api-ws/v1/inference），无功能性 HTTP 接口，
  * 退化为「已配密钥 + 主机可达」的近似判断（无法在此做真转写探测）。
  */
-async function probeAsr(baseUrl: string, provider: string, apiKey?: string): Promise<boolean> {
+async function probeAsr(
+  baseUrl: string,
+  provider: string,
+  apiKey?: string,
+  model = 'sensevoice-small',
+): Promise<boolean> {
   if (provider === 'dashscope') {
     if (!apiKey) return false
     return probeHost(baseUrl)
@@ -180,7 +186,9 @@ async function probeAsr(baseUrl: string, provider: string, apiKey?: string): Pro
     try {
       const form = new FormData()
       form.append('file', new Blob([tinySilentWav()], { type: 'audio/wav' }), 'probe.wav')
-      form.append('model', 'whisper-1')
+      // 内置 ASR 引擎只支持 sensevoice-small（其它模型需配上游），硬传 whisper-1 会被 9529 以
+      // 400 拒绝，导致检测误报「地址不可达」。优先用已配置的模型，未配则回退内置默认。
+      form.append('model', model)
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 4000)
       try {
@@ -281,6 +289,7 @@ async function buildStatus(
   kind: 'asr' | 'tts' | 'llm',
   apiKey: string | undefined,
   deep: boolean,
+  model?: string,
 ): Promise<ProviderStatus> {
   if (provider === 'stub') return summarizeProvider('stub', false)
   const endpoint = hostOf(baseUrl)
@@ -288,7 +297,7 @@ async function buildStatus(
   // ASR / LLM 仍是布尔可达性，由 summarizeProvider 收敛成状态。
   if (kind === 'tts') return probeTts(baseUrl, provider, apiKey, endpoint, deep)
   const reachable =
-    kind === 'asr' ? await probeAsr(baseUrl, provider, apiKey) : await probe(baseUrl, apiKey)
+    kind === 'asr' ? await probeAsr(baseUrl, provider, apiKey, model) : await probe(baseUrl, apiKey)
   return summarizeProvider(provider, reachable, endpoint)
 }
 
@@ -395,13 +404,31 @@ export async function buildHealth(
   deep = false,
 ): Promise<HealthReport> {
   const resolved = resolveCapabilityConfig(voice, config)
-  const asr = await buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, deep)
+  // 内置 ASR 引擎只支持 sensevoice-small；用户若在设置页选了其它 ASR 模型则用它，未选回退默认。
+  const asrModel =
+    typeof resolved.asr.params?.model === 'string' && (resolved.asr.params.model as string)
+      ? (resolved.asr.params.model as string)
+      : 'sensevoice-small'
+  const asr = await buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, deep, asrModel)
   const tts = await buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey, deep)
   const network = await probeExternal()
   // LLM：deep（一键检测）走真正调用模型，能暴露欠费 / 模型名 / 密钥这类「连通但不可用」故障；
   // 其余（30s 轮询）只做连通探测，避免每次轮询都真打模型烧额度。
+  // 一键检测（deep）对 LLM 走真实对话调用；内置来源若没选模型（沿用来源默认），
+  // 解析出 9529 实际可服务的模型来验证可用性，避免假红「未选择模型，无法验证对话能力」
+  // —— 内置模型由后端兜底，未选不等于不可用。
+  let llmDeepModel = resolved.llm.model
+  if (deep && !llmDeepModel && resolved.llm.provider === 'builtin') {
+    try {
+      const root = resolved.llm.baseUrl.replace(/\/llm\/v1\/?$/, '')
+      const models = await listLlmModels('builtin', config, resolved.llm.apiKey, root)
+      if (models.length) llmDeepModel = models[0]
+    } catch {
+      // 解析失败则维持空，probeLlmDeep 仍会给出「无法验证」提示
+    }
+  }
   const llm = deep
-    ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, resolved.llm.model)
+    ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, llmDeepModel)
     : await buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey, deep)
   return { asr, llm, tts, network }
 }

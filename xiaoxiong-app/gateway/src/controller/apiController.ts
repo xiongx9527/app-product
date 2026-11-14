@@ -1,6 +1,7 @@
 import type { DataService } from '../service/dataService'
 import { listLlmModels } from '../service/llmModels'
 import { listTtsVoices } from '../service/ttsVoices'
+import { listVoiceModels } from '../service/voiceModels'
 import { openApiSpec } from '../openapi'
 
 export interface ApiRequest {
@@ -71,6 +72,32 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
       return { status: 200, body: { deleted: n } }
     }
 
+    // 设置接口（/api/admin）：设置页「保存配置」把整份 AppConfig 落库到网关 SQLite。
+    // 免登录、按设备维度；网关只存取 JSON 字符串，不解析不改写配置内容。
+    // POST 成功才算「保存成功」——前端据此判断，连不上 / 写失败要如实报错。
+    if (pathname === '/api/admin/config' && method === 'POST') {
+      if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
+      // body 是整份配置对象（secureRequest POST 的 data）；拒绝非对象，避免脏数据入库。
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return { status: 400, body: { error: 'config object required' } }
+      }
+      try {
+        await data.saveAppConfig(deviceId, JSON.stringify(body))
+        return { status: 200, body: { ok: true } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+    if (pathname === '/api/admin/config' && method === 'GET') {
+      if (!deviceId) return { status: 400, body: { error: 'deviceId required' } }
+      try {
+        const config = await data.getAppConfig(deviceId)
+        return { status: 200, body: { config: config ? JSON.parse(config) : null } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+
     // 设置接口（/api/admin）：语音助手设置页自身使用，不需要登录。
     // LLM 模型下拉框的数据源：默认按 provider 从网关配置的来源地址拉可选模型
     // （内置=网关 VOICE_BUILTIN_URL；百炼=网关 VOICE_DASHSCOPE_URL + 用户本机 api-key）。
@@ -104,6 +131,36 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
       try {
         const result = await listTtsVoices(provider as 'builtin' | 'dashscope', lang)
         return { status: 200, body: result }
+      } catch (err) {
+        return { status: 502, body: { error: (err as Error).message } }
+      }
+    }
+
+    // 设置接口（/api/admin）：语音助手设置页自身使用，不需要登录。
+    // ASR / TTS 模型下拉框数据源：与 LLM 同理，地址由网关持有并中转，前端只传 provider +
+    // capability（asr | tts）；可选带 url（用户当前来源地址，保证列表与真实推理同地址）
+    // 与 api-key（内置本地服务非必填，自建实例可能要）。实时目录拉不到时回退官方清单兜底，
+    // 保证两个来源永远有得选。详见 service/voiceModels.ts。
+    if (pathname === '/api/admin/voice-models' && method === 'GET') {
+      const provider = query.get('provider')
+      const capability = query.get('capability')
+      const apiKey = query.get('apiKey') ?? undefined
+      const url = query.get('url') ?? undefined
+      if (provider !== 'builtin' && provider !== 'dashscope') {
+        return { status: 400, body: { error: 'provider 仅支持 builtin / dashscope' } }
+      }
+      if (capability !== 'asr' && capability !== 'tts') {
+        return { status: 400, body: { error: 'capability 仅支持 asr / tts' } }
+      }
+      try {
+        const models = await listVoiceModels(
+          provider as 'builtin' | 'dashscope',
+          capability as 'asr' | 'tts',
+          config,
+          apiKey,
+          url,
+        )
+        return { status: 200, body: { models } }
       } catch (err) {
         return { status: 502, body: { error: (err as Error).message } }
       }

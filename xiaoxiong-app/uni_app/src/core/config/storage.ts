@@ -18,8 +18,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const DEFAULT_VOICE: VoiceServiceConfig = {
   provider: 'builtin',
-  builtin: { url: 'http://127.0.0.1:9529', apiKey: '', model: '', voice: '', voiceModel: '' },
-  dashscope: { url: '', apiKey: '', model: '', voice: '', voiceModel: '' },
+  builtin: { url: 'http://127.0.0.1:9529', apiKey: '', model: '', voice: '', voiceModel: '', asrModel: '', ttsModel: '' },
+  dashscope: { url: '', apiKey: '', model: '', voice: '', voiceModel: '', asrModel: '', ttsModel: '' },
 }
 
 /** 默认语音服务：内置、本地 9529、无需密钥 */
@@ -185,7 +185,7 @@ function normalizeMcp(raw: unknown): McpConfig {
 
 function normalizeProviderSettings(
   raw: unknown,
-  fallback: { url: string; apiKey: string; model?: string; voice?: string; voiceModel?: string }
+  fallback: { url: string; apiKey: string; model?: string; voice?: string; voiceModel?: string; asrModel?: string; ttsModel?: string }
 ): VoiceProviderSettings {
   const source = isRecord(raw) ? raw : {}
   const url = typeof source.url === 'string' ? source.url.trim() : ''
@@ -193,12 +193,16 @@ function normalizeProviderSettings(
   const model = typeof source.model === 'string' ? source.model.trim() : ''
   const voice = typeof source.voice === 'string' ? source.voice.trim() : ''
   const voiceModel = typeof source.voiceModel === 'string' ? source.voiceModel.trim() : ''
+  const asrModel = typeof source.asrModel === 'string' ? source.asrModel.trim() : ''
+  const ttsModel = typeof source.ttsModel === 'string' ? source.ttsModel.trim() : ''
   return {
     url: url || fallback.url,
     apiKey: apiKey || fallback.apiKey,
     model: model || fallback.model || '',
     voice: voice || fallback.voice || '',
     voiceModel: voiceModel || fallback.voiceModel || '',
+    asrModel: asrModel || fallback.asrModel || '',
+    ttsModel: ttsModel || fallback.ttsModel || '',
   }
 }
 

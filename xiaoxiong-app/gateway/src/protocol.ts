@@ -95,8 +95,9 @@ export type ClientMessage =
       /** wake=只做 ASR（用于本地唤醒词检测，不跑 LLM/TTS）；dialog=完整对话，默认 */
       mode?: 'wake' | 'dialog'
       /**
-       * 客户端设置页选的语音服务配置（内置 / DashScope + 地址 + Key）。
-       * 网关据此展开成 ASR / LLM / TTS 三套能力的真实地址，不再依赖服务端写死的 .env 地址。
+       * 客户端设置页选的语音服务配置（内置 / DashScope + 地址 + Key + 各能力模型）。
+       * 网关据此展开成 ASR / LLM / TTS 三套能力的真实地址与模型，不再依赖服务端写死的 .env。
+       * model=LLM、asrModel=ASR、ttsModel=TTS（独立顶层字段），params.model=音色所属模型；详见 voiceConfig.ts。
        */
       voice?: VoiceConfig
       /**

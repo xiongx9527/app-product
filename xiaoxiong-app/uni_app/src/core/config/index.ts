@@ -78,6 +78,8 @@ export function activeVoiceConfig(): {
   url: string
   apiKey: string
   model: string
+  asrModel: string
+  ttsModel: string
   voice: string
   params?: { voice: string; model?: string }
 } {
@@ -97,6 +99,10 @@ export function activeVoiceConfig(): {
     url: active.url,
     apiKey: active.apiKey,
     model: active.model ?? '',
+    // ASR / TTS 模型走独立顶层字段下发：共用 params 通道会被网关按能力剥离（TTS 专用字段不进 ASR），
+    // 塞进去 ASR 根本拿不到。留空即空，由网关沿用来源默认模型。
+    asrModel: active.asrModel ?? '',
+    ttsModel: active.ttsModel ?? '',
     voice,
     params: voice ? { voice, model: voiceModel } : undefined,
   }

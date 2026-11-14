@@ -70,6 +70,72 @@ describe('resolveCapabilityConfig：TTS 专用参数不得污染 ASR / LLM', () 
   })
 })
 
+describe('resolveCapabilityConfig：asrModel / ttsModel 独立注入对应能力', () => {
+  it('显式 asrModel 注入 asr.params.model，且不污染 tts / llm', () => {
+    const voice = normalizeVoiceConfig({
+      provider: 'dashscope',
+      url: 'https://llm-x.maas.aliyuncs.com',
+      apiKey: 'k',
+      model: 'qwen-plus',
+      asrModel: 'fun-asr-realtime',
+      ttsModel: 'cosyvoice-v3-plus',
+      params: { voice: 'longyumi_v3', model: 'cosyvoice-v3-flash', language: 'zh' },
+    })
+    const r = resolveCapabilityConfig(voice, CONFIG)
+    // ASR 拿到自己显式的模型，且通用参数保留
+    expect(r.asr.params?.model).toBe('fun-asr-realtime')
+    expect(r.asr.params?.language).toBe('zh')
+    expect(r.asr.params?.voice).toBeUndefined()
+    // TTS 显式 ttsModel 优先于音色所属模型（params.model）
+    expect(r.tts.params?.model).toBe('cosyvoice-v3-plus')
+    expect(r.tts.params?.voice).toBe('longyumi_v3')
+    // LLM 不受影响：模型走顶层 model，params 里没有 model / voice
+    expect(r.llm.model).toBe('qwen-plus')
+    expect(r.llm.params?.model).toBeUndefined()
+  })
+
+  it('留空 asrModel / ttsModel：完全保持旧行为（ASR 无 model，TTS 用音色所属模型）', () => {
+    const voice = normalizeVoiceConfig({
+      provider: 'dashscope',
+      url: '',
+      apiKey: 'k',
+      params: { voice: 'longyumi_v3', model: 'cosyvoice-v3-flash' },
+    })
+    const r = resolveCapabilityConfig(voice, CONFIG)
+    expect(r.asr.params?.model).toBeUndefined()
+    expect(r.tts.params?.model).toBe('cosyvoice-v3-flash')
+  })
+
+  it('只填 ttsModel、不填 asrModel：TTS 被覆盖，ASR 沿用默认（无 model）', () => {
+    const voice = normalizeVoiceConfig({ provider: 'builtin', ttsModel: 'edge-tts' })
+    const r = resolveCapabilityConfig(voice, CONFIG)
+    expect(r.asr.params?.model).toBeUndefined()
+    expect(r.tts.params?.model).toBe('edge-tts')
+  })
+
+  it('空串 / 非字符串 asrModel、ttsModel 视为未配置，不注入', () => {
+    const voice = normalizeVoiceConfig({
+      provider: 'builtin',
+      asrModel: '   ',
+      ttsModel: 123,
+    })
+    const r = resolveCapabilityConfig(voice, CONFIG)
+    expect(r.asr.params?.model).toBeUndefined()
+    expect(r.tts.params?.model).toBeUndefined()
+  })
+
+  it('builtin 源同样把两个模型注入对应能力', () => {
+    const voice = normalizeVoiceConfig({
+      provider: 'builtin',
+      asrModel: 'sensevoice-small',
+      ttsModel: 'edge-tts',
+    })
+    const r = resolveCapabilityConfig(voice, CONFIG)
+    expect(r.asr.params?.model).toBe('sensevoice-small')
+    expect(r.tts.params?.model).toBe('edge-tts')
+  })
+})
+
 describe('DashScopeWsAsr：误入的 TTS 模型不得让识别挂掉', () => {
   it('cosyvoice-v3-flash 被忽略，回退 paraformer-realtime-v2，且 voice 不进 parameters', () => {
     const asr = new DashScopeWsAsr(

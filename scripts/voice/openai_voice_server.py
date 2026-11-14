@@ -244,29 +244,31 @@ def tts_voice() -> str:
     return value or "zh-CN-XiaoxiaoNeural"
 
 
-# 对外提供的可用音色目录（edge-tts 风格），按语言分组并附说明。
+# 对外提供的可用音色目录（edge-tts 风格）。
+# 每条只保留 id 与中/英两份描述（desc_zh / desc_en），不再带 lang——语言由 id 前缀体现，
+# 调用方按需选中文或英文描述，避免接口里混入单语标签。
 # 管理面板与 /voice/v1/audio/voices 接口共用这一份，避免两端不一致。
 VOICE_CATALOG = [
-    {"id": "zh-CN-XiaoxiaoNeural", "lang": "中文", "desc": "女声·温柔自然（默认）"},
-    {"id": "zh-CN-YunxiNeural", "lang": "中文", "desc": "男声·年轻活泼"},
-    {"id": "zh-CN-YunyangNeural", "lang": "中文", "desc": "男声·专业新闻播报"},
-    {"id": "zh-CN-XiaoyiNeural", "lang": "中文", "desc": "女声·活泼可爱"},
-    {"id": "zh-CN-YunjianNeural", "lang": "中文", "desc": "男声·成熟稳重"},
-    {"id": "zh-CN-YunxiaNeural", "lang": "中文", "desc": "女声·甜美"},
-    {"id": "zh-CN-XiaoxuanNeural", "lang": "中文", "desc": "女声·清新"},
-    {"id": "zh-TW-HsiaoChenNeural", "lang": "中文(台湾)", "desc": "女声·台湾腔"},
-    {"id": "zh-TW-YunJheNeural", "lang": "中文(台湾)", "desc": "男声·台湾腔"},
-    {"id": "zh-TW-HsiaoYuNeural", "lang": "中文(台湾)", "desc": "女声·台湾腔·温柔"},
-    {"id": "zh-HK-HiuGaaiNeural", "lang": "粤语", "desc": "女声·粤语"},
-    {"id": "zh-HK-WanLungNeural", "lang": "粤语", "desc": "男声·粤语"},
-    {"id": "zh-HK-HiuMaanNeural", "lang": "粤语", "desc": "女声·粤语·活泼"},
-    {"id": "en-US-AriaNeural", "lang": "英文", "desc": "女声·自然通用"},
-    {"id": "en-US-GuyNeural", "lang": "英文", "desc": "男声·沉稳"},
-    {"id": "en-US-JennyNeural", "lang": "英文", "desc": "女声·亲切"},
-    {"id": "en-GB-SoniaNeural", "lang": "英文(英式)", "desc": "女声·优雅英音"},
-    {"id": "en-GB-RyanNeural", "lang": "英文(英式)", "desc": "男声·英音"},
-    {"id": "ja-JP-NanamiNeural", "lang": "日文", "desc": "女声·柔和"},
-    {"id": "ja-JP-KeitaNeural", "lang": "日文", "desc": "男声·清晰"},
+    {"id": "zh-CN-XiaoxiaoNeural", "desc_zh": "女声·温柔自然（默认）", "desc_en": "Female · gentle and natural (default)"},
+    {"id": "zh-CN-YunxiNeural", "desc_zh": "男声·年轻活泼", "desc_en": "Male · young and lively"},
+    {"id": "zh-CN-YunyangNeural", "desc_zh": "男声·专业新闻播报", "desc_en": "Male · professional news broadcast"},
+    {"id": "zh-CN-XiaoyiNeural", "desc_zh": "女声·活泼可爱", "desc_en": "Female · lively and cute"},
+    {"id": "zh-CN-YunjianNeural", "desc_zh": "男声·成熟稳重", "desc_en": "Male · mature and steady"},
+    {"id": "zh-CN-YunxiaNeural", "desc_zh": "女声·甜美", "desc_en": "Female · sweet"},
+    {"id": "zh-CN-XiaoxuanNeural", "desc_zh": "女声·清新", "desc_en": "Female · fresh"},
+    {"id": "zh-TW-HsiaoChenNeural", "desc_zh": "女声·台湾腔", "desc_en": "Female · Taiwanese accent"},
+    {"id": "zh-TW-YunJheNeural", "desc_zh": "男声·台湾腔", "desc_en": "Male · Taiwanese accent"},
+    {"id": "zh-TW-HsiaoYuNeural", "desc_zh": "女声·台湾腔·温柔", "desc_en": "Female · Taiwanese accent · gentle"},
+    {"id": "zh-HK-HiuGaaiNeural", "desc_zh": "女声·粤语", "desc_en": "Female · Cantonese"},
+    {"id": "zh-HK-WanLungNeural", "desc_zh": "男声·粤语", "desc_en": "Male · Cantonese"},
+    {"id": "zh-HK-HiuMaanNeural", "desc_zh": "女声·粤语·活泼", "desc_en": "Female · Cantonese · lively"},
+    {"id": "en-US-AriaNeural", "desc_zh": "女声·自然通用", "desc_en": "Female · natural and versatile"},
+    {"id": "en-US-GuyNeural", "desc_zh": "男声·沉稳", "desc_en": "Male · calm"},
+    {"id": "en-US-JennyNeural", "desc_zh": "女声·亲切", "desc_en": "Female · friendly"},
+    {"id": "en-GB-SoniaNeural", "desc_zh": "女声·优雅英音", "desc_en": "Female · elegant British accent"},
+    {"id": "en-GB-RyanNeural", "desc_zh": "男声·英音", "desc_en": "Male · British accent"},
+    {"id": "ja-JP-NanamiNeural", "desc_zh": "女声·柔和", "desc_en": "Female · soft"},
+    {"id": "ja-JP-KeitaNeural", "desc_zh": "男声·清晰", "desc_en": "Male · clear"},
 ]
 
 
@@ -495,6 +497,26 @@ def llm_base_url() -> str | None:
 def llm_model_override() -> str:
     """配置后覆盖客户端传来的模型名；留空则完全沿用请求。"""
     return config_value("LLM_UPSTREAM_MODEL", "").strip()
+
+
+def default_model_for_provider(cap: str, vendor: str) -> str:
+    """取某提供商自己的默认模型（*_UPSTREAM_DEFAULT_MODELS 里的 vendor -> model）。
+
+    默认模型按提供商维度存：每个提供商各有一个，没勾「默认提供商」也各自生效。
+    找不到时回退到全局 *_UPSTREAM_MODEL（兼容旧配置 / 单地址写法）。
+    """
+    raw = (config_value(f"{cap}_UPSTREAM_DEFAULT_MODELS", "") or "").strip()
+    if raw:
+        try:
+            mapping = json.loads(raw)
+        except (ValueError, TypeError):
+            mapping = None
+        if isinstance(mapping, dict):
+            v = (vendor or "").strip().lower()
+            for key, val in mapping.items():
+                if str(key).strip().lower() == v and isinstance(val, str) and val.strip():
+                    return val.strip()
+    return (config_value(f"{cap}_UPSTREAM_MODEL", "") or "").strip()
 
 
 def llm_api_version() -> str:
@@ -1048,8 +1070,9 @@ def _edge_tts_available() -> bool:
 def _voice_provider_entries() -> list[dict]:
     """枚举 STT / TTS 两个端口的可用提供商，供 /voice/v1/providers 与 /voice/v1/models 共用。
 
-    每个端口始终含 builtin（本地引擎）；若 DB 配置了上游 provider（dashscope / openai_audio），
-    再追加一条上游条目，含 base_url 主机、默认模型、候选模型列表、协议推断。任何密钥都不出现。
+    每个端口始终含 builtin（本地引擎）；若 DB 配置了上游 provider（dashscope / deepseek /
+    openai_audio），再追加一条上游条目，含 base_url 主机、默认模型、候选模型列表、协议。
+    protocol 是调用形态（http / ws / http-async），优先取 DB 的 speech_models 表；任何密钥都不出现。
     """
     out: list[dict] = []
 
@@ -1058,7 +1081,7 @@ def _voice_provider_entries() -> list[dict]:
             {
                 "capability": capability,  # stt / tts
                 "vendor": vendor,  # builtin / dashscope / openai_audio
-                "protocol": protocol,  # local / http / ws / http-async
+                "protocol": protocol,  # http / ws / http-async（调用形态，不含厂商/部署位置）
                 "model": model,  # 该 provider 当前默认模型
                 "host": host,  # 上游主机（脱敏）
                 "ready": ready,  # builtin 为布尔；上游为 None（需点测）
@@ -1074,10 +1097,11 @@ def _voice_provider_entries() -> list[dict]:
         [stt_model] if stt_model else []
     )
     add("stt", "builtin", "sensevoice-small", "", sensevoice_ready(),
-        sorted(BUILTIN_STT_MODELS), "local")
+        sorted(BUILTIN_STT_MODELS), "http")
     if stt_provider and stt_provider != "builtin":
         add("stt", stt_provider, stt_model, _host_of(stt_base), None,
-            stt_models, "ws" if _model_uses_ws(stt_model) else "http")
+            stt_models, voice_db.model_protocol("stt", stt_provider, stt_model)
+            or ("ws" if _model_uses_ws(stt_model) else "http"))
 
     # ---- TTS ----
     tts_provider = (config_value("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
@@ -1087,10 +1111,11 @@ def _voice_provider_entries() -> list[dict]:
         [tts_model] if tts_model else []
     )
     add("tts", "builtin", "edge-tts", "", _edge_tts_available(),
-        sorted(BUILTIN_TTS_MODELS), "local")
+        sorted(BUILTIN_TTS_MODELS), "http")
     if tts_provider and tts_provider != "builtin":
         add("tts", tts_provider, tts_model, _host_of(tts_base), None,
-            tts_models, "ws" if _model_uses_ws(tts_model) else "http")
+            tts_models, voice_db.model_protocol("tts", tts_provider, tts_model)
+            or ("ws" if _model_uses_ws(tts_model) else "http"))
     return out
 
 
@@ -1111,7 +1136,8 @@ def voice_models():
 
     模型来自当前激活的提供商：builtin 固定（sensevoice-small / edge-tts），上游（dashscope /
     openai_audio）取 DB 配置的候选模型列表（*_UPSTREAM_MODELS），不再写死 2 个。
-    统一用 model_catalog.ModelInfo，方便网关按 type / protocol 归类与校验。
+    统一用 model_catalog.ModelInfo，每条带 provider（厂商）与 protocol（调用形态
+    http / ws / http-async），方便网关按 type / provider / protocol 归类与校验。
     """
     data = []
     for entry in _voice_provider_entries():
@@ -1125,16 +1151,19 @@ def voice_models():
         for mid in models:
             if not mid:
                 continue
-            # 协议按每个模型名判定：builtin 恒 local；上游模型名含 cosyvoice /
-            # realtime / streaming / gummy 的走 ws，其余 http（对齐面板协议标签）。
-            protocol = "local" if entry["vendor"] == "builtin" else (
-                "ws" if _model_uses_ws(mid) else "http"
+            # 协议是模型级字段，优先读 DB 的 speech_models 表（init_catalog.py 维护），
+            # 读不到再按模型名推断。内置本地引擎走 /voice/v1 的 HTTP，协议是 http，
+            # 不是 "local"（那是部署位置）；厂商单独放 provider 字段，不混进协议。
+            protocol = voice_db.model_protocol(entry["capability"], entry["vendor"], mid) or (
+                "http" if entry["vendor"] == "builtin"
+                else ("ws" if _model_uses_ws(mid) else "http")
             )
             data.append(
                 model_catalog.ModelInfo(
                     id=mid,
                     owned_by=owned,
                     type=mtype,
+                    provider=entry["vendor"],
                     protocol=protocol,
                 ).to_openai()
             )
@@ -1290,6 +1319,80 @@ def resolve_voice_protocol(requested: str, model: str, provider: str) -> str:
     return "ws" if _model_uses_ws(model) else "http"
 
 
+# ── DeepSeek 语音（官方全家桶 API 的 ASR / TTS 独立接口）─────────────────
+# 地址固定为官方入口（与 DashScope 一样「地址固定、只填 api-key」）。
+# 调用协议是 http（整段上传 / 一次性返回），端点 POST /v1/tools/{asr,tts} 属于接口路径，
+# 不是协议名——协议口径统一为 http / ws / http-async，不带厂商名。
+DEEPSEEK_BASE = "https://api.deepseek.com"
+
+
+def _deepseek_key(kind: str) -> str:
+    """取 DeepSeek api-key：优先 STT_/TTS_ 各自的，其次共用的 DEEPSEEK_API_KEY。"""
+    return (
+        (config_value(f"{kind}_DEEPSEEK_API_KEY") or "").strip()
+        or (config_value("DEEPSEEK_API_KEY") or "").strip()
+    )
+
+
+async def deepseek_tts_bytes(text: str, voice: str, key: str) -> bytes:
+    """DeepSeek 官方 TTS：返回 24kHz / 16bit / 单声道 PCM，包成 WAV 交给上层。
+
+    失败抛 RuntimeError，由调用方转 502——已选 DeepSeek 就如实报错，不回落内置。
+    """
+    if not key:
+        raise RuntimeError("DeepSeek TTS 未配置 api-key（设置页填 TTS_DEEPSEEK_API_KEY）")
+    payload: dict[str, Any] = {"text": text, "format": "pcm"}
+    if voice:
+        payload["voice_id"] = voice
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            DEEPSEEK_BASE + "/v1/tools/tts",
+            json=payload,
+            headers={"Authorization": f"Bearer {key}"},
+        )
+    if r.status_code >= 400:
+        raise RuntimeError(f"DeepSeek TTS 失败（{r.status_code}）: {r.text[:200]}")
+    if not r.content:
+        raise RuntimeError("DeepSeek TTS 已响应但没有音频数据")
+    return pcm16_to_wav(r.content, 24000)
+
+
+async def deepseek_asr_text(audio: bytes, key: str) -> str:
+    """DeepSeek 官方 ASR：multipart 上传整段音频，返回识别文本（不支持流式）。"""
+    if not key:
+        raise RuntimeError("DeepSeek ASR 未配置 api-key（设置页填 STT_DEEPSEEK_API_KEY）")
+    if audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        raise ValueError("DeepSeek ASR 只接受 16 位 PCM WAV（网关上行会补 WAV 头）")
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            DEEPSEEK_BASE + "/v1/tools/asr",
+            headers={"Authorization": f"Bearer {key}"},
+            files={"file": ("audio.wav", audio, "audio/wav")},
+        )
+    if r.status_code >= 400:
+        raise RuntimeError(f"DeepSeek ASR 失败（{r.status_code}）: {r.text[:200]}")
+    try:
+        return (r.json().get("text") or "").strip()
+    except ValueError as exc:
+        raise RuntimeError(f"DeepSeek ASR 返回无法解析: {r.text[:150]}") from exc
+
+
+def _deepseek_default_model(kind: str) -> str:
+    """DeepSeek 官方 ASR/TTS 没有模型参数，这里给目录里的模型名做占位。"""
+    return voice_db.default_speech_model(kind, "deepseek") or (
+        "deepseek-asr" if kind == "stt" else "deepseek-tts"
+    )
+
+
+def _deepseek_voice(voice: str, model: str) -> str:
+    """音色必须属于 DeepSeek 目录（stella / tide），否则回退该模型的默认音色。"""
+    v = (voice or "").strip()
+    known = {x["id"] for x in voice_db.list_voices("deepseek")}
+    if v and (not known or v in known):
+        return v
+    return voice_db.default_voice("deepseek", model or "deepseek-tts") or "stella"
+
+
 def pcm16_to_wav(pcm: bytes, sample_rate: int = TTS_SAMPLE_RATE) -> bytes:
     """WS 实时合成返回裸 s16le PCM 帧，包成 WAV 供播放器与后续转码使用。"""
     if pcm[:4] == b"RIFF" and pcm[8:12] == b"WAVE":
@@ -1308,8 +1411,20 @@ def is_edge_voice(voice: str) -> bool:
     return any(v.get("id") == voice for v in VOICE_CATALOG)
 
 
-async def stt_upstream_test(model_override: str | None = None) -> dict:
-    """管理面板 ASR 行点「测试可用」：真识别一次样例语音（与正式转发同源）。"""
+async def stt_upstream_test(model_override: str | None = None, provider: str = "") -> dict:
+    """管理面板 ASR 行点「测试可用」：真识别一次样例语音（与正式转发同源）。
+
+    provider 为空时按 DashScope 行测（历史行为）；传 deepseek 则测 DeepSeek 官方 ASR。
+    """
+    b64_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr_sample.b64")
+    audio = base64.b64decode(open(b64_path, encoding="utf-8").read().strip())
+    if (provider or "").strip().lower() == "deepseek":
+        try:
+            text = await deepseek_asr_text(audio, _deepseek_key("STT"))
+            return ({"ok": True, "message": f"识别成功：{text[:60]}"} if text
+                    else {"ok": True, "message": "DeepSeek 已响应（空文本）"})
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "message": str(exc)[:200]}
     base = (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
     model = (model_override or "").strip() or (config_value("STT_UPSTREAM_MODEL") or "").strip()
     if not model:
@@ -1317,8 +1432,6 @@ async def stt_upstream_test(model_override: str | None = None) -> dict:
     key = (config_value("STT_UPSTREAM_API_KEY") or "").strip() or (
         config_value("TTS_UPSTREAM_API_KEY") or ""
     ).strip()
-    b64_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asr_sample.b64")
-    audio = base64.b64decode(open(b64_path, encoding="utf-8").read().strip())
     is_dashscope = "dashscope.aliyuncs.com" in base
     try:
         if is_dashscope and _model_uses_ws(model):
@@ -1333,8 +1446,19 @@ async def stt_upstream_test(model_override: str | None = None) -> dict:
         return {"ok": False, "message": str(exc)[:200]}
 
 
-async def tts_upstream_test(model_override: str | None = None) -> dict:
-    """管理面板 TTS 行点「测试可用」：真合成一句验证上游 TTS（与正式转发同源）。"""
+async def tts_upstream_test(model_override: str | None = None, provider: str = "") -> dict:
+    """管理面板 TTS 行点「测试可用」：真合成一句验证上游 TTS（与正式转发同源）。
+
+    provider 为空时按 DashScope 行测（历史行为）；传 deepseek 则测 DeepSeek 官方 TTS。
+    """
+    if (provider or "").strip().lower() == "deepseek":
+        try:
+            m = (model_override or "").strip() or _deepseek_default_model("tts")
+            voice = _deepseek_voice("", m)
+            raw = await deepseek_tts_bytes("你好，语音合成测试。", voice, _deepseek_key("TTS"))
+            return {"ok": True, "message": f"合成成功（{m} / {voice}，{len(raw)} 字节音频）"}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "message": str(exc)[:200]}
     base = (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
     model = (model_override or "").strip() or (config_value("TTS_UPSTREAM_MODEL") or "").strip()
     if not model:
@@ -1432,6 +1556,14 @@ async def _tts_synthesize(
     抽出自 /voice/v1/audio/speech 路由（OpenAI 形状）与 WS /voice/ws/inference 共用，
     避免两套重复逻辑。
     """
+    if tts_provider == "deepseek":
+        # DeepSeek 只有 stella / tide 两个音色，且没有语速参数（speed 忽略）
+        raw = await deepseek_tts_bytes(
+            text, _deepseek_voice(voice, upstream_model), _deepseek_key("TTS")
+        )
+        if fmt == "wav":
+            return raw, "audio/wav"
+        return transcode_mp3(raw, fmt)
     if tts_provider == "dashscope":
         # DashScope 音色体系与 edge-tts 不通用：传来的 edge 目录音色视为「未指定」，
         # 按模型族回退官方默认音色（否则云端 418 Invalid voice）。
@@ -1477,6 +1609,10 @@ async def _asr_recognize(
             raise ValueError("只支持 WAV 音频（网关上行会补 WAV 头）")
         text, duration, lang = await asyncio.to_thread(transcribe_sensevoice, payload, language)
         return text, duration, lang
+    if stt_provider == "deepseek":
+        # 官方 ASR 是整段上传（≤120s），没有 model / 语种参数，语种自动识别
+        text = await deepseek_asr_text(payload, _deepseek_key("STT"))
+        return text, 0.0, ""
     upstream_model = (model or "").strip()
     if not upstream_model:
         raise RuntimeError("已选择上游 ASR，请在请求里带 model 或配置 STT_UPSTREAM_MODEL")
@@ -1589,12 +1725,63 @@ async def speech(body: SpeechBody):
 
 
 @app.get("/voice/v1/audio/voices")
-async def list_voices():
+async def list_voices(provider: str = "", model: str = ""):
     """对外公开的可选音色目录（无需鉴权），供客户端下拉框与第三方调用方拉取。
 
-    返回 {default, voices:[{id,lang,desc}]}，与 /voice/v1/audio/speech 的 voice 字段对齐。
+    可选查询参数：
+    - provider：TTS 提供商（builtin / openai_audio，openai_audio 归为 dashscope）；不传用配置默认。
+    - model：TTS 模型；不传用该 provider 的默认模型。
+    两者都不传时即「默认提供商 + 默认模型」。音色目录来自本地 SQLite 的 voices 表（表维护）。
+
+    返回 {default, provider, model, voices:[{id, provider, model, desc_zh, desc_en, is_default}]}，
+    与 /voice/v1/audio/speech 的 voice 字段对齐；default 为该 provider+model 的默认音色。
     """
-    return {"default": tts_voice(), "voices": VOICE_CATALOG}
+    prov = (provider or "").strip().lower() or (
+        config_value("TTS_PROVIDER", "builtin") or "builtin"
+    ).strip().lower()
+    if prov in ("openai_audio", "dashscope"):
+        prov_key = "dashscope"
+    elif prov == "deepseek":
+        prov_key = "deepseek"
+    else:
+        prov_key = "builtin"
+    mdl = (model or "").strip()
+    voices = voice_db.list_voices(prov_key, mdl or None)
+    if not voices:  # 模型名不匹配 / 未传 → 退回该 provider 全部音色
+        voices = voice_db.list_voices(prov_key, None)
+    # 回显的 model 与真实返回的音色对齐（请求的模型若不在目录里，用目录里的模型）
+    if voices and (not mdl or not any(v["model"] == mdl for v in voices)):
+        mdl = voices[0]["model"]
+    if not voices:  # DB 尚未播种等极端情况：退回内置硬编码目录
+        voices = [
+            {"id": v["id"], "provider": "builtin", "model": "edge-tts",
+             "desc_zh": v.get("desc_zh", ""), "desc_en": v.get("desc_en", ""),
+             "is_default": v["id"] == tts_voice()}
+            for v in VOICE_CATALOG
+        ]
+        mdl = mdl or "edge-tts"
+    default_id = next((v["id"] for v in voices if v.get("is_default")), None)
+    if not default_id and prov_key == "builtin":
+        default_id = tts_voice()
+    if not default_id and voices:
+        default_id = voices[0]["id"]
+    return {
+        "default": default_id or tts_voice(),
+        "provider": prov_key,
+        "model": mdl,
+        "protocol": voice_db.model_protocol("tts", prov_key, mdl),
+        "voices": [
+            {
+                "id": v["id"],
+                "provider": v["provider"],
+                "model": v["model"],
+                "desc_zh": v.get("desc_zh") or "",
+                "desc_en": v.get("desc_en") or "",
+                "is_default": bool(v.get("is_default")),
+            }
+            for v in voices
+        ],
+    }
 
 
 async def forward_transcriptions_openai(
@@ -1645,7 +1832,11 @@ async def transcriptions(
     ).strip().lower()
     upstream_model = ""
     proto = (protocol or "").strip().lower()
-    if stt_provider == "builtin":
+    if stt_provider == "deepseek":
+        # DeepSeek 官方 ASR 是整段上传，没有模型 / 协议可选
+        upstream_model = (model or "").strip() or _deepseek_default_model("stt")
+        proto = proto or "http"
+    elif stt_provider == "builtin":
         # 内置模式：model 可为空/默认值，但传了别的（如上游模型名）直接拒绝——不静默吞掉。
         requested = (model or "").strip()
         if requested and requested not in BUILTIN_STT_MODELS:
@@ -1771,7 +1962,10 @@ async def translations(
     ).strip().lower()
     upstream_model = ""
     proto = (protocol or "").strip().lower()
-    if stt_provider == "builtin":
+    if stt_provider == "deepseek":
+        upstream_model = (model or "").strip() or _deepseek_default_model("stt")
+        proto = proto or "http"
+    elif stt_provider == "builtin":
         if proto in ("ws", "http-async"):
             return error_response(400, f"内置 ASR 为本地推理，只支持 http 协议（收到 {proto}）")
         if not proto:
@@ -1880,7 +2074,10 @@ async def _ws_handle_asr(websocket: WebSocket, task_id: str, model: str, payload
     stt_provider = (config_value("STT_PROVIDER", "builtin") or "builtin").strip().lower()
     upstream_model = ""
     proto = "http"
-    if stt_provider != "builtin":
+    if stt_provider == "deepseek":
+        # DeepSeek ASR 没有模型参数，用目录里的模型名占位即可
+        upstream_model = (model or "").strip() or _deepseek_default_model("stt")
+    elif stt_provider != "builtin":
         upstream_model = (model or "").strip() or (config_value("STT_UPSTREAM_MODEL") or "").strip()
         if not upstream_model:
             await _ws_send_fail(websocket, task_id, "dashscope ASR 需要 model 或配置 STT_UPSTREAM_MODEL")
@@ -1947,7 +2144,9 @@ async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload
     """TTS 子流程：收 continue-task(文本) + finish-task，合成后回二进制音频 + task-finished。"""
     tts_provider = (config_value("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
     upstream_model = ""
-    if tts_provider != "builtin":
+    if tts_provider == "deepseek":
+        upstream_model = (model or "").strip() or _deepseek_default_model("tts")
+    elif tts_provider != "builtin":
         upstream_model = (model or "").strip() or (config_value("TTS_UPSTREAM_MODEL") or "").strip()
         if not upstream_model:
             await _ws_send_fail(websocket, task_id, "dashscope TTS 需要 model 或配置 TTS_UPSTREAM_MODEL")
@@ -2099,6 +2298,7 @@ def llm_catalog() -> list[model_catalog.ModelInfo]:
                 model_catalog.ModelInfo(
                     id=m,
                     owned_by=(e.get("vendor") or e.get("protocol") or "openai"),
+                    provider=e.get("vendor") or "",
                     type=model_catalog.ModelType.LLM,
                 ),
             )
@@ -2322,9 +2522,9 @@ async def chat_completions(request: Request):
             )
     # 模型名确定（对外统一规则）：
     # - 显式带了模型就原样下发（用户/测试指定了要跑哪个模型，绝不偷偷替换）；
-    # - 没带模型（只传提供商 / 都没传）：在所选提供商的模型池内取默认模型——
-    #   优先全局默认模型（LLM_UPSTREAM_MODEL），若它属于该提供商；否则退回该提供商
-    #   的入口模型，保证模型在该提供商模型池里消化，不串到别的提供商。
+    # - 没带模型（只传提供商 / 都没传）：取「该提供商自己的默认模型」——默认模型
+    #   是按提供商维度存的，每个提供商各有一个，不串到别的提供商；该提供商没设
+    #   默认则退回其入口模型。
     override_model = llm_model_override()
     if req_model:
         effective_model = req_model
@@ -2333,8 +2533,9 @@ async def chat_completions(request: Request):
             e.get("model") for e in upstream_pool.load_pool("LLM")
             if e.get("vendor") == entry.get("vendor") and e.get("model")
         ]
+        provider_default = default_model_for_provider("LLM", entry.get("vendor") or "")
         effective_model = (
-            override_model if (override_model and override_model in vendor_models) else
+            provider_default if (provider_default in vendor_models) else
             (entry.get("model") or next(iter(vendor_models), "") or override_model)
         )
     req, stream_cls, resp_transform = llm_protocols.prepare(
@@ -2525,8 +2726,24 @@ async def embeddings(request: Request):
     if entry is None:
         return llm_disabled_response()
 
-    # 上游模型存在性校验（同 chat 路由）。
+    # 计算生效模型：显式指定优先；否则取「该提供商自己的默认模型」（按提供商维度）。
+    # 没配 → 如实报错（没有向量模型就不该静默成功）。
     if req_model:
+        effective_model = req_model
+    else:
+        embed_model = default_model_for_provider(cap, entry.get("vendor") or "")
+        if not embed_model:
+            return error_response(
+                400,
+                f"未配置向量模型：请先在配置页为该提供商指定默认模型，"
+                f"或在请求中显式传入 model 字段。",
+            )
+        effective_model = embed_model
+
+    # 上游模型存在性校验（同 chat 路由）：生效模型必须确实在提供商目录里。
+    # 模型一定要在提供商里面——既不校验本地聊天模型目录，也不默认放行；目录探不到（None）时才跳过，避免误杀。
+    # bypass_catalog 可跳过；直连上游（direct_upstream）不涉及本地池，也不校验。
+    if not body.get("bypass_catalog") and not req_base_url:
         try:
             upstream_models = await upstream_pool.list_provider_models(
                 entry["base_url"], entry["api_key"],
@@ -2536,30 +2753,11 @@ async def embeddings(request: Request):
         except Exception:
             upstream_models = None
         if upstream_models is not None and not any(
-            m.lower() == req_model.lower() for m in upstream_models
+            m.lower() == effective_model.lower() for m in upstream_models
         ):
             return error_response(
                 404,
-                f"模型不存在：{req_model}（该提供商未提供此模型，请检查名称或刷新模型列表）",
-            )
-
-    override_model = llm_model_override()
-    if req_model:
-        effective_model = req_model
-    else:
-        # 优先用专门的向量模型配置（EMBED_UPSTREAM_MODEL / LLM_EMBED_MODEL），
-        # 避免回退到对话模型去 embed 而 501。
-        embed_model = (config_value(f"{cap}_UPSTREAM_MODEL", "") or "").strip()
-        if embed_model:
-            effective_model = embed_model
-        else:
-            vendor_models = [
-                e.get("model") for e in upstream_pool.load_pool(cap)
-                if e.get("vendor") == entry.get("vendor") and e.get("model")
-            ]
-            effective_model = (
-                override_model if (override_model and override_model in vendor_models) else
-                (entry.get("model") or next(iter(vendor_models), "") or override_model)
+                f"模型不存在：{effective_model}（该提供商未提供此模型，请检查名称或刷新模型列表）",
             )
 
     wire = llm_protocols.normalize_protocol(req_protocol or entry["protocol"] or "openai_chat_completions")

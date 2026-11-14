@@ -78,6 +78,34 @@ export const openApiSpec = {
         responses: { '201': { description: '已写入' } },
       },
     },
+    '/api/admin/config': {
+      post: {
+        summary: '保存设置页的整份配置到网关 SQLite（按 deviceId 覆盖更新）',
+        description: '语音助手设置页点「保存配置」时调用。body 为整份 AppConfig 对象，网关只存取 JSON、不解析不改写。POST 成功才算保存成功；连不上或写失败前端要如实报错。',
+        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { type: 'object', description: '整份 AppConfig（mode / language / timezone / voice / playback / recommend / general / memory / mcp）', additionalProperties: true },
+            },
+          },
+        },
+        responses: {
+          '200': { description: '{ ok: true }：已落库' },
+          '400': { description: '缺 deviceId 或 body 不是对象' },
+          '500': { description: '写库失败，附 error 信息' },
+        },
+      },
+      get: {
+        summary: '读回该设备最近一次保存的配置',
+        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': { description: '{ config: AppConfig | null }；未保存过返回 null' },
+          '400': { description: '缺 deviceId' },
+        },
+      },
+    },
     '/api/admin/memories': {
       get: {
         summary: '分页列出该设备的长期记忆',
@@ -132,6 +160,22 @@ export const openApiSpec = {
           '200': { description: '{ defaultVoice, voices:[{value,label}] }：从来源读到的可选音色', content: { 'application/json': { schema: { type: 'object', properties: { defaultVoice: { type: 'string' }, voices: { type: 'array', items: { type: 'object', properties: { value: { type: 'string' }, label: { type: 'string' } } } } } } } } },
           '400': { description: 'provider 缺失或非法' },
           '502': { description: '无法从来源拉取音色列表' },
+        },
+      },
+    },
+    '/api/admin/voice-models': {
+      get: {
+        summary: '列出某来源的 ASR / TTS 模型（设置页「ASR 模型 / TTS 模型」下拉框数据源；实时目录 + 官方清单兜底）',
+        parameters: [
+          { name: 'provider', in: 'query', required: true, schema: { type: 'string', enum: ['builtin', 'dashscope'] }, description: '语音服务来源（地址由网关配置持有并中转，前端不传）' },
+          { name: 'capability', in: 'query', required: true, schema: { type: 'string', enum: ['asr', 'tts'] }, description: '能力端口：asr=语音识别（对应 9529 的 STT），tts=语音合成' },
+          { name: 'apiKey', in: 'query', schema: { type: 'string' }, description: '来源 api-key，只落本机、由前端带来；内置本地服务非必填，自建实例可能要' },
+          { name: 'url', in: 'query', schema: { type: 'string' }, description: '用户当前来源地址（如自建 9529 实例），让列表与真实推理同地址；不传则用网关默认地址' },
+        ],
+        responses: {
+          '200': { description: '{ models: string[] }：该能力端口的可选模型列表（实时目录合并官方兜底，保证非空）', content: { 'application/json': { schema: { type: 'object', properties: { models: { type: 'array', items: { type: 'string' } } } } } } },
+          '400': { description: 'provider / capability 缺失或非法' },
+          '502': { description: '无法从来源拉取模型列表（且兜底也失败，理论上不会触发）' },
         },
       },
     },

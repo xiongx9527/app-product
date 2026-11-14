@@ -85,9 +85,12 @@ function setTheme(value: string): void {
 const { themeStyle, dataTheme } = useThemeStyle()
 
 const saving = ref(false)
+/** 仅「未同步到网关」时置 true：行内红字如实报错。保存成功不显示文字（加载遮罩已足够）、不用 showToast。 */
+const saveFailed = ref(false)
 
 async function onSave(): Promise<void> {
   saving.value = true
+  saveFailed.value = false
   try {
     persistConfig()
     // 设置页改了播放源：若语音会话仍连着，立即推给网关重建音乐源，无需重连/重唤醒即可生效；
@@ -101,6 +104,20 @@ async function onSave(): Promise<void> {
         appConfig.playback.defaultVolume,
         appConfig.playback.autoLoop ?? false
       )
+    }
+    // 保存配置必须走网关、落进网关 SQLite：POST 成功（2xx）才算保存成功。
+    // 网关没启动 / 请求失败 / 非 2xx 时如实报错，不谎报「已保存」——本机那份只是离线兜底。
+    // 用 JSON.parse(JSON.stringify(...)) 把 reactive 代理转成纯对象，避免序列化出意外结构。
+    try {
+      const res = await secureRequest({
+        url: `${resolveGatewayHttpBase()}/api/admin/config?deviceId=${encodeURIComponent(getDeviceId())}`,
+        method: 'POST',
+        data: JSON.parse(JSON.stringify(appConfig)),
+        header: { 'content-type': 'application/json' },
+      })
+      saveFailed.value = !(res.statusCode >= 200 && res.statusCode < 300)
+    } catch {
+      saveFailed.value = true
     }
     // 本地落盘是同步的，加一个最短可见时长让加载遮罩有反馈，而不是一闪而过。
     await new Promise((r) => setTimeout(r, 400))
@@ -203,18 +220,25 @@ async function loadLlmModels(): Promise<void> {
     })
     const data = res.data as { models?: string[] } | null
     if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.models) && data.models.length) {
-      llmModels.value = data.models.map((m) => ({ value: m, label: m }))
-      // 当前没选或选中的已不在列表里：自动选第一个，保证开箱即连得上（选项来自来源配置）。
+      // 内置来源：首位放「沿用来源默认」空选项，允许不选（空串 = 用 9529 自身默认模型）。
+      // 百炼必须带真实模型，不放空选项。
+      const withDefault = provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
+      llmModels.value = [...withDefault, ...data.models.map((m) => ({ value: m, label: m }))]
       const settings = currentProviderSettings()
-      if (!settings.model || !data.models.includes(settings.model)) {
+      if (settings.model && !data.models.includes(settings.model)) {
+        // 选中的模型已不在列表里：内置回退「沿用来源默认」，百炼必须选一个真实模型。
+        settings.model = provider === 'builtin' ? '' : data.models[0]
+      } else if (!settings.model && provider === 'dashscope') {
+        // 百炼 LLM 模型必填：没选时默认选第一个，保证开箱即连得上。
         settings.model = data.models[0]
       }
+      // 内置 LLM 模型留空 = 沿用来源默认，不做强制选择。
     } else {
-      llmModels.value = []
+      llmModels.value = provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
       llmModelHint.value = t('settings.voice.llmModelEmpty')
     }
   } catch {
-    llmModels.value = []
+    llmModels.value = provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
     llmModelHint.value = t('settings.voice.llmModelFailed')
   }
 }
@@ -223,6 +247,77 @@ function onSelectProvider(p: 'builtin' | 'dashscope'): void {
   setVoiceProvider(p)
   void loadLlmModels()
   void loadTtsVoices()
+  void loadAsrModels()
+  void loadTtsModels()
+}
+
+/** ASR / TTS 模型下拉：「沿用来源默认」空选项 —— 空串表示跟随来源默认模型（推荐）。 */
+const USE_SOURCE_DEFAULT = computed(() => ({ value: '', label: t('settings.voice.useSourceDefault') }))
+
+/** ASR 模型下拉：选项来自网关的实时目录 + 官方清单兜底（保证两个来源永远有得选）。 */
+const asrModels = ref<{ value: string; label: string }[]>([])
+const asrModelHint = ref('')
+
+async function loadAsrModels(): Promise<void> {
+  asrModelHint.value = ''
+  const provider = appConfig.voice.provider
+  const settings = currentProviderSettings()
+  // 前端只与网关通信：模型目录由网关持有来源地址并中转，前端只传 provider + capability。
+  // 仅百炼需要用户本机 api-key；内置无需任何密钥。地址默认由网关持有中转，但用户当前来源
+  // 地址（voice.url，如自建 9529 实例）也要带上，让列表与真实推理同地址。
+  const qs = new URLSearchParams({ provider, capability: 'asr' })
+  if (settings.url) qs.set('url', settings.url)
+  if (settings.apiKey) qs.set('apiKey', settings.apiKey)
+  try {
+    const res = await secureRequest({
+      url: `${resolveGatewayHttpBase()}/api/admin/voice-models?${qs.toString()}`,
+      method: 'GET',
+    })
+    const data = res.data as { models?: string[] } | null
+    if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.models)) {
+      asrModels.value = [USE_SOURCE_DEFAULT.value, ...data.models.map((m) => ({ value: m, label: m }))]
+      // 当前没选或选中的已不在列表里：回退「沿用来源默认」，保证选值始终有效。
+      const s = currentProviderSettings()
+      if (s.asrModel && !data.models.includes(s.asrModel)) s.asrModel = ''
+    } else {
+      asrModels.value = [USE_SOURCE_DEFAULT.value]
+      asrModelHint.value = t('settings.voice.asrModelEmpty')
+    }
+  } catch {
+    asrModels.value = [USE_SOURCE_DEFAULT.value]
+    asrModelHint.value = t('settings.voice.asrModelFailed')
+  }
+}
+
+/** TTS 模型下拉：选项来源与 ASR 同理（实时目录 + 官方清单兜底）。 */
+const ttsModels = ref<{ value: string; label: string }[]>([])
+const ttsModelHint = ref('')
+
+async function loadTtsModels(): Promise<void> {
+  ttsModelHint.value = ''
+  const provider = appConfig.voice.provider
+  const settings = currentProviderSettings()
+  const qs = new URLSearchParams({ provider, capability: 'tts' })
+  if (settings.url) qs.set('url', settings.url)
+  if (settings.apiKey) qs.set('apiKey', settings.apiKey)
+  try {
+    const res = await secureRequest({
+      url: `${resolveGatewayHttpBase()}/api/admin/voice-models?${qs.toString()}`,
+      method: 'GET',
+    })
+    const data = res.data as { models?: string[] } | null
+    if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.models)) {
+      ttsModels.value = [USE_SOURCE_DEFAULT.value, ...data.models.map((m) => ({ value: m, label: m }))]
+      const s = currentProviderSettings()
+      if (s.ttsModel && !data.models.includes(s.ttsModel)) s.ttsModel = ''
+    } else {
+      ttsModels.value = [USE_SOURCE_DEFAULT.value]
+      ttsModelHint.value = t('settings.voice.ttsModelEmpty')
+    }
+  } catch {
+    ttsModels.value = [USE_SOURCE_DEFAULT.value]
+    ttsModelHint.value = t('settings.voice.ttsModelFailed')
+  }
 }
 
 /** 一键检测：按当前选中的来源（内置 / DashScope）探测 LLM / ASR / TTS / 外网是否正常。
@@ -318,9 +413,15 @@ const { goBack } = useSubPageBack({ fallbackUrl: '/pages/index/index' })
 onMounted(() => {
   void loadLlmModels()
   void loadTtsVoices()
+  void loadAsrModels()
+  void loadTtsModels()
   // 播放源目前仅百度一种（隐藏选择器），旧配置若存过其它源（netease/tencent/kugou）静默回退到百度。
   if (appConfig.playback.source !== 'baidu') {
     appConfig.playback.source = 'baidu'
+  }
+  // 语音服务来源目前仅内置一种（选择器已隐藏），旧配置若存过 dashscope 静默回退到内置。
+  if (appConfig.voice.provider !== 'builtin') {
+    appConfig.voice.provider = 'builtin'
   }
 })
 
@@ -495,6 +596,9 @@ watch(
         <view class="group-chevron" :class="{ open: isOpen('voice') }" />
       </view>
       <template v-if="isOpen('voice')">
+      <!-- 服务来源选择器已隐藏：目前仅内置一种来源（provider 默认 builtin，旧配置在 onMounted 静默回退）。
+           代码保留，后续若开放多来源再放开 v-if。 -->
+      <template v-if="false">
       <text class="row-label">{{ t('settings.voice.provider') }}</text>
       <view class="providers">
         <view
@@ -514,6 +618,7 @@ watch(
           <text class="provider-name">{{ t('settings.voice.dashscope') }}</text>
         </view>
       </view>
+      </template>
 
       <!-- 内置：地址与密钥都可改，默认指向本机本地 AI 服务（9529） -->
       <view v-if="appConfig.voice.provider === 'builtin'" class="row column">
@@ -521,30 +626,45 @@ watch(
         <input
           class="input"
           v-model="appConfig.voice.builtin.url"
-          placeholder="http://127.0.0.1:9529"
         />
-        <text class="hint">{{ t('settings.voice.urlBuiltinHint') }}</text>
         <text class="row-label">{{ t('settings.voice.apiKey') }}</text>
         <input
           class="input"
           :password="true"
           v-model="appConfig.voice.builtin.apiKey"
-          :placeholder="t('settings.voice.apiKeyHint')"
         />
         <text class="row-label">{{ t('settings.voice.llmModel') }}</text>
         <SelectRow
-          :title="t('settings.voice.llmModel')"
           :hint="t('settings.voice.llmModelHint')"
           :options="llmModels"
           :model-value="appConfig.voice.builtin.model ?? ''"
           :disabled="llmModels.length === 0"
-          :searchable="llmModels.length > 0"
+          :searchable="llmModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.builtin.model = v)"
         />
         <text v-if="llmModelHint" class="hint" @tap="loadLlmModels">{{ llmModelHint }}</text>
+        <text class="row-label">{{ t('settings.voice.asrModel') }}</text>
+        <SelectRow
+          :hint="t('settings.voice.asrModelHint')"
+          :options="asrModels"
+          :model-value="appConfig.voice.builtin.asrModel ?? ''"
+          :disabled="asrModels.length === 0"
+          :searchable="asrModels.length > 1"
+          @update:model-value="(v: string) => (appConfig.voice.builtin.asrModel = v)"
+        />
+        <text v-if="asrModelHint" class="hint" @tap="loadAsrModels">{{ asrModelHint }}</text>
+        <text class="row-label">{{ t('settings.voice.ttsModel') }}</text>
+        <SelectRow
+          :hint="t('settings.voice.ttsModelHint')"
+          :options="ttsModels"
+          :model-value="appConfig.voice.builtin.ttsModel ?? ''"
+          :disabled="ttsModels.length === 0"
+          :searchable="ttsModels.length > 1"
+          @update:model-value="(v: string) => (appConfig.voice.builtin.ttsModel = v)"
+        />
+        <text v-if="ttsModelHint" class="hint" @tap="loadTtsModels">{{ ttsModelHint }}</text>
         <text class="row-label">{{ t('settings.voice.ttsVoice') }}</text>
         <SelectRow
-          :title="t('settings.voice.ttsVoice')"
           :hint="t('settings.voice.ttsVoiceHint')"
           :options="ttsVoices"
           :model-value="appConfig.voice.builtin.voice ?? ''"
@@ -572,23 +692,40 @@ watch(
             class="input"
             :password="true"
             v-model="appConfig.voice.dashscope.apiKey"
-            :placeholder="t('settings.voice.apiKeyHint')"
           />
         </view>
         <text class="row-label">{{ t('settings.voice.llmModel') }}</text>
         <SelectRow
-          :title="t('settings.voice.llmModel')"
           :hint="t('settings.voice.llmModelHint')"
           :options="llmModels"
           :model-value="appConfig.voice.dashscope.model ?? ''"
           :disabled="llmModels.length === 0"
-          :searchable="llmModels.length > 0"
+          :searchable="llmModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.dashscope.model = v)"
         />
         <text v-if="llmModelHint" class="hint" @tap="loadLlmModels">{{ llmModelHint }}</text>
+        <text class="row-label">{{ t('settings.voice.asrModel') }}</text>
+        <SelectRow
+          :hint="t('settings.voice.asrModelHint')"
+          :options="asrModels"
+          :model-value="appConfig.voice.dashscope.asrModel ?? ''"
+          :disabled="asrModels.length === 0"
+          :searchable="asrModels.length > 1"
+          @update:model-value="(v: string) => (appConfig.voice.dashscope.asrModel = v)"
+        />
+        <text v-if="asrModelHint" class="hint" @tap="loadAsrModels">{{ asrModelHint }}</text>
+        <text class="row-label">{{ t('settings.voice.ttsModel') }}</text>
+        <SelectRow
+          :hint="t('settings.voice.ttsModelHint')"
+          :options="ttsModels"
+          :model-value="appConfig.voice.dashscope.ttsModel ?? ''"
+          :disabled="ttsModels.length === 0"
+          :searchable="ttsModels.length > 1"
+          @update:model-value="(v: string) => (appConfig.voice.dashscope.ttsModel = v)"
+        />
+        <text v-if="ttsModelHint" class="hint" @tap="loadTtsModels">{{ ttsModelHint }}</text>
         <text class="row-label">{{ t('settings.voice.ttsVoice') }}</text>
         <SelectRow
-          :title="t('settings.voice.ttsVoice')"
           :hint="t('settings.voice.ttsVoiceHint')"
           :options="ttsVoices"
           :model-value="appConfig.voice.dashscope.voice ?? ''"
@@ -788,6 +925,8 @@ watch(
 
     <!-- 记忆设置 -->
     <button class="save" :disabled="saving" @tap="onSave">{{ t('settings.save') }}</button>
+    <!-- 仅失败时行内红字报错：连不上网关要如实告知，不谎报成功；成功不显示文字 -->
+    <text v-if="saveFailed" class="save-status save-err">{{ t('settings.saveFailGateway') }}</text>
 
     <!-- 保存中的加载遮罩 -->
     <view v-if="saving" class="save-mask">
@@ -1167,6 +1306,13 @@ picker {
   font-size: 11px;
   line-height: 1.5;
   color: #6f7691;
+}
+
+.save-status {
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  color: #ff6b81;
 }
 
 .muted {

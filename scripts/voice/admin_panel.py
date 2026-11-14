@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import os
 import re
 import secrets
@@ -257,7 +258,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title data-i18n="app.title">语音助手模型代理管理</title>
+<title data-i18n="app.title">模型代理管理</title>
 <style>
   :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --fg:#e6e8ec; --mut:#9aa3b2;
           --acc:#4f8cff; --ok:#3ecf8e; --warn:#f5a623; --err:#ff5c5c; }
@@ -295,6 +296,16 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   textarea:focus { outline:none; border-color:var(--acc); }
   select { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:8px; padding:8px 10px; font-size:13px; width:100%; box-sizing:border-box; }
   .chk { display:flex; align-items:center; gap:6px; color:var(--mut); font-size:12px; margin-top:10px; }
+  /* API Key 输入框的「眼睛」显示/隐藏切换：输入框右侧内嵌一个图标按钮 */
+  .pw-wrap { position:relative; display:block; }
+  /* !important 必须加：下面 .modal input 的 padding 简写特异性相同且定义在后面，
+     会把 padding-right 重置成 10px，导致圆点画到眼睛图标底下（看起来两者重复/重叠）。 */
+  .pw-wrap input[type=password], .pw-wrap input[type=text] { padding-right:40px !important; }
+  .pw-eye { position:absolute; right:6px; top:50%; transform:translateY(-50%);
+            background:transparent !important; color:var(--mut) !important; border:0 !important;
+            padding:2px !important; border-radius:6px; display:flex; align-items:center;
+            justify-content:center; line-height:0; cursor:pointer; }
+  .pw-eye:hover { color:var(--fg) !important; }
   .chk input { width:auto; }
   .tabs { display:flex; gap:8px; margin:16px 0 12px; flex-wrap:wrap; }
   .tab { background:#1b1f27; color:var(--mut); border:1px solid var(--line); border-radius:8px; padding:6px 14px; cursor:pointer; font-size:13px; }
@@ -408,7 +419,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<header><h1 data-i18n="app.title">语音助手模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><a class="sec" id="docsLink" data-i18n="common.docs" href="/docs" target="_blank" rel="noopener">文档</a><a class="sec" id="wsDocsLink" data-i18n="common.wsDocs" href="/docs/ws" target="_blank" rel="noopener">WS 文档</a><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
+<header><h1 data-i18n="app.title">模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><a class="sec" id="docsLink" data-i18n="common.docs" href="/docs" target="_blank" rel="noopener">文档</a><a class="sec" id="wsDocsLink" data-i18n="common.wsDocs" href="/docs/ws" target="_blank" rel="noopener">WS 文档</a><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
 <main id="app"></main>
 <div id="panelLoading"><div class="loading-box"><span class="spinner"></span><span data-i18n="common.loading">请求中…</span></div></div>
 
@@ -490,7 +501,7 @@ function el(html){ const d=document.createElement('div'); d.innerHTML=html; retu
 const I18N = {
   'zh-CN': {
     "app.logout": "退出登录",
-    "app.title": "语音助手模型代理管理",
+    "app.title": "模型代理管理",
     "asr.builtinModel": "内置离线模型（无需外部服务）",
     "asr.builtinNote": "当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。",
     "asr.cannotRecord": "无法录音：",
@@ -521,8 +532,12 @@ const I18N = {
     "builtin": "内置",
     "cfg.addModelPh": "输入模型名后点添加",
     "cfg.customApi": "DashScope",
+    "cfg.deepseek": "DeepSeek",
+    "cfg.dsUrlFixed": "服务地址固定为官方入口 https://api.deepseek.com（无需填写）；模型/音色用「↻ 刷新」或音色目录维护。",
+    "cfg.dsNeedKey": "已选择 DeepSeek：请先填写 API Key 并保存",
     "cfg.customNotConfigured": "未配置服务地址（点此填写）",
     "cfg.provEditPrefix": "编辑提供商（",
+    "cfg.provEditTitle": "编辑提供商：",
     "cfg.provUrl": "服务地址（固定）",
     "cfg.provUrlFixed": "服务地址固定为官方入口 https://dashscope.aliyuncs.com（无需填写）；模型用「↻ 刷新」拉取后勾选。",
     "cfg.provUrlFixedShort": "官方入口",
@@ -628,7 +643,6 @@ const I18N = {
     "llm.embeddingText": "待嵌入文本（一行一条，可多行）",
     "llm.embedModelTabHint": "模型留空时，使用配置页设置的默认向量模型；指定后优先使用所选模型",
     "llm.apiChat": "将调用：POST /llm/v1/chat/completions",
-    "llm.apiEmbed": "将调用：POST /llm/v1/embeddings",
     "llm.embeddingResult": "嵌入结果：",
     "llm.expectDim": "请求维度（可选）：部分模型支持自定义向量维度（如 OpenAI 3 系、Ollama），不填则用模型默认维度",
     "llm.dimMismatchShort": "维度不匹配",
@@ -692,7 +706,7 @@ const I18N = {
   },
   'en': {
     "app.logout": "Log out",
-    "app.title": "Voice Assistant Model Proxy Admin",
+    "app.title": "Model Proxy Admin",
     "asr.builtinModel": "Built-in offline model (no external service)",
     "asr.builtinNote": "ASR is fixed to the built-in model; whether it works depends on the runtime (click \"Test availability\" to verify on demand); external upstreams will be added per vendor later.",
     "asr.cannotRecord": "Cannot record: ",
@@ -723,8 +737,12 @@ const I18N = {
     "builtin": "Built-in",
     "cfg.addModelPh": "Type a model name, then Add",
     "cfg.customApi": "DashScope",
+    "cfg.deepseek": "DeepSeek",
+    "cfg.dsUrlFixed": "Base URL is fixed to the official endpoint https://api.deepseek.com (no need to fill); use ↻ Refresh or the voice catalog to maintain models/voices.",
+    "cfg.dsNeedKey": "DeepSeek selected: fill in the API Key and save first",
     "cfg.customNotConfigured": "No base URL configured (click to edit)",
     "cfg.provEditPrefix": "Edit provider (",
+    "cfg.provEditTitle": "Edit provider: ",
     "cfg.provUrl": "Base URL (fixed)",
     "cfg.provUrlFixed": "Base URL is fixed to the official endpoint https://dashscope.aliyuncs.com (no need to fill); use ↻ Refresh to fetch models.",
     "cfg.provUrlFixedShort": "official endpoint",
@@ -826,7 +844,6 @@ const I18N = {
     "llm.embeddingText": "Text to embed (one per line, multiple lines allowed)",
     "llm.embedModelTabHint": "Model blank = use the default embedding model set on the config page; otherwise the selected model takes priority",
     "llm.apiChat": "Will call: POST /llm/v1/chat/completions",
-    "llm.apiEmbed": "Will call: POST /llm/v1/embeddings",
     "llm.embeddingResult": "Embedding result: ",
     "llm.expectDim": "Requested dimension (optional): some models support a custom vector dimension (e.g. OpenAI 3-series, Ollama); leave blank to use the model default",
     "llm.dimMismatchShort": "dimension mismatch",
@@ -1031,17 +1048,59 @@ async function loadConfig(){
     // 向量默认模型（embeddings 测试兜底；向后兼容旧的 LLM_EMBED_MODEL）
     embedDefModel = (cfgOrig.EMBED_UPSTREAM_MODEL || cfgOrig.LLM_EMBED_MODEL || '').trim();
     // ASR/TTS 提供商状态回填：provider、上游地址/模型/模型列表（Key 不回显，留空=不修改）
-    asrProvider = cfgOrig.STT_PROVIDER === 'dashscope' ? 'custom' : 'builtin';
-    ttsProvider = cfgOrig.TTS_PROVIDER === 'dashscope' ? 'custom' : 'builtin';
+    const provOf = (v) => (v === 'dashscope' || v === 'openai_audio')
+      ? 'custom' : (v === 'deepseek' ? 'deepseek' : 'builtin');
+    asrProvider = provOf(cfgOrig.STT_PROVIDER);
+    ttsProvider = provOf(cfgOrig.TTS_PROVIDER);
     const parseModels = (v) => { try { const a = JSON.parse(v||'[]'); return Array.isArray(a) ? a.filter(x=>typeof x==='string') : []; } catch { return []; } };
     provEdit.stt.model = cfgOrig.STT_UPSTREAM_MODEL || '';
-    provEdit.stt.cands = parseModels(cfgOrig.STT_UPSTREAM_MODELS);
-    provEdit.stt.sel = new Set(provEdit.stt.cands);
-    provEdit.stt.def = cfgOrig.STT_UPSTREAM_MODEL || provEdit.stt.cands[0] || '';
-    provEdit.tts.model = cfgOrig.TTS_UPSTREAM_MODEL || '';
-    provEdit.tts.cands = parseModels(cfgOrig.TTS_UPSTREAM_MODELS);
-    provEdit.tts.sel = new Set(provEdit.tts.cands);
-    provEdit.tts.def = cfgOrig.TTS_UPSTREAM_MODEL || provEdit.tts.cands[0] || '';
+    const restoreSel = (e, saved, def) => {
+      e.cands = saved.slice();
+      e.sel = new Set(saved);
+      // 默认模型只能来自「已勾选」：旧配置里 def 有值但清单为空时，不能凭空把它
+      // 补成勾选（那会把用户明确取消的勾选又勾回来）。保存严格以勾选为准。
+      e.def = (def && e.sel.has(def)) ? def : (saved[0] || '');
+    };
+    restoreSel(provEdit.stt, parseModels(cfgOrig.STT_UPSTREAM_MODELS), cfgOrig.STT_UPSTREAM_MODEL || '');
+    restoreSel(provEdit.tts, parseModels(cfgOrig.TTS_UPSTREAM_MODELS), cfgOrig.TTS_UPSTREAM_MODEL || '');
+    // 从 DB（speech_models 表）拉 dashscope 的 ASR/TTS 模型目录并入候选（保留已勾选，默认仍按配置）
+    try{
+      const [sm, tm, all] = await Promise.all([
+        fetch('/admin/api/speech-models?kind=stt&provider=dashscope',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+        fetch('/admin/api/speech-models?kind=tts&provider=dashscope',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+        fetch('/admin/api/speech-models',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+      ]);
+      const mergeModels = (e, resp)=>{
+        const dbModels = (resp && Array.isArray(resp.models)) ? resp.models.map(x=>x.model).filter(Boolean) : [];
+        if(!dbModels.length) return;
+        e.cands = [...new Set([...e.cands, ...dbModels])];   // 仅并入候选，勾选/默认沿用配置
+      };
+      mergeModels(provEdit.stt, sm);
+      mergeModels(provEdit.tts, tm);
+      // 全量目录：页面「提供商 / 协议」两列与模型子表的协议标签都以它为准
+      const allRows = (all && Array.isArray(all.models)) ? all.models : [];
+      SPEECH_CATALOG = {
+        stt: allRows.filter(x => x.kind === 'stt'),
+        tts: allRows.filter(x => x.kind === 'tts'),
+      };
+      SPEECH_PROTO = {};
+      allRows.forEach(x => { if (x.model) SPEECH_PROTO[x.model] = x.protocol || ''; });
+      // DeepSeek 槽：候选 = 目录里该提供商的模型；勾选严格沿用「已保存的勾选清单」。
+      // key 从没写过（老配置）才默认全勾；写过就按保存的来，包括用户明确取消到空列表，
+      // 不能无条件 new Set(models) 把用户取消的勾选再勾回来。
+      const fillDs = (e, kind, savedSel, savedDef) => {
+        const rows = SPEECH_CATALOG[kind].filter(x => x.provider === 'deepseek');
+        if (!rows.length) return;
+        const models = rows.map(x => x.model).filter(Boolean);
+        e.cands = models;
+        e.sel = (savedSel === null) ? new Set(models) : new Set(savedSel.filter(m => models.includes(m)));
+        const catDef = (rows.find(x => x.is_default) || {}).model || models[0];
+        e.def = (savedDef && models.includes(savedDef)) ? savedDef : (e.sel.values().next().value || catDef);
+      };
+      const savedList = (v) => (v === undefined || v === null || v === '') ? null : parseModels(v);
+      fillDs(provEdit.sttDeepseek, 'stt', savedList(cfgOrig.STT_DEEPSEEK_MODELS), (cfgOrig.STT_DEEPSEEK_MODEL || '').trim());
+      fillDs(provEdit.ttsDeepseek, 'tts', savedList(cfgOrig.TTS_DEEPSEEK_MODELS), (cfgOrig.TTS_DEEPSEEK_MODEL || '').trim());
+    }catch(_){}
     await renderLlmTable();
     await renderEmbedTable();
     paintAsrTable();
@@ -1103,10 +1162,12 @@ function wireConfig(){
 // 但数据独立存储（LLM_UPSTREAM_POOL vs EMBED_UPSTREAM_POOL），互不影响、不会同步覆盖。
 let llmGroups = [];        // LLM 池（cap=LLM）
 let llmDefVendor = '';     // LLM 全局默认供应商（LLM_UPSTREAM_VENDOR）
-let llmDefModel = '';      // LLM 全局默认模型（LLM_UPSTREAM_MODEL，对话用）
+let llmDefModel = '';      // LLM 全局默认模型（LLM_UPSTREAM_MODEL，兼容镜像）
+let llmDefModels = {};     // LLM 按提供商维度的默认模型 {vendor: model}（真相源）
 let embedGroups = [];      // 向量池（cap=EMBED），独立数据
 let embedDefVendor = '';   // 向量默认供应商（EMBED_UPSTREAM_VENDOR）
-let embedDefModel = '';    // 向量默认模型（EMBED_UPSTREAM_MODEL，embeddings 用，独立）
+let embedDefModel = '';    // 向量默认模型（EMBED_UPSTREAM_MODEL，兼容镜像）
+let embedDefModels = {};   // 向量按提供商维度的默认模型 {vendor: model}（真相源）
 // 5 个线协议（与 llm_protocols.WIRE_PROTOCOLS 对齐）
 const LLM_PROTOCOLS = [
   'openai_chat_completions', 'azure_openai_chat_completions',
@@ -1122,7 +1183,9 @@ function poolConf(prefix){
     groups:()=>embedGroups, setGroups:(g)=>{ embedGroups=g; },
     defVendor:()=>embedDefVendor, setDefVendor:(v)=>{ embedDefVendor=v; },
     defModel:()=>embedDefModel, setDefModel:(v)=>{ embedDefModel=v; },
+    defModels:()=>embedDefModels, setDefModels:(m)=>{ embedDefModels=m; },
     poolKey:'EMBED_UPSTREAM_POOL', defVendorKey:'EMBED_UPSTREAM_VENDOR', defModelKey:'EMBED_UPSTREAM_MODEL',
+    defModelsKey:'EMBED_UPSTREAM_DEFAULT_MODELS',
     endpoint:'/admin/api/embed-pool'
   };
   return {
@@ -1130,7 +1193,9 @@ function poolConf(prefix){
     groups:()=>llmGroups, setGroups:(g)=>{ llmGroups=g; },
     defVendor:()=>llmDefVendor, setDefVendor:(v)=>{ llmDefVendor=v; },
     defModel:()=>llmDefModel, setDefModel:(v)=>{ llmDefModel=v; },
+    defModels:()=>llmDefModels, setDefModels:(m)=>{ llmDefModels=m; },
     poolKey:'LLM_UPSTREAM_POOL', defVendorKey:'LLM_UPSTREAM_VENDOR', defModelKey:'LLM_UPSTREAM_MODEL',
+    defModelsKey:'LLM_UPSTREAM_DEFAULT_MODELS',
     endpoint:'/admin/api/llm-pool'
   };
 }
@@ -1157,9 +1222,14 @@ function buildModelPick(gi, prefix){
   if(!g._cands) g._cands=[...g.models];
   if(!g._sel)   g._sel=new Set(g.models);
   if(!g._avail) g._avail={};   // 各模型最近一次测试结果：'ok' / 'err'
-  if(g._def===undefined) g._def = (g.vendor===S.defVendor() && S.defModel() && g.models.includes(S.defModel())) ? S.defModel() : (g.models[0]||'');
-  const isEmbed = prefix==='embed';
-  const defModel = S.defModel() || (prefix==='lp' ? g._def : '');
+  // 默认模型按提供商维度：优先取该组在 *_UPSTREAM_DEFAULT_MODELS 里的值，
+  // 没有才回退到全局兼容镜像 / 该组第一个模型。每组各自独立，不再共用一个全局值。
+  if(g._def===undefined){
+    const dm = (S.defModels()||{})[g.vendor];
+    g._def = (dm && g._cands.includes(dm)) ? dm
+           : ((g.vendor===S.defVendor() && S.defModel() && g.models.includes(S.defModel())) ? S.defModel() : (g.models[0]||''));
+  }
+  const defModel = g._def || '';
   let html='<div class="model-pick">';
   // 默认列：LLM 表 = 对话默认；向量表 = 向量默认，统一叫「默认」（用户要求去掉「向量」前缀）。
   html+='<table class="model-sub"><thead><tr><th></th><th>'+t('common.model')+'</th><th>'+t('common.default')+'</th><th>'+t('common.action')+'</th><th>'+t('common.status')+'</th></tr></thead><tbody>';
@@ -1200,20 +1270,24 @@ function bindModelCell(gi, prefix){
     if(cb.checked) g._sel.add(m);
     else {
       g._sel.delete(m);
-      const isDef = S.defModel()===m || (prefix==='lp' && g._def===m);
-      if(isDef){ S.setDefModel(''); if(prefix==='lp'){ g._def=''; } cell.querySelectorAll(`input[name="${prefix}Def_${gi}"]`).forEach(r=>{ if(r.value===m) r.checked=false; }); }
+      if(g._def===m){
+        g._def='';
+        const dms=S.defModels(); if(dms) delete dms[g.vendor];
+        cell.querySelectorAll(`input[name="${prefix}Def_${gi}"]`).forEach(r=>{ if(r.value===m) r.checked=false; });
+      }
     }
   });
   // 默认模型单选：设为默认时必须同时勾选（默认模型必须是选中的），并同步勾选框。
-  // LLM 表→对话默认（llmDefModel）；向量表→向量默认（embedDefModel），两者相互独立。
+  // 默认模型按「提供商维度」：只改本组的 g._def 与 defModels[vendor]，不动别组、不动
+  // 「默认供应商」radio——每个提供商都能有自己的默认模型，不需要先勾默认供应商。
   cell.querySelectorAll(`input[name="${prefix}Def_${gi}"]`).forEach(r=> r.onchange=()=>{
     if(r.checked){
       const g=S.groups()[gi];
       g._sel.add(r.value);
       const cb=r.closest('tr') && r.closest('tr').querySelector('.lp-model');
       if(cb) cb.checked=true;
-      S.setDefModel(r.value);
-      if(prefix!=='embed'){ g._def=r.value; }
+      g._def=r.value;
+      const dms=S.defModels(); if(dms) dms[g.vendor]=r.value;
     }
   });
   // 逐模型可用性测试：LLM 表→对话测试弹窗；向量表→向量（embeddings）测试弹窗
@@ -1323,7 +1397,9 @@ function runModalTest(){
     thinkEl: document.getElementById('testModalThink'), thinkWrapEl: document.getElementById('testModalThinkWrap'),
     onDone:(ok)=>{
       if(runBtn){ runBtn.disabled=false; runBtn.textContent=t('common.test'); }
-      stat.textContent = ok ? t('common.available') : t('common.unavailable'); stat.className = ok ? 'hint' : 'err';
+      // 成功才写「可用」；失败且 runLlmChat 已写过详细错误（如「失败 502…」）时保留，不覆盖成笼统的「不可用」。
+      if(ok){ stat.textContent = t('common.available'); stat.className = 'hint'; }
+      else if(stat.className !== 'err'){ stat.textContent = t('common.unavailable'); stat.className = 'err'; }
       // 记录测试结果到该模型，刷新子表徽标（可用/不可用/未测）
       if(g && m){ g._avail[m] = ok ? 'ok':'err'; if(gi>=0) refreshModelCell(gi); }
     } };
@@ -1338,7 +1414,7 @@ function openAccModal(gi, ai, prefix){
   const g=S.groups()[gi], a=g && g.accounts[ai];
   if(!a) return;
   editAccGi=gi; editAccAi=ai; editAccPrefix=prefix;
-  document.getElementById('accModalTitle').textContent = t('modal.editPrefix') + vendorLabel(g.vendor) + '（' + t('login.account') + ' ' + (ai+1) + '）';
+  document.getElementById('accModalTitle').textContent = t('modal.editPrefix') + vendorLabel(g.vendor);
   document.getElementById('accUrl').value = a.base_url||'';
   document.getElementById('accKey').value = a.api_key||'';
   document.getElementById('accModal').classList.add('show');
@@ -1365,21 +1441,25 @@ function saveAccModal(){
 
 // ── ASR/TTS 上游（dashscope）的弹框编辑与保存 ──
 // provEdit[kind] 是编辑暂存；Key 不回显（cfgOrig 里是打码值），留空 = 不修改已存的 Key。
-let provModalKind = null;   // 'stt' | 'tts'
-function openProvModal(kind){
+let provModalKind = null;       // 'stt' | 'tts'
+let provModalProvider = 'dashscope';   // 'dashscope' | 'deepseek'
+function openProvModal(kind, provider){
   provModalKind = kind;
-  const e = provEdit[kind];
+  provModalProvider = provider || 'dashscope';
+  const e = provSlot(kind, provModalProvider);
   document.getElementById('provModalTitle').textContent =
-    t('cfg.provEditPrefix') + (kind === 'stt' ? 'ASR' : 'TTS');
-  // 服务地址固定为 DashScope 官方入口，只读展示、不可修改
-  document.getElementById('provUrl').value = 'https://dashscope.aliyuncs.com';
+    t('cfg.provEditTitle') + (kind === 'stt' ? 'ASR' : 'TTS') + ' · ' +
+    (provModalProvider === 'deepseek' ? t('cfg.deepseek') : t('cfg.customApi'));
+  // 服务地址固定为厂商官方入口，只读展示、不可修改
+  document.getElementById('provUrl').value = provModalProvider === 'deepseek'
+    ? 'https://api.deepseek.com' : 'https://dashscope.aliyuncs.com';
   document.getElementById('provKey').value = e.key || '';
   document.getElementById('provModal').classList.add('show');
 }
 function saveProvModal(){
   const kind = provModalKind;
   if (!kind) return;
-  const e = provEdit[kind];
+  const e = provSlot(kind, provModalProvider);
   e.url = document.getElementById('provUrl').value.trim();
   const k = document.getElementById('provKey').value;
   if (k) e.key = k;          // 留空 = 不修改已存 Key
@@ -1393,20 +1473,32 @@ async function saveProvConfig(kind){
   const stat = document.getElementById(kind === 'stt' ? 'cfgStat_asr' : 'cfgStat_tts');
   const cap = kind.toUpperCase();
   const e = provEdit[kind];
-  const prov = (kind === 'stt' ? asrProvider : ttsProvider) === 'custom' ? 'dashscope' : 'builtin';
+  const sel = kind === 'stt' ? asrProvider : ttsProvider;   // 'builtin' | 'custom' | 'deepseek'
+  const prov = sel === 'custom' ? 'dashscope' : (sel === 'deepseek' ? 'deepseek' : 'builtin');
   const patch = {};
   patch[cap + '_PROVIDER'] = prov;
-  // DashScope 提供商的属性（地址/Key/模型）始终落库——与「当前默认用哪个提供商」解耦：
+  // 每个提供商的属性（Key/模型）都始终落库——与「当前默认用哪个提供商」解耦：
   // 即使默认是内置，勾选的模型清单也要保存，否则勾选再保存也「没用」。
   // MODELS 落勾选中的模型；MODEL 落子表默认模型（须被勾选）。
   if (e.key) patch[cap + '_UPSTREAM_API_KEY'] = e.key;
   if (Array.isArray(e.cands)) {
     const picked = e.cands.filter(m => e.sel.has(m));
     patch[cap + '_UPSTREAM_MODELS'] = JSON.stringify(picked);
-    if (e.def && picked.includes(e.def)) patch[cap + '_UPSTREAM_MODEL'] = e.def;
+    patch[cap + '_UPSTREAM_MODEL'] = (e.def && picked.includes(e.def)) ? e.def : '';
   }
-  if (prov !== 'builtin' && !e.key) {
+  const dsk = provEdit[kind + 'Deepseek'];
+  if (dsk.key) patch[cap + '_DEEPSEEK_API_KEY'] = dsk.key;
+  if (Array.isArray(dsk.cands) && dsk.cands.length) {
+    const picked = dsk.cands.filter(m => dsk.sel.has(m));
+    patch[cap + '_DEEPSEEK_MODELS'] = JSON.stringify(picked);
+    patch[cap + '_DEEPSEEK_MODEL'] = (dsk.def && picked.includes(dsk.def)) ? dsk.def : '';
+  }
+  if (prov === 'dashscope' && !hasProvKey(cap + '_UPSTREAM_API_KEY', e)) {
     if (stat) { stat.className = 'err'; stat.textContent = t('cfg.provNeedKey'); }
+    return;
+  }
+  if (prov === 'deepseek' && !hasProvKey(cap + '_DEEPSEEK_API_KEY', dsk)) {
+    if (stat) { stat.className = 'err'; stat.textContent = t('cfg.dsNeedKey'); }
     return;
   }
   if (stat) { stat.className = 'hint'; stat.textContent = t('common.saving'); }
@@ -1448,6 +1540,12 @@ async function renderPoolTable(wrapId, prefix){
     });
     // 每个账号补上协议字段（后端只给组级 protocol），默认沿用组协议
     groups.forEach(g=> g.accounts.forEach(a=>{ if(!('protocol' in a)) a.protocol = g.protocol; }));
+    S.setDefModels(data.default_models||{});
+    // 默认模型按提供商维度回填：每组各自带上自己的默认，互不覆盖。
+    groups.forEach(g=>{
+      const dm=(S.defModels()||{})[g.vendor];
+      if(dm && (g.models||[]).includes(dm)) g._def=dm;
+    });
     S.setGroups(groups);
     S.setDefVendor(data.default_vendor||'');
     S.setDefModel(data.default_model||'');
@@ -1524,16 +1622,21 @@ function buildLlmPoolPatch(prefix){
   });
   const patch={};
   patch[S.poolKey]= JSON.stringify(pool);
+  // 默认模型按「提供商维度」落库：每个分组各自一个，写成 {vendor: model} 的 JSON map。
+  // 没有勾选「默认供应商」也照常保存——每个提供商都能有自己的默认模型。
+  const defModels={};
+  S.groups().forEach(g=>{
+    if(g._def && g._sel && g._sel.has(g._def)) defModels[g.vendor]=g._def;
+  });
+  patch[S.defModelsKey]= JSON.stringify(defModels);
+  // 兼容镜像：全局 *_UPSTREAM_MODEL 仍落库（旧配置的单地址写法、上游池分组级 model 兜底、
+  // 以及网关侧读取都还依赖它）。取「默认供应商那组」的默认；没勾默认供应商时取第一个有默认的组。
+  // 这样既不丢历史行为，也不再要求先勾 radio 才能保存默认模型。
+  const mirrorVendor = defaultVendor && defModels[defaultVendor]
+    ? defaultVendor : Object.keys(defModels)[0] || '';
+  patch[S.defModelKey]= mirrorVendor ? defModels[mirrorVendor] : '';
   // 两个能力都把「默认提供商」落库（LLM_UPSTREAM_VENDOR / EMBED_UPSTREAM_VENDOR），数据各自独立。
   if(defaultVendor) patch[S.defVendorKey]=defaultVendor;
-  if(prefix==='embed'){
-    // 向量表：保存「向量默认模型」（EMBED_UPSTREAM_MODEL），数据独立，不影响对话默认
-    patch[S.defModelKey]= S.defModel()||'';
-  } else if(defaultVendor){
-    // 默认模型 = 默认供应商里「选中且设为默认」的模型（默认模型必须是选中的）
-    const g=S.groups().find(x=>x.vendor===defaultVendor);
-    if(g && g._def && g._sel.has(g._def)) patch[S.defModelKey]=g._def;
-  }
   return patch;
 }
 async function savePoolTable(prefix, statId){
@@ -1562,12 +1665,33 @@ let provEdit = {
   tts: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
   sttBuiltin: { cands: ['sensevoice-small'], sel: new Set(['sensevoice-small']), def: 'sensevoice-small' },
   ttsBuiltin: { cands: ['edge-tts'], sel: new Set(['edge-tts']), def: 'edge-tts' },
+  // DeepSeek 官方语音（地址固定、只填 api-key；ASR/TTS 各自一把 Key）
+  sttDeepseek: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
+  ttsDeepseek: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
 };
+
+// ASR/TTS 模型目录（来自 /admin/api/speech-models，DB 维护）：每条含 provider + protocol。
+// 页面上「提供商」「协议」两列都读它，不再按模型名正则猜协议。
+let SPEECH_CATALOG = { stt: [], tts: [] };
+let SPEECH_PROTO = {};          // model -> protocol
+const HIDDEN_SENTINEL = '********';
+
+// 取某提供商的槽（dashscope 用 kind，DeepSeek 用 kind+'Deepseek'）
+function provSlot(kind, provider){
+  return provider === 'deepseek' ? provEdit[kind + 'Deepseek'] : provEdit[kind];
+}
+
+// 是否已配置 Key：内存里刚填的，或配置里已落库（打码值即代表有）
+function hasProvKey(cfgKey, slot){
+  return !!(slot && slot.key) || cfgOrig[cfgKey] === HIDDEN_SENTINEL;
+}
 
 // 模型 → 支持的调用协议（按模型名分档，对齐 DashScope 官方文档）：
 // qwen-audio-tts 系 HTTP 直回音频；qwen-tts/qwen3-asr HTTP（TTS 回 OSS URL / ASR 两步上传）；
 // paraformer/fun-asr 非实时为 HTTP 异步；cosyvoice / realtime / streaming 系为 WS 流式。
 function modelProtocols(m){
+  const dbp = SPEECH_PROTO[(m || '').trim()];
+  if (dbp) return [dbp];       // 目录里登记过的模型以 DB 协议为准
   const id = (m || '').toLowerCase();
   if (/cosyvoice/.test(id)) return ['ws'];
   if (/realtime|streaming/.test(id)) return ['ws'];
@@ -1596,7 +1720,7 @@ function paintAsrTable(){
   </tr>`;
   // 阿里云 DashScope（dashscope 上游）：radio 可选；协议固定 http（OpenAI 兼容）；
   // 模型多选 + 默认单选（与 LLM 同款）；地址/Key 点单元格弹框编辑（Key 不回显），未配置时如实提示。
-  const sttCfg = provEdit.stt.key
+  const sttCfg = hasProvKey('STT_UPSTREAM_API_KEY', provEdit.stt)
     ? `<span class="acc-url" title="${t('cfg.provUrlFixed')}">${t('cfg.provUrlFixedShort')}</span>`
     : `<span class="muted">${t('cfg.provNeedKeyShort')}</span>`;
   html += `<tr class="asr-custom">
@@ -1605,12 +1729,27 @@ function paintAsrTable(){
     <td class="env-cell prov-edit-cell" data-prov="stt" title="${t('cfg.provEditPrefix')}">${sttCfg}</td>
     <td class="model-cell">${buildUpstreamModelPick('stt')}</td>
   </tr>`;
+  // DeepSeek 官方语音：地址固定为 https://api.deepseek.com，只填 api-key；模型目录来自 DB。
+  const dsCfg = hasProvKey('STT_DEEPSEEK_API_KEY', provEdit.sttDeepseek)
+    ? `<span class="acc-url" title="${t('cfg.dsUrlFixed')}">${t('cfg.provUrlFixedShort')}</span>`
+    : `<span class="muted">${t('cfg.provNeedKeyShort')}</span>`;
+  html += `<tr class="asr-deepseek">
+    <td class="row-act"><input type="radio" name="asrDefault" value="deepseek" ${asrProvider==='deepseek'?'checked':''} title="${t('llm.defaultProvider')}" /></td>
+    <td class="prov-cell"><b>${t('cfg.deepseek')}</b> <button class="mini" data-up-refresh="sttDeepseek" title="${t('llm.refreshModels')}">↻</button></td>
+    <td class="env-cell prov-edit-cell" data-prov="stt:deepseek" title="${t('cfg.provEditPrefix')}">${dsCfg}</td>
+    <td class="model-cell">${buildUpstreamModelPick('sttDeepseek')}</td>
+  </tr>`;
   html += '</tbody></table>';
   wrap.className=''; wrap.innerHTML=html;
   wrap.querySelectorAll('.asr-builtin-test').forEach(b=> b.onclick=testAsrBuiltin);
-  wrap.querySelectorAll('.up-test').forEach(b=> b.onclick=()=>testAsrUpstream(b.dataset.m));
-  const ec=wrap.querySelector('.prov-edit-cell'); if(ec) ec.onclick=()=>openProvModal('stt');
+  wrap.querySelectorAll('.up-test').forEach(b=> b.onclick=()=>testAsrUpstream(b.dataset.m, b.dataset.provider));
+  wrap.querySelectorAll('.prov-edit-cell').forEach(c=>{
+    const dv = c.dataset.prov || 'stt';
+    const [k, pv] = dv.split(':');
+    c.onclick = () => openProvModal(k, pv || 'dashscope');
+  });
   bindUpstreamModelPick('stt');
+  bindUpstreamModelPick('sttDeepseek');
   wrap.querySelectorAll('input[name=asrDefault]').forEach(r=> r.onchange=()=>{ asrProvider=r.value; paintAsrTable(); });
 }
 
@@ -1644,7 +1783,7 @@ function buildUpstreamModelPick(kind, readonly, nameLabel){
         ? `<button class="mini asr-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('asr.detectingTitle')}">${t('common.testShort')}</button>`
         : kind === 'ttsBuiltin'
         ? `<button class="mini tts-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('tts.synthTitle')}">${t('common.testShort')}</button>`
-        : `<button class="mini up-test" data-kind="${kind}" data-m="${escapeAttr(m)}" title="${t('llm.testAvail')}">${t('common.testShort')}</button>`);
+        : `<button class="mini up-test" data-kind="${kind}" data-m="${escapeAttr(m)}" data-provider="${kind.endsWith('Deepseek') ? 'deepseek' : 'dashscope'}" title="${t('llm.testAvail')}">${t('common.testShort')}</button>`);
     const opCell = noDefault ? '' : `<td class="row-act">${testBtn}</td>`;
     const stCell = noDefault ? '' : `<td>${badge}</td>`;
     const protoTag = (noDefault ? '' :
@@ -1678,54 +1817,54 @@ function bindUpstreamModelPick(kind){
   });
 }
 
-// 「刷新模型」：从 DashScope 拉全部模型 id，全量并入候选并勾选（不丢已添加/已勾选的）
+// 「刷新模型」：按提供商重新拉最新清单，候选替换但保留已有勾选（不丢已勾选的）。
+// - DashScope：从 /admin/api/dashscope-models 的官方清单拉（不发网络请求）。
+// - DeepSeek：官方没有「列举语音模型」接口（ASR/TTS 连 model 参数都没有），
+//   因此改读本地 DB（speech_models 表）——即 init_catalog.py 灌进去的那份目录。
+//   刷新 = 重读 DB 最新目录，不编造上游清单、不把 LLM 模型混进 ASR/TTS。
 document.addEventListener('click', async (ev) => {
   const rb = ev.target && ev.target.closest ? ev.target.closest('[data-up-refresh]') : null;
   if (!rb) return;
   const kind = rb.dataset.upRefresh;
   const e = provEdit[kind];
+  if (!e) return;
+  const isDeepseek = kind.endsWith('Deepseek');
+  const cap = kind.startsWith('stt') ? 'stt' : 'tts';
   rb.disabled = true;
+  let models = [];
   try{
-    const r = await fetch('/admin/api/dashscope-models', {method:'POST', credentials:'same-origin',
-      headers:{'content-type':'application/json'}, body: JSON.stringify({kind})});
-    const d = await r.json().catch(()=>({}));
-    if (!d.ok) { console.error('[刷新模型]', d.message || r.status); }
-    else {
-      // 刷新语义 = 重新拉取最新清单：候选替换，但**保留已有勾选**——
-      // 之前勾选保存过的模型不能被刷没；新出现的模型只列出、不自动勾。
-      const prevSel = new Set(e.sel);
-      e.cands = (d.models || []).slice();
-      e.sel = new Set(e.cands.filter(m => prevSel.has(m)));
-      if (e.def && !e.cands.includes(e.def)) e.def = '';
+    if (isDeepseek) {
+      const r = await fetch(`/admin/api/speech-models?kind=${cap}&provider=deepseek`, {credentials:'same-origin'});
+      const d = await r.json().catch(()=>({}));
+      if (!r.ok || !d.ok) { console.error('[刷新模型]', d.message || r.status); }
+      else {
+        const rows = d.models || [];
+        models = rows.map(x => x.model).filter(Boolean);
+        // 刷新也要同步协议目录：目录里新增的模型，协议标签与「协议」列才不会
+        // 回退到按模型名猜（会错标成 http），保持与 DB 一致。
+        rows.forEach(x => { if (x.model && x.protocol) SPEECH_PROTO[x.model] = x.protocol; });
+        SPEECH_CATALOG[cap] = [
+          ...((SPEECH_CATALOG[cap] || []).filter(x => x.provider !== 'deepseek')),
+          ...rows,
+        ];
+      }
+    } else {
+      const r = await fetch('/admin/api/dashscope-models', {method:'POST', credentials:'same-origin',
+        headers:{'content-type':'application/json'}, body: JSON.stringify({kind:cap})});
+      const d = await r.json().catch(()=>({}));
+      if (!d.ok) { console.error('[刷新模型]', d.message || r.status); }
+      else models = (d.models || []).slice();
     }
   }catch(err){ console.error('[刷新模型]', err); }
+  // 拉取失败 / 清单为空时保留原候选不动，别把用户已勾的模型刷没
+  if (models.length) {
+    const prevSel = new Set(e.sel);
+    e.cands = models;
+    e.sel = new Set(e.cands.filter(m => prevSel.has(m)));
+    if (e.def && !e.cands.includes(e.def)) e.def = '';
+  }
   rb.disabled = false;
-  if (kind === 'stt') paintAsrTable(); else paintTtsTable();
-});
-
-// 「刷新模型」：从 DashScope 拉全部模型 id，全量并入候选并勾选（不丢已添加/已勾选的）
-document.addEventListener('click', async (ev) => {
-  const rb = ev.target && ev.target.closest ? ev.target.closest('[data-up-refresh]') : null;
-  if (!rb) return;
-  const kind = rb.dataset.upRefresh;
-  const e = provEdit[kind];
-  rb.disabled = true;
-  try{
-    const r = await fetch('/admin/api/dashscope-models', {method:'POST', credentials:'same-origin',
-      headers:{'content-type':'application/json'}, body: JSON.stringify({kind})});
-    const d = await r.json().catch(()=>({}));
-    if (!d.ok) { console.error('[刷新模型]', d.message || r.status); }
-    else {
-      // 刷新语义 = 重新拉取最新清单：候选替换，但**保留已有勾选**——
-      // 之前勾选保存过的模型不能被刷没；新出现的模型只列出、不自动勾。
-      const prevSel = new Set(e.sel);
-      e.cands = (d.models || []).slice();
-      e.sel = new Set(e.cands.filter(m => prevSel.has(m)));
-      if (e.def && !e.cands.includes(e.def)) e.def = '';
-    }
-  }catch(err){ console.error('[刷新模型]', err); }
-  rb.disabled = false;
-  if (kind === 'stt') paintAsrTable(); else paintTtsTable();
+  if (cap === 'stt') paintAsrTable(); else paintTtsTable();
 });
 
 // 行内「添加模型」：非空且不重复才进候选并勾选；第一个自动成为默认
@@ -1780,7 +1919,7 @@ function paintTtsTable(){
     <td class="model-cell">${buildUpstreamModelPick('ttsBuiltin', true)}</td>
   </tr>`;
   // 阿里云 DashScope（dashscope 上游）：与 ASR 同构——模型多选 + 默认、地址/Key 弹框编辑、真调测试。
-  const ttsCfg = provEdit.tts.key
+  const ttsCfg = hasProvKey('TTS_UPSTREAM_API_KEY', provEdit.tts)
     ? `<span class="acc-url" title="${t('cfg.provUrlFixed')}">${t('cfg.provUrlFixedShort')}</span>`
     : `<span class="muted">${t('cfg.provNeedKeyShort')}</span>`;
   html += `<tr class="tts-custom">
@@ -1789,13 +1928,27 @@ function paintTtsTable(){
     <td class="env-cell prov-edit-cell" data-prov="tts" title="${t('cfg.provEditPrefix')}">${ttsCfg}</td>
     <td class="model-cell">${buildUpstreamModelPick('tts')}</td>
   </tr>`;
+  const dsCfg = hasProvKey('TTS_DEEPSEEK_API_KEY', provEdit.ttsDeepseek)
+    ? `<span class="acc-url" title="${t('cfg.dsUrlFixed')}">${t('cfg.provUrlFixedShort')}</span>`
+    : `<span class="muted">${t('cfg.provNeedKeyShort')}</span>`;
+  html += `<tr class="tts-deepseek">
+    <td class="row-act"><input type="radio" name="ttsDefault" value="deepseek" ${ttsProvider==='deepseek'?'checked':''} title="${t('llm.defaultProvider')}" /></td>
+    <td class="prov-cell"><b>${t('cfg.deepseek')}</b> <button class="mini" data-up-refresh="ttsDeepseek" title="${t('llm.refreshModels')}">↻</button></td>
+    <td class="env-cell prov-edit-cell" data-prov="tts:deepseek" title="${t('cfg.provEditPrefix')}">${dsCfg}</td>
+    <td class="model-cell">${buildUpstreamModelPick('ttsDeepseek')}</td>
+  </tr>`;
   html += '</tbody></table>';
   wrap.className=''; wrap.innerHTML=html;
   const bt=wrap.querySelector('.tts-builtin-test'); if(bt) bt.onclick=testTtsBuiltin;
   // 模型级测试按钮与 ASR 同构：类名是 .up-test（buildUpstreamModelPick 渲染），逐个绑定
-  wrap.querySelectorAll('.up-test').forEach(b=> b.onclick=()=>testTtsUpstream(b.dataset.m));
-  const ec=wrap.querySelector('.prov-edit-cell'); if(ec) ec.onclick=()=>openProvModal('tts');
+  wrap.querySelectorAll('.up-test').forEach(b=> b.onclick=()=>testTtsUpstream(b.dataset.m, b.dataset.provider));
+  wrap.querySelectorAll('.prov-edit-cell').forEach(c=>{
+    const dv = c.dataset.prov || 'tts';
+    const [k, pv] = dv.split(':');
+    c.onclick = () => openProvModal(k, pv || 'dashscope');
+  });
   bindUpstreamModelPick('tts');
+  bindUpstreamModelPick('ttsDeepseek');
   wrap.querySelectorAll('input[name=ttsDefault]').forEach(r=> r.onchange=()=>{ ttsProvider=r.value; paintTtsTable(); });
 }
 
@@ -1818,14 +1971,15 @@ async function testTtsBuiltin(){
 
 // 上游（openai_audio）按需测试：后端按当前 DB 配置真调一次上游（TTS 合成一句 / ASR 识别样例语音）。
 // 配置还没保存时测的是「已保存」的状态——提示先保存再测，避免测的和你看到的配置不一致。
-async function testAsrUpstream(model){
-  const e=provEdit.stt;
+async function testAsrUpstream(model, provider){
+  const pv = provider || 'dashscope';
+  const e = provSlot('stt', pv);
   const m = model || e.def || '';
   if(!m){ return; }
-  const btn=document.querySelector(`.up-test[data-kind="stt"][data-m="${m}"]`);
+  const btn=document.querySelector(`.up-test[data-kind="${pv==='deepseek'?'sttDeepseek':'stt'}"][data-m="${m}"]`);
   if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
   try{
-    const r=await fetch('/admin/api/stt-upstream-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:m})});
+    const r=await fetch('/admin/api/stt-upstream-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:m, provider:pv})});
     const d=await r.json().catch(()=>({}));
     e.avail = e.avail || {};
     e.avail[m] = d.ok ? 'ok' : 'err';
@@ -1835,14 +1989,15 @@ async function testAsrUpstream(model){
   paintAsrTable();
 }
 
-async function testTtsUpstream(model){
-  const e=provEdit.tts;
+async function testTtsUpstream(model, provider){
+  const pv = provider || 'dashscope';
+  const e = provSlot('tts', pv);
   const m = model || e.def || '';
   if(!m){ return; }
   const btn=document.querySelector(`.up-test[data-kind="tts"][data-m="${m}"]`);
   if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
   try{
-    const r=await fetch('/admin/api/tts-upstream-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:m})});
+    const r=await fetch('/admin/api/tts-upstream-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:m, provider:pv})});
     const d=await r.json().catch(()=>({}));
     e.avail = e.avail || {};
     e.avail[m] = d.ok ? 'ok' : 'err';
@@ -2035,7 +2190,7 @@ async function runLlmChat(opts){
         else if(d&&d.detail) msg+=': '+d.detail;
         else msg+=': '+txt.slice(0,200);
       }catch(_){ msg+=': '+txt.slice(0,200); }
-      setStatus(msg,'err'); return;
+      setStatus(msg,'err'); if(onDone) onDone(false); return;
     }
     if(stream){
       const reader=r.body.getReader(), dec=new TextDecoder(); let buf='', text='', thinkTxt='';
@@ -2178,7 +2333,6 @@ async function renderDashboard(){
     </div>
 
     <div id="t-embed" class="tabpane" hidden>
-      <div class="hint" style="margin-bottom:6px">${t('llm.apiEmbed')}</div>
       <label>${t('common.provider')}</label>
       <select id="embedProvider"><option value="">${t('llm.defaultRoute')}</option></select>
       <label>${t('llm.modelHint')}</label>
@@ -2205,6 +2359,7 @@ async function renderDashboard(){
         <option value="">${t('llm.defaultRoute')}</option>
         <option value="builtin">${t('test.builtin')}</option>
         <option value="dashscope">DashScope</option>
+        <option value="deepseek">DeepSeek</option>
       </select>
       <label>${t('common.protocol')}</label>
       <select id="asrProtocol"></select>
@@ -2230,6 +2385,7 @@ async function renderDashboard(){
         <option value="">${t('llm.defaultRoute')}</option>
         <option value="builtin">${t('test.builtin')}</option>
         <option value="dashscope">DashScope</option>
+        <option value="deepseek">DeepSeek</option>
       </select>
       <label>${t('common.protocol')}</label>
       <select id="ttsProtocol"></select>
@@ -2322,47 +2478,65 @@ async function renderDashboard(){
   // TTS 音色下拉：按语言分组，每个音色带一句说明（性别 / 风格 / 适用场景）
   const voiceSel = document.getElementById('ttsVoice');
   const VOICE_DESC = document.getElementById('ttsVoiceDesc');
-  // 兜底目录：接口拿不到时用（与服务端 VOICE_CATALOG 保持一致）
+  // 兜底目录：接口拿不到时用（与服务端 VOICE_CATALOG 保持一致：id + 中英描述，无 lang）
   let VOICE_CATALOG = [
-    {id:'zh-CN-XiaoxiaoNeural',lang:'中文',desc:'女声·温柔自然（默认）'},
-    {id:'zh-CN-YunxiNeural',lang:'中文',desc:'男声·年轻活泼'},
-    {id:'zh-CN-YunyangNeural',lang:'中文',desc:'男声·专业新闻播报'},
-    {id:'zh-CN-XiaoyiNeural',lang:'中文',desc:'女声·活泼可爱'},
-    {id:'zh-CN-YunjianNeural',lang:'中文',desc:'男声·成熟稳重'},
-    {id:'zh-CN-YunxiaNeural',lang:'中文',desc:'女声·甜美'},
-    {id:'zh-CN-XiaoxuanNeural',lang:'中文',desc:'女声·清新'},
-    {id:'zh-TW-HsiaoChenNeural',lang:'中文(台湾)',desc:'女声·台湾腔'},
-    {id:'zh-TW-YunJheNeural',lang:'中文(台湾)',desc:'男声·台湾腔'},
-    {id:'zh-TW-HsiaoYuNeural',lang:'中文(台湾)',desc:'女声·台湾腔·温柔'},
-    {id:'zh-HK-HiuGaaiNeural',lang:'粤语',desc:'女声·粤语'},
-    {id:'zh-HK-WanLungNeural',lang:'粤语',desc:'男声·粤语'},
-    {id:'zh-HK-HiuMaanNeural',lang:'粤语',desc:'女声·粤语·活泼'},
-    {id:'en-US-AriaNeural',lang:'英文',desc:'女声·自然通用'},
-    {id:'en-US-GuyNeural',lang:'英文',desc:'男声·沉稳'},
-    {id:'en-US-JennyNeural',lang:'英文',desc:'女声·亲切'},
-    {id:'en-GB-SoniaNeural',lang:'英文(英式)',desc:'女声·优雅英音'},
-    {id:'en-GB-RyanNeural',lang:'英文(英式)',desc:'男声·英音'},
-    {id:'ja-JP-NanamiNeural',lang:'日文',desc:'女声·柔和'},
-    {id:'ja-JP-KeitaNeural',lang:'日文',desc:'男声·清晰'},
+    {id:'zh-CN-XiaoxiaoNeural',desc_zh:'女声·温柔自然（默认）',desc_en:'Female · gentle and natural (default)'},
+    {id:'zh-CN-YunxiNeural',desc_zh:'男声·年轻活泼',desc_en:'Male · young and lively'},
+    {id:'zh-CN-YunyangNeural',desc_zh:'男声·专业新闻播报',desc_en:'Male · professional news broadcast'},
+    {id:'zh-CN-XiaoyiNeural',desc_zh:'女声·活泼可爱',desc_en:'Female · lively and cute'},
+    {id:'zh-CN-YunjianNeural',desc_zh:'男声·成熟稳重',desc_en:'Male · mature and steady'},
+    {id:'zh-CN-YunxiaNeural',desc_zh:'女声·甜美',desc_en:'Female · sweet'},
+    {id:'zh-CN-XiaoxuanNeural',desc_zh:'女声·清新',desc_en:'Female · fresh'},
+    {id:'zh-TW-HsiaoChenNeural',desc_zh:'女声·台湾腔',desc_en:'Female · Taiwanese accent'},
+    {id:'zh-TW-YunJheNeural',desc_zh:'男声·台湾腔',desc_en:'Male · Taiwanese accent'},
+    {id:'zh-TW-HsiaoYuNeural',desc_zh:'女声·台湾腔·温柔',desc_en:'Female · Taiwanese accent · gentle'},
+    {id:'zh-HK-HiuGaaiNeural',desc_zh:'女声·粤语',desc_en:'Female · Cantonese'},
+    {id:'zh-HK-WanLungNeural',desc_zh:'男声·粤语',desc_en:'Male · Cantonese'},
+    {id:'zh-HK-HiuMaanNeural',desc_zh:'女声·粤语·活泼',desc_en:'Female · Cantonese · lively'},
+    {id:'en-US-AriaNeural',desc_zh:'女声·自然通用',desc_en:'Female · natural and versatile'},
+    {id:'en-US-GuyNeural',desc_zh:'男声·沉稳',desc_en:'Male · calm'},
+    {id:'en-US-JennyNeural',desc_zh:'女声·亲切',desc_en:'Female · friendly'},
+    {id:'en-GB-SoniaNeural',desc_zh:'女声·优雅英音',desc_en:'Female · elegant British accent'},
+    {id:'en-GB-RyanNeural',desc_zh:'男声·英音',desc_en:'Male · British accent'},
+    {id:'ja-JP-NanamiNeural',desc_zh:'女声·柔和',desc_en:'Female · soft'},
+    {id:'ja-JP-KeitaNeural',desc_zh:'男声·清晰',desc_en:'Male · clear'},
   ];
-  const voiceDesc = (id)=>{ const f=VOICE_CATALOG.find(v=>v.id===id); return f? f.desc : ''; };
+  // 音色按「提供商 · 模型」分组；描述按当前界面语言取中/英；默认音色加「（默认）」标记
+  const voiceIsEn = ()=> String(curLang||'').toLowerCase().startsWith('en');
+  const voiceDescText = (v)=> v ? (voiceIsEn()? (v.desc_en||v.desc_zh||'') : (v.desc_zh||v.desc_en||'')) : '';
+  const provLabel = (p)=> ({builtin:'内置',dashscope:'DashScope',deepseek:'DeepSeek'}[p] || p || '内置');
+  const voiceGroupLabel = (v)=>{
+    if(v.provider){ return provLabel(v.provider) + (v.model? ' · '+v.model : ''); }
+    return v.id ? v.id.split('-').slice(0,2).join('-') : '其它';
+  };
+  const voiceDesc = (id)=>{ const f=VOICE_CATALOG.find(v=>v.id===id); return voiceDescText(f); };
   const fillVoices = (def)=>{
     voiceSel.innerHTML='';
     const groups={};
-    VOICE_CATALOG.forEach(v=>{ (groups[v.lang]=groups[v.lang]||[]).push(v); });
+    VOICE_CATALOG.forEach(v=>{ const g=voiceGroupLabel(v); (groups[g]=groups[g]||[]).push(v); });
     Object.entries(groups).forEach(([g,items])=>{
       const og=document.createElement('optgroup'); og.label=g;
-      items.forEach(v=>{ const o=document.createElement('option'); o.value=v.id; o.textContent=v.id+'　'+v.desc; og.appendChild(o); });
+      items.forEach(v=>{ const o=document.createElement('option'); o.value=v.id;
+        const dz=voiceDescText(v);
+        // desc 里若已含「默认/default」就不再重复追加标记
+        o.textContent=v.id+'　'+dz+((v.is_default && !/(默认|default)/i.test(dz))?t('common.defaultParen'):'');
+        og.appendChild(o); });
       voiceSel.appendChild(og);
     });
     if(def){ const o=document.createElement('option'); o.value=def; o.textContent=def+t('common.defaultParen'); voiceSel.appendChild(o); }
-    voiceSel.value = def || VOICE_CATALOG[0].id;
+    voiceSel.value = def || (VOICE_CATALOG[0] && VOICE_CATALOG[0].id) || '';
     VOICE_DESC.textContent = t('tts.voiceNote') + voiceDesc(voiceSel.value) + t('tts.voiceParam');
   };
   voiceSel.onchange = ()=>{ VOICE_DESC.textContent = t('tts.voiceNote') + voiceDesc(voiceSel.value) + t('tts.voiceParam'); };
-  // 从对外接口拉取最新音色目录（接口不可用时回退兜底）
-  fetch('/voice/v1/audio/voices',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(d=>{
-    if(d && Array.isArray(d.voices) && d.voices.length){ VOICE_CATALOG=d.voices; fillVoices(d.default); }
+  // 拉取「内置 + dashscope」两个提供商的音色（接口不可用时回退兜底目录）
+  Promise.all([
+    fetch('/voice/v1/audio/voices?provider=builtin',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+    fetch('/voice/v1/audio/voices?provider=dashscope',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+  ]).then(([b,d])=>{
+    let all=[];
+    if(b && Array.isArray(b.voices)) all=all.concat(b.voices);
+    if(d && Array.isArray(d.voices)) all=all.concat(d.voices);
+    if(all.length){ VOICE_CATALOG=all; fillVoices((b&&b.default)||undefined); }
   }).catch(()=>{});
   api('/admin/api/status').then(r=>r.ok?r.json():null).then(s=>{
     const def = s && s.health && s.health.tts_voice;
@@ -2804,6 +2978,33 @@ function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
   };
 })();
 
+// ── API Key 输入框「眼睛」显示/隐藏 ──────────────────────────────
+// 只给 id 含 key 的密码框加（accKey / provKey / testKey / testModalAuthKey / cfg_*_API_KEY），
+// 登录密码框（id=p）不加。动态渲染出来的输入框由 MutationObserver 兜底挂载（rAF 合并，避免频繁重扫）。
+const EYE_ON='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+function attachEye(inp){
+  if(!inp || inp.dataset.eye==='1') return;
+  if(inp.tagName!=='INPUT' || inp.type!=='password') return;
+  if(!/key/i.test(inp.id||'')) return;           // 只处理 API Key 输入框
+  inp.dataset.eye='1';
+  const wrap=document.createElement('span'); wrap.className='pw-wrap';
+  inp.parentNode.insertBefore(wrap, inp); wrap.appendChild(inp);
+  const btn=document.createElement('button'); btn.type='button'; btn.className='pw-eye';
+  btn.setAttribute('aria-label','show/hide API key'); btn.innerHTML=EYE_ON;
+  btn.onclick=(ev)=>{ ev.preventDefault(); ev.stopPropagation();
+    const show=inp.type==='password';
+    inp.type=show?'text':'password'; btn.innerHTML=show?EYE_OFF:EYE_ON;
+  };
+  wrap.appendChild(btn);
+}
+let _eyePending=false;
+function scanEyes(){ if(_eyePending) return; _eyePending=true;
+  requestAnimationFrame(()=>{ _eyePending=false; document.querySelectorAll('input[type=password]').forEach(attachEye); });
+}
+new MutationObserver(scanEyes).observe(document.documentElement,{childList:true,subtree:true});
+scanEyes();
+
 boot();
 </script>
 </body>
@@ -2900,6 +3101,50 @@ def register_admin_routes(
         err = write_voice_config(patch)
         if err:
             raise HTTPException(status_code=500, detail=err)
+        # ASR/TTS 模型配置落库时，同步把勾选的模型写进 speech_models 表（DB 维护），
+        # 让「模型目录」以数据库为准；默认模型标记 is_default。协议按提供商固定。
+        def _proto_of(provider: str, model: str) -> str:
+            """协议 = 调用形态（http / ws / http-async），不带厂商名。
+
+            与 openai_voice_server.resolve_voice_protocol 的口径一致：厂商由 provider
+            列单独表达；DeepSeek 是整段 HTTP，DashScope 按模型族分实时 WS / 文件异步 / HTTP。
+            """
+            if provider == "deepseek":
+                return "http"
+            m = model.lower()
+            if re.search(r"cosyvoice|realtime|streaming|gummy", m):
+                return "ws"
+            if re.search(r"paraformer|fun-asr", m):
+                return "http-async"   # 录音文件异步转写
+            return "http"
+
+        for _provider, _pairs, _base in (
+            ("dashscope", (
+                ("stt", "STT_UPSTREAM_MODELS", "STT_UPSTREAM_MODEL"),
+                ("tts", "TTS_UPSTREAM_MODELS", "TTS_UPSTREAM_MODEL"),
+            ), 100),
+            ("deepseek", (
+                ("stt", "STT_DEEPSEEK_MODELS", "STT_DEEPSEEK_MODEL"),
+                ("tts", "TTS_DEEPSEEK_MODELS", "TTS_DEEPSEEK_MODEL"),
+            ), 200),
+        ):
+            for _kind, _mk, _dmk in _pairs:
+                if _mk not in patch:
+                    continue
+                try:
+                    _models = json.loads(patch.get(_mk) or "[]")
+                except Exception:
+                    _models = []
+                if not isinstance(_models, list):
+                    _models = []
+                _def = (patch.get(_dmk) or "").strip()
+                for _i, _m in enumerate(_models):
+                    if isinstance(_m, str) and _m.strip():
+                        voice_db.upsert_speech_model(
+                            _kind, _provider, _m.strip(),
+                            protocol=_proto_of(_provider, _m.strip()),
+                            is_default=(_m.strip() == _def), sort=_base + _i,
+                        )
         # 配置可能改了上游地址池（LLM/STT/TTS_UPSTREAM_POOL 等），清掉池缓存，
         # 下次请求立即按新配置重新解析，不必重启服务。
         upstream_pool.invalidate()
@@ -2987,7 +3232,19 @@ def register_admin_routes(
         ]
         default_vendor = config_store.instance().get(def_vendor_key, "") or ""
         default_model = config_store.instance().get(def_model_key, "") or ""
-        return {"groups": out, "default_vendor": default_vendor, "default_model": default_model}
+        # 按提供商维度的默认模型（*_UPSTREAM_DEFAULT_MODELS，JSON map: vendor -> model）。
+        # 每个提供商各自一个默认，互不覆盖；def_model_key 只作为全局兼容镜像。
+        raw_def_models = config_store.instance().get(f"{cap}_UPSTREAM_DEFAULT_MODELS", "") or ""
+        try:
+            parsed = json.loads(raw_def_models) if raw_def_models else {}
+        except Exception:
+            parsed = {}
+        default_models = (
+            {str(k): str(v) for k, v in parsed.items() if k and v}
+            if isinstance(parsed, dict) else {}
+        )
+        return {"groups": out, "default_vendor": default_vendor,
+                "default_model": default_model, "default_models": default_models}
 
     @app.post("/admin/api/stt-builtin-test", dependencies=[Depends(require_admin)])
     async def admin_stt_builtin_test():
@@ -3074,33 +3331,46 @@ def register_admin_routes(
         kind = (kind or "tts").strip().lower()
         return {"ok": True, "models": list(DASHSCOPE_VOICE_MODELS.get(kind, []))}
 
+    @app.get("/admin/api/speech-models", dependencies=[Depends(require_admin)])
+    def admin_speech_models(kind: str = "", provider: str = ""):
+        """返回 DB（speech_models 表）维护的 ASR/TTS 模型目录，按 kind/provider 过滤。"""
+        rows = voice_db.list_speech_models(
+            (kind or "").strip().lower() or None,
+            (provider or "").strip().lower() or None,
+        )
+        return {"ok": True, "models": rows}
+
     @app.post("/admin/api/stt-upstream-test", dependencies=[Depends(require_admin)])
     async def admin_stt_upstream_test(request: Request):
-        """按当前 DB 配置真调一次上游 ASR；可带 {model} 覆盖默认模型（模型级测试）。"""
+        """按当前 DB 配置真调一次上游 ASR；可带 {model, provider} 覆盖（模型级测试）。"""
         model = None
+        provider = ""
         try:
             b = await request.json()
             if isinstance(b, dict):
                 model = b.get("model")
+                provider = (b.get("provider") or "").strip().lower()
         except Exception:
             pass
         if _STT_UPSTREAM_TEST is None:
             return {"ok": False, "message": "检测能力未注入"}
-        return await _STT_UPSTREAM_TEST(model)
+        return await _STT_UPSTREAM_TEST(model, provider)
 
     @app.post("/admin/api/tts-upstream-test", dependencies=[Depends(require_admin)])
     async def admin_tts_upstream_test(request: Request):
-        """按当前 DB 配置真合成一句验证上游 TTS；可带 {model} 覆盖默认模型。"""
+        """按当前 DB 配置真合成一句验证上游 TTS；可带 {model, provider} 覆盖。"""
         model = None
+        provider = ""
         try:
             b = await request.json()
             if isinstance(b, dict):
                 model = b.get("model")
+                provider = (b.get("provider") or "").strip().lower()
         except Exception:
             pass
         if _TTS_UPSTREAM_TEST is None:
             return {"ok": False, "message": "检测能力未注入"}
-        return await _TTS_UPSTREAM_TEST(model)
+        return await _TTS_UPSTREAM_TEST(model, provider)
 
     @app.post("/admin/api/tts-builtin-test", dependencies=[Depends(require_admin)])
     async def admin_tts_builtin_test():

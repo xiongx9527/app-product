@@ -32,6 +32,16 @@ export interface VoiceProviderSettings {
    * 从根本上避免「v1 音色名 + v2 模型」这类 418 InvalidParameter。
    */
   voiceModel?: string
+  /**
+   * 该来源的 ASR 模型名（如 paraformer-realtime-v2 / fun-asr-realtime / sensevoice-small）。
+   * 留空则由网关用来源默认模型；随 session.start.voice 独立下发，网关注入 asr.params.model。
+   */
+  asrModel?: string
+  /**
+   * 该来源的 TTS 模型名（如 cosyvoice-v3-flash / qwen-tts / edge-tts）。
+   * 留空则沿用音色所属模型（voiceModel）或来源默认；显式填写时优先于 voiceModel。
+   */
+  ttsModel?: string
 }
 
 /**

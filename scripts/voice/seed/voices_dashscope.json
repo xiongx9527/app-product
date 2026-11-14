@@ -1,0 +1,377 @@
+{
+  "provider": "dashscope",
+  "model": "cosyvoice-v3-flash",
+  "default": "longyumi_v3",
+  "voices": [
+    {
+      "id": "longanyang",
+      "desc_zh": "龙安洋 · 男声 · 中文、英文",
+      "desc_en": "Longanyang · Male · Chinese, English"
+    },
+    {
+      "id": "longanhuan",
+      "desc_zh": "龙安欢 · 女声 · 中文、英文",
+      "desc_en": "Longanhuan · Female · Chinese, English"
+    },
+    {
+      "id": "longanhuan_v3",
+      "desc_zh": "龙安欢(V3) · 女声 · 中文、英文（多方言）",
+      "desc_en": "Longanhuan V3 · Female · Chinese, English (dialects)"
+    },
+    {
+      "id": "longyumi_v3",
+      "desc_zh": "YUMI · 女声 · 中文、英文",
+      "desc_en": "YUMI · Female · Chinese, English"
+    },
+    {
+      "id": "longxiaochun_v3",
+      "desc_zh": "龙小淳 · 女声 · 中文、英文",
+      "desc_en": "Longxiaochun · Female · Chinese, English"
+    },
+    {
+      "id": "longxiaoxia_v3",
+      "desc_zh": "龙小夏 · 女声 · 中文、英文",
+      "desc_en": "Longxiaoxia · Female · Chinese, English"
+    },
+    {
+      "id": "longanyun_v3",
+      "desc_zh": "龙安昀 · 男声 · 中文、英文",
+      "desc_en": "Longanyun · Male · Chinese, English"
+    },
+    {
+      "id": "longanwen_v3",
+      "desc_zh": "龙安温 · 女声 · 中文、英文",
+      "desc_en": "Longanwen · Female · Chinese, English"
+    },
+    {
+      "id": "longanli_v3",
+      "desc_zh": "龙安莉 · 女声 · 中文、英文",
+      "desc_en": "Longanli · Female · Chinese, English"
+    },
+    {
+      "id": "longanlang_v3",
+      "desc_zh": "龙安朗 · 男声 · 中文、英文",
+      "desc_en": "Longanlang · Male · Chinese, English"
+    },
+    {
+      "id": "longyingmu_v3",
+      "desc_zh": "龙应沐 · 女声 · 中文、英文",
+      "desc_en": "Longyingmu · Female · Chinese, English"
+    },
+    {
+      "id": "longhuhu_v3",
+      "desc_zh": "龙呼呼 · 女声 · 中文、英文",
+      "desc_en": "Longhuhu · Female · Chinese, English"
+    },
+    {
+      "id": "longpaopao_v3",
+      "desc_zh": "龙泡泡 · 女声 · 中文、英文",
+      "desc_en": "Longpaopao · Female · Chinese, English"
+    },
+    {
+      "id": "longjielidou_v3",
+      "desc_zh": "龙杰力豆 · 男声 · 中文、英文",
+      "desc_en": "Longjielidou · Male · Chinese, English"
+    },
+    {
+      "id": "longxian_v3",
+      "desc_zh": "龙仙 · 女声 · 中文、英文",
+      "desc_en": "Longxian · Female · Chinese, English"
+    },
+    {
+      "id": "longling_v3",
+      "desc_zh": "龙铃 · 女声 · 中文、英文",
+      "desc_en": "Longling · Female · Chinese, English"
+    },
+    {
+      "id": "longshanshan_v3",
+      "desc_zh": "龙闪闪 · 女声 · 中文、英文",
+      "desc_en": "Longshanshan · Female · Chinese, English"
+    },
+    {
+      "id": "longniuniu_v3",
+      "desc_zh": "龙牛牛 · 男声 · 中文、英文",
+      "desc_en": "Longniuniu · Male · Chinese, English"
+    },
+    {
+      "id": "longjiaxin_v3",
+      "desc_zh": "龙嘉欣 · 女声 · 中文（粤语）",
+      "desc_en": "Longjiaxin · Female · Cantonese"
+    },
+    {
+      "id": "longjiayi_v3",
+      "desc_zh": "龙嘉怡 · 女声 · 中文（粤语）",
+      "desc_en": "Longjiayi · Female · Cantonese"
+    },
+    {
+      "id": "longanyue_v3",
+      "desc_zh": "龙安粤 · 男声 · 中文（粤语）",
+      "desc_en": "Longanyue · Male · Cantonese"
+    },
+    {
+      "id": "longlaotie_v3",
+      "desc_zh": "龙老铁 · 男声 · 中文（东北话）",
+      "desc_en": "Longlaotie · Male · Northeastern dialect"
+    },
+    {
+      "id": "longshange_v3",
+      "desc_zh": "龙陕哥 · 男声 · 中文（陕西话）",
+      "desc_en": "Longshange · Male · Shaanxi dialect"
+    },
+    {
+      "id": "longanmin_v3",
+      "desc_zh": "龙安闽 · 女声 · 中文（闽南话）",
+      "desc_en": "Longanmin · Female · Minnan dialect"
+    },
+    {
+      "id": "longfei_v3",
+      "desc_zh": "龙飞 · 男声 · 中文、英文",
+      "desc_en": "Longfei · Male · Chinese, English"
+    },
+    {
+      "id": "longyingxiao_v3",
+      "desc_zh": "龙应笑 · 女声 · 中文、英文",
+      "desc_en": "Longyingxiao · Female · Chinese, English"
+    },
+    {
+      "id": "longyingxun_v3",
+      "desc_zh": "龙应询 · 男声 · 中文、英文",
+      "desc_en": "Longyingxun · Male · Chinese, English"
+    },
+    {
+      "id": "longyingjing_v3",
+      "desc_zh": "龙应静 · 女声 · 中文、英文",
+      "desc_en": "Longyingjing · Female · Chinese, English"
+    },
+    {
+      "id": "longyingling_v3",
+      "desc_zh": "龙应聆 · 女声 · 中文、英文",
+      "desc_en": "Longyingling · Female · Chinese, English"
+    },
+    {
+      "id": "longyingtao_v3",
+      "desc_zh": "龙应桃 · 女声 · 中文、英文",
+      "desc_en": "Longyingtao · Female · Chinese, English"
+    },
+    {
+      "id": "longantai_v3",
+      "desc_zh": "龙安台 · 女声 · 中文、英文",
+      "desc_en": "Longantai · Female · Chinese, English"
+    },
+    {
+      "id": "longhua_v3",
+      "desc_zh": "龙华 · 女声 · 中文、英文",
+      "desc_en": "Longhua · Female · Chinese, English"
+    },
+    {
+      "id": "longcheng_v3",
+      "desc_zh": "龙橙 · 男声 · 中文、英文",
+      "desc_en": "Longcheng · Male · Chinese, English"
+    },
+    {
+      "id": "longze_v3",
+      "desc_zh": "龙泽 · 男声 · 中文、英文",
+      "desc_en": "Longze · Male · Chinese, English"
+    },
+    {
+      "id": "longzhe_v3",
+      "desc_zh": "龙哲 · 男声 · 中文、英文",
+      "desc_en": "Longzhe · Male · Chinese, English"
+    },
+    {
+      "id": "longyan_v3",
+      "desc_zh": "龙颜 · 女声 · 中文、英文",
+      "desc_en": "Longyan · Female · Chinese, English"
+    },
+    {
+      "id": "longxing_v3",
+      "desc_zh": "龙星 · 女声 · 中文、英文",
+      "desc_en": "Longxing · Female · Chinese, English"
+    },
+    {
+      "id": "longtian_v3",
+      "desc_zh": "龙天 · 男声 · 中文、英文",
+      "desc_en": "Longtian · Male · Chinese, English"
+    },
+    {
+      "id": "longwan_v3",
+      "desc_zh": "龙婉 · 女声 · 中文、英文",
+      "desc_en": "Longwan · Female · Chinese, English"
+    },
+    {
+      "id": "longqiang_v3",
+      "desc_zh": "龙嫱 · 女声 · 中文、英文",
+      "desc_en": "Longqiang · Female · Chinese, English"
+    },
+    {
+      "id": "longfeifei_v3",
+      "desc_zh": "龙菲菲 · 女声 · 中文、英文",
+      "desc_en": "Longfeifei · Female · Chinese, English"
+    },
+    {
+      "id": "longhao_v3",
+      "desc_zh": "龙浩 · 男声 · 中文、英文",
+      "desc_en": "Longhao · Male · Chinese, English"
+    },
+    {
+      "id": "longanrou_v3",
+      "desc_zh": "龙安柔 · 女声 · 中文、英文",
+      "desc_en": "Longanrou · Female · Chinese, English"
+    },
+    {
+      "id": "longhan_v3",
+      "desc_zh": "龙寒 · 男声 · 中文、英文",
+      "desc_en": "Longhan · Male · Chinese, English"
+    },
+    {
+      "id": "longanzhi_v3",
+      "desc_zh": "龙安智 · 男声 · 中文、英文",
+      "desc_en": "Longanzhi · Male · Chinese, English"
+    },
+    {
+      "id": "longanling_v3",
+      "desc_zh": "龙安灵 · 女声 · 中文、英文",
+      "desc_en": "Longanling · Female · Chinese, English"
+    },
+    {
+      "id": "longanya_v3",
+      "desc_zh": "龙安雅 · 女声 · 中文、英文",
+      "desc_en": "Longanya · Female · Chinese, English"
+    },
+    {
+      "id": "longanqin_v3",
+      "desc_zh": "龙安亲 · 女声 · 中文、英文",
+      "desc_en": "Longanqin · Female · Chinese, English"
+    },
+    {
+      "id": "longmiao_v3",
+      "desc_zh": "龙妙 · 女声 · 中文、英文",
+      "desc_en": "Longmiao · Female · Chinese, English"
+    },
+    {
+      "id": "longsanshu_v3",
+      "desc_zh": "龙三叔 · 男声 · 中文、英文",
+      "desc_en": "Longsanshu · Male · Chinese, English"
+    },
+    {
+      "id": "longyuan_v3",
+      "desc_zh": "龙媛 · 女声 · 中文、英文",
+      "desc_en": "Longyuan · Female · Chinese, English"
+    },
+    {
+      "id": "longyue_v3",
+      "desc_zh": "龙悦 · 女声 · 中文、英文",
+      "desc_en": "Longyue · Female · Chinese, English"
+    },
+    {
+      "id": "longxiu_v3",
+      "desc_zh": "龙修 · 男声 · 中文、英文",
+      "desc_en": "Longxiu · Male · Chinese, English"
+    },
+    {
+      "id": "longnan_v3",
+      "desc_zh": "龙楠 · 男声 · 中文、英文",
+      "desc_en": "Longnan · Male · Chinese, English"
+    },
+    {
+      "id": "longwanjun_v3",
+      "desc_zh": "龙婉君 · 女声 · 中文、英文",
+      "desc_en": "Longwanjun · Female · Chinese, English"
+    },
+    {
+      "id": "longyichen_v3",
+      "desc_zh": "龙逸尘 · 男声 · 中文、英文",
+      "desc_en": "Longyichen · Male · Chinese, English"
+    },
+    {
+      "id": "longlaobo_v3",
+      "desc_zh": "龙老伯 · 男声 · 中文、英文",
+      "desc_en": "Longlaobo · Male · Chinese, English"
+    },
+    {
+      "id": "longlaoyi_v3",
+      "desc_zh": "龙老姨 · 女声 · 中文、英文",
+      "desc_en": "Longlaoyi · Female · Chinese, English"
+    },
+    {
+      "id": "longjiqi_v3",
+      "desc_zh": "龙机器 · 女声 · 中文、英文",
+      "desc_en": "Longjiqi · Female · Chinese, English"
+    },
+    {
+      "id": "longhouge_v3",
+      "desc_zh": "龙猴哥 · 男声 · 中文、英文",
+      "desc_en": "Longhouge · Male · Chinese, English"
+    },
+    {
+      "id": "longdaiyu_v3",
+      "desc_zh": "龙黛玉 · 女声 · 中文、英文",
+      "desc_en": "Longdaiyu · Female · Chinese, English"
+    },
+    {
+      "id": "longanran_v3",
+      "desc_zh": "龙安燃 · 女声 · 中文、英文",
+      "desc_en": "Longanran · Female · Chinese, English"
+    },
+    {
+      "id": "longanxuan_v3",
+      "desc_zh": "龙安宣 · 女声 · 中文、英文",
+      "desc_en": "Longanxuan · Female · Chinese, English"
+    },
+    {
+      "id": "longshuo_v3",
+      "desc_zh": "龙硕 · 男声 · 中文、英文",
+      "desc_en": "Longshuo · Male · Chinese, English"
+    },
+    {
+      "id": "longshu_v3",
+      "desc_zh": "龙书 · 男声 · 中文、英文",
+      "desc_en": "Longshu · Male · Chinese, English"
+    },
+    {
+      "id": "loongbella_v3",
+      "desc_zh": "Bella3.0 · 女声 · 中文、英文",
+      "desc_en": "Bella 3.0 · Female · Chinese, English"
+    },
+    {
+      "id": "loongabby_v3",
+      "desc_zh": "Abby · 女声 · 英文（美式）",
+      "desc_en": "Abby · Female · American English"
+    },
+    {
+      "id": "loongandy_v3",
+      "desc_zh": "Andy · 男声 · 英文（美式）",
+      "desc_en": "Andy · Male · American English"
+    },
+    {
+      "id": "loongannie_v3",
+      "desc_zh": "Annie · 女声 · 英文（美式）",
+      "desc_en": "Annie · Female · American English"
+    },
+    {
+      "id": "loongdavid_v3",
+      "desc_zh": "David · 男声 · 英文（美式）",
+      "desc_en": "David · Male · American English"
+    },
+    {
+      "id": "loongemily_v3",
+      "desc_zh": "Emily · 女声 · 英文（英式）",
+      "desc_en": "Emily · Female · British English"
+    },
+    {
+      "id": "loongeric_v3",
+      "desc_zh": "Eric · 男声 · 英文（英式）",
+      "desc_en": "Eric · Male · British English"
+    },
+    {
+      "id": "loongyuuna_v3",
+      "desc_zh": "Yuuna · 女声 · 日文",
+      "desc_en": "Yuuna · Female · Japanese"
+    },
+    {
+      "id": "loongjihun_v3",
+      "desc_zh": "Jihun · 男声 · 韩文",
+      "desc_en": "Jihun · Male · Korean"
+    }
+  ]
+}

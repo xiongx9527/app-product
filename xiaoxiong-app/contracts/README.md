@@ -100,8 +100,12 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 - `provider`：`builtin`（网关内置，默认）或 `dashscope`（用户自带 DashScope Key）。
 - `url`：服务根地址。`builtin` 默认 `http://127.0.0.1:9529`；`dashscope` 默认 `https://dashscope.aliyuncs.com`，也支持业务空间地址与 `/compatible-mode/v1`、`/api-ws/v1/inference` 写法，由网关归一化。
 - `apiKey`：默认空。`builtin` 通常为空；`dashscope` 必填，三件事共用。
-- **缺省 `voice`**（旧客户端）时，网关完全沿用自身 env 配置，行为不变。
-- 网关按本次会话的 `voice` 生成临时配置：`builtin` 的 LLM 用 OpenAI 兼容 provider + `${url}/llm/v1`、ASR / TTS 用 `${url}/voice`（注意两个前缀不同；不能沿用 env 的 `ollama` 直连模式）；`dashscope` 的 LLM 走 OpenAI 兼容 `${root}/compatible-mode/v1` + `qwen-plus`，ASR / TTS 走 `wss://${host}/api-ws/v1/inference`（`dashscopeWs.ts`）+ `paraformer-realtime-v2` / `cosyvoice-v2`。
+- `model`：LLM 模型名（可选，来自设置页「LLM 模型」下拉）；留空由网关用来源默认。
+- `asrModel`：ASR 模型名（可选，来自设置页，两个来源各填一份）。网关注入 `asr.params.model`，**独立顶层字段，不进 `params` 共用通道**（该通道会按能力剥离 TTS 专用字段，ASR 拿不到 `model`）。留空则沿用来源默认识别模型。
+- `ttsModel`：TTS 模型名（可选，同上两个来源各一份）。网关注入 `tts.params.model`，**优先于 `params.model`（音色所属模型 `voiceModel`）**；留空则沿用音色所属模型 / 来源默认。`params.model` 仍是音色所属模型，二者互不覆盖、不串味。
+- `params`：ASR / LLM / TTS 共用的厂商级参数通道，含 `voice`（音色）与 `model`（音色所属模型）；仅 TTS 使用其中 `voice` / `model`，ASR / LLM 会剥离这两个 TTS 专用字段。
+- **缺省 `voice`**（旧客户端）时，网关完全沿用自身 env 配置，行为不变；新增的 `asrModel` / `ttsModel` 同样缺省即沿用来源默认，旧配置零改动兼容。
+- 网关按本次会话的 `voice` 生成临时配置：`builtin` 的 LLM 用 OpenAI 兼容 provider + `${url}/llm/v1`、ASR / TTS 用 `${url}/voice`（注意两个前缀不同；不能沿用 env 的 `ollama` 直连模式）；`dashscope` 的 LLM 走 OpenAI 兼容 `${root}/compatible-mode/v1` + `qwen-plus`，ASR / TTS 走 `wss://${host}/api-ws/v1/inference`（`dashscopeWs.ts`）。ASR / TTS 的模型缺省为 `paraformer-realtime-v2` / `cosyvoice-v2`，可由 `asrModel` / `ttsModel` 覆盖。
 - 同一 `deviceId` 再次 `session.start` 时，`provider | url | apiKey` 不变则复用会话与记忆；变化则关闭旧会话并按新配置重建，下一次连接 / 唤醒生效。
 - API Key 只存在客户端本地并经 WSS 文本帧传输，网关不落库；客户端不得直连 DashScope。
 - 本地 AI 服务的语音接口前缀为 `/voice`（LLM 为 `/llm/v1`）；网关 `ASR_BASE_URL` / `TTS_BASE_URL` 须带上 `/voice`。旧拼写 `/voide` 已废弃，不保留别名。
@@ -272,6 +276,15 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 > 语音侧的「记住 / 回忆 / 忘了XX」由对话智能体的 `remember` / `recall` / `forget` 工具与「忘了XX / 清空记忆」直接指令处理（见 `gateway/src/service/memoryControl.ts` 与 `tools/memoryTool.ts`），写入同样落到本接口背后的 `user_memory` 表。设置页（`uni_app` 的 `pages/settings`）可调 REST 查看与删除。
 
+##### 设置页配置 config
+
+设置页点「保存配置」时，把**整份 `AppConfig`**（`mode` / `language` / `timezone` / `voice` / `playback` / `recommend` / `general` / `memory` / `mcp`）通过网关写入本机 SQLite 的 `app_config` 表，按 `deviceId` 一份、重复保存覆盖更新。网关只存取 JSON 字符串，**不解析、不改写**配置内容。本机 `uni.setStorageSync('app-product.config.v1')` 仍是运行时真相源（开屏秒读、离线可用），网关这份是持久化副本，供重装恢复 / 审计 / 后续跨端读取。
+
+- `POST /api/admin/config?deviceId=xxx`：body 为整份配置对象，落库返回 `{ "ok": true }`。缺 `deviceId` 或 body 非对象返回 `400`，写库失败返回 `500`（带 `error`）。
+- `GET /api/admin/config?deviceId=xxx`：返回 `{ "config": <AppConfig> | null }`；未保存过返回 `null`。缺 `deviceId` 返回 `400`。
+
+> **保存必须走网关、连不上要报错**：`onSave` 在 `persistConfig()`（本机落盘）之后，`POST /api/admin/config` 到网关；POST 成功（2xx）时保存完成、不额外显示文字（加载遮罩即为反馈）。网关没启动 / 请求失败 / 非 2xx 时显示行内红字错误（「配置仅存到本机，未同步到网关」），**不谎报成功**。语音服务配置本身另经 `session.start.voice` 下发网关生效（见上「session.start 的 voice」），与这里的落库是两条独立链路。
+
 
 #### 参数加密（PARAM_ENCRYPT=true）
 
@@ -305,9 +318,9 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 |---|---|---|
 | ASR | `POST /voice/v1/audio/transcriptions` | `multipart/form-data` 上传 16k/16bit 单声道 WAV，返回 `{ "text": "..." }` |
 | TTS | `POST /voice/v1/audio/speech` | JSON（`input` / `voice` / `response_format` / `speed`），返回 WAV / MP3 / PCM |
-| TTS | `GET /voice/v1/audio/voices` | 音色目录 `{ default, voices: [{ id, lang, desc }] }` |
+| TTS | `GET /voice/v1/audio/voices` | 音色目录 `{ default, provider, model, protocol, voices: [{ id, provider, model, desc_zh, desc_en, is_default }] }`；可选查询参数 `provider` / `model`，都不传时用默认提供商 + 默认模型。`provider` 支持 `builtin` / `dashscope`（兼容旧值 `openai_audio`）/ `deepseek`；`protocol` 是该模型的调用协议（`http` / `ws` / `http-async`，不含厂商名，厂商由 `provider` 表达）。数据来自本地 SQLite 的 `voices` / `speech_models` 表（`scripts/voice/seed/*.json` 初始化，`init_catalog.py` 灌库），每个模型各有一个默认音色 |
 | 翻译 | `POST /voice/v1/audio/translations` | `multipart/form-data` 上传音频，先 ASR 识别原文、再经 LLM 代理翻译成 `target_lang`（默认英语）文本；无 LLM 上游时如实返回 503，不把识别原文冒充翻译 |
-| 服务级 | `GET /voice/health`、`GET /voice/v1/models` | 整体健康状态 / 统一模型目录 |
+| 服务级 | `GET /voice/health`、`GET /voice/v1/models` | 整体健康状态 / 统一模型目录。`/voice/v1/models` 的每条模型形如 `{ id, object, owned_by, type, context_length, dimension, provider, protocol }`：`provider` 是厂商（`builtin` / `dashscope` / `deepseek` / `openai_audio`），`protocol` 是该模型的调用形态（`http` / `ws` / `http-async`），取值来自本地 SQLite 的 `speech_models` 表；内置本地引擎也是走 `/voice/v1` 的 HTTP，协议为 `http` 而非 `local` |
 | LLM 对话 | `POST /llm/v1/chat/completions` | OpenAI 兼容，流式/非流式同一端点（`stream` 字段区分，SSE 或单个 JSON） |
 | LLM 嵌入 | `POST /llm/v1/embeddings` | OpenAI 兼容向量接口：`{ input, model, encoding_format?, dimensions? }` → `{ object:"list", data:[{ index, embedding }] }`；Ollama / DashScope / Gemini 走各自路径，Anthropic 与 OpenAI Responses 线协议不提供向量接口（501） |
 | LLM 模型 | `GET /llm/v1/models` | OpenAI 风格模型目录（配置并集） |
@@ -357,6 +370,8 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 | 模型目录 | `GET /llm/v1/models` | OpenAI 风格 `{object:"list", data:[{id, owned_by, ...}]}`；返回「所有分组的模型并集」，无配置时退回上游真实 `/models` |
 | 提供商 | `GET /llm/v1/providers` | 列出已配置 LLM 提供商（`vendor` / `protocol` / `model` / `host` 脱敏），**不含任何密钥** |
 | 健康 | `GET /llm/health`、根 `GET /llm` | 仅 LLM 的健康状态；`/llm` 用于网关建连时打 baseUrl 本身做探测 |
+
+**默认模型按提供商维度**：管理面板里每个提供商分组各有一个「默认」模型，互不覆盖，也不需要先把该组勾成「默认供应商」。真相源是 `LLM_UPSTREAM_DEFAULT_MODELS` / `EMBED_UPSTREAM_DEFAULT_MODELS`（JSON map：`{vendor: model}`），由面板「保存」写入；网关未带 `model` 发起请求时，代理按命中的提供商取它自己的默认模型，`LLM_UPSTREAM_MODEL` / `EMBED_UPSTREAM_MODEL` 只是兼容镜像（旧单地址配置、上游池分组级 model 兜底仍读它）。`*_UPSTREAM_VENDOR` 是「默认提供商」，与「默认模型」是两个独立维度。
 
 - **鉴权**：与语音接口一致——IP 白名单 + API-Key（走请求头，由配置决定是否开启），默认都关闭。
 - **思考控制**：对外固定用请求头 `X-Proxy-Think`（取值 `1/true/yes/on`），代理读入后转成内部统一字段，再翻译成上游厂商原生的 body 参数（如 ollama `think=false`）真正生效；**不落存储**，客户端每次自带，且不会原样透传给上游。

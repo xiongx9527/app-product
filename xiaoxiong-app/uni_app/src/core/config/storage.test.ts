@@ -47,6 +47,41 @@ describe('app config', () => {
     expect(config.voice.builtin.apiKey).toBe('')
   })
 
+  it('默认 ASR / TTS 模型字段为空串（留空=来源默认）', () => {
+    const v = createDefaultVoice()
+    expect(v.builtin.asrModel).toBe('')
+    expect(v.builtin.ttsModel).toBe('')
+    expect(v.dashscope.asrModel).toBe('')
+    expect(v.dashscope.ttsModel).toBe('')
+  })
+
+  it('两个来源的 ASR / TTS 模型各自独立保存', () => {
+    const config = normalizeConfig({
+      voice: {
+        provider: 'builtin',
+        builtin: { url: '', apiKey: '', asrModel: 'sensevoice-small', ttsModel: 'edge-tts' },
+        dashscope: { url: '', apiKey: 'k', asrModel: 'fun-asr-realtime', ttsModel: 'cosyvoice-v3-plus' },
+      },
+    })
+    expect(config.voice.builtin.asrModel).toBe('sensevoice-small')
+    expect(config.voice.builtin.ttsModel).toBe('edge-tts')
+    expect(config.voice.dashscope.asrModel).toBe('fun-asr-realtime')
+    expect(config.voice.dashscope.ttsModel).toBe('cosyvoice-v3-plus')
+  })
+
+  it('ASR / TTS 模型名 trim，非字符串与缺省收敛为空串', () => {
+    const config = normalizeConfig({
+      voice: {
+        provider: 'dashscope',
+        dashscope: { url: '', apiKey: 'k', asrModel: '  fun-asr  ', ttsModel: 123 },
+      },
+    })
+    expect(config.voice.dashscope.asrModel).toBe('fun-asr')
+    expect(config.voice.dashscope.ttsModel).toBe('')
+    expect(config.voice.builtin.asrModel).toBe('')
+    expect(config.voice.builtin.ttsModel).toBe('')
+  })
+
   it('内置缺地址时补默认根地址，避免空串连到奇怪的地方', () => {
     const config = normalizeConfig({ voice: { provider: 'builtin', url: '', apiKey: '' } })
     expect(config.voice.builtin.url).toBe('http://127.0.0.1:9529')

@@ -10,7 +10,8 @@ interface Option {
 }
 
 const props = defineProps<{
-  title: string
+  /** 行内左侧主标题；为兼容「标签放外面」（如设置页模型下拉）的场景，title 可为空，此时行内只显示值与提示 */
+  title?: string
   hint?: string
   options: Option[]
   modelValue: string
@@ -60,7 +61,7 @@ function onSearch(e: Event): void {
   <view class="select-row">
     <view class="row" :class="{ disabled }" @tap="toggle">
       <view class="row-text">
-        <text class="row-label">{{ title }}</text>
+        <text v-if="title" class="row-label">{{ title }}</text>
         <text v-if="hint" class="hint">{{ hint }}</text>
       </view>
       <view class="row-right">

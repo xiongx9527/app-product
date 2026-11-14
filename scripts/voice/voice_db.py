@@ -23,10 +23,13 @@ import threading
 import time
 from typing import Any
 
+import catalog  # 目录种子数据（seed/*.json）
+
 # ── 连接与缓存（模块级单例）────────────────────────────────────────
 _db_path: str | None = None
 _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
+_auto_seed = True
 
 # 配置热缓存：全量 key->value；TTL 兜底，写时立即失效。
 _cache: dict[str, str] = {}
@@ -44,6 +47,16 @@ def configure(db_path: str) -> None:
     _db_path = os.path.abspath(os.path.expanduser(db_path))
 
 
+def set_auto_seed(enabled: bool) -> None:
+    """是否在建表 / 升级后自动播种目录。
+
+    默认开启（服务启动即可用）；`init_catalog.py` 会关掉它，改由脚本自己灌库并
+    如实报告「新增 / 更新」了多少条，避免出现「脚本没写、计数却是 0 新增」的假象。
+    """
+    global _auto_seed
+    _auto_seed = bool(enabled)
+
+
 def _conn_get() -> sqlite3.Connection:
     global _conn
     if _conn is None:
@@ -57,7 +70,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 _migrate() 里补 DDL。
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 
 
 def ensure_schema() -> None:
@@ -106,6 +119,32 @@ def ensure_schema() -> None:
             created_at INTEGER NOT NULL,
             expires_at INTEGER NOT NULL
         );
+        -- 音色目录：每条带 provider / model 与中英描述，供 /voice/v1/audio/voices 查询。
+        -- 用表维护（不再硬编码），首次初始化时播种内置(edge-tts) + 全部 dashscope 音色。
+        CREATE TABLE IF NOT EXISTS voices (
+            id         TEXT PRIMARY KEY,
+            provider   TEXT NOT NULL DEFAULT 'builtin',
+            model      TEXT NOT NULL DEFAULT '',
+            desc_zh    TEXT,
+            desc_en    TEXT,
+            sort       INTEGER NOT NULL DEFAULT 0,
+            is_default INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_voices_pm ON voices(provider, model);
+        -- ASR / TTS 模型目录：按 kind('stt'/'tts') + provider 维护，每 provider 一个默认模型。
+        -- protocol 是「调用形态」线协议（http / ws / http-async），与 LLM 侧「协议 ≠ 厂商」
+        -- 口径一致：不带厂商名/引擎名，厂商由 provider 列单独表达；同一 provider 下可有多种形态。
+        -- 与 voices 表配合：voices 的 (provider, model) 指向这里的模型；用表维护不再硬编码。
+        CREATE TABLE IF NOT EXISTS speech_models (
+            kind       TEXT NOT NULL,
+            provider   TEXT NOT NULL,
+            protocol   TEXT NOT NULL DEFAULT '',
+            model      TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            sort       INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(kind, provider, model)
+        );
+        CREATE INDEX IF NOT EXISTS idx_speech_models_kp ON speech_models(kind, provider);
         CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
         CREATE INDEX IF NOT EXISTS idx_health_ts ON health_snapshots(ts);
@@ -133,12 +172,18 @@ def _migrate() -> None:
         c.execute("ALTER TABLE config_kv ADD COLUMN updated_by TEXT")
     if not _has_column("events", "meta"):
         c.execute("ALTER TABLE events ADD COLUMN meta TEXT")
+    if not _has_column("speech_models", "protocol"):
+        c.execute("ALTER TABLE speech_models ADD COLUMN protocol TEXT NOT NULL DEFAULT ''")
     # 未来升级在此追加 ALTER / CREATE。
     c.execute(
         "INSERT INTO schema_version(version, applied_at) VALUES(?,?)",
         (SCHEMA_VERSION, int(time.time())),
     )
     c.commit()
+    # 音色 / 模型表首次建好后播种（内置 + dashscope + deepseek；表已有数据则跳过）。
+    if _auto_seed:
+        _seed_voices()
+        _seed_speech_models()
 
 
 # ── 管理员会话（落库）──────────────────────────────────────────────
@@ -390,7 +435,7 @@ def recent_audit(limit: int = 50) -> list[dict[str, Any]]:
 
 def stats() -> dict[str, int]:
     if _db_path is None:
-        return {"config": 0, "events": 0, "audit": 0, "health": 0, "sessions": 0}
+        return {"config": 0, "events": 0, "audit": 0, "health": 0, "sessions": 0, "voices": 0}
     cur = _conn_get()
     return {
         "config": cur.execute("SELECT COUNT(*) FROM config_kv").fetchone()[0],
@@ -398,4 +443,275 @@ def stats() -> dict[str, int]:
         "audit": cur.execute("SELECT COUNT(*) FROM audit").fetchone()[0],
         "health": cur.execute("SELECT COUNT(*) FROM health_snapshots").fetchone()[0],
         "sessions": cur.execute("SELECT COUNT(*) FROM admin_sessions").fetchone()[0],
+        "voices": cur.execute("SELECT COUNT(*) FROM voices").fetchone()[0],
     }
+
+
+# ── 音色目录（数据库表维护）──────────────────────────────────────────
+# 目录数据本体在 `seed/*.json`（见 catalog.py），这里只负责首次建库时灌进去。
+# 之所以不写死在代码里：音色 / 模型 / 协议会随上游变化，数据要和代码解耦，
+# 换机或升级时用 `init_catalog.py` 重新同步即可。
+
+
+def _seed_voices() -> None:
+    """音色表为空时按 seed 播种（内置 + dashscope + deepseek，每个模型各一个默认音色）。"""
+    c = _conn_get()
+    if c.execute("SELECT COUNT(*) FROM voices").fetchone()[0]:
+        return
+    rows = [
+        (r["id"], r["provider"], r["model"], r["desc_zh"], r["desc_en"],
+         r["sort"], 1 if r["is_default"] else 0)
+        for r in catalog.load_voices()
+    ]
+    if not rows:
+        return
+    with _lock:
+        c.executemany(
+            "INSERT OR IGNORE INTO voices(id, provider, model, desc_zh, desc_en, sort, is_default) "
+            "VALUES(?,?,?,?,?,?,?)",
+            rows,
+        )
+        c.commit()
+
+
+def list_voices(provider: str | None = None, model: str | None = None) -> list[dict[str, Any]]:
+    """按 provider / model 过滤（均可空）返回音色目录，含 is_default 标记。"""
+    if _db_path is None:
+        return []
+    sql = "SELECT id, provider, model, desc_zh, desc_en, is_default FROM voices"
+    clauses: list[str] = []
+    args: list[Any] = []
+    if provider:
+        clauses.append("provider=?")
+        args.append(provider)
+    if model:
+        clauses.append("model=?")
+        args.append(model)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY sort, id"
+    rows = _conn_get().execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def default_voice(provider: str, model: str) -> str | None:
+    """取某 provider+model 的默认音色 id；没有则 None。"""
+    if _db_path is None:
+        return None
+    row = _conn_get().execute(
+        "SELECT id FROM voices WHERE provider=? AND model=? AND is_default=1 LIMIT 1",
+        (provider, model),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def set_default_voice(provider: str, model: str, voice_id: str) -> bool:
+    """把某 provider+model 下的某个音色设为默认（同模型其余取消默认）。"""
+    if _db_path is None:
+        return False
+    with _lock:
+        c = _conn_get()
+        exists = c.execute("SELECT 1 FROM voices WHERE id=?", (voice_id,)).fetchone()
+        if not exists:
+            return False
+        c.execute("UPDATE voices SET is_default=0 WHERE provider=? AND model=?", (provider, model))
+        c.execute("UPDATE voices SET is_default=1 WHERE id=?", (voice_id,))
+        c.commit()
+    return True
+
+
+def upsert_voice(
+    voice_id: str,
+    provider: str,
+    model: str,
+    desc_zh: str = "",
+    desc_en: str = "",
+    sort: int = 0,
+    is_default: bool = False,
+) -> None:
+    """新增 / 更新一个音色；is_default=True 时会清掉同 provider+model 的其它默认。"""
+    if _db_path is None:
+        return
+    with _lock:
+        c = _conn_get()
+        if is_default:
+            c.execute("UPDATE voices SET is_default=0 WHERE provider=? AND model=?", (provider, model))
+        c.execute(
+            "INSERT INTO voices(id, provider, model, desc_zh, desc_en, sort, is_default) "
+            "VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, model=excluded.model, "
+            "desc_zh=excluded.desc_zh, desc_en=excluded.desc_en, sort=excluded.sort, "
+            "is_default=excluded.is_default",
+            (voice_id, provider, model, desc_zh, desc_en, sort, 1 if is_default else 0),
+        )
+        c.commit()
+
+
+def delete_voice(voice_id: str) -> None:
+    if _db_path is None:
+        return
+    with _lock:
+        _conn_get().execute("DELETE FROM voices WHERE id=?", (voice_id,))
+        _conn_get().commit()
+
+
+# ── ASR / TTS 模型目录（数据库表维护）────────────────────────────────
+# 数据同样在 seed/speech_models.json，字段：kind / provider / protocol / model / 默认 / 排序。
+
+
+def _seed_speech_models() -> None:
+    """模型表为空时按 seed 播种（含 provider + protocol，每个 provider 一个默认模型）。"""
+    c = _conn_get()
+    if c.execute("SELECT COUNT(*) FROM speech_models").fetchone()[0]:
+        return
+    rows = [
+        (r["kind"], r["provider"], r["protocol"], r["model"],
+         1 if r["is_default"] else 0, r["sort"])
+        for r in catalog.load_speech_models()
+    ]
+    if not rows:
+        return
+    with _lock:
+        c.executemany(
+            "INSERT OR IGNORE INTO speech_models(kind, provider, protocol, model, is_default, sort) "
+            "VALUES(?,?,?,?,?,?)",
+            rows,
+        )
+        c.commit()
+
+
+def list_speech_models(kind: str | None = None, provider: str | None = None) -> list[dict[str, Any]]:
+    """按 kind('stt'/'tts') / provider 过滤（均可空）返回模型目录，含 is_default。"""
+    if _db_path is None:
+        return []
+    sql = "SELECT kind, provider, protocol, model, is_default, sort FROM speech_models"
+    clauses: list[str] = []
+    args: list[Any] = []
+    if kind:
+        clauses.append("kind=?")
+        args.append(kind)
+    if provider:
+        clauses.append("provider=?")
+        args.append(provider)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY kind, sort, model"
+    rows = _conn_get().execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def default_speech_model(kind: str, provider: str) -> str | None:
+    """取某 kind+provider 的默认模型；没有则 None。"""
+    if _db_path is None:
+        return None
+    row = _conn_get().execute(
+        "SELECT model FROM speech_models WHERE kind=? AND provider=? AND is_default=1 LIMIT 1",
+        (kind, provider),
+    ).fetchone()
+    return row["model"] if row else None
+
+
+def set_default_speech_model(kind: str, provider: str, model: str) -> bool:
+    if _db_path is None:
+        return False
+    with _lock:
+        c = _conn_get()
+        exists = c.execute(
+            "SELECT 1 FROM speech_models WHERE kind=? AND provider=? AND model=?",
+            (kind, provider, model),
+        ).fetchone()
+        if not exists:
+            return False
+        c.execute("UPDATE speech_models SET is_default=0 WHERE kind=? AND provider=?", (kind, provider))
+        c.execute(
+            "UPDATE speech_models SET is_default=1 WHERE kind=? AND provider=? AND model=?",
+            (kind, provider, model),
+        )
+        c.commit()
+    return True
+
+
+def upsert_speech_model(
+    kind: str,
+    provider: str,
+    model: str,
+    *,
+    protocol: str = "",
+    is_default: bool = False,
+    sort: int = 0,
+) -> None:
+    """新增 / 更新一个 ASR-TTS 模型；protocol 留空表示不覆盖已有协议。"""
+    if _db_path is None:
+        return
+    with _lock:
+        c = _conn_get()
+        if is_default:
+            c.execute("UPDATE speech_models SET is_default=0 WHERE kind=? AND provider=?", (kind, provider))
+        c.execute(
+            "INSERT INTO speech_models(kind, provider, protocol, model, is_default, sort) "
+            "VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(kind, provider, model) DO UPDATE SET "
+            "protocol=COALESCE(NULLIF(excluded.protocol,''), speech_models.protocol), "
+            "is_default=excluded.is_default, sort=excluded.sort",
+            (kind, provider, (protocol or "").strip(), model, 1 if is_default else 0, sort),
+        )
+        c.commit()
+
+
+def model_protocol(kind: str, provider: str, model: str) -> str:
+    """取某模型的调用协议（http / ws / http-async）；查不到返回空串。"""
+    if _db_path is None:
+        return ""
+    row = _conn_get().execute(
+        "SELECT protocol FROM speech_models WHERE kind=? AND provider=? AND model=?",
+        (kind, provider, model),
+    ).fetchone()
+    return (row["protocol"] or "") if row else ""
+
+
+def set_speech_model_protocol(kind: str, provider: str, model: str, protocol: str) -> None:
+    """只补协议，不动默认 / 排序（老库升级补字段时用，避免覆盖用户的选择）。"""
+    if _db_path is None:
+        return
+    with _lock:
+        c = _conn_get()
+        c.execute(
+            "UPDATE speech_models SET protocol=? WHERE kind=? AND provider=? AND model=?",
+            ((protocol or "").strip(), kind, provider, model),
+        )
+        c.commit()
+
+
+
+def delete_voices_by_provider(provider: str) -> int:
+    """删除某提供商的全部音色（初始化脚本 --reset 用）。返回删除行数。"""
+    if _db_path is None:
+        return 0
+    with _lock:
+        c = _conn_get()
+        n = c.execute("DELETE FROM voices WHERE provider=?", (provider,)).rowcount
+        c.commit()
+    return int(n or 0)
+
+
+def delete_speech_models_by_provider(provider: str) -> int:
+    """删除某提供商的全部 ASR/TTS 模型（初始化脚本 --reset 用）。返回删除行数。"""
+    if _db_path is None:
+        return 0
+    with _lock:
+        c = _conn_get()
+        n = c.execute("DELETE FROM speech_models WHERE provider=?", (provider,)).rowcount
+        c.commit()
+    return int(n or 0)
+
+
+
+def delete_speech_model(kind: str, provider: str, model: str) -> None:
+    if _db_path is None:
+        return
+    with _lock:
+        _conn_get().execute(
+            "DELETE FROM speech_models WHERE kind=? AND provider=? AND model=?",
+            (kind, provider, model),
+        )
+        _conn_get().commit()

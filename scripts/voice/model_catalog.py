@@ -36,10 +36,13 @@ class ModelInfo:
     type: str = ModelType.LLM
     context_length: int = 0  # 未知用 0（与 Java 约定一致）
     dimension: int = 0
-    protocol: Optional[str] = None  # 线协议：local / http / ws / http-async；语音上游模型需要
+    # 厂商单独表达，不混进 protocol（与「协议 = 线协议 ≠ 厂商」的口径一致）。
+    provider: Optional[str] = None  # builtin / dashscope / deepseek / openai_audio …
+    # 调用形态：http / ws / http-async；内置本地引擎也是走 /voice/v1 的 HTTP，故为 http。
+    protocol: Optional[str] = None
 
     def to_openai(self) -> dict:
-        """转成 OpenAI /v1/models 的条目形状，并附上端口类型与能力字段。"""
+        """转成 OpenAI /v1/models 的条目形状，并附上端口类型 / 提供商 / 协议等能力字段。"""
         return {
             "id": self.id,
             "object": "model",
@@ -48,6 +51,7 @@ class ModelInfo:
             "type": self.type,
             "context_length": self.context_length,
             "dimension": self.dimension,
+            "provider": self.provider or "",
             "protocol": self.protocol or "",
         }
 

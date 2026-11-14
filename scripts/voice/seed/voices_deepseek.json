@@ -1,0 +1,17 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-tts",
+  "default": "stella",
+  "voices": [
+    {
+      "id": "stella",
+      "desc_zh": "海星 · 女声（默认）",
+      "desc_en": "Stella · female (default)"
+    },
+    {
+      "id": "tide",
+      "desc_zh": "暗潮 · 男声",
+      "desc_en": "Tide · male"
+    }
+  ]
+}

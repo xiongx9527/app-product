@@ -46,6 +46,13 @@ const BOOTSTRAP_SQL = `
   -- 旧库若缺这条唯一约束，onConflictDoUpdate 会因「找不到冲突目标」而报错；
   -- 用 IF NOT EXISTS 创建索引可同时覆盖「新建库」与「已存在但缺约束的旧库」。
   CREATE UNIQUE INDEX IF NOT EXISTS uq_user_memory_device_key ON user_memory(device_id, key);
+  CREATE TABLE IF NOT EXISTS app_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT,
+    config TEXT NOT NULL,
+    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_app_config_device ON app_config(device_id);
 `
 
 /** 创建数据库连接（Node 内置 node:sqlite，无原生编译依赖）并引导建表。 */

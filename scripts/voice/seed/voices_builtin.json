@@ -1,0 +1,107 @@
+{
+  "provider": "builtin",
+  "model": "edge-tts",
+  "default": "zh-CN-XiaoxiaoNeural",
+  "voices": [
+    {
+      "id": "zh-CN-XiaoxiaoNeural",
+      "desc_zh": "女声·温柔自然（默认）",
+      "desc_en": "Female · gentle and natural (default)"
+    },
+    {
+      "id": "zh-CN-YunxiNeural",
+      "desc_zh": "男声·年轻活泼",
+      "desc_en": "Male · young and lively"
+    },
+    {
+      "id": "zh-CN-YunyangNeural",
+      "desc_zh": "男声·专业新闻播报",
+      "desc_en": "Male · professional news broadcast"
+    },
+    {
+      "id": "zh-CN-XiaoyiNeural",
+      "desc_zh": "女声·活泼可爱",
+      "desc_en": "Female · lively and cute"
+    },
+    {
+      "id": "zh-CN-YunjianNeural",
+      "desc_zh": "男声·成熟稳重",
+      "desc_en": "Male · mature and steady"
+    },
+    {
+      "id": "zh-CN-YunxiaNeural",
+      "desc_zh": "女声·甜美",
+      "desc_en": "Female · sweet"
+    },
+    {
+      "id": "zh-CN-XiaoxuanNeural",
+      "desc_zh": "女声·清新",
+      "desc_en": "Female · fresh"
+    },
+    {
+      "id": "zh-TW-HsiaoChenNeural",
+      "desc_zh": "女声·台湾腔",
+      "desc_en": "Female · Taiwanese accent"
+    },
+    {
+      "id": "zh-TW-YunJheNeural",
+      "desc_zh": "男声·台湾腔",
+      "desc_en": "Male · Taiwanese accent"
+    },
+    {
+      "id": "zh-TW-HsiaoYuNeural",
+      "desc_zh": "女声·台湾腔·温柔",
+      "desc_en": "Female · Taiwanese accent · gentle"
+    },
+    {
+      "id": "zh-HK-HiuGaaiNeural",
+      "desc_zh": "女声·粤语",
+      "desc_en": "Female · Cantonese"
+    },
+    {
+      "id": "zh-HK-WanLungNeural",
+      "desc_zh": "男声·粤语",
+      "desc_en": "Male · Cantonese"
+    },
+    {
+      "id": "zh-HK-HiuMaanNeural",
+      "desc_zh": "女声·粤语·活泼",
+      "desc_en": "Female · Cantonese · lively"
+    },
+    {
+      "id": "en-US-AriaNeural",
+      "desc_zh": "女声·自然通用",
+      "desc_en": "Female · natural and versatile"
+    },
+    {
+      "id": "en-US-GuyNeural",
+      "desc_zh": "男声·沉稳",
+      "desc_en": "Male · calm"
+    },
+    {
+      "id": "en-US-JennyNeural",
+      "desc_zh": "女声·亲切",
+      "desc_en": "Female · friendly"
+    },
+    {
+      "id": "en-GB-SoniaNeural",
+      "desc_zh": "女声·优雅英音",
+      "desc_en": "Female · elegant British accent"
+    },
+    {
+      "id": "en-GB-RyanNeural",
+      "desc_zh": "男声·英音",
+      "desc_en": "Male · British accent"
+    },
+    {
+      "id": "ja-JP-NanamiNeural",
+      "desc_zh": "女声·柔和",
+      "desc_en": "Female · soft"
+    },
+    {
+      "id": "ja-JP-KeitaNeural",
+      "desc_zh": "男声·清晰",
+      "desc_en": "Male · clear"
+    }
+  ]
+}
