@@ -43,14 +43,7 @@ button {
   box-sizing: border-box;
 }
 
-/* 仅竖屏宽屏（平板等）限宽居中成手机列，避免铺满拉伸。
-   横屏（含手机横屏、iPad 横屏）不在此列——直接铺满宽度，避免两侧留黑边。
+/* 平板/宽屏（含 iPad 竖屏与横屏、手机横屏）一律铺满宽度，不留左右黑边或留白。
+   此前竖屏曾限宽 680 居中成手机列，但用户要求 iPad 竖屏也要占满。
    底部操作栏 .action-bar 的居中在其组件内（mcpservers.vue）处理，避免被 scoped 的 left/right 覆盖。 */
-@media (min-width: 600px) and (orientation: portrait) {
-  .page {
-    max-width: 680px;
-    margin-left: auto;
-    margin-right: auto;
-  }
-}
 </style>

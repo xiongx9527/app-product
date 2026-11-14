@@ -1590,16 +1590,6 @@ function onOrbTap(): void {
   color: rgba(231, 230, 245, 0.4);
 }
 
-/* 平板与折叠屏竖屏：内容限宽居中，布局更舒展。
-   横屏（.landscape）不在此列——直接铺满宽度，避免两侧留黑边（手机横屏按宽度会被归到
-   medium/expanded，若也限宽就会居中留黑）；竖屏才限宽。卡片始终单列（flex column），
-   不做横排分栏——「我说/小熊说」框完整显示、不滑动。 */
-.page.bp-medium:not(.landscape),
-.page.bp-expanded:not(.landscape) {
-  max-width: 720px;
-  margin: 0 auto;
-}
-
 /* info-col 仅作分组，透明不参与布局，子元素直接进 .page 流；
    横竖屏统一单列（iPad 等由 .page.bp-medium/.bp-expanded 的 max-width 限宽居中），
    不做左右分栏——用户要求统一布局。 */
