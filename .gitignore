@@ -14,6 +14,10 @@ apps/uni_app/unpackage/
 .env
 .env.*
 !.env.example
+# 本机开发 / 构建环境（含本机路径与 DCloud AppKey，不入库；提供 .example 模板）
+.dev_env
+.build_env.*
+!.build_env.example
 *.local
 *.keystore
 *.p12
@@ -47,6 +51,20 @@ pnpm-debug.log*
 app.db
 app.db-*
 apps/gateway/data/app.db
+
+# DCloud 离线 SDK（DCloud 分发的工程件，体积大）：已放 xiaoxiong-app/native/android/sdk/ 但不入库；
+# 部署/打包时从官方下载离线 SDK 解压到此目录即可，或用 --sdk 指定其它位置。
+# 真正的「原生工厂」（我们自己的原生源码）在 xiaoxiong-app/native/android/app/，正常入库、不忽略。
+xiaoxiong-app/native/android/sdk/
+
+# Android 原生工厂（native/android/app）的生成物，由 package-android-offline.mjs 注入，不入库：
+# 前端 www、内嵌网关资产、libnode.so、引擎 aar 副本、构建缓存。
+xiaoxiong-app/native/android/app/src/main/assets/apps/
+xiaoxiong-app/native/android/app/src/main/assets/gateway/
+xiaoxiong-app/native/android/app/src/main/jniLibs/
+xiaoxiong-app/native/android/app/libs/
+xiaoxiong-app/native/android/app/build/
+xiaoxiong-app/native/android/app/.cxx/
 
 # 网关依赖锁文件
 apps/gateway/package-lock.json

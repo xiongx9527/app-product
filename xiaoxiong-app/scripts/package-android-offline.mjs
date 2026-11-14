@@ -1,23 +1,29 @@
 #!/usr/bin/env node
 /**
- * 把 `npm run build:app` 产出的本地打包资源（dist/build/app）接入 DCloud Android 离线 SDK 工程，
+ * 把 `npm run build:app` 产出的本地打包资源（dist/build/app）接入 Android 离线打包工程，
  * 并把内嵌网关（gateway.bundle.mjs + 提示音 + digidem libnode.so）一并接入，生成离线打包所需的
  * 目录结构与配置，省去手动拷贝出错。
  *
+ * 工程二分（见 xiaoxiong-app/native/android/）：
+ *   - sdk/  = DCloud 离线打包工程壳（HBuilder-Integrate-AS，仅含 gradlew/settings.gradle/引擎 aar），
+ *            体积大、不入库（.gitignore 已忽略 xiaoxiong-app/native/android/sdk/）。
+ *   - app/  = 我们的「原生工厂」（native/android/app），含全部 Java 源码、JNI 桥、AndroidManifest、
+ *            dcloud_properties 与已预置的网关 Service/Application 声明；这是可直接打开构建的 Android 模块，入库。
+ *   二者由 SDK 壳的 settings.gradle 用 `include ':app'` + `project(':app').projectDir = file('../app')` 关联。
+ *
  * 用法：
  *   node scripts/package-android-offline.mjs \
- *     --sdk /path/to/HBuilder-Integrate-AS \   # 离线 SDK 里那个 Android Studio 工程根目录（含 simpleDemo/ 与 settings.gradle）
+ *     --sdk <HBuilder-Integrate-AS 路径> \     # DCloud 离线 SDK 壳根；缺省默认 xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS
  *     --appid __UNI_XXXXXXXX \                  # DCloud 开发者中心的 appid（必须非空，且与 AppKey 对应）
- *     [--module simpleDemo]                     # 主模块名（5.34 SDK 默认是 simpleDemo，旧版可能是 app）
- *     [--appkey xxxxxxxx]                       # 可选：AppKey 字符串，写入 AndroidManifest 的 dcloud_appkey meta-data
- *     [--node-lib /path/to/digidem-android]     # 可选：digidem android 包解压目录（内含各 ABI 的 libnode.so）
+ *     [--appkey xxxxxxxx]                       # 可选：AppKey 字符串，写入 app 模块 AndroidManifest 的 dcloud_appkey meta-data（已预置，可覆盖）
+ *     [--node-lib /path/to/digidem-android]     # 可选：digidem android 包解压目录（内含各 ABI 的 libnode.so）；app 模块已内置，可用它刷新
  *     [--gateway-bundle /path/bundle.mjs]       # 可选：覆盖默认 <gateway>/dist/gateway.bundle.mjs
  *     [--gateway-cues /path/cues]               # 可选：覆盖默认 <gateway>/static/cues
  *     [--no-gateway]                            # 可选：跳过网关资产接入（退回纯 uni-app 资源接入）
  *
- * 该脚本只做「资源与运行库接入」，不负责：原生插件（app-product-wake）、JNI 桥编译、Java Service 落位、
- * AndroidManifest 的 :gateway Service 声明、build.gradle 的 CMake 接线、签名与包名（后两者在 build.gradle 里改）。
- * 这些后续步骤见 xiaoxiong-app/native/README.md 与 docs/mobile-embedded-gateway.md §15。
+ * 脚本只做「生成物接入」（前端 www、网关 bundle、libnode.so 与可选 AppKey）；Java/CMake/Manifest/
+ * dcloud_properties 这些「源」都已在 app/ 模块里就位，脚本仅做幂等兜底，不新增源文件。
+ * 构建与签名见 app/build.gradle（引擎 aar 从 ../sdk/libs 引用，keystore 从 ../sdk/HBuilder-Integrate-AS 引用）。
  *
  * 注意：编译出 APK 不需要 appid/AppKey；只有装到设备上「能启动运行」才需要，且 appid、包名、证书 SHA1 三者
  * 必须与 DCloud 开发者中心申请 AppKey 时填的一致，否则启动时报「未配置appkey或配置错误」。
@@ -28,18 +34,20 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
-const root = resolve(__dirname, '..')
-const gatewayRoot = resolve(root, '..', 'gateway') // xiaoxiong-app/gateway
+// 脚本集中在 xiaoxiong-app/scripts；以下路径均相对 xiaoxiong-app 根解析，与脚本所在目录无关。
+const projectRoot = resolve(__dirname, '..') // xiaoxiong-app
+const uniAppRoot = resolve(projectRoot, 'uni_app')
+const gatewayRoot = resolve(projectRoot, 'gateway') // xiaoxiong-app/gateway
+const nativeAndroid = resolve(projectRoot, 'native', 'android', 'app') // 我们的原生工厂模块（单一真相源）
 
 const VALID_ABIS = new Set(['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'armeabi'])
 
 function parseArgs(argv) {
-  const out = { module: 'simpleDemo', gateway: true }
+  const out = { gateway: true, sdk: resolve(projectRoot, 'native', 'android', 'sdk', 'HBuilder-Integrate-AS') }
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]
     if (a === '--sdk') out.sdk = argv[++i]
     else if (a === '--appid') out.appid = argv[++i]
-    else if (a === '--module') out.module = argv[++i]
     else if (a === '--appkey') out.appkey = argv[++i]
     else if (a === '--node-lib') out.nodeLib = argv[++i]
     else if (a === '--gateway-bundle') out.gatewayBundle = argv[++i]
@@ -71,21 +79,23 @@ function findFiles(dir, filename, acc = []) {
 }
 
 const args = parseArgs(process.argv.slice(2))
-if (!args.sdk || !args.appid) {
-  console.error('用法: node scripts/package-android-offline.mjs --sdk <HBuilder-Integrate-AS 路径> --appid <appid> [--module simpleDemo] [--appkey <AppKey字符串>] [--node-lib <digidem android 解压目录>] [--no-gateway]')
+if (!args.appid) {
+  console.error('用法: node scripts/package-android-offline.mjs --appid <appid> [--sdk <HBuilder-Integrate-AS 路径>] [--appkey <AppKey字符串>] [--node-lib <digidem android 解压目录>] [--no-gateway>]')
+  console.error('  --sdk 缺省默认 xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS（DCloud 离线 SDK 壳，已随工程放置）；用其它 SDK 时再用 --sdk 覆盖')
   process.exit(1)
 }
 if (!existsSync(args.sdk)) {
-  console.error(`离线 SDK 工程不存在: ${args.sdk}`)
+  console.error(`离线 SDK 工程不存在: ${args.sdk}（可把 DCloud 离线 SDK 解压到 xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS，或用 --sdk 指定）`)
   process.exit(1)
 }
-const moduleDir = join(args.sdk, args.module)
+// app 模块是固定的原生工厂（native/android/app）；SDK 壳通过 settings.gradle 的 include ':app' 关联它。
+const moduleDir = nativeAndroid
 if (!existsSync(moduleDir)) {
-  console.error(`主模块不存在: ${moduleDir}（用 --module 指定，5.34 SDK 默认 simpleDemo）`)
+  console.error(`原生工厂模块不存在: ${moduleDir}（确认 xiaoxiong-app/native/android/app 已就位）`)
   process.exit(1)
 }
 
-const bundle = join(root, 'dist', 'build', 'app')
+const bundle = join(uniAppRoot, 'dist', 'build', 'app')
 if (!existsSync(bundle)) {
   console.error(`未找到构建产物 ${bundle}，请先运行 npm run build:app`)
   process.exit(1)
@@ -232,9 +242,81 @@ if (args.nodeLib) {
   console.warn('[warn] 未提供 --node-lib：APK 不含 libnode.so，内嵌网关无法启动（下载 digidem android 包后用 --node-lib 指向其解压目录）')
 }
 
-console.log('\n下一步（网关同包，详见 xiaoxiong-app/native/README.md 与 docs §15）：')
-console.log('  1. 把 native/android/GatewayNodeService.java 放到 src/main/java/com/xiaoxiong/assistant/gateway/')
-console.log('  2. AndroidManifest.xml 声明 <service android:name="com.xiaoxiong.assistant.gateway.GatewayNodeService" android:process=":gateway" android:exported="false"/>')
-console.log('  3. NDK 编 gateway_node_bridge.cpp（CMake 的 NODE_INCLUDE 指向 digidem 包 include/node，NODE_LIB 指向 jniLibs/<abi>/libnode.so）')
-console.log('  4. 接入 app-product-wake 原生插件（否则唤醒与 PCM 采集不可用）')
-console.log('  5. Android Studio 打开 HBuilder-Integrate-AS，Sync 后 Build APK（或 Run 到 Pixel5_API35 AVD）')
+// 7) 原生源码（App.java / GatewayNodeService.java / WakeModule.java）已作为「源」常驻在
+//    native/android/app/src/main/java/com/xiaoxiong/assistant/，是可直接打开构建的 Android 模块，
+//    无需脚本再拷入。脚本只负责下方 7a/7b/7c 的幂等兜底（dcloud_properties / 权限 / Manifest 声明），
+//    正常情况下这些已预置在 app 模块，脚本直接跳过。
+
+
+// 7a) dcloud_properties.xml 注册 feature（离线 SDK 原生插件靠它在 requireNativePlugin 时定位类）
+{
+  const propPath = join(moduleDir, 'src', 'main', 'assets', 'data', 'dcloud_properties.xml')
+  if (existsSync(propPath)) {
+    let prop = readFileSync(propPath, 'utf8')
+    if (!/app-product-wake/.test(prop)) {
+      prop = prop.replace(
+        /(\s*)<\/features>/,
+        `$1\t<feature name="app-product-wake" value="com.xiaoxiong.assistant.wake.WakeModule"/>\n$1</features>`,
+      )
+      writeFileSync(propPath, prop)
+      console.log('[ok] dcloud_properties.xml 已注册 app-product-wake')
+    } else {
+      console.log('[info] dcloud_properties.xml 已含 app-product-wake，跳过注册')
+    }
+  } else {
+    console.warn(`[warn] 未找到 ${propPath}，无法注册 app-product-wake（请手动加 feature）`)
+  }
+}
+
+// 7b) AndroidManifest 声明麦克风权限（AudioRecord 必需，uni-app 框架不会为原生 AudioRecord 请求）
+if (existsSync(androidManifestPath)) {
+  let mf = readFileSync(androidManifestPath, 'utf8')
+  if (!/RECORD_AUDIO/.test(mf)) {
+    mf = mf.replace(
+      /(\s*)<application/,
+      `$1<uses-permission android:name="android.permission.RECORD_AUDIO" />\n$1<application`,
+    )
+    writeFileSync(androidManifestPath, mf)
+    console.log('[ok] AndroidManifest 已声明 RECORD_AUDIO 权限')
+  } else {
+    console.log('[info] AndroidManifest 已含 RECORD_AUDIO，跳过')
+  }
+
+  // 7c) 注入自定义 Application 类（主进程拉起网关）与 :gateway 独立进程 Service。
+  //     让 SDK 的 AndroidManifest 完全由本脚本从仓库装配，不再手工编辑（对应「包括 sdk」的要求）。
+  if (!/android:name="com\.xiaoxiong\.assistant\.App"/.test(mf)) {
+    if (/<application\b[^>]*\bandroid:name="/.test(mf)) {
+      mf = mf.replace(/(<application\b[^>]*\b)android:name="[^"]*"/,
+        '$1android:name="com.xiaoxiong.assistant.App" tools:replace="android:name"')
+    } else {
+      mf = mf.replace(/(<application\b)/,
+        '$1 android:name="com.xiaoxiong.assistant.App" tools:replace="android:name"')
+    }
+    if (!/xmlns:tools=/.test(mf)) {
+      mf = mf.replace(/(<manifest\b[^>]*?)(\s*>)/,
+        '$1 xmlns:tools="http://schemas.android.com/apk/res/android"$2')
+    }
+    writeFileSync(androidManifestPath, mf)
+    console.log('[ok] AndroidManifest 注入 Application=com.xiaoxiong.assistant.App')
+  } else {
+    console.log('[info] AndroidManifest 已声明 App 类，跳过')
+  }
+  if (!/GatewayNodeService/.test(mf)) {
+    mf = readFileSync(androidManifestPath, 'utf8')
+    mf = mf.replace(
+      /(\s*)<\/application>/,
+      `$1\t<service\n\t\tandroid:name="com.xiaoxiong.assistant.gateway.GatewayNodeService"\n\t\tandroid:process=":gateway"\n\t\tandroid:exported="false" />\n$1</application>`,
+    )
+    writeFileSync(androidManifestPath, mf)
+    console.log('[ok] AndroidManifest 注入 :gateway Service')
+  } else {
+    console.log('[info] AndroidManifest 已含 :gateway Service，跳过')
+  }
+}
+
+console.log('\n下一步（网关同包，详见 xiaoxiong-app/native/android/）：')
+console.log('  1. 原生源码/Manifest/CMake 已就位在 native/android/app/，本脚本只注入了前端 www、网关 bundle 与 libnode.so。')
+console.log('  2. 进 SDK 壳目录构建（app 模块由 settings.gradle 的 include \':app\' 关联）：')
+console.log('       cd xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS && ./gradlew :app:clean :app:assembleDebug')
+console.log('  3. 装到设备：adb install -r app/build/outputs/apk/debug/app-debug.apk')
+console.log('  4. 真机验证「一键检测」：网关应正常（地址可达即「已接入」，内置源永不报「未选择模型」）。')

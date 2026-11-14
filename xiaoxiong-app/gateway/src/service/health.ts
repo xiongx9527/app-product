@@ -332,26 +332,43 @@ async function probeExternal(): Promise<NetworkStatus> {
  * 连通探测（只 GET 根路径）会漏掉「地址通、但调模型被拒」这类故障——典型如欠费 / 额度不足 /
  * 模型名不存在 / 密钥无权限：端点照样可达，真正对话才炸。deep 检测（一键检测按钮）走这条，
  * 把上游真实报错（如「余额不足」）带回到界面，而不是误报「正常」。
- * 未选模型（model 为空）时无法真正调用，退化为连通探测并在 message 里说清原因。
+ * 未选模型（model 为空，含内置源「使用来源默认」）时：
+ *   - 内置（builtin）来源模型可留空，由本地 AI 服务默认模型兜底，无论地址可达与否都不报
+ *     「未选择模型」——对内置源而言「没选模型」不是故障，地址不可达才如实说地址不可达；
+ *   - 其它来源（如百炼）模型必填，仍如实提示未选模型、不可假绿。
  */
 async function probeLlmDeep(
   baseUrl: string,
   apiKey: string | undefined,
   model: string,
+  provider?: string,
   timeoutMs = 8000,
 ): Promise<ProviderStatus> {
   const endpoint = hostOf(baseUrl)
   if (!model) {
-    // 没选模型，没法真正调用对话接口：绝不能报“可用”（假绿），只能说明“无法验证”。
-    // 仍顺手探一下主机连通性用于更具体的提示，但 reachable 一律为 false。
+    // 没显式选模型（含内置源「使用来源默认」）：没法真正调用对话接口，按地址可达性给状态。
     const hostUp = await probe(baseUrl, apiKey)
+    // 内置（builtin）来源：模型可留空（本地 AI 服务默认模型兜底），「没选模型」不是故障，
+    // 永远不报「未选择模型」；地址不可达就如实说地址不可达，与是否选了模型无关。
+    if (provider === 'builtin') {
+      return {
+        provider: 'llm',
+        configured: true,
+        reachable: hostUp,
+        endpoint,
+        message: hostUp
+          ? `已接入（${endpoint}），使用默认模型`
+          : `内置语音服务地址不可达（${endpoint}），请检查来源地址`,
+      }
+    }
+    // 其它来源（如百炼）模型必填，如实提示未选模型、不可假绿。
     return {
       provider: 'llm',
       configured: true,
       reachable: false,
       endpoint,
       message: hostUp
-        ? `主机可达（${endpoint}），但未选择模型，无法验证对话能力`
+        ? `未选择模型，无法验证对话能力（${endpoint}）`
         : `未选择模型，且地址不可达（${endpoint}）`,
     }
   }
@@ -428,7 +445,7 @@ export async function buildHealth(
     }
   }
   const llm = deep
-    ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, llmDeepModel)
+    ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, llmDeepModel, resolved.llm.provider)
     : await buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey, deep)
   return { asr, llm, tts, network }
 }

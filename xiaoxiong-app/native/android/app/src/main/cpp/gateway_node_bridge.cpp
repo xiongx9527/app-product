@@ -35,7 +35,9 @@ Java_com_xiaoxiong_assistant_gateway_GatewayNodeService_nativeStartNode(
   setEnv("HOME", home);                    // os.homedir() 才可用
   setEnv("GATEWAY_MODE", "embedded");
   setEnv("DOCS_ENABLED", "false");
-  setEnv("GATEWAY_PORT", "0");            // 系统分配，实际端口由 bundle 写回文件
+  // 固定端口：客户端兜底默认地址即 ws://127.0.0.1:8787/ws，无需依赖 plus.io 读端口文件
+  // （真机实测 plus.io 各 root 均未映射到 getFilesDir()，动态端口+文件回传链路在 JS 侧断掉）。
+  setEnv("GATEWAY_PORT", "8787");
   setEnv("GATEWAY_PORT_FILE", home + "/.gateway_port");
   setEnv("NODE_COMPILE_CACHE", cache + "/node-cache");  // V8 代码缓存，加速冷启
   // 后台运行时不能按整机 RAM 定 old-space，用百分比上限避免触发 cgroup 杀进程

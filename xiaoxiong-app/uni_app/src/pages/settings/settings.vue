@@ -419,8 +419,8 @@ onMounted(() => {
   if (appConfig.playback.source !== 'baidu') {
     appConfig.playback.source = 'baidu'
   }
-  // 语音服务来源目前仅内置一种（选择器已隐藏），旧配置若存过 dashscope 静默回退到内置。
-  if (appConfig.voice.provider !== 'builtin') {
+  // 语音服务来源：内置 / DashScope 都是合法选择（页面已放开选择器），只把非法值兜底回内置。
+  if (appConfig.voice.provider !== 'builtin' && appConfig.voice.provider !== 'dashscope') {
     appConfig.voice.provider = 'builtin'
   }
 })
@@ -596,9 +596,8 @@ watch(
         <view class="group-chevron" :class="{ open: isOpen('voice') }" />
       </view>
       <template v-if="isOpen('voice')">
-      <!-- 服务来源选择器已隐藏：目前仅内置一种来源（provider 默认 builtin，旧配置在 onMounted 静默回退）。
-           代码保留，后续若开放多来源再放开 v-if。 -->
-      <template v-if="false">
+      <!-- 服务来源选择器：内置 / DashScope 都放开，让用户在本机设置页自行选择并填地址 / 密钥 / 模型。 -->
+      <template v-if="true">
       <text class="row-label">{{ t('settings.voice.provider') }}</text>
       <view class="providers">
         <view

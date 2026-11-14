@@ -151,13 +151,14 @@ describe('buildHealth：内置未选模型（后端兜底）deep 应解析真实
     expect(h.llm.message).toContain('已接入')
   })
 
-  it('内置未选模型但来源模型列表为空：维持「无法验证」，不假绿', async () => {
+  it('内置未选模型但来源模型列表为空：主机可达即视为可用（模型可留空，后端兜底），不报「未选择模型」', async () => {
     stubFetch((url) => {
       if (url.endsWith('/llm/v1/models')) return { status: 200, body: JSON.stringify({ data: [] }) }
       return { status: 200 }
     })
     const h = await buildHealth(builtinConfig, builtinVoice(''), true)
-    expect(h.llm.reachable).toBe(false)
-    expect(h.llm.message).toContain('未选择模型')
+    expect(h.llm.reachable).toBe(true)
+    expect(h.llm.message).toContain('已接入')
+    expect(h.llm.message).not.toContain('未选择模型')
   })
 })

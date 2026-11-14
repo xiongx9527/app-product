@@ -1,0 +1,20 @@
+# 构建环境配置模板（复制为 .build_env.<env> 后填本机值；.build_env.* 不入库）。
+# build.sh 按第一个参数选择环境：dev / test / pro → 对应 .build_env.dev / .test / .pro。
+# 用法：scripts/build.sh <env> <platform>   env=dev|test|pro  platform=android|ios
+#
+# 变量说明：
+#   ANDROID_APPID / IOS_APPID     DCloud appid（Android / iOS 各自一个，与对应工程必须一致）
+#   ANDROID_APPKEY / IOS_APPKEY   DCloud AppKey（各自一个；留空则沿用对应工程已写入的值；填了会覆盖）
+#   NODE_LIB         digidem android 包解压目录（含各 ABI 的 libnode.so）；留空则用 app 模块已内置的 libnode.so
+#   ANDROID_SDK_DIR  DCloud 离线 SDK 壳根目录（一般不改；换 SDK 时用绝对路径覆盖）
+#   IOS_SDK_DIR      iOS 离线 SDK 工程根目录（package-ios-offline.mjs 的 --sdk；iOS 构建必填）
+#   NODE_IOS         digidem ios 包解压目录（含 NodeMobile.xcframework）；iOS 构建用，留空则跳过
+
+ANDROID_APPID=__UNI_XXXXXXXX
+IOS_APPID=__UNI_XXXXXXXX
+ANDROID_APPKEY=
+IOS_APPKEY=
+NODE_LIB=
+ANDROID_SDK_DIR=
+IOS_SDK_DIR=
+NODE_IOS=

@@ -1,0 +1,14 @@
+# 开发环境配置模板（复制为 .dev_env 后填本机值；.dev_env 不入库）。
+# dev.sh 会自动 source .dev_env（若存在）。
+
+# 网关端口（dev-server.mjs 与 gateway/server.ts 共用这一个来源）
+PORT=8787
+
+# uni-app H5 开发服务器端口（npm run dev:h5）
+UNI_APP_DEV_PORT=5173
+
+# 本机开发服务器对外 host（设备经 adb reverse / 同网段访问时用）
+DEV_HOST=127.0.0.1
+
+# Android 真机联调：把设备 localhost 的这些端口反向转发到本机（逗号分隔；adb reverse）
+ANDROID_REVERSE_PORTS=8787

@@ -14,7 +14,7 @@
 //   node scripts/dev-server.mjs log             # 打印各服务日志尾部
 //   node scripts/dev-server.mjs start uniapp    # 只启动某个服务（gateway / uniapp）
 //
-// 说明：uni_app 默认用 dev:app（uni -p app，仅 Android / iOS）；真机部署走 HBuilderX。
+// 说明：uni_app 用 H5 模式做浏览器开发预览；原生 App 部署走 HBuilderX「运行到手机或模拟器」。
 // 日志与 pid 文件都在 apps/logs 下，已被 .gitignore 忽略，不会入库。
 
 import { spawn } from 'node:child_process'
@@ -55,6 +55,11 @@ function gatewayPort() {
   return Number(process.env.PORT ?? 8787)
 }
 
+/** 前端 H5 开发端口：与 uni_app 的 vite dev 端口一致（默认 5173）。 */
+function h5Port() {
+  return Number(process.env.UNI_APP_DEV_PORT ?? 5173)
+}
+
 /** RSA 密钥存放路径：打包/dev 时随机生成一次后复用，确保前后端用的是同一套密钥，
  * 避免「前后端配置不一致」导致加解密失败。已被 .gitignore 忽略。 */
 const rsaKeysPath = join(appsDir, '.rsa-keys.json')
@@ -91,15 +96,15 @@ function ensureRsaKeys() {
 const services = [
   {
     key: 'gateway',
-    name: '网关 (gateway / nodejs)',
+    name: '网关',
     cwd: join(appsDir, 'gateway'),
     script: 'dev', // tsx watch，热重载
   },
   {
     key: 'uniapp',
-    name: '前端 (uni_app)',
+    name: '前端',
     cwd: join(appsDir, 'uni_app'),
-    script: 'dev:app', // uni -p app，仅 Android / iOS；真机部署走 HBuilderX
+    script: 'dev:h5', // 浏览器开发预览（H5）；原生 App 走 HBuilderX「运行到手机或模拟器」
   },
 ]
 
@@ -128,54 +133,46 @@ function readPid(s) {
 
 function startOne(s) {
   const existing = readPid(s)
-  if (existing && isAlive(existing)) {
-    console.log(`${s.name} 已在运行 (pid=${existing})，无需重复启动。日志：${logPath(s)}`)
-    return
+  const already = !!(existing && isAlive(existing))
+  let pid
+  if (already) {
+    pid = existing
+  } else {
+    mkdirSync(logsDir, { recursive: true }) // 确保日志目录存在，避免 ENOENT
+    const file = logPath(s)
+    appendFileSync(file, `\n=== start @ ${new Date().toISOString()} ===\n`)
+    // 同步开 fd 再传入 stdio，避免 WriteStream 异步打开时 fd 为 null 导致 spawn 失败
+    const fd = openSync(file, 'a')
+    // detached + unref：子进程进入独立会话/进程组，脱离当前终端，父进程退出后继续存活。
+    // 统一来源：网关地址 + RSA 加解密密钥都由 dev 脚本注入，前后端用同一套、避免配置不一致。
+    const childEnv = { ...process.env }
+    const keys = ensureRsaKeys()
+    if (s.key === 'gateway') {
+      if (!childEnv.RSA_BACKEND_PRIVATE_KEY) childEnv.RSA_BACKEND_PRIVATE_KEY = keys.backendPrivate
+      if (!childEnv.RSA_FRONTEND_PUBLIC_KEY) childEnv.RSA_FRONTEND_PUBLIC_KEY = keys.frontendPublic
+    } else if (s.key === 'uniapp') {
+      if (!childEnv.VITE_GATEWAY_WS_URL) childEnv.VITE_GATEWAY_WS_URL = `ws://127.0.0.1:${gatewayPort()}/ws`
+      if (!childEnv.VITE_RSA_FRONTEND_PRIVATE_KEY) childEnv.VITE_RSA_FRONTEND_PRIVATE_KEY = keys.frontendPrivate
+      if (!childEnv.VITE_RSA_BACKEND_PUBLIC_KEY) childEnv.VITE_RSA_BACKEND_PUBLIC_KEY = keys.backendPublic
+    }
+    const child = spawn(npmBin, ['run', s.script], {
+      cwd: s.cwd,
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      env: childEnv,
+      windowsHide: true,
+    })
+    child.unref()
+    writeFileSync(pidPath(s), String(child.pid))
+    pid = child.pid
   }
-  mkdirSync(logsDir, { recursive: true }) // 确保日志目录存在，避免 ENOENT
-  const file = logPath(s)
-  appendFileSync(file, `\n=== start @ ${new Date().toISOString()} ===\n`)
-  // 同步开 fd 再传入 stdio，避免 WriteStream 异步打开时 fd 为 null 导致 spawn 失败
-  const fd = openSync(file, 'a')
-  // detached + unref：子进程进入独立会话/进程组，脱离当前终端，父进程退出后继续存活。
-  // 这正是 setsid/nohup 在三个平台上统一替代方案。
-  // 统一来源：网关地址 + RSA 加解密密钥都由 dev 脚本注入，前后端用同一套、避免配置不一致。
-  // 仅当用户未在 shell/.env 显式设置时才注入，避免覆盖自定义值。
-  const childEnv = { ...process.env }
-  const keys = ensureRsaKeys()
-  if (s.key === 'gateway') {
-    if (!childEnv.RSA_BACKEND_PRIVATE_KEY) childEnv.RSA_BACKEND_PRIVATE_KEY = keys.backendPrivate
-    if (!childEnv.RSA_FRONTEND_PUBLIC_KEY) childEnv.RSA_FRONTEND_PUBLIC_KEY = keys.frontendPublic
-    // PARAM_ENCRYPT 默认不开启：不强制注入 true，沿用网关自身默认值（false）。
-    // 仅在 shell / .env 显式设置时才生效，方便「默认明文调试、按需开启加密」。
-  } else if (s.key === 'uniapp') {
-    if (!childEnv.VITE_GATEWAY_WS_URL) childEnv.VITE_GATEWAY_WS_URL = `ws://127.0.0.1:${gatewayPort()}/ws`
-    if (!childEnv.VITE_RSA_FRONTEND_PRIVATE_KEY) childEnv.VITE_RSA_FRONTEND_PRIVATE_KEY = keys.frontendPrivate
-    if (!childEnv.VITE_RSA_BACKEND_PUBLIC_KEY) childEnv.VITE_RSA_BACKEND_PUBLIC_KEY = keys.backendPublic
-    // 同上：VITE_PARAM_ENCRYPT 不强制，默认关闭，按需开启。
-  }
-  const child = spawn(npmBin, ['run', s.script], {
-    cwd: s.cwd,
-    detached: true,
-    stdio: ['ignore', fd, fd],
-    env: childEnv,
-    windowsHide: true,
-  })
-  child.unref()
-  writeFileSync(pidPath(s), String(child.pid))
-  console.log(`${s.name} 已后台启动（热重载），pid=${child.pid}`)
-  console.log(`  日志：${file}`)
-  console.log(`  停止：node scripts/dev-server.mjs stop ${s.key}`)
-  // 启动后把访问地址打出来，省得再去翻日志/猜端口
-  if (s.key === 'gateway') {
-    const port = gatewayPort()
-    console.log(`  访问：http://localhost:${port}`)
-    console.log(`        WebSocket 同端口；Swagger 文档：http://localhost:${port}/doc.html （或 /docs）`)
-  } else if (s.key === 'uniapp') {
-    console.log(`  访问：dev:app 是 Android/iOS 原生打包模式，无浏览器端口。`)
-    console.log(`        真机/模拟器请用 HBuilderX「运行到手机或模拟器」；`)
-    console.log(`        浏览器预览请改用：cd ${s.cwd} && npm run dev:h5`)
-  }
+  // 紧凑输出：一行服务信息 + 一行日志路径，避免刷屏
+  const port = s.key === 'gateway' ? gatewayPort() : h5Port()
+  const state = already ? '已运行 ' : '已启动'
+  let info = `  ✓ ${s.name}  ${state}  pid=${pid}  ·  访问 http://localhost:${port}`
+  if (s.key === 'gateway') info += '  ·  Swagger: /doc.html'
+  console.log(info)
+  console.log(`    日志: ${logPath(s)}`)
 }
 
 function stopOne(s) {

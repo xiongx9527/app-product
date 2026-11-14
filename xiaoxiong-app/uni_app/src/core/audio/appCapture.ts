@@ -34,14 +34,23 @@ interface NativePcmModule {
 }
 
 function loadPcmModule(): NativePcmModule | null {
-  if (typeof uni === 'undefined') return null
+  if (typeof uni === 'undefined') {
+    console.warn('[appCapture] uni undefined')
+    return null
+  }
   const scope = uni as unknown as {
     requireNativePlugin?: (name: string) => unknown
   }
-  if (typeof scope.requireNativePlugin !== 'function') return null
+  if (typeof scope.requireNativePlugin !== 'function') {
+    console.warn('[appCapture] requireNativePlugin 不可用')
+    return null
+  }
   try {
-    return scope.requireNativePlugin('app-product-wake') as NativePcmModule
-  } catch {
+    const mod = scope.requireNativePlugin('app-product-wake') as NativePcmModule
+    console.warn('[appCapture] requireNativePlugin(app-product-wake) =>', mod ? Object.keys(mod as object) : 'null')
+    return mod
+  } catch (e) {
+    console.warn('[appCapture] requireNativePlugin threw', e)
     return null
   }
 }
@@ -49,12 +58,13 @@ function loadPcmModule(): NativePcmModule | null {
 /** 插件存在且实现了 PCM 接口才算可用；旧基座只支持唤醒时返回 false。 */
 export function isAppCaptureSupported(): boolean {
   const mod = loadPcmModule()
-  return (
+  const ok =
     mod !== null &&
     typeof mod.startPcm === 'function' &&
     typeof mod.stopPcm === 'function' &&
     typeof mod.onPcmFrame === 'function'
-  )
+  console.warn('[appCapture] isAppCaptureSupported =>', ok)
+  return ok
 }
 
 /** 原生回调可能给 ArrayBuffer 或类型化数组，统一成 ArrayBuffer。 */
@@ -123,4 +133,34 @@ export function stopAppCapture(): void {
   } catch {
     // 重复停止忽略
   }
+}
+
+/**
+ * 调 startAppCapture 前，确保麦克风权限已授予（仅 App 端需要）。
+ *
+ * 为什么必须前端请求：原生 AudioRecord 不走 uni-app 的录音 API，框架不会代为弹权限框；
+ * 而 WXModule 也不保证把 onRequestPermissionsResult 转发到插件，所以权限申请只能放在 JS 侧。
+ * App 端用 uni.authorize(scope.record) 触发系统麦克风权限弹窗（映射 RECORD_AUDIO）。
+ * 返回 true = 已授权；false = 用户拒绝或未授予，调用方应提示并停止采集，不要继续连网关空等。
+ */
+export function requestMicPermission(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const scope = uni as unknown as {
+      authorize?: (opt: {
+        scope: string
+        success?: () => void
+        fail?: () => void
+      }) => void
+    }
+    if (typeof scope.authorize !== 'function') {
+      // 非 App 端（H5 由浏览器自己管权限，且本函数只在 isAppCaptureSupported 分支调用）
+      resolve(true)
+      return
+    }
+    scope.authorize({
+      scope: 'scope.record',
+      success: () => resolve(true),
+      fail: () => resolve(false),
+    })
+  })
 }

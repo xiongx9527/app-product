@@ -51,8 +51,10 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
-const root = resolve(__dirname, '..')
-const gatewayRoot = resolve(root, '..', 'gateway') // xiaoxiong-app/gateway
+// 脚本集中在 xiaoxiong-app/scripts；以下路径均相对 xiaoxiong-app 根解析，与脚本所在目录无关。
+const projectRoot = resolve(__dirname, '..') // xiaoxiong-app
+const uniAppRoot = resolve(projectRoot, 'uni_app')
+const gatewayRoot = resolve(projectRoot, 'gateway') // xiaoxiong-app/gateway
 
 function parseArgs(argv) {
   const out = { gateway: true }
@@ -132,7 +134,7 @@ if (!existsSync(args.sdk)) {
   console.error(`iOS SDK 工程不存在: ${args.sdk}`)
   process.exit(1)
 }
-const bundle = join(root, 'dist', 'build', 'app')
+const bundle = join(uniAppRoot, 'dist', 'build', 'app')
 if (!existsSync(bundle)) {
   console.error(`未找到构建产物 ${bundle}，请先运行 npm run build:app`)
   process.exit(1)

@@ -25,7 +25,7 @@ import {
   stopCapture,
   stopPlayback,
 } from '@/core/audio/h5Audio'
-import { isAppCaptureSupported, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
+import { isAppCaptureSupported, requestMicPermission, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
 import { t } from '@/core/i18n'
 import { transition } from '@/core/assistant/stateMachine'
 import {
@@ -668,6 +668,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     phase.value = 'idle'
     assistantBusy = false
     answerHasTts = false
+    console.warn('[wake] enterWake()')
     await ensureCapture()
     // 网关可能刚重启过，本地标志会过期；一律以传输层的真实连接状态为准
     if (transport.isConnected()) {
@@ -734,10 +735,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
 
     if (isAppCaptureSupported()) {
+      console.warn('[wake] ensureCapture: App 分支')
+      // 原生 AudioRecord 需要运行时麦克风权限，且框架不会代请求，必须前端先申请。
+      const granted = await requestMicPermission()
+      if (!granted) {
+        errorMessage.value = t('error.micUnavailable', { reason: '麦克风权限被拒绝' })
+        return
+      }
       const ok = startAppCapture(onPcm, (message) => {
         errorMessage.value = t('error.micUnavailable', { reason: message })
       })
       if (ok) capturing = true
+      else errorMessage.value = t('error.micUnavailable', { reason: '原生录音启动失败' })
       return
     }
 
@@ -777,6 +786,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    */
   let enabling = false
   async function enable(): Promise<void> {
+    console.warn('[wake] enable() called')
     if (enabling) return // 防重入：connect 触发的连接恢复回调会试图自动重开
     enabling = true
     try {

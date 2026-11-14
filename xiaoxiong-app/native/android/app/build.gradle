@@ -1,0 +1,98 @@
+apply plugin: 'com.android.application'
+
+android {
+    compileSdkVersion 35
+    buildToolsVersion '36.0.0'
+    namespace 'com.xiaoxiong.assistant'
+    defaultConfig {
+        applicationId "com.xiaoxiong.assistant"
+        minSdkVersion 21
+        targetSdkVersion 33
+        versionCode 1
+        versionName "1.0"
+        multiDexEnabled true
+        compileOptions {
+            sourceCompatibility JavaVersion.VERSION_1_8
+            targetCompatibility JavaVersion.VERSION_1_8
+        }
+    }
+        signingConfigs {
+            config {
+                keyAlias 'xiaoxiong'
+                keyPassword 'xiaoxiong-dev-2026'
+                // keystore 随 DCloud 离线 SDK 壳一起放在 native/android/sdk/HBuilder-Integrate-AS/ 下
+                // （SDK 壳不入库，但本机/CI 解压 SDK 后即存在）。Gradle 的 file() 相对本 module 目录
+                // （native/android/app/），故 ../../sdk/HBuilder-Integrate-AS/ 指到 SDK 壳根。
+                storeFile file('../sdk/HBuilder-Integrate-AS/xiaoxiong-release.keystore')
+                storePassword 'xiaoxiong-dev-2026'
+                v1SigningEnabled true
+                v2SigningEnabled true
+            }
+        }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.config
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        release {
+            signingConfig signingConfigs.config
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    aaptOptions {
+        additionalParameters '--auto-add-overlay'
+        ignoreAssetsPattern "!.svn:!.git:.*:!CVS:!thumbs.db:!picasa.ini:!*.scc:*~"
+    }
+
+    // ===== 网关 JNI 桥：条件式接线 =====
+    // 仅当本机 Android SDK 装了 NDK + CMake 组件时，才启用 externalNativeBuild 编译
+    // src/main/cpp/CMakeLists.txt（产出 libgatewaynode.so）。离线 SDK 默认不含 NDK/CMake，
+    // 此时跳过，保证纯 Java/资源 APK 仍可正常编译；装好组件后无需改本文件即自动生效：
+    //   sdkmanager "ndk;27.0.12077973" "cmake;3.22.1"
+    // 装好后需重新 Sync/编译，且网关 Service 才有 libgatewaynode.so 可加载。
+    def gwSdkRoot = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT')
+    if (!gwSdkRoot) {
+        def gwLp = rootProject.file('local.properties')
+        if (gwLp.exists()) {
+            def gwLine = gwLp.readLines().find { it.trim().startsWith('sdk.dir=') }
+            if (gwLine) gwSdkRoot = gwLine.split('=', 2)[1].trim()
+        }
+    }
+    def gwNdk = gwSdkRoot ? new File(gwSdkRoot, 'ndk') : null
+    def gwCmake = gwSdkRoot ? new File(gwSdkRoot, 'cmake') : null
+    def gwHasComponent = { File d -> d != null && d.exists() && d.listFiles()?.any { it.isDirectory() } }
+    if (gwHasComponent(gwNdk) && gwHasComponent(gwCmake)) {
+        defaultConfig {
+            // 只编 jniLibs 里已有 libnode.so 的 ABI，避免 CMakeLists 找不到其它 ABI 的库
+            ndk { abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64' }
+        }
+        externalNativeBuild {
+            cmake {
+                path "src/main/cpp/CMakeLists.txt"
+            }
+        }
+        logger.lifecycle('[gateway] NDK/CMake 就绪：已启用 JNI 桥编译')
+    } else {
+        logger.lifecycle('[gateway] 未装 NDK/CMake：跳过 JNI 桥编译（APK 仍可编译；网关 Service 需 libgatewaynode.so 方能运行）')
+    }
+}
+
+dependencies {
+    // 引擎 aar（DCloud 离线 SDK 的 lib.5plus.base / uniapp-v8 等）放在 SDK 壳的 libs/（不入库），
+    // 本 module 通过相对路径 ../sdk/libs 引用，避免把体积大的引擎 aar 重复进 app/。
+    implementation fileTree(dir: '../sdk/libs', include: ['*.aar', '*.jar'], exclude: [])
+    implementation 'androidx.appcompat:appcompat:1.1.0'
+    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.0.0'
+    implementation 'androidx.core:core:1.1.0'
+    implementation "androidx.fragment:fragment:1.1.0"
+    implementation 'androidx.recyclerview:recyclerview:1.1.0'
+    implementation 'com.facebook.fresco:fresco:2.5.0'
+    implementation "com.facebook.fresco:animated-gif:2.5.0"
+    implementation 'com.github.bumptech.glide:glide:4.9.0'
+    implementation 'com.alibaba:fastjson:1.2.83'
+    implementation 'androidx.webkit:webkit:1.5.0'
+}
+
