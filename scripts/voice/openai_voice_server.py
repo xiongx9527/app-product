@@ -1067,6 +1067,11 @@ def _edge_tts_available() -> bool:
         return False
 
 
+def _enabled_provider(p: str) -> str:
+    """启用表里的 provider 名：openai_audio 是 dashscope 的旧别名。"""
+    return "dashscope" if (p or "").strip().lower() in ("openai_audio", "dashscope") else (p or "").strip().lower()
+
+
 def _voice_provider_entries() -> list[dict]:
     """枚举 STT / TTS 两个端口的可用提供商，供 /voice/v1/providers 与 /voice/v1/models 共用。
 
@@ -1093,7 +1098,8 @@ def _voice_provider_entries() -> list[dict]:
     stt_provider = (config_value("STT_PROVIDER", "builtin") or "builtin").strip().lower()
     stt_base = (config_value("STT_UPSTREAM_BASE_URL") or "").strip() or _UPSTREAM_DEFAULT_BASE
     stt_model = (config_value("STT_UPSTREAM_MODEL") or "").strip()
-    stt_models = _json_model_list(config_value("STT_UPSTREAM_MODELS")) or (
+    # 启用表是「实际要用上的」唯一真相源；config_kv 的 *_UPSTREAM_MODELS 只作兼容镜像。
+    stt_models = voice_db.enabled_models("stt", _enabled_provider(stt_provider)) or (
         [stt_model] if stt_model else []
     )
     add("stt", "builtin", "sensevoice-small", "", sensevoice_ready(),
@@ -1107,7 +1113,7 @@ def _voice_provider_entries() -> list[dict]:
     tts_provider = (config_value("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
     tts_base = (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or _UPSTREAM_DEFAULT_BASE
     tts_model = (config_value("TTS_UPSTREAM_MODEL") or "").strip()
-    tts_models = _json_model_list(config_value("TTS_UPSTREAM_MODELS")) or (
+    tts_models = voice_db.enabled_models("tts", _enabled_provider(tts_provider)) or (
         [tts_model] if tts_model else []
     )
     add("tts", "builtin", "edge-tts", "", _edge_tts_available(),
@@ -2288,7 +2294,8 @@ def llm_catalog() -> list[model_catalog.ModelInfo]:
     override = llm_model_override()
     if override:
         models[override] = model_catalog.ModelInfo(
-            id=override, owned_by="config", type=model_catalog.ModelType.LLM
+            id=override, owned_by="config", type=model_catalog.ModelType.LLM,
+            is_default=(override == default_model_for_provider("LLM", "")),
         )
     for e in upstream_pool.load_pool("LLM"):
         m = e.get("model")
@@ -2300,6 +2307,30 @@ def llm_catalog() -> list[model_catalog.ModelInfo]:
                     owned_by=(e.get("vendor") or e.get("protocol") or "openai"),
                     provider=e.get("vendor") or "",
                     type=model_catalog.ModelType.LLM,
+                    is_default=(m == default_model_for_provider("LLM", e.get("vendor") or "")),
+                ),
+            )
+    return list(models.values())
+
+
+def embed_catalog() -> list[model_catalog.ModelInfo]:
+    """合成向量（embeddings）模型目录：来自独立的 EMBED 上游池，type=EMBED。
+
+    与 LLM 目录严格分离——不并入 LLM 池、也不退回 LLM 池，避免把对话模型误标成向量；
+    只列真正配置为向量用途的模型。供 /llm/v1/models 展示（对话校验仍只用 llm_catalog()）。
+    """
+    models: dict[tuple[str, str], model_catalog.ModelInfo] = {}
+    for e in upstream_pool.load_pool("EMBED"):
+        m = e.get("model")
+        if m:
+            models.setdefault(
+                (m, model_catalog.ModelType.EMBED),
+                model_catalog.ModelInfo(
+                    id=m,
+                    owned_by=(e.get("vendor") or e.get("protocol") or "openai"),
+                    provider=e.get("vendor") or "",
+                    type=model_catalog.ModelType.EMBED,
+                    is_default=(m == default_model_for_provider("EMBED", e.get("vendor") or "")),
                 ),
             )
     return list(models.values())
@@ -2321,6 +2352,9 @@ async def llm_models():
         return llm_disabled_response()
 
     models = llm_catalog()
+    # 向量（embeddings）模型来自独立的 EMBED 池，单独标 type=EMBED 并入列表，
+    # 让 /llm/v1/models 同时展示对话与向量两类可用模型。
+    models += embed_catalog()
     if models:
         return {
             "object": "list",

@@ -69,8 +69,26 @@ def _conn_get() -> sqlite3.Connection:
 # 管理员会话有效期（秒），与 admin_panel.SESSION_TTL 保持一致。
 SESSION_TTL = 3600 * 8
 
-# 当前 schema 版本；新增表 / 列时 +1，并在 _migrate() 里补 DDL。
-SCHEMA_VERSION = 5
+# 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
+SCHEMA_VERSION = 7
+
+# 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
+# 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
+# 建表统一由 ensure_schema() 的 CREATE TABLE IF NOT EXISTS 负责，这里只记说明。
+# 历史 v1~v6 按当前结构补录；从 v7 起每次结构变化都必须在此登记 + 版本号 +1。
+SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
+    1: ("初始结构：config_kv / events / audit / health_snapshots / admin_sessions", []),
+    2: ("config_kv 增加 updated_by；events 增加 meta",
+        ["col:config_kv:updated_by:TEXT", "col:events:meta:TEXT"]),
+    3: ("新增 voices 表：音色目录（内置 edge-tts + 全部 dashscope 音色），含 provider/model/中英描述/默认标记", []),
+    4: ("新增 speech_models 表：ASR/TTS 模型目录，按 kind + provider 维护，每 provider 一个默认模型", []),
+    5: ("speech_models 增加 protocol 列：调用形态 http / ws / http-async（不含厂商名）",
+        ["col:speech_models:protocol:TEXT NOT NULL DEFAULT ''"]),
+    6: ("新增 enabled_speech_models 表：实际启用（用户勾选）的模型，与基础库 speech_models 严格分离；"
+        "基础库只由 seed/init_catalog.py 维护，保存动作按 (kind, provider) 整体替换启用表", []),
+    7: ("schema_version 增加 description 列，按版本逐级记录表结构变更；补齐 v1~v6 历史说明",
+        ["col:schema_version:description:TEXT"]),
+}
 
 
 def ensure_schema() -> None:
@@ -79,8 +97,9 @@ def ensure_schema() -> None:
     c.executescript(
         """
         CREATE TABLE IF NOT EXISTS schema_version (
-            version   INTEGER PRIMARY KEY,
-            applied_at INTEGER
+            version     INTEGER PRIMARY KEY,
+            applied_at  INTEGER,
+            description TEXT          -- 该版本做了什么表结构变更（见 SCHEMA_CHANGES）
         );
         -- 配置键值表：配置的真相源。updated_by 记录最近修改者（审计用）。
         CREATE TABLE IF NOT EXISTS config_kv (
@@ -145,6 +164,18 @@ def ensure_schema() -> None:
             PRIMARY KEY(kind, provider, model)
         );
         CREATE INDEX IF NOT EXISTS idx_speech_models_kp ON speech_models(kind, provider);
+        -- 实际启用的模型（用户在配置页勾选的）：与「基础模型库」speech_models 严格分开。
+        -- speech_models 只由 seed / init_catalog.py 维护，是全量官方目录，保存动作绝不写它；
+        -- 这张表只存「当前真正要用上的」模型，按 (kind, provider) 整体替换，取消勾选即删除。
+        CREATE TABLE IF NOT EXISTS enabled_speech_models (
+            kind       TEXT NOT NULL,
+            provider   TEXT NOT NULL,
+            model      TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            sort       INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(kind, provider, model)
+        );
+        CREATE INDEX IF NOT EXISTS idx_enabled_models_kp ON enabled_speech_models(kind, provider);
         CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
         CREATE INDEX IF NOT EXISTS idx_health_ts ON health_snapshots(ts);
@@ -153,6 +184,10 @@ def ensure_schema() -> None:
     )
     c.commit()
     _migrate()
+    # 启用表迁移与 schema 版本无关：老库已是最新版但启用表为空时（例如升级后
+    # 第一次启动、或表被清空）也要能从旧 config_kv 勾选清单补回来。
+    if _auto_seed:
+        _seed_enabled_from_config()
 
 
 def _has_column(table: str, col: str) -> bool:
@@ -160,27 +195,67 @@ def _has_column(table: str, col: str) -> bool:
     return any(r["name"] == col for r in rows)
 
 
-def _migrate() -> None:
-    """按版本补增量 DDL；旧库缺列时用 ALTER TABLE 补齐（新列都可空，安全）。"""
-    c = _conn_get()
-    row = c.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").fetchone()
-    current = row["version"] if row else 0
-    if current >= SCHEMA_VERSION:
+def _apply_change_ddl(c: sqlite3.Connection, instruction: str) -> None:
+    """执行一条幂等的迁移指令；目前只支持给已有表补列。"""
+    parts = instruction.split(":")
+    if len(parts) != 4 or parts[0] != "col":
         return
-    # 给已存在的旧表补列：SQLite 仅支持 ADD COLUMN，且新增列均可为空。
-    if not _has_column("config_kv", "updated_by"):
-        c.execute("ALTER TABLE config_kv ADD COLUMN updated_by TEXT")
-    if not _has_column("events", "meta"):
-        c.execute("ALTER TABLE events ADD COLUMN meta TEXT")
-    if not _has_column("speech_models", "protocol"):
-        c.execute("ALTER TABLE speech_models ADD COLUMN protocol TEXT NOT NULL DEFAULT ''")
-    # 未来升级在此追加 ALTER / CREATE。
-    c.execute(
-        "INSERT INTO schema_version(version, applied_at) VALUES(?,?)",
-        (SCHEMA_VERSION, int(time.time())),
-    )
+    _, table, column, decl = parts
+    if not _has_column(table, column):
+        c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def schema_history() -> list[dict[str, Any]]:
+    """按版本返回表结构变更记录（含说明与应用时间），供管理面板 / 运维查看。"""
+    if _db_path is None:
+        return []
+    rows = _conn_get().execute(
+        "SELECT version, applied_at, description FROM schema_version ORDER BY version"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _migrate() -> None:
+    """按版本逐级应用表结构变更，每个版本在 schema_version 里留一条带说明的记录。
+
+    与旧实现的区别：不再「一次性把版本号刷到最新」，而是 current+1 .. SCHEMA_VERSION
+    逐级执行各自的 DDL 并登记说明；老库里已存在的版本行会补上历史说明（v1~v6 补录）。
+    所有建表 / 补列都是幂等的，跨版本升级、重复启动都安全。
+    """
+    c = _conn_get()
+    # 所有补列 DDL 无条件幂等执行一遍（用 _has_column 判断），与版本号无关：
+    # 老库可能版本行已存在但列缺失（升级中断 / 手工改过），这样也能自愈。
+    # 版本记录只负责「留痕」，不负责决定要不要执行 DDL。
+    if not _has_column("schema_version", "description"):
+        c.execute("ALTER TABLE schema_version ADD COLUMN description TEXT")
+    for _desc, ddl in SCHEMA_CHANGES.values():
+        for instruction in ddl:
+            _apply_change_ddl(c, instruction)
     c.commit()
-    # 音色 / 模型表首次建好后播种（内置 + dashscope + deepseek；表已有数据则跳过）。
+
+    row = c.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+    current = int(row["v"] or 0)
+
+    # 历史行补录说明（老库升级时这些行已存在但没有 description）
+    for version, (desc, _ddl) in SCHEMA_CHANGES.items():
+        if version <= current:
+            c.execute(
+                "UPDATE schema_version SET description=COALESCE(description, ?) "
+                "WHERE version=? AND (description IS NULL OR description='')",
+                (desc, version),
+            )
+
+    # 逐级应用缺失的版本
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        desc, _ddl = SCHEMA_CHANGES.get(version, ("", []))
+        c.execute(
+            "INSERT OR REPLACE INTO schema_version(version, applied_at, description) "
+            "VALUES(?,?,?)",
+            (version, int(time.time()), desc),
+        )
+
+    c.commit()
+    # 音色 / 模型基础库首次建好后播种（内置 + dashscope + deepseek；表已有数据则跳过）。
     if _auto_seed:
         _seed_voices()
         _seed_speech_models()
@@ -435,7 +510,8 @@ def recent_audit(limit: int = 50) -> list[dict[str, Any]]:
 
 def stats() -> dict[str, int]:
     if _db_path is None:
-        return {"config": 0, "events": 0, "audit": 0, "health": 0, "sessions": 0, "voices": 0}
+        return {"config": 0, "events": 0, "audit": 0, "health": 0, "sessions": 0,
+                "voices": 0, "speech_models": 0, "enabled_models": 0}
     cur = _conn_get()
     return {
         "config": cur.execute("SELECT COUNT(*) FROM config_kv").fetchone()[0],
@@ -444,6 +520,8 @@ def stats() -> dict[str, int]:
         "health": cur.execute("SELECT COUNT(*) FROM health_snapshots").fetchone()[0],
         "sessions": cur.execute("SELECT COUNT(*) FROM admin_sessions").fetchone()[0],
         "voices": cur.execute("SELECT COUNT(*) FROM voices").fetchone()[0],
+        "speech_models": cur.execute("SELECT COUNT(*) FROM speech_models").fetchone()[0],
+        "enabled_models": cur.execute("SELECT COUNT(*) FROM enabled_speech_models").fetchone()[0],
     }
 
 
@@ -715,3 +793,136 @@ def delete_speech_model(kind: str, provider: str, model: str) -> None:
             (kind, provider, model),
         )
         _conn_get().commit()
+
+
+# ── 实际启用的模型（勾选数据）──────────────────────────────────────
+# 与基础库 speech_models 严格分离：这里是「当前真正要用上的」模型，由配置页保存时
+# 按 (kind, provider) 整体替换；基础库只由 seed / init_catalog.py 维护，保存动作不碰。
+
+
+def list_enabled_models(
+    kind: str | None = None, provider: str | None = None
+) -> list[dict[str, Any]]:
+    """列出实际启用的模型；按 kind / provider 过滤（均可空）。"""
+    if _db_path is None:
+        return []
+    sql = "SELECT kind, provider, model, is_default, sort FROM enabled_speech_models"
+    clauses: list[str] = []
+    args: list[Any] = []
+    if kind:
+        clauses.append("kind=?")
+        args.append(kind)
+    if provider:
+        clauses.append("provider=?")
+        args.append(provider)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY kind, sort, model"
+    return [dict(r) for r in _conn_get().execute(sql, args).fetchall()]
+
+
+def enabled_models(kind: str, provider: str) -> list[str]:
+    """某 kind+provider 下实际启用的模型名（按 sort 顺序）。"""
+    return [r["model"] for r in list_enabled_models(kind, provider)]
+
+
+def enabled_default_model(kind: str, provider: str) -> str | None:
+    """某 kind+provider 下实际启用的默认模型；没有则取第一个启用模型。"""
+    rows = list_enabled_models(kind, provider)
+    for r in rows:
+        if r["is_default"]:
+            return r["model"]
+    return rows[0]["model"] if rows else None
+
+
+def replace_enabled_models(
+    kind: str, provider: str, models: list[str], default_model: str = ""
+) -> None:
+    """整体替换某 kind+provider 的启用清单：取消勾选的模型会被真正删除。
+
+    models 为空表示全部取消。默认模型必须在清单内，否则不标默认（由调用方回退）。
+    """
+    if _db_path is None:
+        return
+    seen: set[str] = set()
+    clean: list[str] = []
+    for m in models:
+        m = (m or "").strip()
+        if m and m not in seen:
+            seen.add(m)
+            clean.append(m)
+    default_model = (default_model or "").strip()
+    if default_model not in clean:
+        default_model = clean[0] if clean else ""
+    with _lock:
+        c = _conn_get()
+        c.execute(
+            "DELETE FROM enabled_speech_models WHERE kind=? AND provider=?",
+            (kind, provider),
+        )
+        c.executemany(
+            "INSERT INTO enabled_speech_models(kind, provider, model, is_default, sort) "
+            "VALUES(?,?,?,?,?)",
+            [
+                (kind, provider, m, 1 if m == default_model else 0, i)
+                for i, m in enumerate(clean)
+            ],
+        )
+        c.commit()
+
+
+# 旧配置里勾选清单存在 config_kv；升级到「两张表」时迁移进启用表，避免升级后页面全不勾。
+_CONFIG_TO_ENABLED = (
+    ("stt", "dashscope", "STT_UPSTREAM_MODELS", "STT_UPSTREAM_MODEL"),
+    ("tts", "dashscope", "TTS_UPSTREAM_MODELS", "TTS_UPSTREAM_MODEL"),
+    ("stt", "deepseek", "STT_DEEPSEEK_MODELS", "STT_DEEPSEEK_MODEL"),
+    ("tts", "deepseek", "TTS_DEEPSEEK_MODELS", "TTS_DEEPSEEK_MODEL"),
+)
+
+
+def _seed_enabled_from_config() -> None:
+    """启用表为空时，从旧 config_kv 勾选清单迁移一次（幂等）。"""
+    c = _conn_get()
+    if c.execute("SELECT COUNT(*) FROM enabled_speech_models").fetchone()[0]:
+        return
+    rows = 0
+    for kind, provider, models_key, def_key in _CONFIG_TO_ENABLED:
+        raw = c.execute("SELECT value FROM config_kv WHERE key=?", (models_key,)).fetchone()
+        default = c.execute("SELECT value FROM config_kv WHERE key=?", (def_key,)).fetchone()
+        try:
+            models = json.loads(raw["value"]) if raw and raw["value"] else []
+        except (ValueError, TypeError):
+            models = []
+        if not isinstance(models, list):
+            models = []
+        clean = [m.strip() for m in models if isinstance(m, str) and m.strip()]
+        dm = (default["value"] or "").strip() if default else ""
+        # 旧配置可能默认模型为空 / 指向已不在清单里的模型：标清单第一个，
+        # 保证每个有勾选的 (kind, provider) 都有一个默认模型。
+        if dm not in clean:
+            dm = clean[0] if clean else ""
+        with _lock:
+            c.execute(
+                "DELETE FROM enabled_speech_models WHERE kind=? AND provider=?",
+                (kind, provider),
+            )
+            c.executemany(
+                "INSERT INTO enabled_speech_models(kind, provider, model, is_default, sort) "
+                "VALUES(?,?,?,?,?)",
+                [
+                    (kind, provider, m, 1 if m == dm else 0, i)
+                    for i, m in enumerate(clean)
+                ],
+            )
+        rows += len(clean)
+    # 内置是固定白名单，也登记为启用，保证「实际要用上的」清单完整
+    with _lock:
+        c.execute(
+            "INSERT OR IGNORE INTO enabled_speech_models(kind, provider, model, is_default, sort) "
+            "VALUES(?,?,?,?,?)", ("stt", "builtin", "sensevoice-small", 1, 0)
+        )
+        c.execute(
+            "INSERT OR IGNORE INTO enabled_speech_models(kind, provider, model, is_default, sort) "
+            "VALUES(?,?,?,?,?)", ("tts", "builtin", "edge-tts", 1, 0)
+        )
+        c.commit()

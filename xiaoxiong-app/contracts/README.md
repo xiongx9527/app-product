@@ -371,6 +371,13 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 | 提供商 | `GET /llm/v1/providers` | 列出已配置 LLM 提供商（`vendor` / `protocol` / `model` / `host` 脱敏），**不含任何密钥** |
 | 健康 | `GET /llm/health`、根 `GET /llm` | 仅 LLM 的健康状态；`/llm` 用于网关建连时打 baseUrl 本身做探测 |
 
+**表结构变更有版本记录**：`scripts/voice/voice_db.py` 的 `SCHEMA_CHANGES` 按版本登记每次表结构变更（新增表 / 列、说明），`_migrate()` 逐级应用并在 `schema_version` 表留痕（版本号 + 应用时间 + 说明）。新增表或列必须同时 `SCHEMA_VERSION + 1` 并在 `SCHEMA_CHANGES` 登记，否则视为未记录的结构变更。查看方式：`python3 scripts/voice/init_catalog.py --schema-history` 或 `GET /admin/api/schema-history`。
+
+**ASR / TTS 模型分两张表**（`scripts/voice/voice_db.py`）：
+- `speech_models` 是**基础模型库**：全量官方目录，只由 `scripts/voice/seed/speech_models.json` + `init_catalog.py` 维护，保存动作绝不写入。
+- `enabled_speech_models` 是**实际启用**：用户在配置页勾选、真正要用上的模型，以及该提供商的默认模型。保存时按 `(kind, provider)` 整体替换，取消勾选即删除。`GET /admin/api/enabled-models` 可查；`GET /admin/api/speech-models` 只返回基础库。
+- **页面展示两种视图**：① 默认视图（页面加载 / 保存后 / 整页刷新）——模型子表**只显示已启用（勾选）的模型**，呈现干净视图；某分组一条都没启用时回退到全量候选，否则没法勾选。② 点提供商后的「↻ 刷新模型」按钮——把候选**展开为基础库全量**，并保留已勾选与默认标记，用于增删；改完保存又回到默认视图。复选框状态与「默认」单选始终来自启用表，基础库全量只作候选来源，两者互不覆盖。
+
 **默认模型按提供商维度**：管理面板里每个提供商分组各有一个「默认」模型，互不覆盖，也不需要先把该组勾成「默认供应商」。真相源是 `LLM_UPSTREAM_DEFAULT_MODELS` / `EMBED_UPSTREAM_DEFAULT_MODELS`（JSON map：`{vendor: model}`），由面板「保存」写入；网关未带 `model` 发起请求时，代理按命中的提供商取它自己的默认模型，`LLM_UPSTREAM_MODEL` / `EMBED_UPSTREAM_MODEL` 只是兼容镜像（旧单地址配置、上游池分组级 model 兜底仍读它）。`*_UPSTREAM_VENDOR` 是「默认提供商」，与「默认模型」是两个独立维度。
 
 - **鉴权**：与语音接口一致——IP 白名单 + API-Key（走请求头，由配置决定是否开启），默认都关闭。

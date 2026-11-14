@@ -17,13 +17,18 @@ from typing import Optional, Sequence
 
 
 class ModelType:
-    """模型能力端口：与 Java 的 ModelType 一一对应，只是把 EMBEDDING/RERANK 换成 TTS/STT。"""
+    """模型能力端口：与 Java 的 ModelType 一一对应，只是把 EMBEDDING/RERANK 换成 TTS/STT。
+
+    EMBED 是向量（embeddings）端口——本服务的 LLM 代理既做对话也做向量，
+    /llm/v1/models 要同时列出两者，故单列 EMBED 类型以区分。
+    """
 
     LLM = "LLM"
+    EMBED = "EMBED"
     TTS = "TTS"
     STT = "STT"
 
-    ALL = (LLM, TTS, STT)
+    ALL = (LLM, EMBED, TTS, STT)
 
 
 @dataclass
@@ -40,6 +45,8 @@ class ModelInfo:
     provider: Optional[str] = None  # builtin / dashscope / deepseek / openai_audio …
     # 调用形态：http / ws / http-async；内置本地引擎也是走 /voice/v1 的 HTTP，故为 http。
     protocol: Optional[str] = None
+    # 该模型是否是其提供商在该能力端口下的默认模型（按提供商维度，见 default_model_for_provider）。
+    is_default: bool = False
 
     def to_openai(self) -> dict:
         """转成 OpenAI /v1/models 的条目形状，并附上端口类型 / 提供商 / 协议等能力字段。"""
@@ -53,6 +60,7 @@ class ModelInfo:
             "dimension": self.dimension,
             "provider": self.provider or "",
             "protocol": self.protocol or "",
+            "is_default": self.is_default,
         }
 
 

@@ -49,6 +49,7 @@ def main() -> int:
     ap.add_argument("--reset", action="store_true", help="先删除该提供商的目录再灌")
     ap.add_argument("--dry-run", action="store_true", help="只统计，不写库")
     ap.add_argument("--json", action="store_true", help="输出 JSON 摘要")
+    ap.add_argument("--schema-history", action="store_true", help="只查看表结构变更记录")
     args = ap.parse_args()
 
     prov = (args.provider or "").strip().lower() or None
@@ -78,6 +79,19 @@ def main() -> int:
     # 关掉建表时的自动播种：本脚本自己灌库并统计，避免「实际是建表播的、脚本报 0 新增」。
     voice_db.set_auto_seed(False)
     voice_db.ensure_schema()
+    if args.schema_history:
+        changes = voice_db.schema_history()
+        if args.json:
+            print(json.dumps({"current": voice_db.SCHEMA_VERSION, "changes": changes},
+                             ensure_ascii=False, indent=2))
+        else:
+            print(f"当前 schema 版本：v{voice_db.SCHEMA_VERSION}")
+            for ch in changes:
+                import datetime
+                ts = ch.get("applied_at")
+                when = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "-"
+                print(f"  v{ch['version']:<2} {when}  {ch.get('description') or ''}")
+        return 0
 
     providers = sorted({r["provider"] for r in voice_rows + model_rows})
     removed = 0
@@ -139,7 +153,9 @@ def main() -> int:
         print(f"提供商：{', '.join(providers)}" + (f"（删除 {removed} 条）" if removed else ""))
         print(f"音色：新增 {v_new}，更新 {v_upd}")
         print(f"模型：新增 {m_new}，更新 {m_upd}")
-        print(f"当前库内：{summary['totals']}")
+        # 基础库与启用表分开统计：init_catalog 只维护基础库，绝不碰用户勾选数据
+    enabled = voice_db.stats().get("enabled_models", 0)
+    print(f"当前库内：{summary['totals']}（启用表 {enabled} 条由配置页保存维护，本脚本不改动）")
     return 0
 
 

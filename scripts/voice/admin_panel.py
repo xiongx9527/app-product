@@ -535,6 +535,8 @@ const I18N = {
     "cfg.deepseek": "DeepSeek",
     "cfg.dsUrlFixed": "服务地址固定为官方入口 https://api.deepseek.com（无需填写）；模型/音色用「↻ 刷新」或音色目录维护。",
     "cfg.dsNeedKey": "已选择 DeepSeek：请先填写 API Key 并保存",
+    "cfg.savedNeedKeyDash": "DashScope 未配置 API Key，勾选已保存但调用会失败",
+    "cfg.savedNeedKeyDs": "DeepSeek 未配置 API Key，勾选已保存但调用会失败",
     "cfg.customNotConfigured": "未配置服务地址（点此填写）",
     "cfg.provEditPrefix": "编辑提供商（",
     "cfg.provEditTitle": "编辑提供商：",
@@ -740,6 +742,8 @@ const I18N = {
     "cfg.deepseek": "DeepSeek",
     "cfg.dsUrlFixed": "Base URL is fixed to the official endpoint https://api.deepseek.com (no need to fill); use ↻ Refresh or the voice catalog to maintain models/voices.",
     "cfg.dsNeedKey": "DeepSeek selected: fill in the API Key and save first",
+    "cfg.savedNeedKeyDash": "DashScope API Key missing; selection saved but calls will fail",
+    "cfg.savedNeedKeyDs": "DeepSeek API Key missing; selection saved but calls will fail",
     "cfg.customNotConfigured": "No base URL configured (click to edit)",
     "cfg.provEditPrefix": "Edit provider (",
     "cfg.provEditTitle": "Edit provider: ",
@@ -1054,52 +1058,46 @@ async function loadConfig(){
     ttsProvider = provOf(cfgOrig.TTS_PROVIDER);
     const parseModels = (v) => { try { const a = JSON.parse(v||'[]'); return Array.isArray(a) ? a.filter(x=>typeof x==='string') : []; } catch { return []; } };
     provEdit.stt.model = cfgOrig.STT_UPSTREAM_MODEL || '';
-    const restoreSel = (e, saved, def) => {
-      e.cands = saved.slice();
-      e.sel = new Set(saved);
-      // 默认模型只能来自「已勾选」：旧配置里 def 有值但清单为空时，不能凭空把它
-      // 补成勾选（那会把用户明确取消的勾选又勾回来）。保存严格以勾选为准。
-      e.def = (def && e.sel.has(def)) ? def : (saved[0] || '');
-    };
-    restoreSel(provEdit.stt, parseModels(cfgOrig.STT_UPSTREAM_MODELS), cfgOrig.STT_UPSTREAM_MODEL || '');
-    restoreSel(provEdit.tts, parseModels(cfgOrig.TTS_UPSTREAM_MODELS), cfgOrig.TTS_UPSTREAM_MODEL || '');
-    // 从 DB（speech_models 表）拉 dashscope 的 ASR/TTS 模型目录并入候选（保留已勾选，默认仍按配置）
+    provEdit.tts.model = cfgOrig.TTS_UPSTREAM_MODEL || '';
+    // 两张表严格分离：
+    // - /admin/api/speech-models  = 基础模型库（全量官方目录，seed/init_catalog 维护）→ 候选 cands
+    // - /admin/api/enabled-models = 实际启用（用户勾选 + 默认模型）→ 勾选 sel / 默认 def
+    // 展示范围：
+    // - 默认视图（加载 / 保存后 / 整页刷新）：cands 只取「已启用」的模型，呈现干净视图；
+    //   某分组一条都没启用时回退到全量候选，否则没法勾选。
+    // - 点提供商后的「↻ 刷新」按钮：把 cands 展开为基础库全量候选，并保留勾选与默认标记，用于增删。
     try{
-      const [sm, tm, all] = await Promise.all([
-        fetch('/admin/api/speech-models?kind=stt&provider=dashscope',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
-        fetch('/admin/api/speech-models?kind=tts&provider=dashscope',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+      const [catalog, enabled] = await Promise.all([
         fetch('/admin/api/speech-models',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+        fetch('/admin/api/enabled-models',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
       ]);
-      const mergeModels = (e, resp)=>{
-        const dbModels = (resp && Array.isArray(resp.models)) ? resp.models.map(x=>x.model).filter(Boolean) : [];
-        if(!dbModels.length) return;
-        e.cands = [...new Set([...e.cands, ...dbModels])];   // 仅并入候选，勾选/默认沿用配置
-      };
-      mergeModels(provEdit.stt, sm);
-      mergeModels(provEdit.tts, tm);
-      // 全量目录：页面「提供商 / 协议」两列与模型子表的协议标签都以它为准
-      const allRows = (all && Array.isArray(all.models)) ? all.models : [];
+      const catRows = (catalog && Array.isArray(catalog.models)) ? catalog.models : [];
+      const enRows  = (enabled && Array.isArray(enabled.models)) ? enabled.models : [];
       SPEECH_CATALOG = {
-        stt: allRows.filter(x => x.kind === 'stt'),
-        tts: allRows.filter(x => x.kind === 'tts'),
+        stt: catRows.filter(x => x.kind === 'stt'),
+        tts: catRows.filter(x => x.kind === 'tts'),
       };
       SPEECH_PROTO = {};
-      allRows.forEach(x => { if (x.model) SPEECH_PROTO[x.model] = x.protocol || ''; });
-      // DeepSeek 槽：候选 = 目录里该提供商的模型；勾选严格沿用「已保存的勾选清单」。
-      // key 从没写过（老配置）才默认全勾；写过就按保存的来，包括用户明确取消到空列表，
-      // 不能无条件 new Set(models) 把用户取消的勾选再勾回来。
-      const fillDs = (e, kind, savedSel, savedDef) => {
-        const rows = SPEECH_CATALOG[kind].filter(x => x.provider === 'deepseek');
-        if (!rows.length) return;
-        const models = rows.map(x => x.model).filter(Boolean);
-        e.cands = models;
-        e.sel = (savedSel === null) ? new Set(models) : new Set(savedSel.filter(m => models.includes(m)));
-        const catDef = (rows.find(x => x.is_default) || {}).model || models[0];
-        e.def = (savedDef && models.includes(savedDef)) ? savedDef : (e.sel.values().next().value || catDef);
+      catRows.forEach(x => { if (x.model) SPEECH_PROTO[x.model] = x.protocol || ''; });
+      const SLOTS = {
+        'stt:dashscope': provEdit.stt,      'tts:dashscope': provEdit.tts,
+        'stt:deepseek':  provEdit.sttDeepseek, 'tts:deepseek': provEdit.ttsDeepseek,
+        'stt:builtin':   provEdit.sttBuiltin,  'tts:builtin': provEdit.ttsBuiltin,
       };
-      const savedList = (v) => (v === undefined || v === null || v === '') ? null : parseModels(v);
-      fillDs(provEdit.sttDeepseek, 'stt', savedList(cfgOrig.STT_DEEPSEEK_MODELS), (cfgOrig.STT_DEEPSEEK_MODEL || '').trim());
-      fillDs(provEdit.ttsDeepseek, 'tts', savedList(cfgOrig.TTS_DEEPSEEK_MODELS), (cfgOrig.TTS_DEEPSEEK_MODEL || '').trim());
+      Object.entries(SLOTS).forEach(([key, e]) => {
+        const [kind, provider] = key.split(':');
+        const base = catRows.filter(x => x.kind===kind && x.provider===provider).map(x=>x.model).filter(Boolean);
+        const en = enRows.filter(x => x.kind===kind && x.provider===provider);
+        const enModels = en.map(x => x.model).filter(Boolean);
+        // 展示范围：默认只显示「已勾选（启用）」的模型——用户要的干净视图。
+        // 例外：该分组一条都没启用时（首次配置 / 全部取消勾选），回退到全量候选，
+        // 否则列表空了没法勾选；想增删时点 ↻ 刷新出全量候选即可。
+        e.cands = enModels.length ? [...new Set(enModels)] : [...new Set(base)];
+        // 勾选 = 启用表；默认 = 启用表里 is_default 的那条
+        e.sel = new Set(enModels);
+        const defRow = en.find(x => x.is_default);
+        e.def = defRow ? defRow.model : (e.sel.values().next().value || '');
+      });
     }catch(_){}
     await renderLlmTable();
     await renderEmbedTable();
@@ -1480,34 +1478,45 @@ async function saveProvConfig(kind){
   // 每个提供商的属性（Key/模型）都始终落库——与「当前默认用哪个提供商」解耦：
   // 即使默认是内置，勾选的模型清单也要保存，否则勾选再保存也「没用」。
   // MODELS 落勾选中的模型；MODEL 落子表默认模型（须被勾选）。
+  // picked 以「勾选集合 sel」为准、按候选顺序排列：不能只用 cands.filter(sel)，
+  // 否则启用表里存在但基础库里没有的勾选项（刷新后基础库变动）会被漏掉；
+  // 且必须无条件写——取消到空也要发 "[]"，后端才会把启用表对应分组清空。
+  const pickedOf = (x) => {
+    const cands = Array.isArray(x.cands) ? x.cands : [];
+    const sel = (x.sel instanceof Set) ? x.sel : new Set(cands);
+    const ordered = cands.filter(m => sel.has(m));
+    [...sel].forEach(m => { if (!ordered.includes(m)) ordered.push(m); });
+    return ordered;
+  };
+  // 有勾选就必须有默认：只勾 checkbox 时 def 可能还没设置，回退到第一个勾选，
+  // 否则 config_kv 的默认模型会是空、与启用表里标了 is_default 的那条对不上。
+  const defOf = (x, picked) => (x.def && picked.includes(x.def)) ? x.def : (picked[0] || '');
   if (e.key) patch[cap + '_UPSTREAM_API_KEY'] = e.key;
-  if (Array.isArray(e.cands)) {
-    const picked = e.cands.filter(m => e.sel.has(m));
+  {
+    const picked = pickedOf(e);
     patch[cap + '_UPSTREAM_MODELS'] = JSON.stringify(picked);
-    patch[cap + '_UPSTREAM_MODEL'] = (e.def && picked.includes(e.def)) ? e.def : '';
+    patch[cap + '_UPSTREAM_MODEL'] = defOf(e, picked);
   }
   const dsk = provEdit[kind + 'Deepseek'];
   if (dsk.key) patch[cap + '_DEEPSEEK_API_KEY'] = dsk.key;
-  if (Array.isArray(dsk.cands) && dsk.cands.length) {
-    const picked = dsk.cands.filter(m => dsk.sel.has(m));
+  {
+    const picked = pickedOf(dsk);
     patch[cap + '_DEEPSEEK_MODELS'] = JSON.stringify(picked);
-    patch[cap + '_DEEPSEEK_MODEL'] = (dsk.def && picked.includes(dsk.def)) ? dsk.def : '';
+    patch[cap + '_DEEPSEEK_MODEL'] = defOf(dsk, picked);
   }
-  if (prov === 'dashscope' && !hasProvKey(cap + '_UPSTREAM_API_KEY', e)) {
-    if (stat) { stat.className = 'err'; stat.textContent = t('cfg.provNeedKey'); }
-    return;
-  }
-  if (prov === 'deepseek' && !hasProvKey(cap + '_DEEPSEEK_API_KEY', dsk)) {
-    if (stat) { stat.className = 'err'; stat.textContent = t('cfg.dsNeedKey'); }
-    return;
-  }
+  // 没配 API Key 只影响「能不能调用」，不能拦下保存：否则用户勾好模型、
+  // 切了默认提供商后点保存，整次 POST 都不发，勾选数据就丢了。这里记下提示，
+  // 保存成功后附在状态里如实告知，勾选清单照常落库。
+  let keyWarn = '';
+  if (prov === 'dashscope' && !hasProvKey(cap + '_UPSTREAM_API_KEY', e)) keyWarn = t('cfg.savedNeedKeyDash');
+  if (prov === 'deepseek' && !hasProvKey(cap + '_DEEPSEEK_API_KEY', dsk)) keyWarn = t('cfg.savedNeedKeyDs');
   if (stat) { stat.className = 'hint'; stat.textContent = t('common.saving'); }
   try{
     const r = await api('/admin/api/config', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(patch)});
     const d = await r.json().catch(()=>({}));
     if (stat) {
       stat.className = r.ok ? 'hint' : 'err';
-      stat.textContent = r.ok ? t('common.saved') + (d.remote_push && d.remote_push.ok ? t('common.syncedRemote') : '') : t('common.failPrefix') + (d.detail || r.status);
+      stat.textContent = r.ok ? t('common.saved') + (d.remote_push && d.remote_push.ok ? t('common.syncedRemote') : '') + (keyWarn ? ' · ' + keyWarn : '') : t('common.failPrefix') + (d.detail || r.status);
     }
     // 和 LLM 一样：保存成功后重拉配置并重绘，表格立即可见落库后的状态
     if (r.ok) await loadConfig();
@@ -1817,52 +1826,42 @@ function bindUpstreamModelPick(kind){
   });
 }
 
-// 「刷新模型」：按提供商重新拉最新清单，候选替换但保留已有勾选（不丢已勾选的）。
-// - DashScope：从 /admin/api/dashscope-models 的官方清单拉（不发网络请求）。
-// - DeepSeek：官方没有「列举语音模型」接口（ASR/TTS 连 model 参数都没有），
-//   因此改读本地 DB（speech_models 表）——即 init_catalog.py 灌进去的那份目录。
-//   刷新 = 重读 DB 最新目录，不编造上游清单、不把 LLM 模型混进 ASR/TTS。
+// 「刷新模型」按钮 = 把候选 cands 展开为基础库全量候选，并保留勾选(sel)与默认(def)标记，
+// 用于增删模型。与默认视图（只显示已启用）互补：默认视图干净，↻ 用来回到全量去勾选。
+// 两张表各司其职：
+// - 基础库 /admin/api/speech-models（seed / init_catalog.py 维护）→ 全量候选 cands；
+// - 启用表 /admin/api/enabled-models（用户勾选的）→ 勾选 sel 与默认 def。
 document.addEventListener('click', async (ev) => {
   const rb = ev.target && ev.target.closest ? ev.target.closest('[data-up-refresh]') : null;
   if (!rb) return;
   const kind = rb.dataset.upRefresh;
   const e = provEdit[kind];
   if (!e) return;
-  const isDeepseek = kind.endsWith('Deepseek');
+  const provider = kind.endsWith('Deepseek') ? 'deepseek' : 'dashscope';
   const cap = kind.startsWith('stt') ? 'stt' : 'tts';
   rb.disabled = true;
-  let models = [];
   try{
-    if (isDeepseek) {
-      const r = await fetch(`/admin/api/speech-models?kind=${cap}&provider=deepseek`, {credentials:'same-origin'});
-      const d = await r.json().catch(()=>({}));
-      if (!r.ok || !d.ok) { console.error('[刷新模型]', d.message || r.status); }
-      else {
-        const rows = d.models || [];
-        models = rows.map(x => x.model).filter(Boolean);
-        // 刷新也要同步协议目录：目录里新增的模型，协议标签与「协议」列才不会
-        // 回退到按模型名猜（会错标成 http），保持与 DB 一致。
-        rows.forEach(x => { if (x.model && x.protocol) SPEECH_PROTO[x.model] = x.protocol; });
-        SPEECH_CATALOG[cap] = [
-          ...((SPEECH_CATALOG[cap] || []).filter(x => x.provider !== 'deepseek')),
-          ...rows,
-        ];
-      }
-    } else {
-      const r = await fetch('/admin/api/dashscope-models', {method:'POST', credentials:'same-origin',
-        headers:{'content-type':'application/json'}, body: JSON.stringify({kind:cap})});
-      const d = await r.json().catch(()=>({}));
-      if (!d.ok) { console.error('[刷新模型]', d.message || r.status); }
-      else models = (d.models || []).slice();
+    const [cat, en] = await Promise.all([
+      fetch(`/admin/api/speech-models?kind=${cap}&provider=${provider}`, {credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+      fetch(`/admin/api/enabled-models?kind=${cap}&provider=${provider}`, {credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+    ]);
+    const rows = (cat && Array.isArray(cat.models)) ? cat.models : [];
+    if (rows.length) {
+      e.cands = rows.map(x => x.model).filter(Boolean);
+      // 同步协议目录：新增模型的协议标签才不会回退到按名字猜
+      rows.forEach(x => { if (x.model && x.protocol) SPEECH_PROTO[x.model] = x.protocol; });
+      SPEECH_CATALOG[cap] = [
+        ...((SPEECH_CATALOG[cap] || []).filter(x => x.provider !== provider)),
+        ...rows,
+      ];
+    }
+    const enRows = (en && Array.isArray(en.models)) ? en.models : [];
+    if (en) {
+      e.sel = new Set(enRows.map(x => x.model));
+      const defRow = enRows.find(x => x.is_default);
+      e.def = defRow ? defRow.model : (e.sel.values().next().value || '');
     }
   }catch(err){ console.error('[刷新模型]', err); }
-  // 拉取失败 / 清单为空时保留原候选不动，别把用户已勾的模型刷没
-  if (models.length) {
-    const prevSel = new Set(e.sel);
-    e.cands = models;
-    e.sel = new Set(e.cands.filter(m => prevSel.has(m)));
-    if (e.def && !e.cands.includes(e.def)) e.def = '';
-  }
   rb.disabled = false;
   if (cap === 'stt') paintAsrTable(); else paintTtsTable();
 });
@@ -3101,32 +3100,20 @@ def register_admin_routes(
         err = write_voice_config(patch)
         if err:
             raise HTTPException(status_code=500, detail=err)
-        # ASR/TTS 模型配置落库时，同步把勾选的模型写进 speech_models 表（DB 维护），
-        # 让「模型目录」以数据库为准；默认模型标记 is_default。协议按提供商固定。
-        def _proto_of(provider: str, model: str) -> str:
-            """协议 = 调用形态（http / ws / http-async），不带厂商名。
-
-            与 openai_voice_server.resolve_voice_protocol 的口径一致：厂商由 provider
-            列单独表达；DeepSeek 是整段 HTTP，DashScope 按模型族分实时 WS / 文件异步 / HTTP。
-            """
-            if provider == "deepseek":
-                return "http"
-            m = model.lower()
-            if re.search(r"cosyvoice|realtime|streaming|gummy", m):
-                return "ws"
-            if re.search(r"paraformer|fun-asr", m):
-                return "http-async"   # 录音文件异步转写
-            return "http"
-
-        for _provider, _pairs, _base in (
+        # ASR/TTS 保存勾选：两张表严格分离。
+        # - speech_models 是「基础模型库」（全量官方目录），只由 seed / init_catalog.py 维护，
+        #   保存动作绝不写它，否则用户取消勾选的模型会被 upsert 回基础库、永远删不掉。
+        # - enabled_speech_models 是「实际启用」的勾选数据，按 (kind, provider) 整体替换：
+        #   取消勾选即删除，默认模型随勾选一起记录。
+        for _provider, _pairs in (
             ("dashscope", (
                 ("stt", "STT_UPSTREAM_MODELS", "STT_UPSTREAM_MODEL"),
                 ("tts", "TTS_UPSTREAM_MODELS", "TTS_UPSTREAM_MODEL"),
-            ), 100),
+            )),
             ("deepseek", (
                 ("stt", "STT_DEEPSEEK_MODELS", "STT_DEEPSEEK_MODEL"),
                 ("tts", "TTS_DEEPSEEK_MODELS", "TTS_DEEPSEEK_MODEL"),
-            ), 200),
+            )),
         ):
             for _kind, _mk, _dmk in _pairs:
                 if _mk not in patch:
@@ -3138,13 +3125,11 @@ def register_admin_routes(
                 if not isinstance(_models, list):
                     _models = []
                 _def = (patch.get(_dmk) or "").strip()
-                for _i, _m in enumerate(_models):
-                    if isinstance(_m, str) and _m.strip():
-                        voice_db.upsert_speech_model(
-                            _kind, _provider, _m.strip(),
-                            protocol=_proto_of(_provider, _m.strip()),
-                            is_default=(_m.strip() == _def), sort=_base + _i,
-                        )
+                voice_db.replace_enabled_models(
+                    _kind, _provider,
+                    [m for m in _models if isinstance(m, str)],
+                    _def,
+                )
         # 配置可能改了上游地址池（LLM/STT/TTS_UPSTREAM_POOL 等），清掉池缓存，
         # 下次请求立即按新配置重新解析，不必重启服务。
         upstream_pool.invalidate()
@@ -3331,10 +3316,32 @@ def register_admin_routes(
         kind = (kind or "tts").strip().lower()
         return {"ok": True, "models": list(DASHSCOPE_VOICE_MODELS.get(kind, []))}
 
+    @app.get("/admin/api/schema-history", dependencies=[Depends(require_admin)])
+    def admin_schema_history():
+        """表结构变更记录：每一版做了什么、何时应用。新增表/列必须同步 SCHEMA_CHANGES。"""
+        return {"ok": True, "current": voice_db.SCHEMA_VERSION,
+                "changes": voice_db.schema_history()}
+
     @app.get("/admin/api/speech-models", dependencies=[Depends(require_admin)])
     def admin_speech_models(kind: str = "", provider: str = ""):
-        """返回 DB（speech_models 表）维护的 ASR/TTS 模型目录，按 kind/provider 过滤。"""
+        """基础模型库（speech_models 表）：全量官方目录，按 kind/provider 过滤。
+
+        这是「可以勾什么」的全量清单（点刷新按钮展示的就是它），只由 seed /
+        init_catalog.py 维护，不随用户勾选变化。
+        """
         rows = voice_db.list_speech_models(
+            (kind or "").strip().lower() or None,
+            (provider or "").strip().lower() or None,
+        )
+        return {"ok": True, "models": rows}
+
+    @app.get("/admin/api/enabled-models", dependencies=[Depends(require_admin)])
+    def admin_enabled_models(kind: str = "", provider: str = ""):
+        """实际启用的模型（enabled_speech_models 表）：用户勾选、真正要用上的。
+
+        与基础库分离：这里只有勾选中的数据，含 is_default（该 provider 的默认模型）。
+        """
+        rows = voice_db.list_enabled_models(
             (kind or "").strip().lower() or None,
             (provider or "").strip().lower() or None,
         )
