@@ -23,8 +23,10 @@
  *   1. 资源 → Pandora/apps/<appid>/www（并修正 manifest.json 的 id 与 dcloud_control.xml）
  *   2. AppKey → 主目标 Info.plist 的 <key>dcloud_appkey</key>
  *   3. UIBackgroundModes: audio → Info.plist（网关常驻 + 退后台保活，必需）
- *   4. 网关资产 → <工程目录>/gateway/（gateway.bundle.mjs + static/cues，首启由 GatewayNode.swift 解包）
- *   5. NodeMobile.xcframework → <工程目录>/Frameworks/NodeMobile.xcframework（digidem iOS full 包）
+ *   4. 网关资产 → <xcodeproj 所在工程根>/gateway/（gateway.bundle.mjs + static/cues，首启由 GatewayNode.swift 解包）。
+ *      注意：DCloud 标准布局里 .xcodeproj 在工程根目录，而 Pandora/源码在子目录；pbxproj 里 gateway 用
+ *      `../gateway` 指向工程根，故脚本把网关放到 .xcodeproj 的父目录（而非 --sdk 子目录），其余资源仍在 --sdk。
+ *   5. NodeMobile.xcframework → <--sdk>/Frameworks/NodeMobile.xcframework（digidem iOS full 包）
  *   6. [--no-launch-storyboard] 启动图改 UILaunchScreen 纯配置 + storyboard 移出 Resources（见上方参数说明）
  *   7. 生成 GATEWAY_INTEGRATION.md（Xcode 里还需手动点几下的步骤清单）
  *
@@ -46,6 +48,7 @@
 import { existsSync, mkdirSync, readdirSync, copyFileSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const root = resolve(__dirname, '..')
@@ -102,6 +105,24 @@ function findDirs(dir, dirnameMatch, acc = []) {
   return acc
 }
 
+/** 递归找出目录下所有以 suffix 结尾的子目录（如工程目录的 *.xcodeproj） */
+function findDirsEndsWith(dir, suffix, acc = []) {
+  if (!existsSync(dir)) return acc
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name)
+    if (!statSync(p).isDirectory()) continue
+    if (name.endsWith(suffix)) acc.push(p)
+    else findDirsEndsWith(p, suffix, acc)
+  }
+  return acc
+}
+
+/** 在工程目录树里找 .xcodeproj（真实目录名形如 HBuilder-Hello.xcodeproj，不能当字面量匹配） */
+function findXcodeproj(from) {
+  const hits = [...findDirsEndsWith(from, '.xcodeproj'), ...findDirsEndsWith(dirname(from), '.xcodeproj')]
+  return hits
+}
+
 const args = parseArgs(process.argv.slice(2))
 if (!args.sdk || !args.appid) {
   console.error('用法: node scripts/package-ios-offline.mjs --sdk <iOS SDK 工程路径> --appid <appid> [--appkey <AppKey>] [--node-ios <digidem ios 包>] [--no-gateway]')
@@ -118,15 +139,25 @@ if (!existsSync(bundle)) {
 }
 const appid = args.appid.trim()
 
-// ── 工程主目录（放 gateway/ 与 Frameworks/ 资源的位置，默认取 .xcodeproj 同级目录）──
+// ── 工程主目录（放 Frameworks/、control.xml 等资源的位置，默认取 --sdk 本身，即源码/Pandora 所在子目录）──
 function resolveProjectDir() {
   if (args.proj) return args.proj
-  const xcodeprojs = findDirs(args.sdk, '.xcodeproj')
-  if (xcodeprojs.length) return dirname(xcodeprojs[0])
+  // 注意：不要按字面量 '.xcodeproj' 匹配（真实目录名是 HBuilder-Hello.xcodeproj），否则会找不到而误用父目录。
+  // 这里资源（Frameworks/NodeMobile、control.xml、Pandora）都相对 --sdk，故默认回退到 --sdk。
   return args.sdk
 }
 const projDir = resolveProjectDir()
 console.log(`[info] 工程主目录: ${projDir}`)
+
+// ── 网关资产目标目录：放 .xcodeproj 所在的工程根（DCloud 标准布局里 .xcodeproj 在根目录、
+//    Pandora/control.xml/源码在子目录，而 pbxproj 里 gateway 用 ../gateway 指向工程根）。
+//    仅当 --sdk 指向子目录时，需要向上找一层 .xcodeproj，否则会写错位置导致进不了包。──
+function resolveGatewayDestDir() {
+  if (args.gatewayBundle) return projDir // 外部 bundle 时信任 projDir
+  const xcodeprojs = findXcodeproj(args.sdk)
+  if (xcodeprojs.length) return dirname(xcodeprojs[0])
+  return projDir
+}
 
 // ── 1) 资源 → Pandora/apps/<appid>/www ──
 function resolvePandora() {
@@ -277,13 +308,31 @@ if (args.noLaunchStoryboard) {
 
 // ── 5) 内嵌网关资产 → <projDir>/gateway/ ──
 if (args.gateway) {
+  // 打包前自动重新构建网关 bundle，避免把过期的 dist/gateway.bundle.mjs 打进包里。
+  // 仅当用户显式用 --gateway-bundle 指定外部 bundle 时才跳过自动构建。
+  if (!args.gatewayBundle) {
+    const buildScript = join(gatewayRoot, 'package.json')
+    if (existsSync(buildScript)) {
+      console.log('[step] 构建网关 bundle (npm run build:bundle) ...')
+      const r = spawnSync('npm', ['run', 'build:bundle'], { cwd: gatewayRoot, stdio: 'inherit' })
+      if (r.status !== 0) {
+        console.error('[error] 网关 bundle 构建失败，请检查 gateway 目录')
+        process.exit(1)
+      }
+      console.log('[ok] 网关 bundle 已重新构建')
+    } else {
+      console.warn(`[warn] 未找到 ${buildScript}，跳过自动构建，依赖现有 bundle`)
+    }
+  } else {
+    console.log('[info] 使用 --gateway-bundle 指定的外部 bundle，跳过自动构建')
+  }
   const bundleFile = args.gatewayBundle ? resolve(args.gatewayBundle) : join(gatewayRoot, 'dist', 'gateway.bundle.mjs')
   const cuesDir = args.gatewayCues ? resolve(args.gatewayCues) : join(gatewayRoot, 'static', 'cues')
   if (!existsSync(bundleFile)) {
     console.error(`[error] 未找到网关 bundle: ${bundleFile}\n       先在 gateway 目录跑 npm run build:bundle，或用 --no-gateway 跳过`)
     process.exit(1)
   }
-  const gwDir = join(projDir, 'gateway')
+  const gwDir = join(resolveGatewayDestDir(), 'gateway')
   rmSync(gwDir, { recursive: true, force: true })
   mkdirSync(gwDir, { recursive: true })
   copyFileSync(bundleFile, join(gwDir, 'gateway.bundle.mjs'))
@@ -310,7 +359,10 @@ if (args.nodeIos) {
     console.error(`[error] 在 ${nodeIosRoot} 下未找到 NodeMobile.xcframework（应为 digidem ios 包解压目录）`)
     process.exit(1)
   }
-  const fwDir = join(projDir, 'Frameworks')
+  // 注意：pbxproj 里 Frameworks 组没有 path，按 <group> 继承到工程根（.xcodeproj 所在 OUTER 目录），
+  // 所以 NodeMobile.xcframework 必须落在 OUTER/Frameworks，而非 --sdk 子目录。用 resolveGatewayDestDir()
+  // （返回 .xcodeproj 父目录）作为 Frameworks 基址。
+  const fwDir = join(resolveGatewayDestDir(), 'Frameworks')
   mkdirSync(fwDir, { recursive: true })
   const dest = join(fwDir, 'NodeMobile.xcframework')
   rmSync(dest, { recursive: true, force: true })

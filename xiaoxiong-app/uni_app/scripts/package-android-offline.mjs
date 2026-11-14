@@ -25,6 +25,7 @@
 import { existsSync, mkdirSync, readdirSync, copyFileSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const root = resolve(__dirname, '..')
@@ -148,6 +149,24 @@ if (args.appkey) {
 //    运行时 GatewayNodeService 把 assets/gateway/ 整体拷到 no_backup（= GATEWAY_HOME）；
 //    server.ts 的 CUE_DIR 依赖 <home>/static/cues/，故 cues 必须落在 static/cues 子目录。
 if (args.gateway) {
+  // 打包前自动重新构建网关 bundle，避免把过期的 dist/gateway.bundle.mjs 打进包里。
+  // 仅当用户显式用 --gateway-bundle 指定外部 bundle 时才跳过自动构建。
+  if (!args.gatewayBundle) {
+    const buildScript = join(gatewayRoot, 'package.json')
+    if (existsSync(buildScript)) {
+      console.log('[step] 构建网关 bundle (npm run build:bundle) ...')
+      const r = spawnSync('npm', ['run', 'build:bundle'], { cwd: gatewayRoot, stdio: 'inherit' })
+      if (r.status !== 0) {
+        console.error('[error] 网关 bundle 构建失败，请检查 gateway 目录')
+        process.exit(1)
+      }
+      console.log('[ok] 网关 bundle 已重新构建')
+    } else {
+      console.warn(`[warn] 未找到 ${buildScript}，跳过自动构建，依赖现有 bundle`)
+    }
+  } else {
+    console.log('[info] 使用 --gateway-bundle 指定的外部 bundle，跳过自动构建')
+  }
   const bundleFile = args.gatewayBundle ? resolve(args.gatewayBundle) : join(gatewayRoot, 'dist', 'gateway.bundle.mjs')
   const cuesDir = args.gatewayCues ? resolve(args.gatewayCues) : join(gatewayRoot, 'static', 'cues')
   if (!existsSync(bundleFile)) {
