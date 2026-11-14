@@ -15,6 +15,18 @@ onLaunch(() => {
   --accent-rgb: 108, 140, 255;
   --bg-base: #0f1220;
   --bg-glow: rgba(108, 140, 255, 0.18);
+  /* 禁用 iOS 文本自动放大：iPhone 横屏视口更宽时，iOS 会按容器宽度放大正文字号，
+     导致横竖屏、不同宽度页面之间字体大小不一致。固定为 100% 后只认显式字号。 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body,
+#app,
+.page {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 page {
@@ -31,9 +43,10 @@ button {
   box-sizing: border-box;
 }
 
-/* 宽屏（平板 / 横屏）：内容限宽居中成手机列，避免铺满拉伸。
+/* 仅竖屏宽屏（平板等）限宽居中成手机列，避免铺满拉伸。
+   横屏（含手机横屏、iPad 横屏）不在此列——直接铺满宽度，避免两侧留黑边。
    底部操作栏 .action-bar 的居中在其组件内（mcpservers.vue）处理，避免被 scoped 的 left/right 覆盖。 */
-@media (min-width: 600px) {
+@media (min-width: 600px) and (orientation: portrait) {
   .page {
     max-width: 680px;
     margin-left: auto;

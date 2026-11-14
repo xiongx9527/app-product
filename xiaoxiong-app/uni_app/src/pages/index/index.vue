@@ -149,11 +149,12 @@ const screen = ref<ScreenInfo>(readScreenInfo())
 // 内边距全部由 :style 内联注入，不依赖 scoped CSS 规则：
 // uni-app 视图层在子页（如好价商品推荐/开源工具推荐共用的 RecommendList）↔ 主页往返时，
 // 偶尔会丢失主页 scoped 的 .page 规则，导致 paddingTop 归零、齿轮顶到状态栏（回归 bug）。
-// 内联样式不受该问题影响，故 padding 全走这里。竖屏顶部让出状态栏（statusBarHeight）后只留
-// 6px 极小间距，让设置按钮贴近状态栏；横屏状态栏转到侧边、顶部无障碍，只留 4px 极小间距。
+// 内联样式不受该问题影响，故 padding 全走这里。
+// 竖屏顶部让出状态栏（statusBarHeight）+ 6px；横屏状态栏转到侧边、顶部无障碍，取适中 12px：
+// 4px 太贴顶（显得「太高」）、statusBarHeight+6 又下移过多（显得「太低」），12px 为折中。
 const isLandscape = computed(() => screen.value.width > screen.value.height)
 const pageStyle = computed(() => {
-  const top = isLandscape.value ? 4 : screen.value.statusBarHeight + 6
+  const top = isLandscape.value ? 24 : screen.value.statusBarHeight + 2
   return {
     paddingTop: `${top}px`,
     paddingLeft: '20px',
@@ -399,7 +400,7 @@ function onOrbTap(): void {
 </script>
 
 <template>
-  <view class="page" :class="`bp-${screen.breakpoint}`" :style="[pageStyle, themeStyle]" :data-theme="dataTheme">
+  <view class="page" :class="[`bp-${screen.breakpoint}`, { landscape: isLandscape }]" :style="[pageStyle, themeStyle]" :data-theme="dataTheme">
     <view class="header">
       <view class="header-actions">
         <view class="gear" @tap="openSettings">⚙</view>
@@ -408,7 +409,7 @@ function onOrbTap(): void {
 
     <view v-if="queueFullMsg" class="queue-full-banner">{{ queueFullMsg }}</view>
 
-    <view class="stage">
+    <view class="stage" :style="isLandscape ? { marginTop: '-16px', paddingTop: '0px' } : {}">
       <view
         class="orb"
         :class="{ active: isActive, speaking: isSpeaking }"
@@ -655,7 +656,9 @@ function onOrbTap(): void {
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* 设置按钮（齿轮）居左：header 内目前只有齿轮一个元素，
+     flex-start 让它靠左上角（用户期望布局，不走右上角）。 */
+  justify-content: flex-start;
 }
 
 .header-actions {
@@ -1587,61 +1590,21 @@ function onOrbTap(): void {
   color: rgba(231, 230, 245, 0.4);
 }
 
-/* 平板与折叠屏展开态：内容限宽，布局更舒展 */
-.page.bp-medium,
-.page.bp-expanded {
+/* 平板与折叠屏竖屏：内容限宽居中，布局更舒展。
+   横屏（.landscape）不在此列——直接铺满宽度，避免两侧留黑边（手机横屏按宽度会被归到
+   medium/expanded，若也限宽就会居中留黑）；竖屏才限宽。卡片始终单列（flex column），
+   不做横排分栏——「我说/小熊说」框完整显示、不滑动。 */
+.page.bp-medium:not(.landscape),
+.page.bp-expanded:not(.landscape) {
   max-width: 720px;
   margin: 0 auto;
 }
 
-.page.bp-expanded .cards {
-  flex-direction: row;
-}
-
-.page.bp-expanded .card {
-  flex: 1;
-}
-
-/* 竖屏：info-col 仅作分组，透明不参与布局，子元素直接进 .page 流，不影响竖屏表现 */
+/* info-col 仅作分组，透明不参与布局，子元素直接进 .page 流；
+   横竖屏统一单列（iPad 等由 .page.bp-medium/.bp-expanded 的 max-width 限宽居中），
+   不做左右分栏——用户要求统一布局。 */
 .info-col {
   display: contents;
-}
-
-/* 横屏两栏：左侧语音球、右侧信息卡片，铺满屏幕且一眼看全（尽量不滚动）。
-   注意：仅重排布局，music-bar 等内部样式保持原样，不在此特殊处理。 */
-@media (orientation: landscape) {
-  .page.bp-compact,
-  .page.bp-medium,
-  .page.bp-expanded {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-areas:
-      "header header"
-      "stage  info";
-    max-width: none;
-    margin: 0;
-    gap: 12px 32px;
-    align-items: stretch;
-  }
-  .header {
-    grid-area: header;
-  }
-  .stage {
-    grid-area: stage;
-    /* 横屏左栏：语音球顶部对齐，与右栏卡片顶部齐平（比居中更靠上） */
-    justify-content: flex-start;
-  }
-  .info-col {
-    grid-area: info;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    min-height: 0;
-    overflow-y: auto;
-  }
-  .queue-full-banner {
-    grid-column: 1 / -1;
-  }
 }
 
 @keyframes pulse {
