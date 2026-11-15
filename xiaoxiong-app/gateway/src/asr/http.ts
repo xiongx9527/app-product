@@ -88,7 +88,8 @@ export class HttpVoiceAsr implements AsrProvider {
       if (this.params.language !== undefined) {
         form.append('language', String(this.params.language))
       }
-      const res = await fetch(`${this.baseUrl}/v1/audio/transcriptions`, {
+      const url = `${this.baseUrl}/v1/audio/transcriptions`
+      const res = await fetch(url, {
         method: 'POST',
         headers: this.authHeaders({}),
         body: form,
