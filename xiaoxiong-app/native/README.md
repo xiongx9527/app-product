@@ -39,7 +39,11 @@ native/android/
   gateway_node_bridge.cpp    # JNI 桥：setenv + node::Start（后台线程）
   CMakeLists.txt             # 编 libgatewaynode.so，链接 digidem libnode
 native/ios/
-  GatewayNode.swift          # 后台线程调 node_start，轮询端口
+  app/
+    GatewayNode.swift          # 后台线程调 node_start，轮询端口
+    AppDelegate+Gateway.swift  # AppDelegate 钩子：引擎就绪后启动内嵌网关
+  sdk/
+    HBuilder-Hello/            # 官方 iOS 离线 SDK（不入库，自行下载解压到此，见 sdk/README.md）
 gateway/src/embedded/
   entry.ts                   # bundle 入口：起网关 + 写端口文件（build:bundle 已指向它）
 ```
@@ -83,7 +87,7 @@ node xiaoxiong-app/uni_app/scripts/package-android-offline.mjs \
 
 ```sh
 node xiaoxiong-app/uni_app/scripts/package-ios-offline.mjs \
-  --sdk ~/Downloads/latest/5.34/HBuilder-Hello \   # iOS 离线 SDK 工程根（含 .xcodeproj 与 Pandora/）
+  --sdk native/ios/sdk/HBuilder-Hello \   # iOS 离线 SDK 工程根（含 .xcodeproj 与 Pandora/；官方下载解压到 native/ios/sdk/ 下）
   --appid __UNI_XXXXXXXX \
   --appkey <AppKey> \
   --node-ios <digidem-ios 包解压目录>             # nodejs-mobile-ios-24.20.0-0，内含 NodeMobile.xcframework（full）
@@ -92,7 +96,7 @@ node xiaoxiong-app/uni_app/scripts/package-ios-offline.mjs \
 脚本自动做：① 资源 → `Pandora/apps/<appid>/www`（修正 manifest id + `dcloud_control.xml`）；② AppKey → 主目标 `Info.plist` 的 `dcloud_appkey`；③ `UIBackgroundModes: audio` → `Info.plist`；④ 网关资产 → `<工程>/gateway/`（gateway.bundle.mjs + static/cues，首启由 `GatewayNode.swift` 从 App Bundle 解包到 `GATEWAY_HOME`）；⑤ `NodeMobile.xcframework` → `<工程>/Frameworks/`；⑥ 生成 `GATEWAY_INTEGRATION.md`（Xcode 手动步骤清单）。
 
 **Xcode 里仍需手动点几下**（脚本无法改 .pbxproj，且需本机签名），详见生成的 `GATEWAY_INTEGRATION.md`：
-1. 把 `native/ios/GatewayNode.swift` + `AppDelegate+Gateway.swift` 拖入主 target。
+1. 把 `native/ios/app/GatewayNode.swift` + `AppDelegate+Gateway.swift` 拖入主 target。
 2. 在 AppDelegate 的 `application(_:didFinishLaunchingWithOptions:)` 调用 `GatewayNode.shared.start()` / `xiaoxiong_startEmbeddedGateway()`。
 3. 把 `<工程>/gateway/` 作为 **folder reference** 加入主 target（Copy Bundle Resources）；`GatewayNode.swift` 从 `Bundle.main` 的 `subdirectory:"gateway"` 读取。
 4. 把 `<工程>/Frameworks/NodeMobile.xcframework` 加入 Embedded Binaries 并 **Embed & Sign**（必须用 **full** flavour，lite 会让网关 `\p{...}` 正则崩溃）。

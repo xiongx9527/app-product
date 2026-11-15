@@ -67,7 +67,7 @@ else
 fi
 NODE_LIB="${NODE_LIB:-}"
 ANDROID_SDK_DIR="${ANDROID_SDK_DIR:-$ANDROID_SDK_DEFAULT}"
-IOS_SDK_DIR="${IOS_SDK_DIR:-}"
+IOS_SDK_DIR="${IOS_SDK_DIR:-$ROOT/native/ios/sdk/HBuilder-Hello}"
 NODE_IOS="${NODE_IOS:-}"
 
 # 应用品牌（打包的应用名称 / logo）：
@@ -90,8 +90,7 @@ if [ "$PLATFORM" = "android" ]; then
     exit 1
   fi
 elif [ "$PLATFORM" = "ios" ]; then
-  if [ -z "$IOS_SDK_DIR" ]; then echo "iOS 构建需在 .build_env.$ENV 设置 IOS_SDK_DIR（iOS 离线 SDK 工程根）" >&2; exit 1; fi
-  if [ ! -d "$IOS_SDK_DIR" ]; then echo "找不到 iOS 离线 SDK 工程: $IOS_SDK_DIR" >&2; exit 1; fi
+  if [ ! -d "$IOS_SDK_DIR" ]; then echo "找不到 iOS 离线 SDK 工程: $IOS_SDK_DIR（默认指向 native/ios/sdk/HBuilder-Hello；请把官方下载的 HBuilder-Hello 解压到此处，或在 .build_env.$ENV 设 IOS_SDK_DIR）" >&2; exit 1; fi
 fi
 
 # —— 1. 构建 uni-app 前端资源（H5 / APP 共用）——

@@ -27,8 +27,15 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/build.local"
 
-# build.local 里 IOS_SDK 常写成 ~/xxx，source 后不会展开 ~，这里手动展开
-SDK="${IOS_SDK/#\~/$HOME}"
+# build.local 里 IOS_SDK 可写成三种形式，统一解析为绝对路径：
+#   /abs/path          → 直接用
+#   ~/Downloads/...    → 展开 ~ 为用户主目录
+#   sdk/HBuilder-Hello → 相对本脚本所在 native/ios 解析（新约定：SDK 放 native/ios/sdk/ 下）
+case "$IOS_SDK" in
+  /*)  SDK="$IOS_SDK" ;;
+  ~*)  SDK="${IOS_SDK/#\~/$HOME}" ;;
+  *)   SDK="$SCRIPT_DIR/$IOS_SDK" ;;
+esac
 WORKSPACE="$SDK/HBuilder-Hello.xcworkspace"
 PBX="$SDK/HBuilder-Hello.xcodeproj/project.pbxproj"
 SCHEME="HBuilder"

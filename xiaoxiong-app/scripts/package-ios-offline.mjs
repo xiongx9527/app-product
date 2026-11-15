@@ -403,7 +403,7 @@ const integrationMd = `# iOS 内嵌网关 —— Xcode 手动集成清单
 以下需在 Xcode 里手动点几下（无法纯脚本改 .pbxproj，且需你本机的签名）。
 
 ## A. 加入原生代码（主 target）
-1. 把 \`xiaoxiong-app/native/ios/GatewayNode.swift\` 与 \`AppDelegate+Gateway.swift\` 拖入工程主 target（勾选 target membership）。
+1. 把 \`xiaoxiong-app/native/ios/app/GatewayNode.swift\` 与 \`AppDelegate+Gateway.swift\` 拖入工程主 target（勾选 target membership）。
 2. 打开工程 AppDelegate（类名通常 \`AppDelegate\`），在 \`application(_:didFinishLaunchingWithOptions:)\` 返回前加：
    \`\`\`swift
    GatewayNode.shared.start()
