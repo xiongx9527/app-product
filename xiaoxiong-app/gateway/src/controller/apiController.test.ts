@@ -286,3 +286,35 @@ describe('apiController：/api/admin/voice-models（ASR / TTS 模型下拉，实
     expect(badCap.status).toBe(400)
   })
 })
+
+describe('apiController：/api/admin/tts-voices（内置目录跟随来源鉴权）', () => {
+  const originalFetch = globalThis.fetch
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('内置：把前端带来的 api-key 作为 Bearer 透传给 9529 音色目录', async () => {
+    const { api } = makeApi()
+    let seenAuth = ''
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes('/voice/v1/audio/voices')) {
+        seenAuth = (init?.headers as Record<string, string> | undefined)?.Authorization ?? ''
+        return new Response(
+          JSON.stringify({
+            default: 'zh-CN-XiaoxiaoNeural',
+            model: 'edge-tts',
+            voices: [{ id: 'zh-CN-XiaoxiaoNeural', model: 'edge-tts', is_default: true }],
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const query = new URLSearchParams('provider=builtin&lang=zh-CN&apiKey=secret')
+    const res = await api({ method: 'GET', pathname: '/api/admin/tts-voices', query, body: null })
+    expect(res.status).toBe(200)
+    expect(seenAuth).toBe('Bearer secret')
+  })
+})

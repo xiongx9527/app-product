@@ -27,7 +27,7 @@
 # 退出码：任一平台安装失败（Android 真失败 / iOS 编译失败）返回 1；
 #        iOS 仅设备侧状态（离线/待信任等）不算失败，沿用 reprovision.sh 的 exit 0。
 
-set -uo pipefail
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"            # xiaoxiong-app
@@ -115,7 +115,21 @@ install_android() {
   fi
 
   echo "==> [Android] 安装到 USB 设备"
-  adb -d install -r -t "$APK"
+  # -g 安装时自动授予声明的权限（RECORD_AUDIO 等），避免设备端弹框被拒导致
+  # INSTALL_FAILED_ABORTED: User rejected permissions（多见于自动化装机/无头环境）。
+  # 已装包先卸载再全新安装：Android 15 / 部分机型对 adb install -r 重装（尤其应用正在运行、
+  # 或「通过 USB 安装」开发者开关未开）会直接 INSTALL_FAILED_ABORTED，全新安装路径更稳。
+  PKG="com.xiaoxiong.assistant"
+  if adb -d shell pm list packages "$PKG" 2>/dev/null | grep -q "$PKG"; then
+    echo "==> [Android] 检测到已安装 $PKG，先卸载再全新安装（规避重装被拒）"
+    adb -d uninstall "$PKG" || echo "（卸载失败，继续尝试安装）"
+  fi
+  if ! adb -d install -t -g "$APK"; then
+    echo "==> [Android] 安装失败。若仍报 INSTALL_FAILED_ABORTED: User rejected permissions，" >&2
+    echo "    请在该 Honor 设备的「开发者选项」中打开「通过 USB 安装」（部分机型为「USB 安装」），" >&2
+    echo "    并确保在弹出的安装确认框中点「安装」；若应用在前台运行请先退回桌面。" >&2
+    return 1
+  fi
 }
 
 # —— iOS：资源接入（可选）+ 委派 reprovision.sh 编译装机 ——

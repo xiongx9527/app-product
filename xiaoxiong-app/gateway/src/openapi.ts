@@ -151,10 +151,11 @@ export const openApiSpec = {
     },
     '/api/admin/tts-voices': {
       get: {
-        summary: '列出某来源的 TTS 音色（设置页「音色」下拉框数据源；固定精选目录，按 lang 本地化标签）',
+        summary: '列出某来源的 TTS 音色（设置页「音色」下拉框数据源；内置实时中转 9529 目录，百炼用官方标准目录）',
         parameters: [
-          { name: 'provider', in: 'query', required: true, schema: { type: 'string', enum: ['builtin', 'dashscope'] }, description: '语音服务来源（固定目录，不实时拉取）' },
+          { name: 'provider', in: 'query', required: true, schema: { type: 'string', enum: ['builtin', 'dashscope'] }, description: '语音服务来源（内置=网关中转 9529；百炼=官方固定目录）' },
           { name: 'lang', in: 'query', schema: { type: 'string' }, description: '展示语言，如 zh-CN / en；决定标签里的名称、性别、语言的文案，默认 zh-CN' },
+          { name: 'apiKey', in: 'query', schema: { type: 'string' }, description: '来源 api-key，只落本机、由前端带来；内置 9529 开启 API-Key 鉴权（VOICE_API_KEY_AUTH）时必带，默认非必填' },
         ],
         responses: {
           '200': { description: '{ defaultVoice, voices:[{value,label}] }：从来源读到的可选音色', content: { 'application/json': { schema: { type: 'object', properties: { defaultVoice: { type: 'string' }, voices: { type: 'array', items: { type: 'object', properties: { value: { type: 'string' }, label: { type: 'string' } } } } } } } } },

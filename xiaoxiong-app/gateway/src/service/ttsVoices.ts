@@ -9,6 +9,8 @@
  *   每条带 desc_zh / desc_en（中英文描述），是 TTS 真正使用的同一份数据。网关不再写死一份
  *   「精选 N 条」——此前就是网关另写了一份目录，才和真实引擎两条线、对不上，用户在下拉里
  *   看到的既不是真实全集、描述也对不齐。9529 不可达时回退到下面这份内置清单（仅降级用）。
+ *   该接口与其他 /voice 数据接口同样受 VOICE_API_KEY_AUTH 约束：开启后网关带上用户填的
+ *   api-key（Authorization: Bearer），否则会拿到 401 并静默降级成兜底清单。
  * - 百炼（dashscope）：DashScope 的 CosyVoice 没有「列举音色」的开放接口，云端地址也不放目录，
  *   因此保留一份官方标准目录（官方音色 ID + 中英文名称/语言，按前端 lang 本地化标签）。
  *
@@ -222,10 +224,12 @@ export function resolveDashscopeVoice(model: string, voice: string): string {
  */
 async function listBuiltinVoices(
   builtinUrl: string,
+  apiKey?: string,
 ): Promise<VoiceList> {
   const base = (builtinUrl || 'http://127.0.0.1:9529').replace(/\/+$/, '')
   try {
-    const res = await fetch(`${base}/voice/v1/audio/voices?provider=builtin`)
+    const headers: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
+    const res = await fetch(`${base}/voice/v1/audio/voices?provider=builtin`, { headers })
     if (!res.ok) throw new Error(`voice catalog upstream ${res.status}`)
     const data = (await res.json()) as {
       default?: string
@@ -266,7 +270,7 @@ async function listBuiltinVoices(
 export async function listTtsVoices(
   provider: 'builtin' | 'dashscope',
   lang?: string,
-  config?: { voiceBuiltinUrl?: string },
+  config?: { voiceBuiltinUrl?: string; apiKey?: string },
 ): Promise<VoiceList> {
   if (provider === 'dashscope') {
     return {
@@ -275,5 +279,5 @@ export async function listTtsVoices(
       voices: DASHSCOPE_VOICES.map((v) => dashscopeFormat(v, lang)),
     }
   }
-  return listBuiltinVoices(config?.voiceBuiltinUrl ?? '')
+  return listBuiltinVoices(config?.voiceBuiltinUrl ?? '', config?.apiKey)
 }

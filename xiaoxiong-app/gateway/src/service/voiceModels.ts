@@ -7,7 +7,8 @@
  *
  * - 内置（builtin）：实时去本地语音服务（9529）的 /voice/v1/models 拉当前已配置模型
  *   （builtin 固定 sensevoice-small / edge-tts；若 9529 配了上游还会带出上游模型），按 type
- *   拆成 STT / TTS；拉不到或拉空时回退到内置固定清单，保证永远有得选。内置本地服务无需 api-key。
+ *   拆成 STT / TTS；拉不到或拉空时回退到内置固定清单，保证永远有得选。内置本地服务默认不校验
+ *   api-key，但自建实例开启 VOICE_API_KEY_AUTH 后同样要带。
  * - 百炼（dashscope）：DashScope 没有可匿名枚举 ASR / TTS 模型的开放接口（/voice/v1/models
  *   这类目录需要上游密钥、且只列 9529 自身配置的 providers，不属于客户端的百炼来源），因此
  *   直接使用与 9529 管理面板同源的官方权威清单（DASHSCOPE_VOICE_MODELS）作为兜底目录——
@@ -99,8 +100,8 @@ function dedupeSorted(models: string[]): string[] {
 
 /**
  * 列出某来源的 ASR / TTS 模型：地址优先用前端带过来的 voice.url（用户真正在用的来源地址，
- * 如自建 9529 实例），缺省回退网关自身配置（VOICE_BUILTIN_URL）。内置本地服务无需 api-key，
- * 但带上来源密钥时（对话要用的那份）仍透传，便于自建实例鉴权。
+ * 如自建 9529 实例），缺省回退网关自身配置（VOICE_BUILTIN_URL）。内置本地服务默认不校验
+ * api-key，但带上来源密钥时（对话要用的那份）仍透传，开启鉴权的自建实例据此通过。
  */
 export async function listVoiceModels(
   provider: 'builtin' | 'dashscope',

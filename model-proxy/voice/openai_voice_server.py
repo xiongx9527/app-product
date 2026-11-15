@@ -344,10 +344,14 @@ def _auto_generated_key() -> str:
 
 
 def resolve_api_keys() -> set[str]:
-    """按「当前」配置解析允许的一组 Key；空集合 = 不校验。
+    """按「当前」配置解析允许的一组 Key；鉴权关闭时返回空集合。
 
     每次请求都重新读配置（config_value 走内存缓存，开销可忽略），因此开关 / 多 Key
     改动即时生效，不存在 TTL 缓存造成的鉴权空窗。只有 auto 生成的随机 Key 需要记忆化。
+
+    鉴权开启后一定返回非空集合：显式 Key 写成脏值（如只剩逗号 / 空白）时回落到 auto
+    生成的 Key，而不是返回空集合——空集合在中间件里代表「不校验」，会让开启了鉴权的
+    服务反而匿名可访问。
     """
     if not api_key_auth_enabled():
         return set()
@@ -356,7 +360,8 @@ def resolve_api_keys() -> set[str]:
     if lowered in API_KEY_AUTO_VALUES or lowered in API_KEY_OFF_VALUES or not raw:
         return {_auto_generated_key()}
     # 显式多 Key：逗号 / 换行 / 空格分隔，去空项（多个 Key 任一命中即通过）。
-    return {k.strip() for k in re.split(r"[\s,]+", raw) if k.strip()}
+    keys = {k.strip() for k in re.split(r"[\s,]+", raw) if k.strip()}
+    return keys or {_auto_generated_key()}
 
 
 def invalidate_api_keys() -> None:
@@ -608,16 +613,16 @@ async def security_middleware(request: Request, call_next):
         and not admin_panel.valid_session(request.cookies.get(admin_panel.SESSION_COOKIE))
     ):
         keys = resolve_api_keys()
-        if keys:
-            token = _bearer_token(request.headers.get("authorization"))
-            if not (token and any(
-                hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in keys
-            )):
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "缺少或错误的 API Key"},
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
+        token = _bearer_token(request.headers.get("authorization"))
+        # 失败关闭：鉴权开启后 keys 必非空，这里再兜一层——解析不出 Key 也不能退化成不校验。
+        if not keys or not (token and any(
+            hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in keys
+        )):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "缺少或错误的 API Key"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     return await call_next(request)
 
 
@@ -1732,7 +1737,11 @@ async def speech(body: SpeechBody):
 
 @app.get("/voice/v1/audio/voices")
 async def list_voices(provider: str = "", model: str = ""):
-    """对外公开的可选音色目录（无需鉴权），供客户端下拉框与第三方调用方拉取。
+    """可选音色目录，供客户端下拉框与第三方调用方拉取。
+
+    鉴权与其他 /voice、/llm 数据接口一致：开启 VOICE_API_KEY_AUTH 后必须带
+    `Authorization: Bearer <key>`（管理面板已登录会话走 Cookie），否则返回 401；
+    VOICE_IP_ALLOW 白名单同样生效。两项默认都关闭。
 
     可选查询参数：
     - provider：TTS 提供商（builtin / openai_audio，openai_audio 归为 dashscope）；不传用配置默认。
@@ -2037,17 +2046,17 @@ def _ws_auth_ok(websocket: WebSocket, path: str) -> bool:
         and not admin_panel.valid_session(websocket.cookies.get(admin_panel.SESSION_COOKIE))
     ):
         keys = resolve_api_keys()
-        if keys:
-            token = _bearer_token(websocket.headers.get("authorization")) or (
-                websocket.query_params.get("api_key") or ""
+        token = _bearer_token(websocket.headers.get("authorization")) or (
+            websocket.query_params.get("api_key") or ""
+        )
+        # 与 HTTP 中间件一致：失败关闭，解析不出 Key 也不放行。
+        if not keys or not (
+            token
+            and any(
+                hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in keys
             )
-            if not (
-                token
-                and any(
-                    hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in keys
-                )
-            ):
-                return False
+        ):
+            return False
     return True
 
 

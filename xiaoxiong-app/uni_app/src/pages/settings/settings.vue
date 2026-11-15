@@ -263,8 +263,8 @@ async function loadAsrModels(): Promise<void> {
   const provider = appConfig.voice.provider
   const settings = currentProviderSettings()
   // 前端只与网关通信：模型目录由网关持有来源地址并中转，前端只传 provider + capability。
-  // 仅百炼需要用户本机 api-key；内置无需任何密钥。地址默认由网关持有中转，但用户当前来源
-  // 地址（voice.url，如自建 9529 实例）也要带上，让列表与真实推理同地址。
+  // api-key 只落本机、由前端带来：百炼必带；内置本地服务默认不校验，但自建实例开启
+  // API-Key 鉴权（VOICE_API_KEY_AUTH）后同样要带上。地址始终由网关配置持有。
   const qs = new URLSearchParams({ provider, capability: 'asr' })
   if (settings.url) qs.set('url', settings.url)
   if (settings.apiKey) qs.set('apiKey', settings.apiKey)
@@ -359,8 +359,11 @@ async function loadTtsVoices(): Promise<void> {
   ttsVoiceHint.value = ''
   voiceModelMap.clear()
   const provider = appConfig.voice.provider
-  // 前端只与网关通信：把 provider 与当前语言带给网关，由网关按 lang 拼出本地化标签。
+  const settings = currentProviderSettings()
+  // 前端只与网关通信：把 provider、当前语言与来源 api-key 带给网关，由网关按 lang 拼出
+  // 本地化标签；内置 9529 开启鉴权时，网关用这个 Key 去拉实时音色目录。
   const qs = new URLSearchParams({ provider, lang: appConfig.language })
+  if (settings.apiKey) qs.set('apiKey', settings.apiKey)
   try {
     const res = await secureRequest({
       url: `${resolveGatewayHttpBase()}/api/admin/tts-voices?${qs.toString()}`,

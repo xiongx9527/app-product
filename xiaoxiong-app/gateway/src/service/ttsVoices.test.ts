@@ -113,6 +113,31 @@ describe('内置 TTS 音色目录中转 9529（与真实引擎同源，不再另
     expect(list.voices[0].descEn).toBe('Female · gentle and natural (default)')
   })
 
+  it('9529 开启鉴权：带 api-key 时把 Bearer 头透传给音色目录接口', async () => {
+    let seenAuth = ''
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes('/voice/v1/audio/voices')) {
+        seenAuth = (init?.headers as Record<string, string> | undefined)?.Authorization ?? ''
+        return new Response(
+          JSON.stringify({
+            default: 'zh-CN-XiaoxiaoNeural',
+            model: 'edge-tts',
+            voices: [{ id: 'zh-CN-XiaoxiaoNeural', model: 'edge-tts', is_default: true }],
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const list = await listTtsVoices('builtin', 'zh-CN', {
+      voiceBuiltinUrl: 'http://127.0.0.1:9529',
+      apiKey: 'secret',
+    })
+    expect(seenAuth).toBe('Bearer secret')
+    expect(list.defaultVoice).toBe('zh-CN-XiaoxiaoNeural')
+  })
+
   it('9529 不可达：回退降级清单，避免设置页空下拉', async () => {
     globalThis.fetch = (async () => {
       throw new Error('conn refused')

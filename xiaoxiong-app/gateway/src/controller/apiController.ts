@@ -120,16 +120,20 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
     }
 
     // 设置接口（/api/admin）：语音助手设置页自身使用，不需要登录。
-    // 音色下拉框数据源：两份固定精选目录（内置=Edge-TTS 常用音色；百炼=官方 CosyVoice 标准目录），
-    // 均写死、不实时拉取（否则无法国际化），按前端传来的 lang 本地化标签。前端只传 provider + lang。
+    // 音色下拉框数据源：内置=网关中转 9529 的实时音色目录（9529 开启鉴权时需带 API-Key，
+    // 由前端把本机密钥带来）；百炼=官方标准目录，按 lang 本地化标签。
     if (pathname === '/api/admin/tts-voices' && method === 'GET') {
       const provider = query.get('provider')
       const lang = query.get('lang') ?? undefined
+      const apiKey = query.get('apiKey') ?? undefined
       if (provider !== 'builtin' && provider !== 'dashscope') {
         return { status: 400, body: { error: 'provider 仅支持 builtin / dashscope' } }
       }
       try {
-        const result = await listTtsVoices(provider as 'builtin' | 'dashscope', lang, config)
+        const result = await listTtsVoices(provider as 'builtin' | 'dashscope', lang, {
+          voiceBuiltinUrl: config.voiceBuiltinUrl,
+          apiKey,
+        })
         return { status: 200, body: result }
       } catch (err) {
         return { status: 502, body: { error: (err as Error).message } }

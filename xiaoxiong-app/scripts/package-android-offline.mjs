@@ -289,7 +289,16 @@ if (args.nodeLib) {
     process.exit(1)
   }
 } else {
-  console.warn('[warn] 未提供 --node-lib：APK 不含 libnode.so，内嵌网关无法启动（下载 digidem android 包后用 --node-lib 指向其解压目录）')
+  // 未显式给 --node-lib 时，app 模块 src/main/jniLibs 通常已内置 libnode.so
+  // （首次出包后入库），gradle 构建会把它打进 APK，网关可正常启动。
+  // 仅当 jniLibs 里确实缺 libnode.so 时才告警，避免误报「APK 不含」。
+  const jniDir = join(moduleDir, 'src', 'main', 'jniLibs')
+  const builtin = VALID_ABIS.has('arm64-v8a') && existsSync(join(jniDir, 'arm64-v8a', 'libnode.so'))
+  if (builtin) {
+    console.log('[info] 未提供 --node-lib：沿用 app 模块 jniLibs 内置的 libnode.so（gradle 会打进 APK）')
+  } else {
+    console.warn('[warn] 未提供 --node-lib 且 jniLibs 下无内置 libnode.so：APK 将不含 libnode.so，内嵌网关无法启动（下载 digidem android 包后用 --node-lib 指向其解压目录）')
+  }
 }
 
 // 7) 原生源码（App.java / GatewayNodeService.java / WakeModule.java）已作为「源」常驻在
