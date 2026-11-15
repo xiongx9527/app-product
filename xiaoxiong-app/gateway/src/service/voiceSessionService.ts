@@ -1192,8 +1192,9 @@ export class VoiceSessionService {
     const vad = this.vad.push(chunk, { strict: false })
     for (const frame of vad.frames) {
       void this.asr.push(frame).then((partial) => {
-        // 播报期间只做唤醒词识别（用定稿），实时草稿不上发给客户端，避免回声刷屏
-        if (partial && !this.playbackPending) {
+        // 播报期间只做唤醒词识别（用定稿），实时草稿不上发给客户端，避免回声刷屏。
+        // 噪声幻觉碎片（The/Yeah 等纯英文虚词）也不刷草稿，否则界面下方一直闪英文噪声。
+        if (partial && !this.playbackPending && !isNoise(partial)) {
           this.deps.send({ type: 'asr.partial', text: partial })
         }
       })
@@ -1227,7 +1228,10 @@ export class VoiceSessionService {
     const text = await this.asr.finalize()
     if (!this.active || this.cancelled) return
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
-    // 不进模型也不进队列，避免凭空多出一轮回答和 TTS
+    // 不进模型也不进队列，避免凭空多出一轮回答和 TTS。
+    // isNoise 已覆盖 SenseVoice 对静音/音乐回声稳定冒出的英文虚词碎片（The/Yeah/oh…），
+    // 这类碎片进 LLM 会胡乱追问「你说的The没听清」。按会话语言脚本过滤会误伤英文歌名
+    // （Taylor Swift）和混排，故只在「极短纯拉丁虚词」层面拦，不按语言。
     if (!text || isNoise(text)) return
 
     // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。

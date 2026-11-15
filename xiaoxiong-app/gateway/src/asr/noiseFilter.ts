@@ -11,6 +11,9 @@
 /** Whisper/SenseVoice 常见的整段幻觉输出（归一化后精确匹配）。 */
 const HALLUCINATIONS = new Set([
   'yeah', 'yes', 'no', 'ok', 'okay', 'uh', 'um', 'hmm', 'mm', 'huh',
+  // 冠词 / 常见的英文幻觉碎片：SenseVoice 对音乐回声、静音段会稳定冒出这些词，
+  // 中文会话里单独出现几乎必为噪声（「The」「Yeah」是用户实机高频复现的两个）。
+  'the', 'a', 'an', 'oh', 'well', 'so',
   'thanks', 'thankyou', 'bye', 'hello', 'hi',
   '字幕', '谢谢观看', '请不吝点赞', '订阅', '转发', '打赏', '点点关注',
   'music', 'applause', 'silence',
@@ -40,10 +43,35 @@ export function pcmRms(frame: Uint8Array): number {
   return Math.sqrt(sum / samples)
 }
 
+/**
+ * 极短的纯拉丁字母虚词/填充词（可 1–3 个词）：SenseVoice 对静音段、音乐/提示音回声
+ * 会稳定冒出这类碎片（The / Yeah / oh yeah / the one 等），任何会话语言下都不是有效指令。
+ * 只在「整段都是拉丁虚词」时命中：含中文、含数字、或带实义词的短句都放行，
+ * 避免误伤中英混排（Taylor Swift 的歌）和英文用户的正常短指令。
+ */
+const EN_FILLER_WORDS = new Set([
+  'the', 'a', 'an', 'yeah', 'yes', 'no', 'ok', 'okay', 'oh', 'uh', 'um',
+  'hmm', 'mm', 'huh', 'well', 'so', 'um', 'er', 'ah', 'hey', 'wow',
+  'music', 'applause', 'silence', 'thanks', 'thank', 'you', 'please',
+])
+
+function isShortEnglishFragment(text: string): boolean {
+  // 去标点但保留词间空白，才能把 "oh yeah" 分成两个词（coreText 会把空格也去掉）
+  const norm = text.replace(/[\p{P}\p{S}]/gu, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+  if (!norm) return false
+  // 必须整段都是拉丁字母词，含中文/数字/其它脚本一律不在此拦
+  if (!/^[a-z]+(?: [a-z]+)*$/.test(norm)) return false
+  const words = norm.split(/\s+/)
+  // 超过 3 个词不再是「碎片」，交给 LLM 判断（如 "play the beatles song" 可能是真实请求）
+  if (words.length === 0 || words.length > 3) return false
+  return words.every((w) => EN_FILLER_WORDS.has(w))
+}
+
 export function isNoise(text: string): boolean {
   const core = coreText(text)
   if (!core) return true
   if (HALLUCINATIONS.has(core.toLowerCase())) return true
+  if (isShortEnglishFragment(text)) return true
   // 单字：只有语气词当噪声，实义单字（如「滚」「好」）保留
   if (core.length === 1) return FILLERS.has(core)
   return false

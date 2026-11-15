@@ -11,13 +11,33 @@
 
 interface NativePlaybackModule {
   startPlayback?(sampleRate: number): void
-  /** JS 传 { data: 0–255 字节数组 }。必须包成对象：DCloud/weex 桥用 fastjson 解析参数，
-   *  直接传 JS 数组会以 `[` 开头被误判成 JSONObject 而抛 `expect {, actual [`（playPcm 静默失败、无声）。
-   *  采集 startPcm(JSONObject) 走的就是对象路径，已验证可行。 */
-  playPcm?(arg: { data: number[] }): void
+  /** JS 直接传 base64 字符串（不包对象）。血泪：DCloud/weex 桥把 JS 对象转原生 JSONObject 时
+   *  连字段一起丢成空对象 `{}`（{data:[...]}、{pcm:"..."} 都实测为空），裸数组又以 `[` 开头被当
+   *  JSONObject 抛 `expect {, actual [`；只有把标量字符串直接作为方法参数才能可靠过桥。 */
+  playPcm?(pcmB64: string): void
   stopPlayback?(): void
   /** keepAlive 回调：每次播放队列清空且录音头追上写入进度时回传 true */
   onPlaybackIdle?(callback: (idle: boolean) => void): void
+}
+
+const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+/** 手写 base64：App 逻辑层是独立 JS 引擎，不保证有 btoa/Buffer，纯位运算最稳。 */
+function toBase64(bytes: Uint8Array): string {
+  let out = ''
+  let i = 0
+  for (; i + 2 < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2]
+    out += B64_CHARS[(n >> 18) & 63] + B64_CHARS[(n >> 12) & 63] + B64_CHARS[(n >> 6) & 63] + B64_CHARS[n & 63]
+  }
+  const rem = bytes.length - i
+  if (rem === 1) {
+    const n = bytes[i] << 16
+    out += B64_CHARS[(n >> 18) & 63] + B64_CHARS[(n >> 12) & 63] + '=='
+  } else if (rem === 2) {
+    const n = (bytes[i] << 16) | (bytes[i + 1] << 8)
+    out += B64_CHARS[(n >> 18) & 63] + B64_CHARS[(n >> 12) & 63] + B64_CHARS[(n >> 6) & 63] + '='
+  }
+  return out
 }
 
 /** 模块实例必须缓存：app-product-wake 是非单例，每帧重新 require 会拿到不同实例，PCM 被投给各自独立的原生队列而播不连贯。 */
@@ -88,10 +108,9 @@ export function appPlayPcm(pcm: ArrayBuffer, sampleRate = 24000): void {
   bindIdleOnce(mod)
   const bytes = new Uint8Array(pcm)
   if (bytes.length === 0) return
-  const data: number[] = new Array(bytes.length)
-  for (let i = 0; i < bytes.length; i += 1) data[i] = bytes[i] & 0xff
   playbackInFlight = true
-  mod.playPcm({ data })
+  // 必须传标量字符串：整个 JSONObject 参数的字段会被 weex 桥丢成空对象（真机实测 arg={}）
+  mod.playPcm(toBase64(bytes))
 }
 
 /**

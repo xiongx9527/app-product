@@ -7,8 +7,9 @@
 // 职责（与 JS 侧 appCapture.ts / appPlayback.ts / providers/native.ts 的接口一一对应）：
 //   PCM 采集（对话/唤醒的音频来源）：startPcm / stopPcm / onPcmFrame / onPcmError
 //   TTS 播放（App 逻辑层无 WebAudio，网关下发的 24k PCM 只能由原生 AudioTrack 播）：
-//     startPlayback / playPcm({data:[...]}) / stopPlayback / onPlaybackIdle
-//   playPcm 必须收 JSONObject（内包 data 数组），不能收 JSONArray——weex/fastjson 会把裸数组当 JSONObject 解析而失败。
+//     startPlayback / playPcm({pcm:base64}) / stopPlayback / onPlaybackIdle
+//   playPcm 必须收 {pcm:base64字符串}：weex 桥会丢弃 JS 对象里的数组字段（传空对象），
+//   裸数组又以 '[' 开头被 fastjson 误判成 JSONObject；只有字符串标量能可靠过桥。
 //   声学唤醒占位（KWS 模型未集成前不触发 onWake；唤醒判定当前由网关 ASR + JS matchWakeWord 完成）：
 //     start / stop / onWake / onError
 //
@@ -28,13 +29,15 @@ import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
 import android.media.AudioTrack;
+import android.media.MediaPlayer;
 import android.media.MediaRecorder;
+import android.content.res.AssetFileDescriptor;
 import android.media.audiofx.AcousticEchoCanceler;
+import android.util.Base64;
 import android.util.Log;
 
 import androidx.core.content.ContextCompat;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import io.dcloud.feature.uniapp.annotation.UniJSMethod;
@@ -79,6 +82,17 @@ public class WakeModule extends UniModule {
     private UniJSCallback wakeCb;
     private UniJSCallback wakeErrCb;
     private UniJSCallback playbackIdleCb;
+    private UniJSCallback cueEndCb;
+
+    // ---- 本地提示音播放（原生 MediaPlayer，不申请音频焦点）----
+    // 为什么不用 uni.createInnerAudioContext：那条路底层 io.dcloud.feature.audio.AudioPlayer
+    // 会 requestAudioFocus(AUDIOFOCUS_GAIN)，抢走正在播放音乐的 InnerAudioContext 的焦点，
+    // 音乐被系统 pause 且不自动恢复（真机 logcat 已证实：abandonAudioFocus/requestAudioFocus
+    // 均来自 AudioPlayer$1）。裸 MediaPlayer 默认不申请焦点，可与音乐并发出声；配合 JS 侧
+    // duckMusic 压低音乐音量，即可对标 H5「提示音变小、音乐持续播、播完恢复」。
+    private MediaPlayer cuePlayer;
+    /** 提示音资源在 apk assets 内的前缀；mp3 打包时为 Stored（未压缩），可用 openFd 直接播。 */
+    private static final String CUE_ASSET_PREFIX = "apps/__UNI__145C29C/www/static/audio/";
 
     // ---- PCM 采集接口（core/audio/appCapture.ts 使用）----
 
@@ -98,7 +112,7 @@ public class WakeModule extends UniModule {
     /** JS 调用 instance.startPcm({ sampleRate, channels, bitsPerSample, frameMs })（无回调）。 */
     @UniJSMethod(uiThread = false)
     public void startPcm(JSONObject options) {
-        Log.i(TAG, "startPcm called");
+        Log.i(TAG, "startPcm called, options=" + (options == null ? "null" : options.toString()));
         startCapture();
     }
 
@@ -158,61 +172,31 @@ public class WakeModule extends UniModule {
         }
     }
 
-    /** JS 传 {data:[0–255 字节]}。必须包成 JSONObject：DCloud/weex 桥用 fastjson 解析参数，
-     *  直接声明 JSONArray 会让以 '[' 开头的数组被当成 JSONObject 解析而抛
-     *  `expect {, actual [`，playPcm 每帧静默失败（无声 + 卡在播报）。采集 startPcm 用 JSONObject 已验证可行。
-     *
-     *  真机血泪（第二层坑）：包成对象后 `arg.optJSONArray("data")` 仍可能返回 null——weex/fastjson
-     *  在不同版本把 JS number[] 转成 JSONObject 时，data 字段实际是 java.util.List / Object[]，
-     *  而不是 JSONArray（logcat 里 `Missing inline cache for java.lang.Object[] ... prepareArguments`）。
-     *  只认 optJSONArray 会静默 return，导致从不 startPlayback（无声 + 卡在播报）。这里对三种类型都兼容。 */
+    /** JS 直接传 base64 字符串（不包对象）。真机血泪（四层坑，逐层挖出来）：
+     *  ① 裸数组 playPcm(JSONArray)：以 '[' 开头被 fastjson 当 JSONObject 解析，抛 `expect {, actual [`；
+     *  ② 包成 {data:number[]}：weex 桥把 JS 对象转 JSONObject 时丢掉数组字段，原生收到 `{}`；
+     *  ③ 包成 {pcm:"base64"}：连字符串字段也一起丢，仍是 `{}`；
+     *  ④ 正解：字符串直接作为方法参数 playPcm(String)，不包任何对象——标量参数才能可靠过桥。 */
     @UniJSMethod(uiThread = false)
-    public void playPcm(JSONObject arg) {
-        if (arg == null) {
-            Log.w(TAG, "playPcm: arg=null");
+    public void playPcm(String b64) {
+        if (b64 == null || b64.length() == 0) {
+            if (writtenFrames == 0) Log.w(TAG, "playPcm: empty b64 arg");
             return;
         }
-        Object raw = arg.opt("data");
-        int n;
         byte[] pcm;
-        if (raw instanceof JSONArray) {
-            JSONArray ja = (JSONArray) raw;
-            n = ja.length();
-            pcm = new byte[n];
-            for (int i = 0; i < n; i++) pcm[i] = (byte) (ja.optInt(i) & 0xff);
-        } else if (raw instanceof java.util.List) {
-            java.util.List<?> list = (java.util.List<?>) raw;
-            n = list.size();
-            pcm = new byte[n];
-            for (int i = 0; i < n; i++) {
-                Object v = list.get(i);
-                int iv = (v instanceof Number)
-                        ? ((Number) v).intValue()
-                        : (int) Double.parseDouble(String.valueOf(v));
-                pcm[i] = (byte) (iv & 0xff);
-            }
-        } else if (raw != null && raw.getClass().isArray()) {
-            n = java.lang.reflect.Array.getLength(raw);
-            pcm = new byte[n];
-            for (int i = 0; i < n; i++) {
-                Object v = java.lang.reflect.Array.get(raw, i);
-                int iv = (v instanceof Number)
-                        ? ((Number) v).intValue()
-                        : (int) Double.parseDouble(String.valueOf(v));
-                pcm[i] = (byte) (iv & 0xff);
-            }
-        } else {
-            Log.w(TAG, "playPcm: data unsupported type=" + (raw == null ? "null" : raw.getClass().getName()));
+        try {
+            pcm = Base64.decode(b64, Base64.DEFAULT);
+        } catch (Throwable e) {
+            Log.e(TAG, "playPcm: base64 decode failed: " + e.getMessage());
             return;
         }
-        if (n == 0) return;
-        // 每轮首帧打一次，确认 data 真实类型与字节数，避免再次盲猜
+        if (pcm.length == 0) return;
         if (writtenFrames == 0) {
-            Log.i(TAG, "playPcm first frame: dataCls=" + raw.getClass().getName() + " n=" + n + " b0=" + pcm[0]);
+            Log.i(TAG, "playPcm first frame: b64len=" + b64.length() + " bytes=" + pcm.length + " b0=" + pcm[0]);
         }
         if (playTrack == null || !playRunning) startPlayback(playSampleRate);
         if (playTrack == null) return;
-        int written = playTrack.write(pcm, 0, n);
+        int written = playTrack.write(pcm, 0, pcm.length);
         if (written > 0) {
             synchronized (playLock) {
                 writtenFrames += written / 2;
@@ -225,6 +209,92 @@ public class WakeModule extends UniModule {
     public void stopPlayback() {
         Log.i(TAG, "stopPlayback called");
         stopPlaybackInternal();
+    }
+
+    // ---- 本地提示音播放接口（core/audio/promptPlayer.ts 使用）----
+
+    /** 注册提示音播放结束回调（自然播完 / 出错 / 被 stop 都回调一次，带是否自然播完）。 */
+    @UniJSMethod(uiThread = false)
+    public void onCueEnd(UniJSCallback cb) {
+        if (cb != null) {
+            cueEndCb = cb;
+            Log.i(TAG, "onCueEnd registered");
+        }
+    }
+
+    /** 播放一个打包内提示音。file 为文件名（如 greeting.mp3），内部拼 assets 前缀。
+     *  裸 MediaPlayer 不申请音频焦点，音乐 InnerAudioContext 不会被暂停；音量交给 JS duckMusic。 */
+    @UniJSMethod(uiThread = false)
+    public void playCue(String file) {
+        if (file == null || file.length() == 0) {
+            Log.w(TAG, "playCue: empty file arg");
+            return;
+        }
+        Context ctx = safeContext();
+        if (ctx == null) {
+            Log.e(TAG, "playCue: no context");
+            notifyCueEnd(false);
+            return;
+        }
+        stopCueInternal();
+        try {
+            String path = CUE_ASSET_PREFIX + file;
+            AssetFileDescriptor afd = ctx.getAssets().openFd(path);
+            cuePlayer = new MediaPlayer();
+            cuePlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+            afd.close();
+            // STREAM_MUSIC：与音乐同一流，duck 时同为媒体音量；裸 MediaPlayer 主动不调
+            // requestAudioFocus，系统不会因它 pause 掉持有焦点的音乐播放器。
+            cuePlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            cuePlayer.setVolume(1.0f, 1.0f);
+            cuePlayer.setOnCompletionListener(mp -> {
+                Log.i(TAG, "cue completed: " + file);
+                stopCueInternal();
+                notifyCueEnd(true);
+            });
+            cuePlayer.setOnErrorListener((mp, what, extra) -> {
+                Log.e(TAG, "cue error: " + file + " what=" + what + " extra=" + extra);
+                stopCueInternal();
+                notifyCueEnd(false);
+                return true;
+            });
+            cuePlayer.prepare();
+            cuePlayer.start();
+            Log.i(TAG, "cue started: " + file);
+        } catch (Throwable e) {
+            Log.e(TAG, "playCue failed: " + file + " -> " + e.getMessage(), e);
+            stopCueInternal();
+            notifyCueEnd(false);
+        }
+    }
+
+    /** 打断当前提示音（新一轮提示 / 会话结束时）。 */
+    @UniJSMethod(uiThread = false)
+    public void stopCue() {
+        Log.i(TAG, "stopCue called");
+        stopCueInternal();
+    }
+
+    private void stopCueInternal() {
+        if (cuePlayer != null) {
+            try {
+                if (cuePlayer.isPlaying()) cuePlayer.stop();
+                cuePlayer.reset();
+                cuePlayer.release();
+            } catch (Throwable ignored) {
+            }
+            cuePlayer = null;
+        }
+    }
+
+    private void notifyCueEnd(boolean completed) {
+        if (cueEndCb != null) {
+            try {
+                cueEndCb.invokeAndKeepAlive(completed);
+            } catch (Throwable ignored) {
+                // JS 已解绑，忽略
+            }
+        }
     }
 
     /** 轮询播放头位置：追上已写入帧数即视作播空，回调前端对齐 tts.end 的播完回执。 */

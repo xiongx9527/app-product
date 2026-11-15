@@ -1,4 +1,6 @@
 import { resolveGatewayHttpBase } from '@/core/transport'
+import { duckMusic } from './musicPlayer'
+import { appPlayCue, isAppCueSupported } from './appCue'
 
 export type PromptCue =
   | 'greeting'
@@ -281,8 +283,49 @@ function playOneCue(cue: PromptCue, src: string, onFail?: () => void): void {
   timer = setTimeout(cleanup, CUE_MUTE_MS[cue] + 1500)
 }
 
-/** App 端播放提示音：网关类提示从网关 HTTP 拉取，失败（网关挂了 / 拉取异常）回退打包内文件。 */
+/** 当前提示音 duck 的恢复句柄：新提示音开始前先恢复上一次，避免多个提示音叠加把音乐一直压着。 */
+let undoCueDuck: (() => void) | null = null
+
+/**
+ * 提示音期间压低音乐（对标 H5 ducking），播完/超时恢复。用 once 保护：原生 onCueEnd
+ * 与兜底定时器可能都触发，只恢复一次。与 TTS 的 duck 阶段互斥（提示音在唤醒/待唤醒，
+ * TTS 在回答），故各自独立管理，不做全局引用计数。
+ */
+function duckForCue(cue: PromptCue): () => void {
+  undoCueDuck?.()
+  duckMusic(true)
+  let done = false
+  const restore = (): void => {
+    if (done) return
+    done = true
+    if (undoCueDuck === restore) undoCueDuck = null
+    duckMusic(false)
+  }
+  undoCueDuck = restore
+  // 兜底：原生 onCueEnd 丢失时按时长恢复，避免音乐被一直压着
+  setTimeout(restore, CUE_MUTE_MS[cue] + 800)
+  return restore
+}
+
+/**
+ * App 端播放提示音。
+ * 优先走原生 MediaPlayer（不申请音频焦点）——不会抢走音乐的焦点、把音乐 pause；
+ * 播放期间 duckMusic(true)、播完恢复。失败/旧基座不支持时降级回 InnerAudioContext
+ * （那条路底层 AudioPlayer 会 requestAudioFocus，会打断音乐，但至少能出声）。
+ */
 function playAppCue(cue: PromptCue): void {
+  // 打包内文件：App 端所有提示音都走本地文件（cueUrl 在 #ifndef H5 下恒为 bundledCueUrl）
+  const file = CUE_FILE[cue] + '.mp3'
+  if (isAppCueSupported()) {
+    const restore = duckForCue(cue)
+    const played = appPlayCue(file, (completed) => {
+      cueDebug(`原生提示音结束: ${cue} completed=${completed}`)
+      restore()
+    })
+    if (played) return
+    // 原生调用本身失败：撤销 duck，走降级
+    restore()
+  }
   const src = cueUrl(cue)
   playOneCue(cue, src, () => {
     if (isGatewayCue(cue) && src !== bundledCueUrl(cue)) {
