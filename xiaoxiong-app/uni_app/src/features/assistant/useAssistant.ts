@@ -25,6 +25,12 @@ import {
   stopCapture,
   stopPlayback,
 } from '@/core/audio/h5Audio'
+import {
+  isAppPlaybackSupported,
+  appPlayPcm,
+  onAppPlaybackIdle,
+  stopAppPlayback,
+} from '@/core/audio/appPlayback'
 import { isAppCaptureSupported, requestMicPermission, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
 import { t } from '@/core/i18n'
 import { transition } from '@/core/assistant/stateMachine'
@@ -153,6 +159,21 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    */
   const queuePending = ref(0)
 
+  // TTS PCM 播放门面：App 逻辑层没有 WebAudio，必须走原生 AudioTrack；H5 走 WebAudio。
+  // 用能力探测分流而非条件编译，保证同一套代码两端都正确；探测读的是缓存模块，无额外开销。
+  function playTts(chunk: ArrayBuffer): void {
+    if (isAppPlaybackSupported()) appPlayPcm(chunk, 24000)
+    else playPcm(chunk, 24000)
+  }
+  function waitPlaybackIdle(fn: () => void): () => void {
+    return isAppPlaybackSupported() ? onAppPlaybackIdle(fn) : onPlaybackIdle(fn)
+  }
+  function stopTts(): void {
+    // 两端都调：H5 端原生门面是 no-op，App 端 WebAudio 门面是 no-op，互不干扰。
+    stopPlayback()
+    stopAppPlayback()
+  }
+
   const stateLabel = computed(() => t(STATE_LABEL[state.value]))
   const phaseLabel = computed(() => t(PHASE_LABEL[phase.value]))
   const enabled = computed(() => state.value !== 'idle')
@@ -165,7 +186,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 导致每条服务器事件被处理两遍（打招呼 / 还在吗 / TTS 全「放两遍」）。这正是在 H5 调试时
   // 反复改代码触发 HMR 后出现的双音频根因。
   const offEvent = transport.onEvent(handleServerEvent)
-  const offAudio = transport.onAudio((chunk) => playPcm(chunk, 24000))
+  const offAudio = transport.onAudio((chunk) => playTts(chunk))
   // 网关 WS 连接状态：让页面直接显示「已连/未连」，免去开 DevTools 看 101。
   const wsConnected = ref(transport.isConnected())
   // 网关掉线播报：只念一次，避免重连抖动期间反复打扰；前提是开启了唤醒（助手处于启用状态）。
@@ -406,7 +427,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'tts.stop':
         // 被打断：立刻掐掉已排队的音频，不等它播完
         cancelPendingIdle()
-        stopPlayback()
+        stopTts()
         duckMusic(false)
         isSpeaking.value = false
         phase.value = 'done'
@@ -416,7 +437,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 网关下发完 ≠ 客户端播完：播完前保持静音上行、挂起 T1，
         // 否则尾音被收回当成用户说话，或还没播完就触发「还在吗」。
         cancelPendingIdle()
-        cancelPlaybackIdle = onPlaybackIdle(() => {
+        cancelPlaybackIdle = waitPlaybackIdle(() => {
           cancelPlaybackIdle = null
           duckMusic(false)
           isSpeaking.value = false
@@ -606,7 +627,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       case 'endSession':
         cancelPendingIdle()
-        stopPlayback()
+        stopTts()
         isSpeaking.value = false
         queuePending.value = 0
         liveText.value = ''
@@ -616,7 +637,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       case 'cancelSession':
         cancelPendingIdle()
-        stopPlayback()
+        stopTts()
         transport.sendCancel()
         isSpeaking.value = false
         queuePending.value = 0
@@ -706,7 +727,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       stopAppCapture()
       capturing = false
     }
-    stopPlayback()
+    stopTts()
     stopMusic()
     subtitle.value = null
     musicCover.value = ''
