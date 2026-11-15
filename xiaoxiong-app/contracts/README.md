@@ -318,7 +318,7 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 |---|---|---|
 | ASR | `POST /voice/v1/audio/transcriptions` | `multipart/form-data` 上传 16k/16bit 单声道 WAV，返回 `{ "text": "..." }` |
 | TTS | `POST /voice/v1/audio/speech` | JSON（`input` / `voice` / `response_format` / `speed`），返回 WAV / MP3 / PCM |
-| TTS | `GET /voice/v1/audio/voices` | 音色目录 `{ default, provider, model, protocol, voices: [{ id, provider, model, desc_zh, desc_en, is_default }] }`；可选查询参数 `provider` / `model`，都不传时用默认提供商 + 默认模型。`provider` 支持 `builtin` / `dashscope`（兼容旧值 `openai_audio`）/ `deepseek`；`protocol` 是该模型的调用协议（`http` / `ws` / `http-async`，不含厂商名，厂商由 `provider` 表达）。数据来自本地 SQLite 的 `voices` / `speech_models` 表（`scripts/voice/seed/*.json` 初始化，`init_catalog.py` 灌库），每个模型各有一个默认音色 |
+| TTS | `GET /voice/v1/audio/voices` | 音色目录 `{ default, provider, model, protocol, voices: [{ id, provider, model, desc_zh, desc_en, is_default }] }`；可选查询参数 `provider` / `model`，都不传时用默认提供商 + 默认模型。`provider` 支持 `builtin` / `dashscope`（兼容旧值 `openai_audio`）/ `deepseek`；`protocol` 是该模型的调用协议（`http` / `ws` / `http-async`，不含厂商名，厂商由 `provider` 表达）。数据来自本地 SQLite 的 `voices` / `speech_models` 表（`model-proxy/voice/seed/*.json` 初始化，`init_catalog.py` 灌库），每个模型各有一个默认音色 |
 | 翻译 | `POST /voice/v1/audio/translations` | `multipart/form-data` 上传音频，先 ASR 识别原文、再经 LLM 代理翻译成 `target_lang`（默认英语）文本；无 LLM 上游时如实返回 503，不把识别原文冒充翻译 |
 | 服务级 | `GET /voice/health`、`GET /voice/v1/models` | 整体健康状态 / 统一模型目录。`/voice/v1/models` 的每条模型形如 `{ id, object, owned_by, type, context_length, dimension, provider, protocol }`：`provider` 是厂商（`builtin` / `dashscope` / `deepseek` / `openai_audio`），`protocol` 是该模型的调用形态（`http` / `ws` / `http-async`），取值来自本地 SQLite 的 `speech_models` 表；内置本地引擎也是走 `/voice/v1` 的 HTTP，协议为 `http` 而非 `local` |
 | LLM 对话 | `POST /llm/v1/chat/completions` | OpenAI 兼容，流式/非流式同一端点（`stream` 字段区分，SSE 或单个 JSON） |
@@ -371,10 +371,10 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 | 提供商 | `GET /llm/v1/providers` | 列出已配置 LLM 提供商（`vendor` / `protocol` / `model` / `host` 脱敏），**不含任何密钥** |
 | 健康 | `GET /llm/health`、根 `GET /llm` | 仅 LLM 的健康状态；`/llm` 用于网关建连时打 baseUrl 本身做探测 |
 
-**表结构变更有版本记录**：`scripts/voice/voice_db.py` 的 `SCHEMA_CHANGES` 按版本登记每次表结构变更（新增表 / 列、说明），`_migrate()` 逐级应用并在 `schema_version` 表留痕（版本号 + 应用时间 + 说明）。新增表或列必须同时 `SCHEMA_VERSION + 1` 并在 `SCHEMA_CHANGES` 登记，否则视为未记录的结构变更。查看方式：`python3 scripts/voice/init_catalog.py --schema-history` 或 `GET /admin/api/schema-history`。
+**表结构变更有版本记录**：`model-proxy/voice/voice_db.py` 的 `SCHEMA_CHANGES` 按版本登记每次表结构变更（新增表 / 列、说明），`_migrate()` 逐级应用并在 `schema_version` 表留痕（版本号 + 应用时间 + 说明）。新增表或列必须同时 `SCHEMA_VERSION + 1` 并在 `SCHEMA_CHANGES` 登记，否则视为未记录的结构变更。查看方式：`python3 model-proxy/voice/init_catalog.py --schema-history` 或 `GET /admin/api/schema-history`。
 
-**ASR / TTS 模型分两张表**（`scripts/voice/voice_db.py`）：
-- `speech_models` 是**基础模型库**：全量官方目录，只由 `scripts/voice/seed/speech_models.json` + `init_catalog.py` 维护，保存动作绝不写入。
+**ASR / TTS 模型分两张表**（`model-proxy/voice/voice_db.py`）：
+- `speech_models` 是**基础模型库**：全量官方目录，只由 `model-proxy/voice/seed/speech_models.json` + `init_catalog.py` 维护，保存动作绝不写入。
 - `enabled_speech_models` 是**实际启用**：用户在配置页勾选、真正要用上的模型，以及该提供商的默认模型。保存时按 `(kind, provider)` 整体替换，取消勾选即删除。`GET /admin/api/enabled-models` 可查；`GET /admin/api/speech-models` 只返回基础库。
 - **页面展示两种视图**：① 默认视图（页面加载 / 保存后 / 整页刷新）——模型子表**只显示已启用（勾选）的模型**，呈现干净视图；某分组一条都没启用时回退到全量候选，否则没法勾选。② 点提供商后的「↻ 刷新模型」按钮——把候选**展开为基础库全量**，并保留已勾选与默认标记，用于增删；改完保存又回到默认视图。复选框状态与「默认」单选始终来自启用表，基础库全量只作候选来源，两者互不覆盖。
 
