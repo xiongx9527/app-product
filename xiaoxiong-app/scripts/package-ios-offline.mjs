@@ -14,6 +14,8 @@
  *     [--gateway-bundle /path/bundle.mjs]       # 可选：覆盖默认 <gateway>/dist/gateway.bundle.mjs
  *     [--gateway-cues /path/cues]               # 可选：覆盖默认 <gateway>/static/cues
  *     [--no-gateway]                            # 可选：跳过内嵌网关资产接入
+ *     [--app-name "小熊助手"]                    # 可选：应用显示名，改写 Info.plist 的 CFBundleDisplayName / CFBundleName
+ *
  *     [--no-launch-storyboard]                  # 可选：本机 Xcode 缺 iOS 平台登记、ibtool 报 "Platform Not Installed" 时启用：
  *                                              #   启动图改用 iOS14+ 纯配置 UILaunchScreen，并把两个 LaunchScreen*.storyboard
  *                                              #   移出 Copy Bundle Resources（不再经 ibtool 编译），让完整工程能在这台机器上 BUILD SUCCEEDED。
@@ -69,6 +71,7 @@ function parseArgs(argv) {
     else if (a === '--gateway-bundle') out.gatewayBundle = argv[++i]
     else if (a === '--gateway-cues') out.gatewayCues = argv[++i]
     else if (a === '--no-gateway') out.gateway = false
+    else if (a === '--app-name') out.appName = argv[++i]
     else if (a === '--no-launch-storyboard') out.noLaunchStoryboard = true
   }
   return out
@@ -249,6 +252,25 @@ if (!plistPath) {
 }
 console.log(`[info] 主目标 Info.plist: ${plistPath}`)
 let plist = readFileSync(plistPath, 'utf8')
+
+// 应用显示名（Android 侧由 strings.xml app_name 承载；iOS 侧由 Info.plist 的
+// CFBundleDisplayName / CFBundleName 承载）。图标因 iOS 用 AppIcon.appiconset 多尺寸合集，
+// 纯文本 env 不便配置，仍走 Xcode Assets.xcassets 手动替换（见 GATEWAY_INTEGRATION.md）。
+if (args.appName) {
+  const name = args.appName.trim()
+  for (const key of ['CFBundleDisplayName', 'CFBundleName']) {
+    const re = new RegExp(`(<key>${key}</key>\\s*)<string>[^<]*</string>`)
+    if (re.test(plist)) {
+      plist = plist.replace(re, `$1<string>${name}</string>`)
+    } else {
+      plist = plist.replace(/<\/dict>\s*<\/plist>/,
+        `\t<key>${key}</key>\n\t<string>${name}</string>\n</dict>\n</plist>`)
+    }
+  }
+  console.log(`[ok] 应用显示名 -> ${name} (Info.plist CFBundleDisplayName/CFBundleName)`)
+} else {
+  console.log('[info] 未提供 --app-name：沿用 Info.plist 现有显示名')
+}
 
 if (args.appkey) {
   const appkey = args.appkey.trim()

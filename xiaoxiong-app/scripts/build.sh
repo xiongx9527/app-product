@@ -70,6 +70,16 @@ ANDROID_SDK_DIR="${ANDROID_SDK_DIR:-$ANDROID_SDK_DEFAULT}"
 IOS_SDK_DIR="${IOS_SDK_DIR:-}"
 NODE_IOS="${NODE_IOS:-}"
 
+# 应用品牌（打包的应用名称 / logo）：
+#   - APP_DISPLAY_NAME：应用显示名（文字），改写各平台原生显示名；缺省「小熊助手」。
+#   - APP_ICON_DIR：品牌资源目录，含 icon.png / splash.png / push.png（二进制，无法纯 env 配置）。
+#     留空时按环境回退到 native/branding/<env>/（若存在）；都不存在则沿用各平台默认图标。
+APP_DISPLAY_NAME="${APP_DISPLAY_NAME:-小熊助手}"
+APP_ICON_DIR="${APP_ICON_DIR:-}"
+if [ -z "$APP_ICON_DIR" ] && [ -d "$ROOT/native/branding/$ENV" ]; then
+  APP_ICON_DIR="$ROOT/native/branding/$ENV"
+fi
+
 # —— 0. 前置检查 ——
 if [ ! -d "$UNI_APP" ]; then echo "找不到 uni_app: $UNI_APP" >&2; exit 1; fi
 if [ ! -d "$APP_MODULE" ]; then echo "找不到原生工厂模块: $APP_MODULE" >&2; exit 1; fi
@@ -106,6 +116,11 @@ else
   [ -n "$NODE_IOS" ] && NODE_ARG=(--node-ios "$NODE_IOS")
 fi
 
+# 应用品牌：显示名（--app-name）必传；logo 目录（--icon-dir）仅当存在时传。
+BRAND_ARG=(--app-name "$APP_DISPLAY_NAME")
+ICON_ARG=()
+[ -n "$APP_ICON_DIR" ] && ICON_ARG=(--icon-dir "$APP_ICON_DIR")
+
 if [ "$PLATFORM" = "android" ]; then
   echo "==> [3/3] 接入 Android 离线资源 + 原生编译 (gradle :app:assembleDebug)"
   cd "$ROOT"
@@ -113,11 +128,25 @@ if [ "$PLATFORM" = "android" ]; then
     --sdk "$ANDROID_SDK_DIR" \
     --appid "$APPID" \
     --gateway-bundle "$GATEWAY_BUNDLE" \
-    "${APPKEY_ARG[@]}" "${NODE_ARG[@]}"
+    "${BRAND_ARG[@]}" "${ICON_ARG[@]}" "${APPKEY_ARG[@]}" "${NODE_ARG[@]}"
 
   cd "$ANDROID_SDK_DIR"
   ./gradlew :app:clean :app:assembleDebug
-  echo "==> 完成：APK 位于 $APP_MODULE/build/outputs/apk/debug/"
+
+  # 重命名 APK：加「环境 + 时间戳」，便于区分每次出包（:app:clean 已清空旧产物，目录下仅此一个）
+  APK_DIR="$APP_MODULE/build/outputs/apk/debug"
+  SRC_APK="$(ls -1 "$APK_DIR"/app-debug.apk 2>/dev/null | head -1)"
+  if [ -z "$SRC_APK" ]; then
+    SRC_APK="$(ls -1 "$APK_DIR"/*.apk 2>/dev/null | head -1)"
+  fi
+  if [ -n "$SRC_APK" ] && [ -f "$SRC_APK" ]; then
+    TS="$(date +%Y%m%d-%H%M%S)"
+    DST_APK="$APK_DIR/app-debug-${ENV}-${TS}.apk"
+    mv "$SRC_APK" "$DST_APK"
+    echo "==> 完成：APK 位于 $DST_APK"
+  else
+    echo "==> 完成：APK 目录 $APK_DIR 下未找到 app-debug.apk（请检查 gradle 产物名）"
+  fi
 else
   echo "==> [3/3] 接入 iOS 离线资源（Xcode 手动步骤见 $IOS_SDK_DIR/GATEWAY_INTEGRATION.md）"
   cd "$ROOT"
@@ -125,7 +154,7 @@ else
     --sdk "$IOS_SDK_DIR" \
     --appid "$APPID" \
     --gateway-bundle "$GATEWAY_BUNDLE" \
-    "${APPKEY_ARG[@]}" "${NODE_ARG[@]}"
+    "${BRAND_ARG[@]}" "${APPKEY_ARG[@]}" "${NODE_ARG[@]}"
 
   echo "    在 Xcode 打开 $IOS_SDK_DIR 完成 A~D 手动步骤后 Archive 出 IPA。"
 fi

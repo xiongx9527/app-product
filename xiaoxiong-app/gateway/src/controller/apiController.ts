@@ -129,7 +129,7 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
         return { status: 400, body: { error: 'provider 仅支持 builtin / dashscope' } }
       }
       try {
-        const result = await listTtsVoices(provider as 'builtin' | 'dashscope', lang)
+        const result = await listTtsVoices(provider as 'builtin' | 'dashscope', lang, config)
         return { status: 200, body: result }
       } catch (err) {
         return { status: 502, body: { error: (err as Error).message } }

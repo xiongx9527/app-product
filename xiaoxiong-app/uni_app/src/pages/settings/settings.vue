@@ -350,7 +350,7 @@ async function runDetection(): Promise<void> {
 
 /** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用；百炼=官方 CosyVoice 标准），不实时拉取以便国际化。
  *  每条带 model（所属模型），渲染成下拉里的次要列，并随选择下发网关决定真正请求的 TTS 模型。 */
-const ttsVoices = ref<{ value: string; label: string; subtitle?: string }[]>([])
+const ttsVoices = ref<{ value: string; label: string; subtitle?: string; desc?: string }[]>([])
 /** value -> 所属模型 的映射，选中时把对应模型写进配置，随 params.model 下发。 */
 const voiceModelMap = new Map<string, string>()
 const ttsVoiceHint = ref('')
@@ -367,21 +367,34 @@ async function loadTtsVoices(): Promise<void> {
       method: 'GET',
     })
     const data = res.data as {
+      default?: string
       defaultVoice?: string
       defaultModel?: string
-      voices?: { value: string; label: string; model?: string }[]
+      voices?: Array<{
+        id?: string
+        value?: string
+        label?: string
+        model?: string
+        descZh?: string
+        descEn?: string
+        isDefault?: boolean
+      }>
     } | null
     if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.voices) && data.voices.length) {
+      const en = appConfig.language.toLowerCase().startsWith('en')
       ttsVoices.value = data.voices.map((m) => {
-        voiceModelMap.set(m.value, m.model ?? '')
-        return { value: m.value, label: m.label, subtitle: m.model || undefined }
+        const id = m.id ?? m.value ?? ''
+        voiceModelMap.set(id, m.model ?? '')
+        // 内置：主标签即 id，desc_zh / desc_en 作为描述副行展示；百炼：沿用名称标签，无独立描述。
+        const label = m.label ?? id
+        const desc = en ? (m.descEn ?? '') : (m.descZh ?? '')
+        return { value: id, label, subtitle: m.model || undefined, desc: desc || undefined }
       })
-      // 当前没选或选中的已不在列表里：自动选默认（来源配置），保证开箱即连得上。
+      // 不前端强制默认：用户可以不选，未选时由 9529 内部兜底默认音色；仅当已选音色已不在列表里才清空，避免下发非法音色。
       const s = currentProviderSettings()
-      if (!s.voice || !data.voices.some((v) => v.value === s.voice)) {
-        const dv = data.defaultVoice || data.voices[0].value
-        s.voice = dv
-        s.voiceModel = voiceModelMap.get(dv) || data.defaultModel || ''
+      if (s.voice && !data.voices.some((v) => (v.id ?? v.value) === s.voice)) {
+        s.voice = ''
+        s.voiceModel = ''
       }
     } else {
       ttsVoices.value = []
@@ -596,28 +609,7 @@ watch(
         <view class="group-chevron" :class="{ open: isOpen('voice') }" />
       </view>
       <template v-if="isOpen('voice')">
-      <!-- 服务来源选择器：内置 / DashScope 都放开，让用户在本机设置页自行选择并填地址 / 密钥 / 模型。 -->
-      <template v-if="true">
-      <text class="row-label">{{ t('settings.voice.provider') }}</text>
-      <view class="providers">
-        <view
-          class="provider"
-          :class="{ active: appConfig.voice.provider === 'builtin' }"
-          @tap="onSelectProvider('builtin')"
-        >
-          <view class="radio"><view v-if="appConfig.voice.provider === 'builtin'" class="radio-dot" /></view>
-          <text class="provider-name">{{ t('settings.voice.builtin') }}</text>
-        </view>
-        <view
-          class="provider"
-          :class="{ active: appConfig.voice.provider === 'dashscope' }"
-          @tap="onSelectProvider('dashscope')"
-        >
-          <view class="radio"><view v-if="appConfig.voice.provider === 'dashscope'" class="radio-dot" /></view>
-          <text class="provider-name">{{ t('settings.voice.dashscope') }}</text>
-        </view>
-      </view>
-      </template>
+      <!-- 服务来源固定为「内置」（本地 9529），不暴露选择器；默认即内置，onMounted 兜底非法值回内置。 -->
 
       <!-- 内置：地址与密钥都可改，默认指向本机本地 AI 服务（9529） -->
       <view v-if="appConfig.voice.provider === 'builtin'" class="row column">

@@ -9,6 +9,9 @@
 #   ANDROID_SDK_DIR  DCloud 离线 SDK 壳根目录（一般不改；换 SDK 时用绝对路径覆盖）
 #   IOS_SDK_DIR      iOS 离线 SDK 工程根目录（package-ios-offline.mjs 的 --sdk；iOS 构建必填）
 #   NODE_IOS         digidem ios 包解压目录（含 NodeMobile.xcframework）；iOS 构建用，留空则跳过
+#   APP_DISPLAY_NAME 应用显示名（文字，如「小熊助手」）；改写 Android strings.xml / iOS Info.plist 的显示名
+#   APP_ICON_DIR     品牌资源目录（含 icon.png / splash.png / push.png）；留空则按环境回退 native/branding/<env>/，
+#                   再无则沿用各平台默认图标。图标是二进制，无法纯文本 env 配置，只能指向目录。
 
 ANDROID_APPID=__UNI_XXXXXXXX
 IOS_APPID=__UNI_XXXXXXXX
@@ -18,3 +21,5 @@ NODE_LIB=
 ANDROID_SDK_DIR=
 IOS_SDK_DIR=
 NODE_IOS=
+APP_DISPLAY_NAME=小熊助手
+APP_ICON_DIR=

@@ -7,6 +7,8 @@ interface Option {
   label: string
   /** 选填：右对齐的次要信息（如音色的「所属模型」），与 label 区隔显示 */
   subtitle?: string
+  /** 选填：主标签下方的描述副行（如音色的中/英描述） */
+  desc?: string
 }
 
 const props = defineProps<{
@@ -29,12 +31,15 @@ const currentLabel = computed(
   () => props.options.find((o) => o.value === props.modelValue)?.label ?? props.modelValue
 )
 
-// 搜索：按 value / label 子串（大小写不敏感）过滤；关闭时清空输入。
+// 搜索：按 value / label / desc 子串（大小写不敏感）过滤；关闭时清空输入。
 const filteredOptions = computed(() => {
   if (!props.searchable || !searchText.value.trim()) return props.options
   const q = searchText.value.trim().toLowerCase()
   return props.options.filter(
-    (o) => o.value.toLowerCase().includes(q) || o.label.toLowerCase().includes(q)
+    (o) =>
+      o.value.toLowerCase().includes(q) ||
+      o.label.toLowerCase().includes(q) ||
+      (o.desc ?? '').toLowerCase().includes(q)
   )
 })
 
@@ -87,7 +92,10 @@ function onSearch(e: Event): void {
         :class="{ active: opt.value === modelValue }"
         @tap="choose(opt.value)"
       >
-        <text class="option-label">{{ opt.label }}</text>
+        <view class="option-main">
+          <text class="option-label">{{ opt.label }}</text>
+          <text v-if="opt.desc" class="option-desc">{{ opt.desc }}</text>
+        </view>
         <view class="option-right">
           <text v-if="opt.subtitle" class="option-sub">{{ opt.subtitle }}</text>
           <text v-if="opt.value === modelValue" class="check">✓</text>
@@ -202,6 +210,22 @@ function onSearch(e: Event): void {
   color: #e8eaf6;
   flex: 1;
   min-width: 0;
+}
+
+/* 主标签下方的描述副行（如音色中/英描述），弱化展示 */
+.option-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.option-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #8b91ab;
+  word-break: break-word;
 }
 
 .option-right {

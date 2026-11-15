@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
   DASHSCOPE_DEFAULT_MODEL,
   DASHSCOPE_DEFAULT_VOICE,
@@ -68,5 +68,63 @@ describe('百炼 TTS 音色与模型同源（避免 418 Invalid voice 静音）'
     const internal = tts as unknown as { model: string; voice: string }
     expect(internal.model).toBe(DASHSCOPE_DEFAULT_MODEL)
     expect(internal.voice).toBe(DASHSCOPE_DEFAULT_VOICE)
+  })
+})
+
+/**
+ * 内置音色目录必须来自 9529 的 /voice/v1/audio/voices（voice.db / seed 维护、含 desc_zh /
+ * desc_en），网关只做中转、不再写死一份编造目录；9529 不可达时回退降级清单。
+ */
+describe('内置 TTS 音色目录中转 9529（与真实引擎同源，不再另写一份）', () => {
+  const originalFetch = globalThis.fetch
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('正常：9529 返回的真实目录透传给前端，含中英文描述', async () => {
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.includes('/voice/v1/audio/voices')) {
+        return new Response(
+          JSON.stringify({
+            default: 'zh-CN-XiaoxiaoNeural',
+            provider: 'builtin',
+            model: 'edge-tts',
+            protocol: 'http',
+            voices: [
+              { id: 'zh-CN-XiaoxiaoNeural', provider: 'builtin', model: 'edge-tts', desc_zh: '女声·温柔自然（默认）', desc_en: 'Female · gentle and natural (default)', is_default: true },
+              { id: 'ja-JP-NanamiNeural', provider: 'builtin', model: 'edge-tts', desc_zh: '女声·柔和', desc_en: 'Female · soft', is_default: false },
+            ],
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const list = await listTtsVoices('builtin', 'zh-CN', { voiceBuiltinUrl: 'http://127.0.0.1:9529' })
+    expect(list.protocol).toBe('http')
+    expect(list.defaultVoice).toBe('zh-CN-XiaoxiaoNeural')
+    expect(list.defaultModel).toBe('edge-tts')
+    expect(list.voices.length).toBe(2)
+    expect(list.voices[0].value).toBe('zh-CN-XiaoxiaoNeural')
+    expect(list.voices[0].descZh).toBe('女声·温柔自然（默认）')
+    expect(list.voices[0].descEn).toBe('Female · gentle and natural (default)')
+  })
+
+  it('9529 不可达：回退降级清单，避免设置页空下拉', async () => {
+    globalThis.fetch = (async () => {
+      throw new Error('conn refused')
+    }) as unknown as typeof fetch
+
+    const list = await listTtsVoices('builtin', 'zh-CN', { voiceBuiltinUrl: 'http://127.0.0.1:9529' })
+    // 降级清单非空，且每条第带中英文描述
+    expect(list.voices.length).toBeGreaterThan(0)
+    for (const v of list.voices) {
+      expect(v.value).toBeTruthy()
+      expect(v.descZh).toBeTruthy()
+      expect(v.descEn).toBeTruthy()
+    }
   })
 })

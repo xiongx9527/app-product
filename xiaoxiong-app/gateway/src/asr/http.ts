@@ -20,6 +20,8 @@ const PARTIAL_MIN_BYTES = 12800
  * 整体提交一次，文本有变化就作为 asr.partial 下发，句末再由 finalize 定稿。
  *
  * 网关上行是 16kHz/16bit/单声道 PCM，这里在提交前补 44 字节 WAV 头。
+ * 内置 ASR 的模型固定为 sensevoice-small（9529 内置引擎只接受这一个），由 params.model
+ * 下发或这里兜底；不可能是 whisper-1——9529 收到未知模型会直接返回错误（表现为“识别不出/无法唤醒”）。
  * 调用失败不抛异常：中间结果静默跳过，定稿回退占位文本，保证会话不中断。
  */
 export class HttpVoiceAsr implements AsrProvider {
@@ -80,7 +82,9 @@ export class HttpVoiceAsr implements AsrProvider {
       const wav = pcmToWav(pcm, Number.isFinite(sampleRate) ? sampleRate : 16000)
       const form = new FormData()
       form.append('file', new Blob([wav], { type: 'audio/wav' }), 'audio.wav')
-      form.append('model', String(this.params.model ?? 'whisper-1'))
+      // 内置 ASR 模型固定为 sensevoice-small（9529 内置引擎唯一接受的模型名）；
+      // params.model 可由客户端 session.start.voice.asrModel 覆盖，缺省走这里兜底。
+      form.append('model', String(this.params.model ?? 'sensevoice-small'))
       if (this.params.language !== undefined) {
         form.append('language', String(this.params.language))
       }

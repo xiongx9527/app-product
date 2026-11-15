@@ -20,6 +20,8 @@
  *     [--gateway-bundle /path/bundle.mjs]       # 可选：覆盖默认 <gateway>/dist/gateway.bundle.mjs
  *     [--gateway-cues /path/cues]               # 可选：覆盖默认 <gateway>/static/cues
  *     [--no-gateway]                            # 可选：跳过网关资产接入（退回纯 uni-app 资源接入）
+ *     [--app-name "小熊助手"]                    # 可选：应用显示名，改写 strings.xml 的 app_name（Android 桌面名）
+ *     [--icon-dir /path/branding]               # 可选：品牌资源目录，含 icon.png/splash.png/push.png，覆盖 res/drawable 同名文件
  *
  * 脚本只做「生成物接入」（前端 www、网关 bundle、libnode.so 与可选 AppKey）；Java/CMake/Manifest/
  * dcloud_properties 这些「源」都已在 app/ 模块里就位，脚本仅做幂等兜底，不新增源文件。
@@ -53,6 +55,8 @@ function parseArgs(argv) {
     else if (a === '--gateway-bundle') out.gatewayBundle = argv[++i]
     else if (a === '--gateway-cues') out.gatewayCues = argv[++i]
     else if (a === '--no-gateway') out.gateway = false
+    else if (a === '--app-name') out.appName = argv[++i]
+    else if (a === '--icon-dir') out.iconDir = argv[++i]
   }
   return out
 }
@@ -153,6 +157,52 @@ if (args.appkey) {
   console.log('[ok] AppKey 已写入 AndroidManifest.xml 的 dcloud_appkey')
 } else {
   console.warn('[warn] 未提供 --appkey：APK 可编译，但装到设备上会因 AppKey 校验失败而无法启动')
+}
+
+// 4.5) 应用品牌：显示名 + 图标（按环境从 .build_env.<env> 透传；不传则保持各平台默认）。
+//      - 显示名改写 res/values/strings.xml 的 app_name（Android 桌面名）。
+//      - 图标从 --icon-dir 拷 icon.png/splash.png/push.png 覆盖 res/drawable 同名文件（二进制，无法纯 env 配置）。
+const resRoot = join(moduleDir, 'src', 'main', 'res')
+if (args.appName) {
+  const name = args.appName.trim()
+  const stringsPath = join(resRoot, 'values', 'strings.xml')
+  if (existsSync(stringsPath)) {
+    let s = readFileSync(stringsPath, 'utf8')
+    if (/<string\s+name="app_name">/.test(s)) {
+      s = s.replace(/(<string\s+name="app_name">)[^<]*(<\/string>)/, `$1${name}$2`)
+    } else {
+      s = s.replace(/(<\/resources>)/, `    <string name="app_name">${name}</string>\n$1`)
+    }
+    writeFileSync(stringsPath, s)
+    console.log(`[ok] 应用显示名 -> ${name} (res/values/strings.xml)`)
+  } else {
+    console.warn(`[warn] 未找到 ${stringsPath}，跳过应用显示名注入`)
+  }
+} else {
+  console.log('[info] 未提供 --app-name：沿用 strings.xml 现有 app_name')
+}
+if (args.iconDir) {
+  const iconDir = resolve(args.iconDir)
+  if (!existsSync(iconDir)) {
+    console.error(`[error] --icon-dir 目录不存在: ${iconDir}`)
+    process.exit(1)
+  }
+  const drawableDir = join(resRoot, 'drawable')
+  mkdirSync(drawableDir, { recursive: true })
+  let copied = 0
+  for (const f of ['icon.png', 'splash.png', 'push.png']) {
+    const src = join(iconDir, f)
+    if (existsSync(src)) {
+      copyFileSync(src, join(drawableDir, f))
+      console.log(`[ok] 图标 -> res/drawable/${f}`)
+      copied += 1
+    }
+  }
+  if (copied === 0) {
+    console.warn(`[warn] ${iconDir} 下未找到 icon.png/splash.png/push.png，图标未覆盖（沿用默认）`)
+  }
+} else {
+  console.log('[info] 未提供 --icon-dir：沿用 res/drawable 默认图标')
 }
 
 // 5) 内嵌网关资产：gateway.bundle.mjs + static/cues/*.mp3 放进 assets/gateway/

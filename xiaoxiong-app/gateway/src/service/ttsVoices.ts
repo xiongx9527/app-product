@@ -1,36 +1,72 @@
 /**
  * 列出某来源的 TTS 音色（设置页「音色」下拉框数据源）。
  *
- * 与 LLM 模型同理：地址由网关持有并中转，前端只传 provider + 可选 api-key。
- * 但音色目录是「固定目录」而非「实时拉取」：
- * - 百炼（dashscope）：DashScope 的 CosyVoice 没有「列举音色」的开放接口，使用阿里云官方文档
- *   给出的标准 CosyVoice 音色目录（官方音色 ID，随官方文档更新；不写死地址）。
- * - 内置（builtin）：同样写死一份精选目录（以 Edge-TTS 常用音色为主），不再实时去语音服务拉
- *   /voice/v1/audio/voices——因为实时拉回来的描述无法国际化。写死后每条都带中/英名称与语言，
- *   由网关按前端传来的 lang 本地化标签。
+ * 与 LLM 模型同理：地址由网关持有并中转，前端只传 provider；网关再向 9529 本地语音服务
+ * 取真实目录，前端只负责渲染。
  *
- * 标签本地化：前端把当前语言通过 `lang` 传进来（默认 zh-CN），网关据此拼出对应语言的
- * 「名称（id）· 性别 · 语言」标签，前端只负责渲染、不做翻译。
+ * 数据来源（避免两端两套目录对不上）：
+ * - 内置（builtin）：直接中转 9529 的 /voice/v1/audio/voices。该目录由 voice.db / seed 维护，
+ *   每条带 desc_zh / desc_en（中英文描述），是 TTS 真正使用的同一份数据。网关不再写死一份
+ *   「精选 N 条」——此前就是网关另写了一份目录，才和真实引擎两条线、对不上，用户在下拉里
+ *   看到的既不是真实全集、描述也对不齐。9529 不可达时回退到下面这份内置清单（仅降级用）。
+ * - 百炼（dashscope）：DashScope 的 CosyVoice 没有「列举音色」的开放接口，云端地址也不放目录，
+ *   因此保留一份官方标准目录（官方音色 ID + 中英文名称/语言，按前端 lang 本地化标签）。
+ *
+ * 标签本地化：dashscope 由网关按 lang 拼标签；builtin 的描述（desc_zh / desc_en）来自 9529，
+ * 前端按 lang 选其一展示。
  */
 
 export interface VoiceList {
-  /** 该来源的默认音色（前端未选时回退用） */
+  /** 该来源的默认音色（前端未选时由 9529 内部兜底，前端不强制选中） */
   defaultVoice: string
-  /** 默认音色的所属模型（与音色一一对应，前端未选时回退用） */
+  /** 默认音色的所属模型 */
   defaultModel: string
+  /** 该来源的调用协议（http / ws / http-async），透传给前端参考 */
+  protocol?: string
   voices: VoiceOption[]
 }
 
 export interface VoiceOption {
+  /** 音色 id（如 zh-CN-XiaoxiaoNeural / longyumi_v3），前端随选择下发网关 */
   value: string
+  /** 展示名：内置即 id；百炼为「名称（id）· 性别 · 语言」 */
   label: string
-  /** 该音色所属的 TTS 模型（如 cosyvoice-v3-flash）；前端展示为「所属模型」列，并随选择下发，
-   *  网关据此决定实际请求的模型——模型不再写死。 */
+  /** 该音色所属的 TTS 模型；前端展示为「所属模型」列，并随选择下发，网关据此决定实际请求的模型 */
   model: string
+  /** 中文描述（来自 9529 目录） */
+  descZh?: string
+  /** 英文描述（来自 9529 目录） */
+  descEn?: string
 }
 
-/** 单条音色的双语素材：名称/语言各带中英文，性别是二值由函数转成对应词。 */
-interface VoiceSeed {
+/** 内置降级清单（仅当 9529 不可达时回退；正常情况以内置服务的实时目录为准）。 */
+const BUILTIN_VOICES_FALLBACK: { id: string; descZh: string; descEn: string; isDefault?: boolean }[] = [
+  { id: 'zh-CN-XiaoxiaoNeural', descZh: '女声·温柔自然（默认）', descEn: 'Female · gentle and natural (default)', isDefault: true },
+  { id: 'zh-CN-YunxiNeural', descZh: '男声·年轻活泼', descEn: 'Male · young and lively' },
+  { id: 'zh-CN-YunyangNeural', descZh: '男声·专业新闻播报', descEn: 'Male · professional news broadcast' },
+  { id: 'zh-CN-XiaoyiNeural', descZh: '女声·活泼可爱', descEn: 'Female · lively and cute' },
+  { id: 'zh-CN-YunjianNeural', descZh: '男声·成熟稳重', descEn: 'Male · mature and steady' },
+  { id: 'zh-CN-YunxiaNeural', descZh: '女声·甜美', descEn: 'Female · sweet' },
+  { id: 'zh-CN-XiaoxuanNeural', descZh: '女声·清新', descEn: 'Female · fresh' },
+  { id: 'zh-TW-HsiaoChenNeural', descZh: '女声·台湾腔', descEn: 'Female · Taiwanese accent' },
+  { id: 'zh-TW-YunJheNeural', descZh: '男声·台湾腔', descEn: 'Male · Taiwanese accent' },
+  { id: 'zh-TW-HsiaoYuNeural', descZh: '女声·台湾腔·温柔', descEn: 'Female · Taiwanese accent · gentle' },
+  { id: 'zh-HK-HiuGaaiNeural', descZh: '女声·粤语', descEn: 'Female · Cantonese' },
+  { id: 'zh-HK-WanLungNeural', descZh: '男声·粤语', descEn: 'Male · Cantonese' },
+  { id: 'zh-HK-HiuMaanNeural', descZh: '女声·粤语·活泼', descEn: 'Female · Cantonese · lively' },
+  { id: 'en-US-AriaNeural', descZh: '女声·自然通用', descEn: 'Female · natural and versatile' },
+  { id: 'en-US-GuyNeural', descZh: '男声·沉稳', descEn: 'Male · calm' },
+  { id: 'en-US-JennyNeural', descZh: '女声·亲切', descEn: 'Female · friendly' },
+  { id: 'en-GB-SoniaNeural', descZh: '女声·优雅英音', descEn: 'Female · elegant British accent' },
+  { id: 'en-GB-RyanNeural', descZh: '男声·英音', descEn: 'Male · British accent' },
+  { id: 'ja-JP-NanamiNeural', descZh: '女声·柔和', descEn: 'Female · soft' },
+  { id: 'ja-JP-KeitaNeural', descZh: '男声·清晰', descEn: 'Male · clear' },
+]
+
+// ── 以下百炼部分保持原样（音色调用的旧格式、官方约束校验均不动） ──
+
+/** 单条音色的双语素材：名称/性别/语言各带中英文。 */
+interface DashscopeVoiceSeed {
   id: string
   nameZh: string
   nameEn: string
@@ -50,7 +86,7 @@ function genderLabel(gender: 'male' | 'female', en: boolean): string {
   return gender === 'female' ? '女' : '男'
 }
 
-function formatVoice(seed: VoiceSeed, lang?: string): VoiceOption {
+function dashscopeFormat(seed: DashscopeVoiceSeed, lang?: string): { value: string; label: string; model: string } {
   const en = isEn(lang)
   const name = en ? seed.nameEn : seed.nameZh
   const gender = genderLabel(seed.gender, en)
@@ -78,7 +114,7 @@ export const DASHSCOPE_DEFAULT_MODEL = 'cosyvoice-v3-flash'
 /** 默认音色：YUMI（longyumi_v3，官方「语音助手」场景，最贴合本助手对讲）。 */
 export const DASHSCOPE_DEFAULT_VOICE = 'longyumi_v3'
 const V3 = DASHSCOPE_DEFAULT_MODEL
-const DASHSCOPE_VOICES: VoiceSeed[] = [
+const DASHSCOPE_VOICES: DashscopeVoiceSeed[] = [
   // 社交陪伴 / 标杆
   { id: 'longanyang', nameZh: '龙安洋', nameEn: 'Longanyang', gender: 'male', langZh: '中文、英文', langEn: 'Chinese, English', model: V3 },
   { id: 'longanhuan', nameZh: '龙安欢', nameEn: 'Longanhuan', gender: 'female', langZh: '中文、英文', langEn: 'Chinese, English', model: V3 },
@@ -180,34 +216,64 @@ export function resolveDashscopeVoice(model: string, voice: string): string {
   return isDashscopeVoiceValid(model, voice) ? voice : DASHSCOPE_DEFAULT_VOICE
 }
 
-/** 内置语音服务精选目录（以 Edge-TTS 常用音色为主；写死以便国际化，不实时拉取）。 */
-const BUILTIN_VOICES: VoiceSeed[] = [
-  { id: 'zh-CN-XiaoxiaoNeural', nameZh: '晓晓', nameEn: 'Xiaoxiao', gender: 'female', langZh: '中文', langEn: 'Chinese', model: 'edge-tts' },
-  { id: 'zh-CN-YunxiNeural', nameZh: '云希', nameEn: 'Yunxi', gender: 'male', langZh: '中文', langEn: 'Chinese', model: 'edge-tts' },
-  { id: 'zh-CN-YunyangNeural', nameZh: '云扬', nameEn: 'Yunyang', gender: 'male', langZh: '中文', langEn: 'Chinese', model: 'edge-tts' },
-  { id: 'zh-CN-XiaoyiNeural', nameZh: '晓伊', nameEn: 'Xiaoyi', gender: 'female', langZh: '中文', langEn: 'Chinese', model: 'edge-tts' },
-  { id: 'zh-CN-YunjianNeural', nameZh: '云健', nameEn: 'Yunjian', gender: 'male', langZh: '中文', langEn: 'Chinese', model: 'edge-tts' },
-  { id: 'zh-CN-XiaochenNeural', nameZh: '晓辰', nameEn: 'Xiaochen', gender: 'female', langZh: '中文', langEn: 'Chinese', model: 'edge-tts' },
-  { id: 'en-US-AriaNeural', nameZh: '艾莉娅', nameEn: 'Aria', gender: 'female', langZh: '英文', langEn: 'English', model: 'edge-tts' },
-  { id: 'en-US-GuyNeural', nameZh: '盖伊', nameEn: 'Guy', gender: 'male', langZh: '英文', langEn: 'English', model: 'edge-tts' },
-  { id: 'en-US-JennyNeural', nameZh: '珍妮', nameEn: 'Jenny', gender: 'female', langZh: '英文', langEn: 'English', model: 'edge-tts' },
-]
+/**
+ * 内置音色目录：优先中转 9529 本地语音服务的 /voice/v1/audio/voices（voice.db / seed 维护、
+ * 含 desc_zh / desc_en，与真实 TTS 同源）；9529 不可达时回退到内置降级清单，保证设置页仍可用。
+ */
+async function listBuiltinVoices(
+  builtinUrl: string,
+): Promise<VoiceList> {
+  const base = (builtinUrl || 'http://127.0.0.1:9529').replace(/\/+$/, '')
+  try {
+    const res = await fetch(`${base}/voice/v1/audio/voices?provider=builtin`)
+    if (!res.ok) throw new Error(`voice catalog upstream ${res.status}`)
+    const data = (await res.json()) as {
+      default?: string
+      model?: string
+      protocol?: string
+      voices?: Array<{ id: string; model?: string; desc_zh?: string; desc_en?: string; is_default?: boolean }>
+    }
+    const voices: VoiceOption[] = (data.voices ?? []).map((v) => ({
+      value: v.id,
+      label: v.id,
+      model: v.model ?? data.model ?? 'edge-tts',
+      descZh: v.desc_zh || undefined,
+      descEn: v.desc_en || undefined,
+    }))
+    return {
+      defaultVoice: data.default ?? (BUILTIN_VOICES_FALLBACK.find((v) => v.isDefault)?.id ?? BUILTIN_VOICES_FALLBACK[0].id),
+      defaultModel: data.model ?? 'edge-tts',
+      protocol: data.protocol || 'http',
+      voices,
+    }
+  } catch {
+    // 降级：9529 不可达时仍给一份可用清单（无实时目录增量）。
+    return {
+      defaultVoice: BUILTIN_VOICES_FALLBACK.find((v) => v.isDefault)?.id ?? BUILTIN_VOICES_FALLBACK[0].id,
+      defaultModel: 'edge-tts',
+      protocol: 'http',
+      voices: BUILTIN_VOICES_FALLBACK.map((v) => ({
+        value: v.id,
+        label: v.id,
+        model: 'edge-tts',
+        descZh: v.descZh,
+        descEn: v.descEn,
+      })),
+    }
+  }
+}
 
 export async function listTtsVoices(
   provider: 'builtin' | 'dashscope',
   lang?: string,
+  config?: { voiceBuiltinUrl?: string },
 ): Promise<VoiceList> {
   if (provider === 'dashscope') {
     return {
       defaultVoice: DASHSCOPE_DEFAULT_VOICE,
       defaultModel: DASHSCOPE_DEFAULT_MODEL,
-      voices: DASHSCOPE_VOICES.map((v) => formatVoice(v, lang)),
+      voices: DASHSCOPE_VOICES.map((v) => dashscopeFormat(v, lang)),
     }
   }
-  // 内置：固定精选目录，不再实时去语音服务拉取（实时内容无法国际化）。
-  return {
-    defaultVoice: 'zh-CN-XiaoxiaoNeural',
-    defaultModel: 'edge-tts',
-    voices: BUILTIN_VOICES.map((v) => formatVoice(v, lang)),
-  }
+  return listBuiltinVoices(config?.voiceBuiltinUrl ?? '')
 }
