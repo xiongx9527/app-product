@@ -31,18 +31,18 @@ Linux 也顺带可用（见文末）。
 命令：
 
 ```bash
-./scripts/services.sh                       # 等同 start all
-./scripts/services.sh start                 # 启动全部
-./scripts/services.sh start voice           # 只启动本地 AI 服务
-./scripts/services.sh start ollama voice    # 启动多个指定服务
-./scripts/services.sh stop all              # 按相反顺序停止
-./scripts/services.sh restart voice         # 重启指定服务
-./scripts/services.sh status                # 查看全部服务状态
-./scripts/services.sh check                 # 只检查依赖，不启动
-./scripts/services.sh log                   # 各服务日志尾部（默认 80 行）
-./scripts/services.sh log voice -f          # 持续跟踪单个服务日志
-./scripts/services.sh log gateway -n 200    # 查看最近 200 行
-./scripts/services.sh --help                # 完整用法
+./model-proxy/services.sh                       # 等同 start all
+./model-proxy/services.sh start                 # 启动全部
+./model-proxy/services.sh start voice           # 只启动本地 AI 服务
+./model-proxy/services.sh start ollama voice    # 启动多个指定服务
+./model-proxy/services.sh stop all              # 按相反顺序停止
+./model-proxy/services.sh restart voice         # 重启指定服务
+./model-proxy/services.sh status                # 查看全部服务状态
+./model-proxy/services.sh check                 # 只检查依赖，不启动
+./model-proxy/services.sh log                   # 各服务日志尾部（默认 80 行）
+./model-proxy/services.sh log voice -f          # 持续跟踪单个服务日志
+./model-proxy/services.sh log gateway -n 200    # 查看最近 200 行
+./model-proxy/services.sh --help                # 完整用法
 ```
 
 `--help` 直接由脚本头部注释生成，改用法只需改注释。
@@ -148,31 +148,31 @@ STT / TTS。`on` 强制启用但没配上时，启动前的 `preflight.py` 检�
 安装（默认 STT + TTS，会下载约 240MB 的 SenseVoice 模型）：
 
 ```bash
-./scripts/install-voice.sh
+./model-proxy/install-voice.sh
 ```
 
 按需裁剪：
 
 ```bash
-./scripts/install-voice.sh --tts-only    # 只装 TTS，不下载模型
-./scripts/install-voice.sh --stt-only    # 只装 STT，不装 edge-tts / ffmpeg
-./scripts/install-voice.sh --proxy-only  # 只装基础依赖（仅用 LLM、不用本地 STT/TTS 时）
-./scripts/install-voice.sh --skip-model  # 装 STT 依赖但先不下载模型
-./scripts/install-voice.sh --dry-run     # 只打印步骤，不实际安装或下载
+./model-proxy/install-voice.sh --tts-only    # 只装 TTS，不下载模型
+./model-proxy/install-voice.sh --stt-only    # 只装 STT，不装 edge-tts / ffmpeg
+./model-proxy/install-voice.sh --proxy-only  # 只装基础依赖（仅用 LLM、不用本地 STT/TTS 时）
+./model-proxy/install-voice.sh --skip-model  # 装 STT 依赖但先不下载模型
+./model-proxy/install-voice.sh --dry-run     # 只打印步骤，不实际安装或下载
 ```
 
 启动与管理（后台常驻，推荐）：
 
 ```bash
-./scripts/voice.sh start                 # 后台启动，默认 0.0.0.0:9529
-./scripts/voice.sh start --port 9531     # 附加参数原样传给 start-voice.sh
-./scripts/voice.sh status                # 是否在运行、监听端口、最近一行日志
-./scripts/voice.sh check                 # 只做启动前依赖检查
-./scripts/voice.sh log                   # 日志尾部（默认 80 行）
-./scripts/voice.sh log -f                # 持续跟踪日志
-./scripts/voice.sh restart               # 重新读取配置并重启
-./scripts/voice.sh stop                  # 停止
-./scripts/voice.sh run                   # 前台运行，Ctrl+C 停止
+./model-proxy/voice.sh start                 # 后台启动，默认 0.0.0.0:9529
+./model-proxy/voice.sh start --port 9531     # 附加参数原样传给 start-voice.sh
+./model-proxy/voice.sh status                # 是否在运行、监听端口、最近一行日志
+./model-proxy/voice.sh check                 # 只做启动前依赖检查
+./model-proxy/voice.sh log                   # 日志尾部（默认 80 行）
+./model-proxy/voice.sh log -f                # 持续跟踪日志
+./model-proxy/voice.sh restart               # 重新读取配置并重启
+./model-proxy/voice.sh stop                  # 停止
+./model-proxy/voice.sh run                   # 前台运行，Ctrl+C 停止
 ```
 
 启动参数（`start` 后面可跟）：
@@ -185,7 +185,7 @@ STT / TTS。`on` 强制启用但没配上时，启动前的 `preflight.py` 检�
 --api-key off        # 关闭鉴权（默认）
 ```
 
-也可以跳过管理器直接前台运行：`./scripts/start-voice.sh`。
+也可以跳过管理器直接前台运行：`./model-proxy/start-voice.sh`。
 日志和 PID 在 `$VOICE_HOME/voice.log` / `$VOICE_HOME/voice.pid`。
 
 ### Windows
@@ -229,8 +229,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-voice.ps1 -Port 9531
 ```text
 [check] 缺少 / 异常：STT: SenseVoice 模型未就绪：.../models/sensevoice
 [check] 启动脚本只检查依赖，不会自动安装；请手动执行下面的命令：
-  ./scripts/install-voice.sh                # 本地 STT + TTS（含模型）
-  ./scripts/install-voice.sh --proxy-only   # 仅基础依赖（LLM-only 场景）
+  ./model-proxy/install-voice.sh                # 本地 STT + TTS（含模型）
+  ./model-proxy/install-voice.sh --proxy-only   # 仅基础依赖（LLM-only 场景）
 ```
 
 检查内容：
@@ -248,8 +248,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-voice.ps1 -Port 9531
 “本来就没装”而拒绝启动。
 
 依赖缺失时，按日志里的命令手动安装即可；安装完成后重新执行
-`./scripts/voice.sh start`（Windows 用 `scripts\voice.cmd start`）。
-排查依赖问题可直接运行 `./scripts/voice.sh check` / `scripts\voice.cmd check`。
+`./model-proxy/voice.sh start`（Windows 用 `scripts\voice.cmd start`）。
+排查依赖问题可直接运行 `./model-proxy/voice.sh check` / `scripts\voice.cmd check`。
 
 ### 配置文件
 
@@ -278,7 +278,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-voice.ps1 -Port 9531
 | `LLM_UPSTREAM_BASE_URL` | 空 | LLM 纯转发代理的上游；空则 LLM 关闭，只跑本地 STT / TTS |
 
 配置文件支持 `~` 和 `$VOICE_HOME` 展开，语法就是一行一个 `KEY=VALUE`，
-完整注释见 `scripts/voice/voice.conf.example`。
+完整注释见 `model-proxy/voice/voice.conf.example`。
 
 ### API Key（默认关闭）
 
@@ -310,8 +310,8 @@ TTS_API_KEY=<与 VOICE_API_KEY 相同>
 的场景；本地 STT / TTS 仍需各自依赖：
 
 ```bash
-./scripts/install-voice.sh --proxy-only   # 仅基础依赖（LLM-only）
-./scripts/install-voice.sh                # 本地 STT + TTS（含模型 / ffmpeg）
+./model-proxy/install-voice.sh --proxy-only   # 仅基础依赖（LLM-only）
+./model-proxy/install-voice.sh                # 本地 STT + TTS（含模型 / ffmpeg）
 ```
 
 Windows 用 `scripts\install-voice.cmd -ProxyOnly`。`install-mode` 记录最后一次
@@ -373,7 +373,7 @@ TTS_PARAMS={"voice":"zh-CN-XiaoxiaoNeural"}
 安装：
 
 ```bash
-./scripts/install-ollama.sh
+./model-proxy/install-ollama.sh
 ```
 
 - 有 Homebrew 时用 `brew install ollama`。
@@ -383,9 +383,9 @@ TTS_PARAMS={"voice":"zh-CN-XiaoxiaoNeural"}
 下载模型：
 
 ```bash
-./scripts/pull-ollama-models.sh                  # 按 scripts/ollama-models.txt 下载
-./scripts/pull-ollama-models.sh gpt-oss:20b      # 只下载指定模型
-./scripts/pull-ollama-models.sh --dry-run        # 只打印清单，不联网
+./model-proxy/pull-ollama-models.sh                  # 按 model-proxy/ollama-models.txt 下载
+./model-proxy/pull-ollama-models.sh gpt-oss:20b      # 只下载指定模型
+./model-proxy/pull-ollama-models.sh --dry-run        # 只打印清单，不联网
 ```
 
 安装完成后打开 Ollama.app（或运行 `ollama serve`），下载脚本会自动检测服务。
@@ -412,7 +412,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\pull-ollama-models.ps1 -DryRu
 
 ### 模型清单
 
-`scripts/ollama-models.txt` 一行一个模型，`#` 开头为注释，空行忽略。默认是
+`model-proxy/ollama-models.txt` 一行一个模型，`#` 开头为注释，空行忽略。默认是
 `gpt-oss:20b`（约 13GB），与网关默认模型 `gpt-oss:120b-cloud` 同族但可在本机运行；
 内存较小的机器可改用清单里的 `qwen3:8b`。云端模型（如 `gpt-oss:120b-cloud`）不占
 本地磁盘，但需要先执行 `ollama login`。

@@ -24,7 +24,7 @@ out.icons = await page.locator('.row-actions svg.ico').count() // 每行 2 个�
 out.switchCount = await page.locator('.list-row uni-switch').count()
 
 // 截图
-await page.screenshot({ path: '/Users/xiongxiao/Workspaces/Idea/codes/New/app-product/scripts/mcp_list.png', fullPage: false })
+await page.screenshot({ path: new URL('mcp_list.png', import.meta.url).pathname, fullPage: false })
 console.log(JSON.stringify(out, null, 2))
 console.log('logs:', logs.join(' | '))
 await browser.close()

@@ -28,7 +28,7 @@
 
 ```
 app-product/
-├── scripts/                # 开发辅助：安装 Ollama / 本地 AI 服务、统一启停各服务
+├── model-proxy/            # 开发辅助：安装 Ollama / 本地 AI 服务、统一启停各服务（模型代理）
 ├── xiaoxiong-app/
 │   ├── uni_app/            # 客户端
 │   │   └── src/
@@ -62,18 +62,18 @@ App 与鸿蒙需要 HBuilderX / DevEco Studio 自定义基座，原生唤醒插�
 macOS：
 
 ```bash
-./scripts/install-ollama.sh
-./scripts/pull-ollama-models.sh
+./model-proxy/install-ollama.sh
+./model-proxy/pull-ollama-models.sh
 ```
 
 Windows（CMD / PowerShell）：
 
 ```bat
-scripts\install-ollama.cmd
-scripts\pull-ollama-models.cmd
+model-proxy\install-ollama.cmd
+model-proxy\pull-ollama-models.cmd
 ```
 
-模型清单在 `scripts/ollama-models.txt`，也可直接把模型名传给下载脚本。用法与网关配置对应关系见 `scripts/README.md`。
+模型清单在 `model-proxy/ollama-models.txt`，也可直接把模型名传给下载脚本。用法与网关配置对应关系见 `model-proxy/README.md`。
 
 ### 本地 AI 服务（可选）
 
@@ -85,21 +85,21 @@ OpenAI 兼容上游，不加载本地模型、不绑定 Ollama）。
 macOS：
 
 ```bash
-./scripts/install-voice.sh
-./scripts/voice.sh start      # 后台启动
-./scripts/voice.sh status     # 运行状态
-./scripts/voice.sh log        # 查看日志
-./scripts/voice.sh stop       # 停止
+./model-proxy/install-voice.sh
+./model-proxy/voice.sh start      # 后台启动
+./model-proxy/voice.sh status     # 运行状态
+./model-proxy/voice.sh log        # 查看日志
+./model-proxy/voice.sh stop       # 停止
 ```
 
 Windows（CMD / PowerShell）：
 
 ```bat
-scripts\install-voice.cmd
-scripts\voice.cmd start
-scripts\voice.cmd status
-scripts\voice.cmd log
-scripts\voice.cmd stop
+model-proxy\install-voice.cmd
+model-proxy\voice.cmd start
+model-proxy\voice.cmd status
+model-proxy\voice.cmd log
+model-proxy\voice.cmd stop
 ```
 
 `start` / `restart` / `check` 会先检查依赖环境：本地模式检查 Python 包、SenseVoice 模型和
@@ -111,25 +111,25 @@ ffmpeg；代理模式检查基础包和上游地址。检查不通过时服务�
 OpenAI 兼容服务（需先在 `voice.conf` 填上游地址，否则启动检查会失败）。
 监听地址、端口、API Key、上游地址等都在首次安装生成的 `voice.conf` 里配置；
 默认监听 `0.0.0.0:9529`，默认不启用 API Key。
-完整配置项、代理示例和网关 `.env` 对应关系见 `scripts/README.md`。
+完整配置项、代理示例和网关 `.env` 对应关系见 `model-proxy/README.md`。
 
 ### 一键启停所有服务（macOS / Linux）
 
-上面的 Ollama、本地 AI 服务，加上 Node 网关与前端，可以用 `scripts/services.sh`
+上面的 Ollama、本地 AI 服务，加上 Node 网关与前端，可以用 `model-proxy/services.sh`
 统一启停，不用逐个敲命令：
 
 ```bash
-./scripts/services.sh start          # 启动 ollama / voice / gateway / uniapp
-./scripts/services.sh status         # 查看各服务状态
-./scripts/services.sh log voice -f   # 跟踪某个服务日志
-./scripts/services.sh stop all       # 全部停止
+./model-proxy/services.sh start          # 启动 ollama / voice / gateway / uniapp
+./model-proxy/services.sh status         # 查看各服务状态
+./model-proxy/services.sh log voice -f   # 跟踪某个服务日志
+./model-proxy/services.sh stop all       # 全部停止
 ```
 
 也可只操作部分服务（`start voice`、`restart gateway`、`stop backend` 等），
 或先 `check` 只做依赖检查。它是编排层，`voice` 仍由 `voice.sh` 管理、
 `gateway` / `uniapp` 仍由 `xiaoxiong-app/scripts/dev-server.mjs` 管理；
 启动前不会自动安装依赖。LLM 走远程代理时不需要本机 Ollama，可用
-`start voice gateway uniapp`。完整用法见 `scripts/README.md`。
+`start voice gateway uniapp`。完整用法见 `model-proxy/README.md`。
 目前统一管理器只有 bash 版（macOS / Linux），Windows 仍用各服务各自的 `.cmd` 脚本。
 
 ## 配置模型
@@ -172,5 +172,5 @@ OpenAI 兼容服务（需先在 `voice.conf` 填上游地址，否则启动检�
 - 设计文档：`docs/superpowers/specs/2026-11-06-app-product-design.md`
 - 协议契约：`contracts/README.md`
 - 客户端说明：`xiaoxiong-app/uni_app/README.md`
-- 开发脚本说明：`scripts/README.md`
+- 开发脚本说明：`model-proxy/README.md`
 - 协作约定：`AGENTS.md`

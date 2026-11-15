@@ -8,12 +8,12 @@
 #   4. 首次安装时把 voice.conf.example 复制成 $VOICE_HOME/voice.conf。
 #
 # 用法:
-#   ./scripts/install-voice.sh                 # 同时安装 STT + TTS，并下载 SenseVoice 模型
-#   ./scripts/install-voice.sh --tts-only      # 只安装 TTS，不下载模型
-#   ./scripts/install-voice.sh --stt-only      # 只安装 STT，不装 edge-tts / ffmpeg
-#   ./scripts/install-voice.sh --proxy-only    # 只装基础依赖，代理远程 OpenAI 兼容服务
-#   ./scripts/install-voice.sh --skip-model    # 安装 STT 依赖但不下载模型
-#   ./scripts/install-voice.sh --dry-run       # 只打印步骤，不实际安装/下载
+#   ./model-proxy/install-voice.sh                 # 同时安装 STT + TTS，并下载 SenseVoice 模型
+#   ./model-proxy/install-voice.sh --tts-only      # 只安装 TTS，不下载模型
+#   ./model-proxy/install-voice.sh --stt-only      # 只安装 STT，不装 edge-tts / ffmpeg
+#   ./model-proxy/install-voice.sh --proxy-only    # 只装基础依赖，代理远程 OpenAI 兼容服务
+#   ./model-proxy/install-voice.sh --skip-model    # 安装 STT 依赖但不下载模型
+#   ./model-proxy/install-voice.sh --dry-run       # 只打印步骤，不实际安装/下载
 #
 # 环境变量:
 #   VOICE_HOME  运行目录，默认 ~/.app-product/voice
@@ -278,12 +278,12 @@ log "完成。配置文件：${CONFIG_FILE}"
 log "安装模式：${INSTALL_MODE}（启动检查会据此跳过未安装的能力）"
 log ""
 log "启动服务（后台管理，推荐）："
-log "  ./scripts/voice.sh start"
-log "  ./scripts/voice.sh status"
-log "  ./scripts/voice.sh log"
-log "  ./scripts/voice.sh stop"
+log "  ./model-proxy/voice.sh start"
+log "  ./model-proxy/voice.sh status"
+log "  ./model-proxy/voice.sh log"
+log "  ./model-proxy/voice.sh stop"
 log ""
-log "前台运行：./scripts/start-voice.sh"
+log "前台运行：./model-proxy/start-voice.sh"
 log "启动前会检查依赖；缺失时终端和日志会打印安装命令，不会自动安装。"
 if [ "$PROXY_ONLY" -eq 1 ]; then
   log ""

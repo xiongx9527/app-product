@@ -11,16 +11,16 @@
 #   all      ollama + voice + gateway + uniapp（默认）
 #
 # 用法:
-#   ./scripts/services.sh start                 # 全部启动
-#   ./scripts/services.sh start voice           # 只启动语音 / AI 服务
-#   ./scripts/services.sh start ollama voice    # 启动多个指定服务
-#   ./scripts/services.sh stop all              # 按相反顺序停止
-#   ./scripts/services.sh restart voice         # 重启指定服务
-#   ./scripts/services.sh status [服务...]      # 查看状态
-#   ./scripts/services.sh log [服务...]         # 日志尾部（默认 80 行）
-#   ./scripts/services.sh log voice -f          # 跟踪单个服务日志
-#   ./scripts/services.sh log voice -n 200      # 查看最近 200 行
-#   ./scripts/services.sh check [服务...]       # 只检查依赖，不启动
+#   ./model-proxy/services.sh start                 # 全部启动
+#   ./model-proxy/services.sh start voice           # 只启动语音 / AI 服务
+#   ./model-proxy/services.sh start ollama voice    # 启动多个指定服务
+#   ./model-proxy/services.sh stop all              # 按相反顺序停止
+#   ./model-proxy/services.sh restart voice         # 重启指定服务
+#   ./model-proxy/services.sh status [服务...]      # 查看状态
+#   ./model-proxy/services.sh log [服务...]         # 日志尾部（默认 80 行）
+#   ./model-proxy/services.sh log voice -f          # 跟踪单个服务日志
+#   ./model-proxy/services.sh log voice -n 200      # 查看最近 200 行
+#   ./model-proxy/services.sh check [服务...]       # 只检查依赖，不启动
 #
 # 说明:
 #   - voice 仍由 voice.sh 管理，gateway / uniapp 仍由
@@ -179,7 +179,7 @@ start_ollama() {
     return 1
   fi
   if ! command -v ollama >/dev/null 2>&1; then
-    log "Ollama：未安装。先运行 ./scripts/install-ollama.sh"
+    log "Ollama：未安装。先运行 ./model-proxy/install-ollama.sh"
     return 1
   fi
 
@@ -259,7 +259,7 @@ status_ollama() {
 
 check_ollama() {
   if ! command -v ollama >/dev/null 2>&1; then
-    log "Ollama：未安装。运行 ./scripts/install-ollama.sh 后重试。"
+    log "Ollama：未安装。运行 ./model-proxy/install-ollama.sh 后重试。"
     return 1
   fi
   if ! ollama_is_local; then

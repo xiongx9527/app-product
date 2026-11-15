@@ -7,7 +7,7 @@
     LLM 类型，避免对话校验的 validate()（find 搜全部类型）误把向量模型当对话模型放行。
 
 运行（无需起 9529 服务，用临时 SQLite）：
-    cd scripts/voice
+    cd model-proxy/voice
     .venv/bin/python tests/test_llm_models_embed.py
 
 锁住的关键点：

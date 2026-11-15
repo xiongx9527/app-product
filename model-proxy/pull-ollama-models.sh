@@ -2,9 +2,9 @@
 # 下载 Ollama 模型（macOS / Linux）。
 #
 # 用法：
-#   ./scripts/pull-ollama-models.sh                     # 按 scripts/ollama-models.txt 下载
-#   ./scripts/pull-ollama-models.sh gpt-oss:20b qwen3:8b  # 只下载指定模型
-#   ./scripts/pull-ollama-models.sh --dry-run           # 只打印要下载的模型，不联网
+#   ./model-proxy/pull-ollama-models.sh                     # 按 model-proxy/ollama-models.txt 下载
+#   ./model-proxy/pull-ollama-models.sh gpt-oss:20b qwen3:8b  # 只下载指定模型
+#   ./model-proxy/pull-ollama-models.sh --dry-run           # 只打印要下载的模型，不联网
 #
 # 服务未启动时会尝试后台拉起 ollama serve，日志在系统临时目录。
 set -euo pipefail
@@ -24,9 +24,9 @@ for arg in "$@"; do
 下载 Ollama 模型（macOS / Linux）。
 
 用法：
-  ./scripts/pull-ollama-models.sh                       按 scripts/ollama-models.txt 下载
-  ./scripts/pull-ollama-models.sh gpt-oss:20b qwen3:8b  只下载指定模型
-  ./scripts/pull-ollama-models.sh --dry-run             只打印要下载的模型，不联网
+  ./model-proxy/pull-ollama-models.sh                       按 model-proxy/ollama-models.txt 下载
+  ./model-proxy/pull-ollama-models.sh gpt-oss:20b qwen3:8b  只下载指定模型
+  ./model-proxy/pull-ollama-models.sh --dry-run             只打印要下载的模型，不联网
 EOF
       exit 0
       ;;
@@ -65,7 +65,7 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 if ! command -v ollama >/dev/null 2>&1; then
-  echo "未找到 ollama。请先运行 ./scripts/install-ollama.sh。" >&2
+  echo "未找到 ollama。请先运行 ./model-proxy/install-ollama.sh。" >&2
   exit 1
 fi
 

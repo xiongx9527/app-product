@@ -2,7 +2,7 @@
 # 安装 Ollama（macOS / Linux）。
 #
 # 用法：
-#   ./scripts/install-ollama.sh
+#   ./model-proxy/install-ollama.sh
 #
 # 说明：
 #   - macOS 优先用 Homebrew；没有 Homebrew 时给出官方安装包地址，不擅自改动系统。
@@ -34,7 +34,7 @@ case "$os" in
   1. 安装 curl / Homebrew 后重跑本脚本：https://brew.sh
   2. 直接下载 macOS 安装包：https://ollama.com/download/Ollama.dmg
 
-安装完成后打开 Ollama.app，再运行 ./scripts/pull-ollama-models.sh。
+安装完成后打开 Ollama.app，再运行 ./model-proxy/pull-ollama-models.sh。
 EOF
       exit 1
     fi
@@ -63,4 +63,4 @@ esac
 
 echo
 echo "验证：ollama --version && ollama list"
-echo "下载模型：./scripts/pull-ollama-models.sh"
+echo "下载模型：./model-proxy/pull-ollama-models.sh"

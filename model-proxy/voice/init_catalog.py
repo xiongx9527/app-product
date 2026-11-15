@@ -7,11 +7,11 @@
     部署 / 换机 / 升级时跑一次即可；服务启动时的首次播种也走同一份数据。
 
 用法：
-    python3 scripts/voice/init_catalog.py                 # 补齐缺失项（幂等，不动已有数据）
-    python3 scripts/voice/init_catalog.py --force         # 用种子覆盖已有项（改描述/协议后同步）
-    python3 scripts/voice/init_catalog.py --reset         # 先删该提供商的目录再灌（彻底重建）
-    python3 scripts/voice/init_catalog.py --provider deepseek
-    python3 scripts/voice/init_catalog.py --db /tmp/voice.db --dry-run --json
+    python3 model-proxy/voice/init_catalog.py                 # 补齐缺失项（幂等，不动已有数据）
+    python3 model-proxy/voice/init_catalog.py --force         # 用种子覆盖已有项（改描述/协议后同步）
+    python3 model-proxy/voice/init_catalog.py --reset         # 先删该提供商的目录再灌（彻底重建）
+    python3 model-proxy/voice/init_catalog.py --provider deepseek
+    python3 model-proxy/voice/init_catalog.py --db /tmp/voice.db --dry-run --json
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@
 SenseVoice（二者都无上游概念，ASR 非 WAV 直接 400）。
 
 运行方式（需要 Python 3.10+）：
-    cd scripts/voice
+    cd model-proxy/voice
     python -m venv .venv && . .venv/bin/activate
     pip install "fastapi>=0.115,<1" "uvicorn>=0.34,<1" "python-multipart>=0.0.20,<1" "httpx>=0.27,<1"
     python tests/test_routing_httpx.py

@@ -1,5 +1,5 @@
 # ════════════════════════════════════════════════════════════════
-# 本地 AI 服务配置（scripts/voice/openai_voice_server.py）
+# 本地 AI 服务配置（model-proxy/voice/openai_voice_server.py）
 #
 # 重要：voice.conf 只负责「基础设施」几项，其余所有业务配置
 # （ASR / LLM / TTS 的上游地址、模型、音色、鉴权等）都存放在本地

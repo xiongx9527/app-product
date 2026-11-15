@@ -294,10 +294,10 @@ def install_script_hint() -> list[str]:
             r"  scripts\install-voice.cmd -SttOnly        # 只装本地 STT",
         ]
     return [
-        "  ./scripts/install-voice.sh                # 本地 STT + TTS（含模型）",
-        "  ./scripts/install-voice.sh --proxy-only   # 只装代理模式基础依赖",
-        "  ./scripts/install-voice.sh --tts-only     # 只装本地 TTS",
-        "  ./scripts/install-voice.sh --stt-only     # 只装本地 STT",
+        "  ./model-proxy/install-voice.sh                # 本地 STT + TTS（含模型）",
+        "  ./model-proxy/install-voice.sh --proxy-only   # 只装代理模式基础依赖",
+        "  ./model-proxy/install-voice.sh --tts-only     # 只装本地 TTS",
+        "  ./model-proxy/install-voice.sh --stt-only     # 只装本地 STT",
     ]
 
 
@@ -321,7 +321,7 @@ def finish() -> int:
             print(f"  {item}", flush=True)
 
     print("", flush=True)
-    line("修复后重新运行启动命令；完整说明见 scripts/README.md。")
+    line("修复后重新运行启动命令；完整说明见 model-proxy/README.md。")
     return 1
 
 
@@ -329,7 +329,7 @@ def main() -> int:
     line(f"Python: {sys.version.split()[0]}（{sys.executable}）")
     if sys.version_info < (3, 10):
         problem("Python 版本过低，需要 3.10 或更高版本")
-        hints.append("升级 Python 后重新运行 scripts/install-voice 脚本")
+        hints.append("升级 Python 后重新运行 model-proxy/install-voice 脚本")
 
     missing_base = [
         label for label, module in BASE_MODULES if not has_module(module)

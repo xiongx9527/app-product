@@ -9,13 +9,13 @@
 # 由管理面板 ASR「内置」行的「测试可用」按钮按需验证。检查失败只打印安装方法，不自动安装。
 #
 # 用法:
-#   ./scripts/start-voice.sh
-#   ./scripts/start-voice.sh --port 9531
-#   ./scripts/start-voice.sh --ip 127.0.0.1
-#   ./scripts/start-voice.sh --config /path/to/voice.conf
-#   ./scripts/start-voice.sh --require-api-key
-#   ./scripts/start-voice.sh --api-key-file /path/to/api-key
-#   ./scripts/start-voice.sh --api-key off
+#   ./model-proxy/start-voice.sh
+#   ./model-proxy/start-voice.sh --port 9531
+#   ./model-proxy/start-voice.sh --ip 127.0.0.1
+#   ./model-proxy/start-voice.sh --config /path/to/voice.conf
+#   ./model-proxy/start-voice.sh --require-api-key
+#   ./model-proxy/start-voice.sh --api-key-file /path/to/api-key
+#   ./model-proxy/start-voice.sh --api-key off
 #
 # 环境变量:
 #   VOICE_HOME         运行目录，默认 ~/.app-product/voice
@@ -119,7 +119,7 @@ fi
 # 依赖缺失时由 preflight.py 打印具体的安装命令，用户手动执行安装脚本即可。
 [ -x "$VENV_PY" ] || die "未找到虚拟环境：${VENV_PY}
 手动安装（启动脚本不会自动安装）：
-  ./scripts/install-voice.sh
+  ./model-proxy/install-voice.sh
 如果依赖装在别处，请设置 VOICE_HOME 指向包含 venv 的目录。"
 [ -f "$SERVER" ] || die "未找到服务脚本：${SERVER}"
 [ -f "$CHECKER" ] || die "未找到依赖检查脚本：${CHECKER}"
@@ -147,7 +147,7 @@ if [ -n "${FFMPEG_BIN:-}" ]; then
 fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
-  log "提示: 配置文件不存在，使用内置默认值；可运行 ./scripts/install-voice.sh 生成模板。"
+  log "提示: 配置文件不存在，使用内置默认值；可运行 ./model-proxy/install-voice.sh 生成模板。"
 fi
 log "启动前检查依赖环境（只检查，不自动安装）..."
 if [ "$CHECK_ONLY" -eq 1 ]; then

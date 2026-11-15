@@ -8,7 +8,7 @@
     默认模型写空串导致 config_kv 与启用表不一致。
 
 运行（无需起 9529 服务，用临时 SQLite）：
-    cd scripts/voice
+    cd model-proxy/voice
     .venv/bin/python tests/test_enabled_models_no_key.py
 
 锁住的关键点：

@@ -5,16 +5,16 @@
 # 服务配置仍来自 $VOICE_HOME/voice.conf（可用 VOICE_CONFIG 或 start 的参数覆盖）。
 #
 # 用法:
-#   ./scripts/voice.sh start                 # 后台启动（默认命令）
-#   ./scripts/voice.sh start --port 9531     # 附加参数会传给 start-voice.sh
-#   ./scripts/voice.sh stop                  # 停止
-#   ./scripts/voice.sh restart               # 重启（重新读取配置文件）
-#   ./scripts/voice.sh status                # 查看是否在运行
-#   ./scripts/voice.sh check                 # 只做启动前依赖检查
-#   ./scripts/voice.sh log                   # 查看日志尾部（默认 80 行）
-#   ./scripts/voice.sh log -f                # 持续跟踪日志
-#   ./scripts/voice.sh log -n 200            # 查看最近 200 行
-#   ./scripts/voice.sh run                   # 前台运行，Ctrl+C 停止
+#   ./model-proxy/voice.sh start                 # 后台启动（默认命令）
+#   ./model-proxy/voice.sh start --port 9531     # 附加参数会传给 start-voice.sh
+#   ./model-proxy/voice.sh stop                  # 停止
+#   ./model-proxy/voice.sh restart               # 重启（重新读取配置文件）
+#   ./model-proxy/voice.sh status                # 查看是否在运行
+#   ./model-proxy/voice.sh check                 # 只做启动前依赖检查
+#   ./model-proxy/voice.sh log                   # 查看日志尾部（默认 80 行）
+#   ./model-proxy/voice.sh log -f                # 持续跟踪日志
+#   ./model-proxy/voice.sh log -n 200            # 查看最近 200 行
+#   ./model-proxy/voice.sh run                   # 前台运行，Ctrl+C 停止
 #
 # 启动前检查依赖环境；缺失时只把安装方法写进日志 / 终端，不会自动安装。
 #
@@ -131,12 +131,12 @@ do_start() {
     fi
     {
       printf '启动失败：依赖检查未通过时，请按上方 [check] 提示手动安装。\n'
-      printf '启动脚本不会自动安装依赖；完整日志用 ./scripts/voice.sh log 查看。\n'
+      printf '启动脚本不会自动安装依赖；完整日志用 ./model-proxy/voice.sh log 查看。\n'
     } >>"$LOG_FILE"
     log "语音服务启动失败：依赖检查未通过。"
     log_tail
     log ""
-    log "完整日志：./scripts/voice.sh log"
+    log "完整日志：./model-proxy/voice.sh log"
     log "安装依赖后重试；启动脚本不会自动安装。"
     return 1
   fi
@@ -156,8 +156,8 @@ do_start() {
       log "  附加参数：$*"
     fi
     log "  日志：${LOG_FILE}"
-    log "  状态：./scripts/voice.sh status"
-    log "  停止：./scripts/voice.sh stop"
+    log "  状态：./model-proxy/voice.sh status"
+    log "  停止：./model-proxy/voice.sh stop"
     return 0
   fi
 
@@ -169,7 +169,7 @@ do_start() {
   log "语音服务启动失败。"
   log_tail
   log ""
-  log "完整日志：./scripts/voice.sh log"
+  log "完整日志：./model-proxy/voice.sh log"
   log "安装依赖后重试；启动脚本不会自动安装。"
   return 1
 }
@@ -298,7 +298,7 @@ case "$COMMAND" in
   check | doctor)
     [ -x "$VENV_PY" ] || die "未找到虚拟环境：${VENV_PY}
 手动安装（启动脚本不会自动安装）：
-  ./scripts/install-voice.sh"
+  ./model-proxy/install-voice.sh"
     [ -f "$CHECKER" ] || die "未找到依赖检查脚本：${CHECKER}"
     "$VENV_PY" "$CHECKER"
     ;;
