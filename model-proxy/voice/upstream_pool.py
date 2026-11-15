@@ -54,6 +54,9 @@ _FAIL_THRESHOLD = 3
 _COOLDOWN = 60.0
 _PROBE_INTERVAL = 15.0
 _PROBE_TIMEOUT = 3.0
+# Ollama 复探打 /api/chat 读首个 chunk 的超时：比轻量探测长，但远小于完整推理耗时。
+# 卡死的上游永远吐不出第一个字节 → 这里超时判死；健康的首 token 几秒内就到 → 判活。
+_OLLAMA_CHAT_PROBE_TIMEOUT = 15.0
 # 模型名前缀可识别的提供商；用于单地址写法（无显式 vendor 字段）时推导 vendor。
 _KNOWN_VENDORS = {
     "openai", "azure", "deepseek", "dashscope", "aliyun", "qwen", "ollama", "anthropic",
@@ -371,6 +374,22 @@ def mark_failure(cap: str, entry: dict, status: Optional[int] = None) -> None:
             h["last_probe"] = time.time() + _COOLDOWN  # 冷却后再探
 
 
+def mark_unhealthy(cap: str, entry: dict, reason: str = "连接失败") -> None:
+    """确定性失败（上游超时 / 连不上 / 流式中断）：立即摘掉，不等阈值累计。
+
+    普通 mark_failure 要累计到 _FAIL_THRESHOLD 才熔断，但在一次流式超时（上游彻底
+    卡死、120s 无任何字节）面前，等 3 次才摘等于让同一上游连续卡死 6 分钟、请求越堆越多、
+    把整个代理拖到高 CPU 自旋。这类失败是「铁定坏了」，没必要再赌，直接置 unhealthy +
+    冷却，让 pick() 立刻跳过它，避免级联卡死。冷却结束后仍由后台探测决定是否加回。
+    """
+    with _lock:
+        h = _ensure_health(cap, entry)
+        h["healthy"] = False
+        h["fails"] += 1
+        h["last_error"] = reason
+        h["last_probe"] = time.time() + _COOLDOWN  # 冷却后再探
+
+
 def health_snapshot(cap: str) -> list[dict]:
     entries = load_pool(cap)
     out = []
@@ -433,13 +452,55 @@ async def _probe_reach(entry: dict) -> tuple[bool, Optional[str]]:
         return False, str(exc)[:120]
 
 
+async def _probe_ollama_chat(entry: dict) -> tuple[bool, Optional[str]]:
+    """Ollama 专用「可用性」深探：直接打 /api/chat（stream）读首个 chunk。
+
+    Ollama 卡死时 /api/tags（模型列表）仍正常返回，但 /api/chat（推理）永久挂起——
+    这正是「探针判健康、却一直派流量、把代理拖到高 CPU 自旋」的根因。所以 Ollama 的
+    复探必须验 chat 本身：
+      - 卡死的上游永远吐不出第一个字节 → 超时 → 判死，不把坏上游重新加回轮询；
+      - 健康的上游首 token 通常几秒内就到 → 判活。
+    只读到首个 chunk 就停（不等完整推理），用独立的较长超时，区分「挂起」与「健康稍慢」，
+    避免把冷加载偶尔偏慢的健康 Ollama 误杀。
+    """
+    url = (entry.get("base_url") or "").rstrip("/") + "/api/chat"
+    key = entry.get("api_key") or ""
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    payload = {
+        "model": (entry.get("model") or "").strip() or "deepseek-r1:1.5b",
+        "messages": [{"role": "user", "content": "ping"}],
+        "stream": True,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_OLLAMA_CHAT_PROBE_TIMEOUT) as c:
+            async with c.stream("POST", url, headers=headers, json=payload) as r:
+                if not (200 <= r.status_code < 300):
+                    if r.status_code in (401, 403):
+                        return False, f"HTTP {r.status_code}（密钥可能无效）"
+                    if 500 <= r.status_code < 600:
+                        return False, f"HTTP {r.status_code}（上游服务端错误）"
+                    return True, None
+                # 只等首个 chunk：卡死的上游在这里就超时抛错。
+                async for _ in r.aiter_raw():
+                    break
+        return True, None
+    except httpx.HTTPError as exc:
+        return False, str(exc)[:120]
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)[:120]
+
+
 async def _probe_useful(entry: dict) -> tuple[bool, Optional[str]]:
-    """可用性探测：带密钥打模型列表接口，真正验证「这个账号有用」。
+    """可用性探测：真正验证「这个账号有用」。
 
     只有主机在线、密钥有效（2xx，或路径差异导致的 404/400 等 4xx）才视为可用；
     鉴权失败（401/403）说明密钥无效、服务端 5xx 说明上游坏——这些都不算「有用」，
-    账号不会被加回轮询，直到下一次探测通过。
+    账号不会被加回轮询，直到下一次探测通过。Ollama 走 /api/chat 深探（见上），
+    避免 chat 挂起但 tags 正常导致的「假健康」。
     """
+    vendor = (entry.get("vendor") or llm_protocols.protocol_vendor(entry.get("protocol")) or "").lower()
+    if vendor == "ollama":
+        return await _probe_ollama_chat(entry)
     url, headers = _probe_target(entry)
     try:
         async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as c:

@@ -1063,9 +1063,9 @@ async function loadConfig(){
     // - /admin/api/speech-models  = 基础模型库（全量官方目录，seed/init_catalog 维护）→ 候选 cands
     // - /admin/api/enabled-models = 实际启用（用户勾选 + 默认模型）→ 勾选 sel / 默认 def
     // 展示范围：
-    // - 默认视图（加载 / 保存后 / 整页刷新）：cands 只取「已启用」的模型，呈现干净视图；
-    //   某分组一条都没启用时回退到全量候选，否则没法勾选。
+    // - 默认视图（加载 / 保存后 / 整页刷新）：cands 只取「已启用」的模型；全不勾选时整行清空（不残留候选）。
     // - 点提供商后的「↻ 刷新」按钮：把 cands 展开为基础库全量候选，并保留勾选与默认标记，用于增删。
+    //   之所以不在默认视图自动显示全量候选，是因为「取消勾选 = 想停用」时列表仍显示候选会让人误以为没保存。
     try{
       const [catalog, enabled] = await Promise.all([
         fetch('/admin/api/speech-models',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
@@ -1086,13 +1086,12 @@ async function loadConfig(){
       };
       Object.entries(SLOTS).forEach(([key, e]) => {
         const [kind, provider] = key.split(':');
-        const base = catRows.filter(x => x.kind===kind && x.provider===provider).map(x=>x.model).filter(Boolean);
         const en = enRows.filter(x => x.kind===kind && x.provider===provider);
         const enModels = en.map(x => x.model).filter(Boolean);
-        // 展示范围：默认只显示「已勾选（启用）」的模型——用户要的干净视图。
-        // 例外：该分组一条都没启用时（首次配置 / 全部取消勾选），回退到全量候选，
-        // 否则列表空了没法勾选；想增删时点 ↻ 刷新出全量候选即可。
-        e.cands = enModels.length ? [...new Set(enModels)] : [...new Set(base)];
+        // 默认视图只显示「已启用」的模型；全不勾选时 cands 为空（整行清空），
+        // 不再回退到全量候选——否则「取消勾选想停用」时列表仍显示候选，让人误以为没保存。
+        // 需要重新增删模型时点同行「↻ 刷新」展开全量候选即可。
+        e.cands = [...new Set(enModels)];
         // 勾选 = 启用表；默认 = 启用表里 is_default 的那条
         e.sel = new Set(enModels);
         const defRow = en.find(x => x.is_default);

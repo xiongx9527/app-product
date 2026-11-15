@@ -59,7 +59,7 @@
         LLM_UPSTREAM_BASE_URL    OpenAI 兼容上游；设置后启用 LLM 代理（必填）
         LLM_UPSTREAM_API_KEY     上游 API Key，留空表示上游不需要鉴权
         LLM_UPSTREAM_MODEL       覆盖客户端传来的模型名，默认沿用请求
-        UPSTREAM_TIMEOUT         上游请求超时秒数，默认 120
+        UPSTREAM_TIMEOUT         上游请求超时秒数，默认 90
     优先级：命令行参数 > 环境变量 > 配置文件 > 内置默认值。
     配置文件路径可用环境变量 VOICE_CONFIG 或命令行参数 --config 指定。
 
@@ -122,7 +122,7 @@ DEFAULTS = {
     "VOICE_PORT": "9529",
     "TTS_VOICE": "zh-CN-XiaoxiaoNeural",
     "TTS_TIMEOUT": "20",
-    "UPSTREAM_TIMEOUT": "120",
+    "UPSTREAM_TIMEOUT": "90",
     "FFMPEG_BIN": "ffmpeg",
     "VOICE_API_KEY": "off",
     "VOICE_API_KEY_AUTH": "off",
@@ -450,9 +450,9 @@ def _bearer_token(header: str | None) -> str:
 
 def upstream_timeout() -> float:
     try:
-        return max(5.0, float(config_value("UPSTREAM_TIMEOUT", "120")))
+        return max(5.0, float(config_value("UPSTREAM_TIMEOUT", "90")))
     except ValueError:
-        return 120.0
+        return 90.0
 
 
 def upstream_error(response: httpx.Response) -> str:
@@ -2669,6 +2669,12 @@ async def chat_completions(request: Request):
                 out = translator.feed(_decode(chunk))
                 if out:
                     yield out
+            # 流正常结束：上游确实在吐字，标记成功，避免误熔断。
+            upstream_pool.mark_success("LLM", entry)
+        except httpx.HTTPError as exc:
+            # 上游卡死 / 超时 / 断流：立即熔断，让 pick() 跳过该上游，避免同一坏上游
+            # 持续收流量、请求层层堆积把整个代理拖到高 CPU 自旋（即「卡死」）。
+            upstream_pool.mark_unhealthy("LLM", entry, f"流式上游异常: {exc}")
         finally:
             tail = translator.finish()
             if tail:
