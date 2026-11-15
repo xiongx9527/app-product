@@ -285,29 +285,33 @@ describe('语音会话：句末判定、排队与去噪', () => {
     h.finishReply()
   })
 
-  it('播放过程中不识别用户插话：播完之后才作为新一轮处理', async () => {
+  it('播报期间插话排队：当前句播完后按序处理，不中途打断', async () => {
     const h = createHarness()
     await startDialog(h.service)
     await speakUtterance(h)
     expect(h.agentCalls()).toBe(1)
-    expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
 
-    // 播放过程中（未回执播完）再说的话：网关仍把识别结果回传（供客户端做
-    // 唤醒词比对），但绝不识别成新轮次——不进队列、不触发新回答、不中途打断。
+    // 播报中（playbackPending=true）连续三句插话：都进队列（asr.queued），
+    // 不打断当前句、不发起新轮次、不回传 asr.final 顶掉「我说」卡片
     await speakUtterance(h)
     await speakUtterance(h)
     await speakUtterance(h)
-    expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(0)
+    const queued = h.events.filter((e) => e.type === 'asr.queued')
+    expect(queued).toHaveLength(3)
+    expect(queued[0]).toMatchObject({ position: 1, size: 3 })
+    expect(queued[2]).toMatchObject({ position: 3, size: 3 })
     expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
     expect(h.agentCalls()).toBe(1)
 
-    // 客户端回执播完，本轮真正结束；之后再说才作为新一轮处理
-    h.playbackDone()
-    await sleep(30)
+    // 当前句收尾并回执播完：队首被消费成新一轮，queueRemaining 为剩余 2 句（权威值）
     h.finishReply()
-    await sleep(20)
-    await speakUtterance(h)
+    h.playbackDone()
+    await sleep(40)
     expect(h.agentCalls()).toBe(2)
+    const finals = h.events.filter((e) => e.type === 'asr.final')
+    expect(finals[finals.length - 1]).toMatchObject({ queueRemaining: 2 })
+    h.finishReply()
+    await sleep(10)
   })
 
   it('思考阶段（未播放）用户插话：正常进队列，播完后依次处理', async () => {
@@ -337,6 +341,111 @@ describe('语音会话：句末判定、排队与去噪', () => {
     expect(finals[1]).toMatchObject({ queueRemaining: 0 })
   })
 
+  it('播报/思考中 session.skip_current：只跳过当前句，队列未被清空且下一句继续处理', async () => {
+    // delayDelta：先制造「思考阶段插话排队」——第一句进入 agent 但未下发 TTS，
+    // 此时第二句插话进队列。随后 finishReply 让第一句开始播报，播报中收到 skip_current。
+    const h = createHarness({ delayDelta: true })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    expect(h.agentCalls()).toBe(1)
+
+    // 思考阶段插话排队
+    await speakUtterance(h)
+    const queued = h.events.filter((e) => e.type === 'asr.queued')
+    expect(queued).toHaveLength(1)
+
+    // 第一句开始播报（playbackPending=true，等 playback_done）
+    h.finishReply()
+    await sleep(40)
+    expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
+    expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
+
+    // 播报中重新喊唤醒词 → 客户端发 skip_current：停当前句、保留队列
+    h.service.handleText(JSON.stringify({ type: 'session.skip_current' }))
+    await sleep(60)
+
+    // 当前句被 tts.stop 掐掉（证明跳过生效，不是整轮 cancel 才停）
+    expect(h.events.some((e) => e.type === 'tts.stop')).toBe(true)
+    // 队列未被清空：排队句被 shift 出来，作为新的 agent 轮次继续处理
+    expect(h.agentCalls()).toBe(2)
+    // 回放句通过 asr.final 下发，且 queueRemaining 归零（队列确实被消费而非丢弃）
+    const finals = h.events.filter((e) => e.type === 'asr.final')
+    expect(finals[finals.length - 1]).toMatchObject({ queueRemaining: 0 })
+    // 没有走整轮重来：不应有队列拒收噪声
+    expect(h.events.some((e) => e.type === 'asr.rejected')).toBe(false)
+
+    // 收尾：让回放句的 agent 也 resolve，避免悬挂
+    h.finishReply()
+    await sleep(10)
+  })
+
+  it('session.skip_current 在无轮次进行时是空操作', async () => {
+    const h = createHarness()
+    await startDialog(h.service)
+    // 空闲（未思考、未播报）时收到 skip_current：不产生任何 tts.stop，也不发起轮次
+    h.service.handleText(JSON.stringify({ type: 'session.skip_current' }))
+    await sleep(20)
+    expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('播报中喊「小熊小熊」：asr.queued 透传唤醒词，skip_current+dropText 删掉它、队列其它句继续', async () => {
+    // 三次定稿依次为：首句指令、思考期插话、播报期唤醒词。
+    const h = createHarness({
+      delayDelta: true,
+      finalizeTexts: ['今天天气怎么样', '明天天气怎么样', '小熊小熊'],
+    })
+    await startDialog(h.service)
+    await speakUtterance(h) // 首句 → agent(1)，delayDelta 制造「思考中」窗口
+    expect(h.agentCalls()).toBe(1)
+
+    // 思考阶段先排一句普通问句（不命中任何直连命令，回放时进 runAgent）
+    await speakUtterance(h)
+    expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(1)
+
+    // 首句开始播报（playbackPending=true，等 playback_done）
+    h.finishReply()
+    await sleep(40)
+    expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
+
+    // 播报中（未回执播完）再喊唤醒词：这句经 asr.queued 把原文透传给客户端做匹配
+    await speakUtterance(h)
+    const wakeQueued = h.events.filter((e) => e.type === 'asr.queued' && e.text === '小熊小熊')
+    expect(wakeQueued).toHaveLength(1)
+
+    // 客户端命中唤醒词 → 发 skip_current 带 dropText：网关删掉这句唤醒词、只跳当前句
+    h.service.handleText(JSON.stringify({ type: 'session.skip_current', dropText: '小熊小熊' }))
+    await sleep(60)
+    expect(h.events.some((e) => e.type === 'tts.stop')).toBe(true)
+    // 队列未被清空：普通问句被 shift 出来继续处理；唤醒词没有被当成一句话交给 LLM
+    expect(h.agentCalls()).toBe(2)
+    const finals = h.events.filter((e) => e.type === 'asr.final')
+    expect(finals[finals.length - 1]).toMatchObject({ text: '明天天气怎么样', queueRemaining: 0 })
+    expect(finals.some((e) => e.type === 'asr.final' && e.text === '小熊小熊')).toBe(false)
+    h.finishReply()
+    await sleep(10)
+  })
+
+  it('队列已满：asr.rejected 仍带回识别原文，供客户端识别唤醒词打断', async () => {
+    const h = createHarness({
+      delayDelta: true,
+      finalizeTexts: ['今天天气怎么样', '插话1', '插话2', '插话3', '小熊小熊'],
+    })
+    await startDialog(h.service)
+    await speakUtterance(h) // 首句 → agent(1)，思考中
+    // 思考阶段连插 4 句：前 3 句入队，第 4 句（唤醒词）队列满 → asr.rejected（仍带 text）
+    await speakUtterance(h)
+    await speakUtterance(h)
+    await speakUtterance(h)
+    await speakUtterance(h)
+    expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(3)
+    const rejected = h.events.filter((e) => e.type === 'asr.rejected')
+    expect(rejected).toHaveLength(1)
+    expect(rejected[0]).toMatchObject({ reason: 'queue-full', text: '小熊小熊' })
+    h.finishReply()
+    await sleep(10)
+  })
+
   it('tts.end 之后、playback_done 之前：回声（助手原话）被丢弃，不回传也不发起轮次', async () => {
     // 下发一帧高能量 TTS 音频，让门控拿到参考值；finalize 固定返回助手刚念过的原话，模拟回声
     const h = createHarness({ ttsFrames: [loudFrame()], finalizeText: '好的，我来说一句。' })
@@ -347,17 +456,18 @@ describe('语音会话：句末判定、排队与去噪', () => {
     expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
 
     // 此刻音频已下发完（speaking=false），但客户端还没回执播完。
-    // 回声（与助手原话雷同）必须被丢弃，既不回传 asr.final，也不发起新轮次。
+    // 回声（与助手原话雷同）必须被丢弃：既不回传 asr.final，也不排队 / 拒收，更不发起新轮次。
     const before = h.events.filter((e) => e.type === 'asr.final').length
     for (let i = 0; i < 8; i += 1) h.service.handleBinary(loudFrame())
     await sleep(40)
     expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(before)
+    expect(h.events.some((e) => e.type === 'asr.queued' || e.type === 'asr.rejected')).toBe(false)
     expect(h.agentCalls()).toBe(1)
   })
 
-  it('tts.end 之后、playback_done 之前：其它声音回传为 asr.final 但不发起新轮次', async () => {
-    // 播报期间保留唤醒词识别：非回声的识别结果会回传给客户端做「小熊小熊」比对，
-    // 但绝不发起新轮次、不进队列、不打断当前播报。
+  it('tts.end 之后、playback_done 之前：其它声音进队列（asr.queued）但不发起新轮次', async () => {
+    // 播报期间非回声的插话也排队：网关把原文随 asr.queued 透传给客户端做「小熊小熊」比对，
+    // 但绝不发起新轮次、不回传 asr.final 顶掉「我说」卡片、不打断当前播报。
     const h = createHarness({ ttsFrames: [loudFrame()] })
     await startDialog(h.service)
     await speakUtterance(h)
@@ -368,9 +478,9 @@ describe('语音会话：句末判定、排队与去噪', () => {
     const before = h.events.filter((e) => e.type === 'asr.final').length
     for (let i = 0; i < 8; i += 1) h.service.handleBinary(loudFrame())
     await sleep(40)
-    expect(h.events.filter((e) => e.type === 'asr.final').length).toBeGreaterThan(before)
+    expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(before)
     expect(h.agentCalls()).toBe(1)
-    expect(h.events.filter((e) => e.type === 'asr.queued')).toHaveLength(0)
+    expect(h.events.some((e) => e.type === 'asr.queued' || e.type === 'asr.rejected')).toBe(true)
     expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
   })
 

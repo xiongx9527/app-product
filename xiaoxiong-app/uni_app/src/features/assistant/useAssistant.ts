@@ -99,7 +99,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const errorMessage = ref('')
   /** 内嵌网关启动中（enable 时轮询 gateway.url 直到原生进程写出）；启动阶段界面静默，不显示也不播报 */
   const gatewayPreparing = ref(false)
-  /** 队列已满（排队数超上限）的专用话术，显示在页面顶部横幅，不进「你说」卡片 */
+  /** 队列已满（排队数超上限）的专用话术，显示在「我说」卡片右上角（与排队数量徽标同位置同款式），
+   *  不进「你说」正文、不用顶部横幅、不弹浮层 */
   const queueFullMsg = ref('')
   /** 当前播放曲目的封面图（与音频同源，网关 media.play.cover 下发），无封面为空串 */
   const musicCover = ref('')
@@ -342,15 +343,27 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         }
         break
       case 'asr.queued':
-        // 只更新排队数量（「你说」卡片右上角的红标）；不展示多余提示文字，
-        // 这句话等播完轮到它才由 asr.final 进入「你说」卡片
+        // 思考/播报期间的插话都排进了队列，网关把识别原文一并透传回来做唤醒词匹配：
+        // 命中「小熊小熊」= 用户嫌当前这句长、想打断。招呼一声并让网关跳过当前句（队列保留），
+        // 且这句唤醒词不能累加排队徽标——它会被网关从队列删掉，随后 asr.final 的权威剩余数会同步回来。
+        if (mode === 'dialog' && matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) {
+          skipCurrentAndGreet(event.text)
+          break
+        }
+        // 只更新排队数量（「我说」卡片右上角的红标）；不展示多余提示文字，
+        // 这句话等播完轮到它才由 asr.final 进入「我说」卡片
         if (mode === 'dialog') {
           queuePending.value = Math.max(queuePending.value, event.position)
         }
         break
       case 'asr.rejected':
-        // 队列已满（排队数超上限）时服务端拒收，把专用话术放到页面顶部横幅；
-        // 不显示这句识别的内容，也不进「你说」卡片，更不弹浮层
+        // 队列已满时服务端拒收，但仍带回了识别原文：唤醒词即使发生在队列满时也要能打断
+        // （招呼 + 跳过当前句），否则用户喊「小熊小熊」会被当成又一句被吞掉。
+        if (mode === 'dialog' && matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) {
+          skipCurrentAndGreet()
+          break
+        }
+        // 专用话术显示在「我说」卡片右上角（与排队数量徽标同位置同款式），不进正文、不弹浮层
         if (mode === 'dialog') queueFullMsg.value = event.message
         break
       case 'asr.final':
@@ -360,11 +373,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
           break
         }
-        // 对话进行中再次叫「小熊小熊」：重新唤醒——停掉当前轮次、重新招呼，
-        // 回到干净的对听状态。播报（TTS）进行中同样适用；音乐播放不受影响
-        // （它不设置 isSpeaking，且此分支只认唤醒词，不会被普通插话触发）。
+        // 对话中再次叫「小熊小熊」分两种：
+        // - 忙（思考/播报/有排队）：只跳过当前句，队列继续播——招呼一声、通知网关
+        //   session.skip_current，不重启会话也不清队列。用户嫌当前这句长时的打断方式。
+        // - 空闲（对听中）：整轮重来（reWake = cancel+start+招呼），回干净对听状态。
+        // 音乐播放不受影响（不设置 isSpeaking），且此分支只认唤醒词，普通插话不会触发。
         if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) {
-          reWake()
+          if (assistantBusy || isSpeaking.value || queuePending.value > 0) skipCurrentAndGreet()
+          else reWake()
           break
         }
         // 播报（TTS）还没结束：其它声音一律忽略，不显示、不发起新轮次
@@ -886,6 +902,20 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     if (!canWake()) return
     dispatch({ type: 'REWAKE' })
     phase.value = 'listening'
+  }
+
+  /** 播报/思考中重新叫「小熊小熊」：招呼一声，只跳过当前句，队列里的句子继续播。
+   *  不 dispatch REWAKE——那会 cancel+start 清掉队列；改发 session.skip_current 让网关
+   *  仅作废当前句、保留队列。局部界面状态（isSpeaking/queuePending等）由随后下发的
+   *  tts.stop 与下一句的 asr.final/tts.start 自然刷新，此处只负责招呼与通知网关。
+   *  dropText 带上这句唤醒词原文，网关据此把它从队列删掉（它是打断信号、不是指令）。 */
+  function skipCurrentAndGreet(dropText?: string): void {
+    if (!canWake()) return
+    // 招呼落到界面并播本地提示音，与 playGreeting 一致
+    reply.value = '我在'
+    replyDone.value = true
+    playPromptCue('greeting')
+    transport.sendSkipCurrent(dropText)
   }
 
   /** 重新打开字幕面板：仅翻 visible 标记，数据仍在（手动关闭后照样能打开） */

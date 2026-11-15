@@ -137,6 +137,15 @@ export type ClientMessage =
       deviceId?: string
     }
   | { type: 'session.cancel' }
+  /**
+   * 播报/思考中重新喊唤醒词的「跳过当前句」：只停掉当前正在播报/处理的这句，
+   * 保留队列、不终止整条 runTurn 链——当前句让出后队列里的句子继续播。
+   * 与 session.cancel 的区别：cancel 会 ++turn + 清队列 + 重启会话（整轮重来），
+   * skip_current 不动队列、不重启会话，客户端需自行播「我在」招呼。
+   * dropText：这句唤醒词已被网关经 asr.queued 放进队列，它不是用户指令——
+   * 客户端命中唤醒词时把识别原文带上，网关据此从队列移除，避免 runTurn 把它当一句话交给 LLM。
+   */
+  | { type: 'session.skip_current'; dropText?: string }
   | { type: 'session.end' }
   /** 客户端定位更新：连接后或位置变化时补报/刷新最新位置 */
   | { type: 'session.location'; latitude: number; longitude: number; address?: string }

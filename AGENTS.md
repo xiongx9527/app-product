@@ -129,6 +129,8 @@ xiaoxiong-app/uni_app/src/
 - **回复要诚实**：关闭字幕 / 暂停 / 停止等确认必须反映真实状态；没字幕、没在播放就别说"已显示 / 已暂停 / 已关闭"；保存配置连不上或写失败要如实报错，不谎报成功。
 - **详情卡片**：编号同行最前、列表显示字段、缺值占位、来源显示站点名、选号跨轮保留且量词通用、关详情回列表、无朋友圈入口、各 kind 共用同一协议。
 - **展示信息克制**：面板别默认加语义重复的状态列。
+- **思考/播报期间插话排队、只有「小熊小熊」打断**：思考与播报期间用户说的话都排进队列（最多 3 句），当前句播完后按序处理；网关不认识唤醒词，把识别原文随 `asr.queued` / `asr.rejected` 透传回客户端，由客户端 `matchWakeWord` 匹配。命中「小熊小熊」= 用户嫌当前这句长想打断：播一声本地「我在」招呼，回 `session.skip_current`（带 `dropText` 让网关把这句唤醒词从队列删掉），**只跳过当前句、不清空队列**，队列里的句子继续播。这与 `session.cancel`（`REWAKE` 用的整轮重来、清队列）严格区分：旧实现重新喊唤醒词走 `REWAKE = session.cancel + session.start` 会把排队全清掉，正是「重新说小熊小熊排队也被干掉」的根因。客户端唤醒词分支**不累加** `queuePending`，否则删句后徽标会卡住（靠 `asr.final(queueRemaining)` 权威同步）。
+- **队列满提示在「我说」右上角**：超过最大队列的拒收话术显示在「我说」卡片右上角，与排队数量徽标同位置同款式，不用页面顶部横幅、不进正文、不用浮层。
 
 ### 权限与位置
 
@@ -184,6 +186,7 @@ xiaoxiong-app/uni_app/src/
   - **USB 反代会掉**：重插线、重启设备/adb、重新装机后 `adb reverse` 会失效。表现就是「一键检测全红：大模型/语音识别/语音合成都报 `127.0.0.1:9529` 不可达，只有外网绿」、或「喊小熊小熊唤不醒」。**排查第一步永远是 `adb reverse --list`，空了就 `adb reverse tcp:9529 tcp:9529` 重建**，再用 `adb shell 'curl http://127.0.0.1:9529/'` 确认设备侧能拿到 `{"service":...}` 200。别急着改检测逻辑/网关代码——那不是 bug。
   - 反代是 host→device 的反向端口转发，与 CDP 用的 `adb forward`（device→host，如 `tcp:9222`）方向相反，两个不冲突、按需各自建。
   - 一键检测有 15s 探测缓存（`probeCache` TTL）：重建反代后马上再点，ASR/TTS 可能仍显示旧的红色缓存结果，等 >15s 再点才刷新为绿。
+  - **拔线后「界面还红」不等于链路没恢复**：设置页「一键检测」是 `fetchHealthReport` 一次性结果，界面**不会自动刷新**（30s 轮询只喂首页健康胶囊且依赖 WS 连上），拔线瞬间算出的「127.0.0.1:9529 不可达」红字会一直滞留，即使反代已重建。判断链路真通不通用 `adb shell 'curl -s "http://127.0.0.1:8787/api/health?deep=1" -H "x-voice-config: {...}"'`（模拟一键检测，全绿即已恢复），再在真机上**重新点一次「一键检测」**把界面刷成绿即可，不要去改检测逻辑。拔线还会让 App 主进程重启（PID 变）、CDP 的 `adb forward tcp:9222` 失效，要重新 `pidof` 取 PID 再 forward，别复用旧 PID。
   - 9529 真实语音接口带前缀：ASR/TTS 是 `/voice/v1/audio/{transcriptions,speech}`，LLM 是 `/llm/v1/chat/completions`；网关 `resolveCapabilityConfig` 已把 baseUrl 收敛成 `${root}/voice` 和 `${root}/llm/v1`，探测/调用都别自己再拼错前缀。
   - 联调地址 / 模型名从配置读，不要写死；探测设备网关用 `adb forward`。
 - **设备访问本机服务连不通**：先排查 macOS 防火墙丢弃 LAN 入站（localhost 200 但 LAN IP 000），以及 WiFi AP 隔离（ping 不通但能上外网，用 adb reverse 或关 AP 隔离）。

@@ -50,6 +50,7 @@
         SENSEVOICE_DIR     SenseVoice 模型目录，默认 $VOICE_HOME/models/sensevoice
         TTS_VOICE          默认音色，默认 zh-CN-XiaoxiaoNeural
         TTS_TIMEOUT        edge-tts 单个音频块的超时秒数，默认 20
+        TTS_TOTAL_TIMEOUT  edge-tts 整体超时秒数（含 3 次重试），默认 30
         FFMPEG_BIN         ffmpeg 可执行文件路径，默认 PATH 中的 ffmpeg
         VOICE_API_KEY      off / auto / 显式 Key；默认 off（不鉴权）
         VOICE_API_KEY_FILE Key 文件；auto 模式读取，缺失时随机生成并写入
@@ -95,6 +96,7 @@ import wave
 import gzip
 import zlib
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -286,6 +288,14 @@ def tts_timeout() -> float:
         return max(1.0, float(config_value("TTS_TIMEOUT", "20")))
     except ValueError:
         return 20.0
+
+
+def tts_total_timeout() -> float:
+    """edge-tts 整体墙钟超时，兜住 3 次重试 × 单块超时叠加后的最长挂起。"""
+    try:
+        return max(5.0, float(config_value("TTS_TOTAL_TIMEOUT", "30")))
+    except ValueError:
+        return 30.0
 
 
 def api_key_file() -> str:
@@ -580,8 +590,9 @@ def llm_api_version() -> str:
 async def fetch_json(url: str, headers: dict[str, str] | None = None):
     """GET 上游 JSON；失败时返回统一错误响应而不是抛 500。"""
     try:
-        async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
-            response = await client.get(url, headers=headers or {})
+        response = await _shared_http_client().get(
+            url, headers=headers or {}, timeout=upstream_timeout()
+        )
     except httpx.HTTPError as exc:
         return error_response(502, f"上游 LLM 请求失败: {exc}")
     if response.status_code >= 400:
@@ -594,8 +605,33 @@ async def fetch_json(url: str, headers: dict[str, str] | None = None):
         return error_response(502, "上游 LLM 返回的不是 JSON")
 
 
+# LLM 转发共用一个连接池，避免每个 chat 请求重新做 TCP/TLS 握手。
+# 惰性创建：模块导入时 config_store / voice_db 还没 configure()，读不到超时配置。
+_http_client: httpx.AsyncClient | None = None
+
+
+def _shared_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(upstream_timeout(), connect=10.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
+    return _http_client
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None
+
+
 app = FastAPI(
     title="openai-voice-server",
+    lifespan=_lifespan,
     description=(
         "本地 AI 语音服务。HTTP 语音接口（/voice/v1/audio/transcriptions、/speech、/translations、"
         "/voices、/models、/providers）符合 OpenAI 音频 API 标准，可直接在下方调试；"
@@ -942,8 +978,9 @@ async def synthesize_edge_mp3(text: str, voice: str, rate: str) -> bytes:
     """调 edge-tts 拿完整 MP3。
 
     - 重试 3 次：edge-tts 走微软匿名 WebSocket，偶发断连很常见。
-    - 按“单个音频块”超时而不是给整个文本设总超时：长文本总时长可能超过 20s，
-      但只要还在持续出块就不算卡死。
+    - 单块超时（TTS_TIMEOUT）：长文本只要还在持续出块就不算卡死；
+    - 整体超时（TTS_TOTAL_TIMEOUT）：兜住 3 次重试叠加后的最长挂起，超时直接
+      失败而不是返回半截 MP3（网关要的是完整 WAV）。
     - 必须收完整 MP3 才能交给 ffmpeg 转 WAV；网关当前也是一次性读取响应。
     """
     try:
@@ -955,28 +992,37 @@ async def synthesize_edge_mp3(text: str, voice: str, rate: str) -> bytes:
 
     last_error: Exception | None = None
     timeout = tts_timeout()
-    for attempt in range(3):
-        try:
-            communicate = edge_tts.Communicate(text, voice, rate=rate)
-            buf = bytearray()
-            iterator = communicate.stream().__aiter__()
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(
-                        iterator.__anext__(), timeout=timeout
-                    )
-                except StopAsyncIteration:
-                    break
-                if chunk.get("type") == "audio" and chunk.get("data"):
-                    buf.extend(chunk["data"])
-            if buf:
-                return bytes(buf)
-            last_error = RuntimeError("edge-tts 没有返回音频")
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-        if attempt < 2:
-            await asyncio.sleep(0.2 * (attempt + 1))
-    raise RuntimeError(f"edge-tts 合成失败: {last_error}")
+    total = tts_total_timeout()
+
+    async def _collect() -> bytes:
+        nonlocal last_error
+        for attempt in range(3):
+            try:
+                communicate = edge_tts.Communicate(text, voice, rate=rate)
+                buf = bytearray()
+                iterator = communicate.stream().__aiter__()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            iterator.__anext__(), timeout=timeout
+                        )
+                    except StopAsyncIteration:
+                        break
+                    if chunk.get("type") == "audio" and chunk.get("data"):
+                        buf.extend(chunk["data"])
+                if buf:
+                    return bytes(buf)
+                last_error = RuntimeError("edge-tts 没有返回音频")
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+            if attempt < 2:
+                await asyncio.sleep(0.2 * (attempt + 1))
+        raise RuntimeError(f"edge-tts 合成失败: {last_error}")
+
+    try:
+        return await asyncio.wait_for(_collect(), timeout=total)
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(f"edge-tts 合成超时（整体 {total:g}s）") from exc
 
 
 def _looks_like_mp3(data: bytes) -> bool:
@@ -1303,8 +1349,7 @@ async def forward_speech_openai(
         "speed": speed,
     }
     headers = {"Authorization": f"Bearer {key}"} if key else {}
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(url, json=payload, headers=headers)
+    r = await _shared_http_client().post(url, json=payload, headers=headers, timeout=30)
     if r.status_code >= 400:
         raise RuntimeError(f"上游 TTS 失败（{r.status_code}）: {r.text[:200]}")
     return r.content
@@ -1436,12 +1481,12 @@ async def deepseek_tts_bytes(text: str, voice: str, key: str) -> bytes:
     payload: dict[str, Any] = {"text": text, "format": "pcm"}
     if voice:
         payload["voice_id"] = voice
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            DEEPSEEK_BASE + "/v1/tools/tts",
-            json=payload,
-            headers={"Authorization": f"Bearer {key}"},
-        )
+    r = await _shared_http_client().post(
+        DEEPSEEK_BASE + "/v1/tools/tts",
+        json=payload,
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=60,
+    )
     if r.status_code >= 400:
         raise RuntimeError(f"DeepSeek TTS 失败（{r.status_code}）: {r.text[:200]}")
     if not r.content:
@@ -1455,12 +1500,12 @@ async def deepseek_asr_text(audio: bytes, key: str) -> str:
         raise RuntimeError("DeepSeek ASR 未配置 api-key（设置页填 STT_DEEPSEEK_API_KEY）")
     if audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
         raise ValueError("DeepSeek ASR 只接受 16 位 PCM WAV（网关上行会补 WAV 头）")
-    async with httpx.AsyncClient(timeout=120) as client:
-        r = await client.post(
-            DEEPSEEK_BASE + "/v1/tools/asr",
-            headers={"Authorization": f"Bearer {key}"},
-            files={"file": ("audio.wav", audio, "audio/wav")},
-        )
+    r = await _shared_http_client().post(
+        DEEPSEEK_BASE + "/v1/tools/asr",
+        headers={"Authorization": f"Bearer {key}"},
+        files={"file": ("audio.wav", audio, "audio/wav")},
+        timeout=120,
+    )
     if r.status_code >= 400:
         raise RuntimeError(f"DeepSeek ASR 失败（{r.status_code}）: {r.text[:200]}")
     try:
@@ -1593,19 +1638,19 @@ async def dashscope_tts_bytes(base: str, key: str, model: str, text: str, voice:
     """
     url = base.rstrip("/") + "/api/v1/services/aigc/multimodal-generation/generation"
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(url, headers=headers, json={
-            "model": model, "input": {"text": text, "voice": voice},
-        })
-        if r.status_code >= 400:
-            raise RuntimeError(f"DashScope TTS 失败（{r.status_code}）: {r.text[:200]}")
-        audio_url = ((r.json().get("output") or {}).get("audio") or {}).get("url") or ""
-        if not audio_url:
-            raise RuntimeError(f"DashScope TTS 已响应但没有音频 URL: {r.text[:150]}")
-        dl = await client.get(audio_url, timeout=30)
-        if dl.status_code >= 400 or not dl.content:
-            raise RuntimeError(f"DashScope 音频下载失败（{dl.status_code}）")
-        return dl.content
+    client = _shared_http_client()
+    r = await client.post(url, headers=headers, json={
+        "model": model, "input": {"text": text, "voice": voice},
+    }, timeout=60)
+    if r.status_code >= 400:
+        raise RuntimeError(f"DashScope TTS 失败（{r.status_code}）: {r.text[:200]}")
+    audio_url = ((r.json().get("output") or {}).get("audio") or {}).get("url") or ""
+    if not audio_url:
+        raise RuntimeError(f"DashScope TTS 已响应但没有音频 URL: {r.text[:150]}")
+    dl = await client.get(audio_url, timeout=30)
+    if dl.status_code >= 400 or not dl.content:
+        raise RuntimeError(f"DashScope 音频下载失败（{dl.status_code}）")
+    return dl.content
 
 
 async def dashscope_asr_text(base: str, key: str, model: str, audio: bytes, fmt: str) -> str:
@@ -1621,13 +1666,12 @@ async def dashscope_asr_text(base: str, key: str, model: str, audio: bytes, fmt:
     else:
         audio_part = {"type": "input_audio", "input_audio": {"data": f"data:audio/{fmt};base64,{audio_b64}"}}
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(url, headers=headers, json={
-            "model": model, "messages": [{"role": "user", "content": [audio_part]}],
-        })
-        if r.status_code >= 400:
-            raise RuntimeError(f"DashScope ASR 失败（{r.status_code}）: {r.text[:200]}")
-        return ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+    r = await _shared_http_client().post(url, headers=headers, json={
+        "model": model, "messages": [{"role": "user", "content": [audio_part]}],
+    }, timeout=60)
+    if r.status_code >= 400:
+        raise RuntimeError(f"DashScope ASR 失败（{r.status_code}）: {r.text[:200]}")
+    return ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
 
 
 def audio_fmt(payload: bytes) -> str:
@@ -1655,7 +1699,7 @@ async def _tts_synthesize(
         )
         if fmt == "wav":
             return raw, "audio/wav"
-        return transcode_mp3(raw, fmt)
+        return await asyncio.to_thread(transcode_mp3, raw, fmt)
     if tts_provider == "dashscope":
         # DashScope 音色体系与 edge-tts 不通用：传来的 edge 目录音色视为「未指定」，
         # 按模型族回退官方默认音色（否则云端 418 Invalid voice）。
@@ -1670,17 +1714,17 @@ async def _tts_synthesize(
             raw = await dashscope_tts_bytes(base, key, upstream_model, text, ds_voice)
         if fmt == "wav":
             return raw, "audio/wav"
-        return transcode_mp3(raw, fmt)
+        return await asyncio.to_thread(transcode_mp3, raw, fmt)
     if tts_provider == "openai_audio":
         raw = await forward_speech_openai(text, voice, speed, fmt, upstream_model)
         if fmt == "mp3":
             return raw, "audio/mpeg"
-        return transcode_mp3(raw, fmt)
+        return await asyncio.to_thread(transcode_mp3, raw, fmt)
     # 内置：本地 edge-tts
     mp3 = await synthesize_edge_mp3(text, voice, rate)
     if fmt == "mp3":
         return mp3, "audio/mpeg"
-    return transcode_mp3(mp3, fmt)
+    return await asyncio.to_thread(transcode_mp3, mp3, fmt)
 
 
 async def _asr_recognize(
@@ -1894,8 +1938,9 @@ async def forward_transcriptions_openai(
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     files = {"file": (filename, payload, content_type or "audio/wav")}
     data = {"model": model}
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(url, files=files, data=data, headers=headers)
+    r = await _shared_http_client().post(
+        url, files=files, data=data, headers=headers, timeout=30
+    )
     if r.status_code >= 400:
         raise RuntimeError(f"上游 ASR 失败（{r.status_code}）: {r.text[:200]}")
     try:
@@ -2018,8 +2063,10 @@ async def _translate_text(text: str, target_lang: str) -> tuple[str | None, str 
         protocol, entry["base_url"], entry["api_key"], model, api_version, body, entry.get("vendor")
     )
     try:
-        async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
-            r = await client.post(req.url, headers=req.headers, json=req.payload)
+        r = await _shared_http_client().post(
+            req.url, headers=req.headers, json=req.payload,
+            timeout=upstream_timeout(),
+        )
     except httpx.HTTPError as exc:
         return None, f"翻译上游请求失败: {exc}"
     if r.status_code >= 400:
@@ -2566,6 +2613,7 @@ async def chat_completions(request: Request):
     # 但配置了全局默认模型（LLM_UPSTREAM_MODEL）且该模型真实存在时，回落到默认模型，
     # 让本地代理用真实可用的模型接管，而不是一刀切 400 拒绝。这样网关不必硬编码
     # 业务侧的具体模型名，内置服务侧一处配好默认即可。
+    fallback_note: str | None = None
     if req_model and not body.get("bypass_catalog") and not req_base_url:
         catalog = llm_catalog()
         if catalog:
@@ -2576,6 +2624,12 @@ async def chat_completions(request: Request):
                     e.get("model") == override_model
                     for e in upstream_pool.load_pool("LLM")
                 ):
+                    # 静默回落会让「配了云端却跑本地」极难排查，明确留痕并回传响应头。
+                    fallback_note = f"{req_model}->{override_model}"
+                    logging.getLogger("uvicorn.error").info(
+                        "[llm] 模型回落: 请求 %s 不在目录，改用默认模型 %s",
+                        req_model, override_model,
+                    )
                     req_model = override_model
                 else:
                     return error_response(400, f"模型校验失败：{v.reason}（请求模型 {req_model!r}）")
@@ -2662,6 +2716,9 @@ async def chat_completions(request: Request):
             provider_default if (provider_default in vendor_models) else
             (entry.get("model") or next(iter(vendor_models), "") or override_model)
         )
+    resp_headers = (
+        {"X-Proxy-Model-Fallback": fallback_note} if fallback_note else {}
+    )
     req, stream_cls, resp_transform = llm_protocols.prepare(
         req_protocol or entry["protocol"] or "openai_chat_completions", entry["base_url"], entry["api_key"],
         effective_model, llm_api_version(), body, entry.get("vendor"),
@@ -2675,8 +2732,11 @@ async def chat_completions(request: Request):
 
     if not body.get("stream"):
         try:
-            async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
-                response = await client.post(req.url, headers=req.headers, json=req.payload)
+            # 复用共享连接池；超时仍按每次请求的最新配置传，保证热更新生效。
+            response = await _shared_http_client().post(
+                req.url, headers=req.headers, json=req.payload,
+                timeout=upstream_timeout(),
+            )
         except httpx.HTTPError as exc:
             upstream_pool.mark_failure("LLM", entry)
             if req_base_url:
@@ -2694,25 +2754,30 @@ async def chat_completions(request: Request):
             return Response(
                 content=response.content, status_code=response.status_code,
                 media_type=response.headers.get("content-type"),
+                headers=resp_headers,
             )
         data = resp_transform(data)
         return Response(
             content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
             status_code=200, media_type="application/json",
+            headers=resp_headers,
         )
 
-    client = httpx.AsyncClient(timeout=httpx.Timeout(upstream_timeout(), connect=10.0))
-    upstream_req = client.build_request("POST", req.url, headers=req.headers, json=req.payload)
+    client = _shared_http_client()
+    # httpx 的 send() 不接受 timeout 参数，超时要在 build_request 时挂到 request 上。
+    upstream_req = client.build_request(
+        "POST", req.url, headers=req.headers, json=req.payload,
+        timeout=httpx.Timeout(upstream_timeout(), connect=10.0),
+    )
     try:
         response = await client.send(upstream_req, stream=True)
     except httpx.HTTPError as exc:
-        await client.aclose()
         if req_base_url:
             return error_response(502, f"无法连接 base_url 指定的上游（{entry['base_url']}）：{exc}；请检查地址是否正确、该代理/服务是否已启动。")
         return error_response(502, f"上游 LLM 请求失败: {exc}")
     if response.status_code >= 400:
         content = await response.aread()
-        await client.aclose()
+        await response.aclose()
         return error_response(
             502,
             f"上游 LLM 失败（{response.status_code}）: {content.decode(errors='replace')[:500]}",
@@ -2761,9 +2826,11 @@ async def chat_completions(request: Request):
             if tail:
                 yield tail
             await response.aclose()
-            await client.aclose()
+            # 共享连接池不能在这里关：关闭的是本次响应，不是整个 client。
 
-    return StreamingResponse(body_gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        body_gen(), media_type="text/event-stream", headers=resp_headers
+    )
 
 
 def _embed_cap() -> str:
@@ -2902,17 +2969,19 @@ async def embeddings(request: Request):
     req.headers["Accept-Encoding"] = "identity"
 
     try:
-        async with httpx.AsyncClient(timeout=upstream_timeout()) as client:
-            response = await client.post(req.url, headers=req.headers, json=req.payload)
+        response = await _shared_http_client().post(
+            req.url, headers=req.headers, json=req.payload,
+            timeout=upstream_timeout(),
+        )
     except httpx.HTTPError as exc:
-        upstream_pool.mark_failure("LLM", entry)
+        upstream_pool.mark_failure(cap, entry)
         if req_base_url:
             return error_response(502, f"无法连接 base_url 指定的上游（{entry['base_url']}）：{exc}；请检查地址是否正确、该代理/服务是否已启动。")
         return error_response(502, f"上游 LLM 请求失败: {exc}")
     if response.status_code >= 400:
-        upstream_pool.mark_failure("LLM", entry, response.status_code)
+        upstream_pool.mark_failure(cap, entry, response.status_code)
         return error_response(502, f"上游 LLM 失败（{response.status_code}）: {upstream_error(response)}")
-    upstream_pool.mark_success("LLM", entry)
+    upstream_pool.mark_success(cap, entry)
     try:
         data = response.json()
     except ValueError:

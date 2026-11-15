@@ -247,6 +247,24 @@ def _ensure_health(cap: str, e: dict) -> dict:
 # 用于对外接口「模型存在性」校验——只依赖缓存数据，不每次发实时探测。
 _MODEL_CACHE: dict[tuple, tuple[float, Optional[list[str]]]] = {}
 _MODEL_CACHE_TTL = 60.0
+# 正在后台刷新的 key，避免缓存过期后并发请求各起一个探测任务。
+_MODEL_REFRESHING: set[tuple] = set()
+# 后台刷新任务的强引用：事件循环只持有 task 的弱引用，不保存可能被 GC 中途回收，
+# 刷新静默丢失；任务完成后由 done_callback 自动移除，避免集合无限增长。
+_MODEL_REFRESH_TASKS: set[asyncio.Task] = set()
+
+
+async def _refresh_models(
+    key: tuple, base_url: str, api_key: str, protocol: str, vendor: str | None
+) -> None:
+    """后台刷新模型列表；探测失败保留旧值，异常不外抛以免任务变成未处理异常。"""
+    try:
+        models = await _probe_models(base_url, api_key, protocol, vendor)
+        _MODEL_CACHE[key] = (time.time(), models)
+    except Exception:  # noqa: BLE001  上游抖动时下次再试，不影响正在进行的请求
+        pass
+    finally:
+        _MODEL_REFRESHING.discard(key)
 
 
 async def list_provider_models(
@@ -254,12 +272,23 @@ async def list_provider_models(
 ) -> Optional[list[str]]:
     """缓存地列出上游模型的 id；探测失败 / 不支持枚举时返回 None（调用方应跳过校验，不误杀）。
 
-    命中缓存直接返回，避免每次请求都打上游；仅在 TTL 过期后才重新探测一次。
+    stale-while-revalidate：TTL 内直接返回；过期时立刻返回旧值，把探测丢到后台，
+    不阻塞 chat 主路径。只有首次完全没有缓存时才同步探测一次，否则模型存在性
+    校验无从判断，会把请求发到根本不存在的模型上。
     """
     key = (base_url.rstrip("/"), protocol or "", vendor or "")
     now = time.time()
     cached = _MODEL_CACHE.get(key)
     if cached and now - cached[0] < _MODEL_CACHE_TTL:
+        return cached[1]
+    if cached:
+        if key not in _MODEL_REFRESHING:
+            _MODEL_REFRESHING.add(key)
+            task = asyncio.create_task(
+                _refresh_models(key, base_url, api_key, protocol, vendor)
+            )
+            _MODEL_REFRESH_TASKS.add(task)
+            task.add_done_callback(_MODEL_REFRESH_TASKS.discard)
         return cached[1]
     models = await _probe_models(base_url, api_key, protocol, vendor)
     _MODEL_CACHE[key] = (now, models)

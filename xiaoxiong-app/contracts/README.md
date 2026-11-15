@@ -52,6 +52,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }, "recommend": { "dealsCount": 3, "opensourceCount": 3 }, "mcp": { "servers": [ { "name": "fs", "transport": "stdio", "command": "npx @modelcontextprotocol/server-filesystem", "args": ["/tmp"] } ] } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
+{ "type": "session.skip_current" }
 { "type": "session.end" }
 { "type": "session.location", "latitude": 31.23, "longitude": 121.47, "address": "上海市" }
 { "type": "session.playback_done" }
@@ -182,11 +183,21 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `tts.stop` 表示被打断：客户端要立刻丢弃已排队/正在播的音频；`tts.end` 只表示本轮下发完毕。
 
-打断规则：一轮还没结束（思考或回复中）时用户又开口，**不打断当前轮**；
+打断规则：一轮还没结束（思考、回复或**播报**中）时用户又开口，**不打断当前轮**；
 网关只做识别并把这句放入队列（最多 3 句），当前轮播完后按序再交给大模型，
 消费队首时同样下发 `asr.final`。队列已满则下发 `asr.rejected`，
-`message` 是本地化的拒收原因，客户端在页面固定区域展示，不用浮层。
-客户端主动点「打断」仍走 `session.cancel`，会清空队列。
+`message` 是本地化的拒收原因，客户端在「我说」卡片右上角展示（与排队数量徽标同位置同款式），
+不用浮层、不弹顶部横幅。客户端主动点「打断」仍走 `session.cancel`，会清空队列、整轮重来。
+
+思考与播报期间的插话都进队列：网关把识别原文随 `asr.queued`（队列满时 `asr.rejected`）
+透传回客户端，客户端除了更新「我说」右上角的排队数，还对 `text` 做「小熊小熊」匹配。
+命中唤醒词 = 用户嫌当前这句长、想打断，于是播一声本地「我在」招呼并发 `session.skip_current`：
+只跳过当前正在播报/处理的这一句，**不清空队列、不重启会话**；当前句让出后，
+排在队列里的句子继续按序交给大模型并播报。这句唤醒词本身经 `asr.queued` 已入队，
+故 `skip_current` 带 `dropText`（识别原文）让网关把它从队列移除，避免被当成一句指令交给 LLM。
+与 `session.cancel` 的语义区别：cancel 是「整轮重来」（清队列 + 断链），skip_current 是
+「跳过当前、队列继续」。待唤醒/空闲时喊「小熊小熊」仍走原来的 `session.cancel` + `session.start`
+整轮重来（回干净对听状态），只有播报/思考中才走 skip_current。
 
 回声与杂音：网关在播报期间用 strict VAD、下行帧能量门控、已播文本比对三层
 把「收回来的自己的声音」在进 ASR 之前拦掉；ASR 定稿后还会过滤极短的

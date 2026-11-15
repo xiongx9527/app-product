@@ -271,6 +271,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\start-voice.ps1 -Port 9531
 | `SENSEVOICE_DIR` | `$VOICE_HOME/models/sensevoice` | 本地 STT 模型目录 |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | 本地 TTS 默认音色 |
 | `TTS_TIMEOUT` | `20` | edge-tts 单个音频块超时秒数 |
+| `TTS_TOTAL_TIMEOUT` | `30` | edge-tts 整体超时秒数（含 3 次重试），超时直接失败不返回半截音频 |
 | `FFMPEG_BIN` | `ffmpeg` | ffmpeg 路径；本地 WAV 转码需要 |
 | `VOICE_API_KEY` | `off` | 鉴权模式，见下 |
 | `VOICE_API_KEY_FILE` | `$VOICE_HOME/api-key` | Key 文件，`auto` 模式读写 |

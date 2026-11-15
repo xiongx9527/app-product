@@ -105,6 +105,9 @@ export interface AssistantTransport {
   onReconnectExhausted(listener: () => void): () => void
   sendAudioChunk(chunk: ArrayBuffer): void
   sendCancel(): void
+  /** 播报/思考中重新喊「小熊小熊」：只跳过当前句、保留队列（区别于 sendCancel 的整轮重来）。
+   *  dropText 为命中唤醒词的识别原文，让网关把这句（经 asr.queued 入过队）从队列移除，不当成指令处理。 */
+  sendSkipCurrent(dropText?: string): void
   /** 客户端点「换一首 / 换个风格」：下发 music.next 让网关解析下一首 */
   requestMusicNext(genre?: string): void
   /** 设置页保存后实时通知网关切换播放源/自动字幕开关，立即可用（无需重连） */

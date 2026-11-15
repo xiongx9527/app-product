@@ -399,6 +399,12 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendJson({ type: 'session.cancel' })
   }
 
+  /** 播报/思考中重新喊唤醒词：只跳过当前句、保留队列（区别于 sendCancel 的整轮重来）。
+   *  dropText 带上命中的唤醒词原文，网关据此从队列移除这句（它经 asr.queued 入过队）。 */
+  sendSkipCurrent(dropText?: string): void {
+    this.sendJson({ type: 'session.skip_current', ...(dropText ? { dropText } : {}) })
+  }
+
   requestMusicNext(genre?: string): void {
     this.sendJson({ type: 'music.next', genre })
   }

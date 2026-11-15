@@ -140,6 +140,13 @@ function nextPreference(text: string): string | undefined {
 export class VoiceSessionService {
   private active = false
   private cancelled = false
+  /**
+   * 「跳过当前句」标志：播报/思考中重新喊唤醒词时置位，只让当前这句的在途下发停止，
+   * 不 ++turn、不置 cancelled、不清队列——runTurn 的 while 据此继续消费下一句。
+   * 与 cancelled 正交：cancelled 作废整条链，skipRequested 只作废链里的当前一项。
+   * 每句在 runTurn 循环顶部复位。
+   */
+  private skipRequested = false
   /** 当前是否有一轮回答在跑（含思考、生成、播报） */
   private processing = false
   private endpointTimer: ReturnType<typeof setTimeout> | null = null
@@ -351,6 +358,9 @@ export class VoiceSessionService {
         break
       case 'session.cancel':
         this.cancel()
+        break
+      case 'session.skip_current':
+        this.skipCurrent(msg.dropText)
         break
       case 'session.end':
         this.end()
@@ -1257,14 +1267,15 @@ export class VoiceSessionService {
       // 不消费这句、也不替用户做主——清掉待确认标记后照常走下面的音乐/LLM 分支处理。
     }
 
-    // 播报（TTS）进行中：不放行成新轮次，也不排队插话——其它声音一律忽略。
-    // 但保留唤醒词识别：把识别结果回传客户端做「小熊小熊」比对，
-    // 只有命中唤醒词才允许打断，否则播报完整播完。
-    // 助手自己刚念过的原话（回声）直接丢弃，且此分支不触发回声兜底静音，
-    // 否则会连用户想用来打断的唤醒词一起掐掉。
+    // 播报（TTS）进行中：不放行成新轮次，但插话要排队——与思考阶段一致，
+    // 当前句播完（或被「小熊小熊」跳过后）由 runTurn 依次消费。
+    // 唤醒词识别靠 asr.queued/asr.rejected 把识别文本透传回客户端做「小熊小熊」比对：
+    // 命中则客户端发 session.skip_current 跳当前句（招呼由客户端本地播），网关据 dropText
+    // 把这句唤醒词从队列移除。助手自己刚念过的原话（回声）静默丢弃，且此分支不触发
+    // 回声兜底静音，否则会连用户想用来打断的唤醒词一起掐掉。
     if (this.playbackPending) {
       if (Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)) return
-      this.deps.send({ type: 'asr.final', text, queueRemaining: 0 })
+      this.enqueueDuringBusy(text)
       return
     }
     // 文本级回声兜底：刚播完的尾巴里仍可能混进助手说过的原话（含复述用户），
@@ -1281,27 +1292,11 @@ export class VoiceSessionService {
       return
     }
 
-    // 当前轮还没跑完（未播完/未在应答）：不打断、不消费，仅把这句排进队列；
+    // 当前轮还没跑完（未在应答 / 思考中）：不打断、不消费，仅把这句排进队列；
     // 排队句会在本轮播完后由 runTurn 回放，并同样走下面的直连拦截，
     // 避免被丢给大模型由 play_music 自动播放（破坏「按歌手浏览要给候选列表让用户选」）。
     if (this.processing) {
-      if (this.queue.length >= MAX_QUEUE) {
-        this.deps.send({
-          type: 'asr.rejected',
-          text,
-          reason: 'queue-full',
-          message: messages(this.lang).queue.full(),
-        })
-        return
-      }
-      this.queue.push(text)
-      this.deps.send({
-        type: 'asr.queued',
-        text,
-        position: this.queue.length,
-        size: MAX_QUEUE,
-        message: messages(this.lang).queue.accepted(this.queue.length, MAX_QUEUE),
-      })
+      this.enqueueDuringBusy(text)
       return
     }
 
@@ -1313,6 +1308,33 @@ export class VoiceSessionService {
     if (await this.handleDirectCommand(text)) return
 
     void this.runTurn(text)
+  }
+
+  /**
+   * 当前轮还没跑完（思考 / 播报）时把这句排进队列，并把识别原文经 asr.queued 透传回客户端：
+   * 客户端据此更新「我说」右上角的排队数，并对 text 做「小熊小熊」匹配——命中就发
+   * session.skip_current 跳过当前句（招呼由客户端本地播），网关据 dropText 把这句唤醒词移除。
+   * 队列满时不入队，但仍发 asr.rejected（带 text）：让客户端在队列满时也能识别唤醒词打断，
+   * 而不是把唤醒词连同拒收一起吞掉。
+   */
+  private enqueueDuringBusy(text: string): void {
+    if (this.queue.length >= MAX_QUEUE) {
+      this.deps.send({
+        type: 'asr.rejected',
+        text,
+        reason: 'queue-full',
+        message: messages(this.lang).queue.full(),
+      })
+      return
+    }
+    this.queue.push(text)
+    this.deps.send({
+      type: 'asr.queued',
+      text,
+      position: this.queue.length,
+      size: MAX_QUEUE,
+      message: messages(this.lang).queue.accepted(this.queue.length, MAX_QUEUE),
+    })
   }
 
   /**
@@ -1330,6 +1352,9 @@ export class VoiceSessionService {
     try {
       let current: string | undefined = text
       while (current !== undefined) {
+        // 新的一句开始：清除上一句可能的「跳过当前」标志。
+        // 必须在 armPlaybackWait 之前复位，否则被跳过的当前句会让下一句也被误停。
+        this.skipRequested = false
         // 每一句的播报内容与上一句无关，清空回声比对样本
         this.spoken.length = 0
         this.downlinkBytes = 0
@@ -1420,7 +1445,9 @@ export class VoiceSessionService {
   /** @returns 是否发出过 tts.start（决定要不要等播放完成回执） */
   private async runAgent(text: string, turn: number): Promise<boolean> {
     if (!this.agent) return false
-    const stale = () => this.turn !== turn || this.cancelled
+    // skipRequested 也视为「当前句已作废」：停止后续 delta 下发与 enqueue，
+    // 但不清队列、不 ++turn，runTurn 的链得以继续播队首下一句。
+    const stale = () => this.turn !== turn || this.cancelled || this.skipRequested
     let buffer = ''
     let ttsStarted = false
     let ttsChain: Promise<void> = Promise.resolve()
@@ -1483,12 +1510,12 @@ export class VoiceSessionService {
   }
 
   private async speakSentence(sentence: string, turn: number): Promise<void> {
-    if (this.turn !== turn || this.cancelled) return
+    if (this.turn !== turn || this.cancelled || this.skipRequested) return
     this.spoken.push(sentence)
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
     for await (const frame of this.tts.synthesize(sentence)) {
-      if (this.turn !== turn || this.cancelled) return
+      if (this.turn !== turn || this.cancelled || this.skipRequested) return
       this.downlinkBytes += frame.byteLength
       this.echo.onDownlink()
       // 每下发一帧就把回声保护窗口往后挪：窗口始终盖住「最后一帧之后的一小段余音」
@@ -1678,6 +1705,46 @@ export class VoiceSessionService {
     this.cancelPlaybackWait()
     if (wasSpeaking) this.deps.send({ type: 'tts.stop' })
     // 手动打断证明是真人，解除回声兜底
+    this.echo.release()
+    this.syncDuplex()
+    if (this.endpointTimer) clearTimeout(this.endpointTimer)
+    this.asr.reset()
+    this.vad.reset()
+  }
+
+  /**
+   * 播报/思考中重新喊「小熊小熊」：只跳过当前这一句，队列照常继续。
+   *
+   * 与 cancel() 的本质区别：不 ++turn、不置 cancelled、不清 queue。turn/cancelled 是
+   * 「整条链作废」的语义——一旦动它，runTurn 的 while 会在下一处 break，排队的句子
+   * 就再没人消费。这里改用一个只作用于「当前项」的 skipRequested 标志：
+   * 在途的 speakSentence / runAgent 看到它立即停止下发，但 runTurn 的链继续，
+   * 解除播放等待后自然 shift 出队首下一句接着播。客户端的「我在」招呼由客户端本地播。
+   * dropText：这句唤醒词刚被 enqueueDuringBusy 放进队列（经 asr.queued 透传给客户端匹配），
+   * 不是用户指令——从队尾移除，避免 runTurn 把它当一句话交给 LLM。
+   */
+  private skipCurrent(dropText?: string): void {
+    if (!this.active || this.cancelled) return
+    // 没有正在跑的轮次就没什么可跳的，避免误伤空闲态
+    if (!this.processing && !this.playbackPending) return
+    // 唤醒词本身不该进队列：从尾部找，确保删的是「刚识别的这一句」而非更早的重复文本。
+    if (dropText) {
+      const i = this.queue.lastIndexOf(dropText)
+      if (i >= 0) this.queue.splice(i, 1)
+    }
+    // 音频已下发完（tts.end）时 speaking 已为 false，但客户端可能仍在播、等 playback_done；
+    // 只要处于播放窗口就必须发 tts.stop，否则客户端 isSpeaking 不复位，下一句 tts.start
+    // 会被它的抗重复挡掉，队列就卡住不播了。
+    const wasPlaying = this.playbackPending || this.speaking
+    this.skipRequested = true
+    this.speaking = false
+    this.playbackPending = false
+    this.echoUntil = 0
+    // 解除「等播完」阻塞：runTurn 的 await playback 立即返回，随后检查 turn/cancelled
+    // 均未变（不在 break 条件里加 skipRequested），于是继续 shift 队列下一句。
+    this.cancelPlaybackWait()
+    if (wasPlaying) this.deps.send({ type: 'tts.stop' })
+    // 真人打断，解除回声兜底，恢复全双工拾音，让下一句能被正常识别
     this.echo.release()
     this.syncDuplex()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)

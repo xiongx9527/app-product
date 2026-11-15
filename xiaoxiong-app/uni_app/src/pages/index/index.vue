@@ -407,8 +407,6 @@ function onOrbTap(): void {
       </view>
     </view>
 
-    <view v-if="queueFullMsg" class="queue-full-banner">{{ queueFullMsg }}</view>
-
     <view class="stage" :style="isLandscape ? { marginTop: '-16px', paddingTop: '0px' } : {}">
       <view
         class="orb"
@@ -431,7 +429,9 @@ function onOrbTap(): void {
       <view class="card">
         <view class="card-head">
           <text class="card-label">{{ t('card.you') }}</text>
-          <text v-if="queuePending > 0" class="queue-badge">{{ t('queue.badge', { count: queuePending }) }}</text>
+          <!-- 队列满提示与排队数量共用右上角同一徽标位置/款式：满时优先显示拒收话术 -->
+          <text v-if="queueFullMsg" class="queue-badge">{{ queueFullMsg }}</text>
+          <text v-else-if="queuePending > 0" class="queue-badge">{{ t('queue.badge', { count: queuePending }) }}</text>
         </view>
         <text class="card-text">{{ transcript || t('card.placeholder') }}</text>
       </view>
@@ -827,16 +827,6 @@ function onOrbTap(): void {
   line-height: 1.6;
   color: #fff;
   background: #e5484d;
-}
-
-.queue-full-banner {
-  padding: 10px 14px;
-  border-radius: 12px;
-  font-size: 14px;
-  text-align: center;
-  color: #fff;
-  background: linear-gradient(135deg, #e5484d, #f0743f);
-  box-shadow: 0 4px 16px rgba(229, 72, 77, 0.28);
 }
 
 .live-text {

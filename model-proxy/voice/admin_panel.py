@@ -3178,7 +3178,9 @@ def register_admin_routes(
         action = body.get("action") if isinstance(body, dict) else None
         if not action:
             raise HTTPException(status_code=400, detail="缺少 action")
-        return voice_action(action)
+        # voice_action 里是同步 subprocess.run（timeout=60），直接调用会阻塞唯一
+        # 的事件循环、让整个 9529 停摆；放到线程池执行。
+        return await asyncio.to_thread(voice_action, action)
 
     @app.post("/admin/api/sync", dependencies=[Depends(require_admin)])
     async def admin_sync():

@@ -14,6 +14,10 @@ export interface Messages {
     accepted: (position: number, size: number) => string
     full: () => string
   }
+  /** 时间直连口播：入参是按会话时区算好的时/分，按 lang 生成自然语言，不进大模型 */
+  clock: {
+    now: (h: number, m: number) => string
+  }
   /** 音乐控制直连命令的口播确认/找不到文案（llm.delta 直接下发客户端，必须本地化） */
   music: {
     playing: (title: string) => string
