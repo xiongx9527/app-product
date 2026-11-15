@@ -28,8 +28,10 @@ const props = withDefaults(
     position?: FloatPosition
     /** 手动指定层级（一般不用，交给自动注册即可） */
     zIndex?: number
+    /** 顶部锚点需要额外让出的距离（px），传状态栏高度避免悬浮球顶进状态栏 */
+    topInset?: number
   }>(),
-  { visible: true, corner: 'bottom-right', offsetX: 0, offsetY: 0 },
+  { visible: true, corner: 'bottom-right', offsetX: 0, offsetY: 0, topInset: 0 },
 )
 
 const autoZ = registerFloatLayer(props.id)
@@ -51,8 +53,11 @@ const layerStyle = computed(() => {
     zIndex: String(props.zIndex ?? autoZ),
     transform: `${centered ? 'translateX(-50%) ' : ''}translate(${offsetX}px, ${offsetY}px)`,
   }
-  if (corner.startsWith('top')) style.top = inset
-  else style.bottom = inset
+  if (corner.startsWith('top')) {
+    // 顶部锚点叠加状态栏高度：H5/App 都需要让出状态栏，否则悬浮球顶进状态栏被遮挡（用户反馈「悬浮框偏高」）。
+    // bottomInset 保持 FLOAT_INSET，顶部单独加 topInset。
+    style.top = `calc(${inset} + ${props.topInset}px)`
+  } else style.bottom = inset
   if (centered) style.left = '50%'
   else if (corner.endsWith('left')) style.left = inset
   else style.right = inset

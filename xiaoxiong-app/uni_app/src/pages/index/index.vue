@@ -598,7 +598,12 @@ function onOrbTap(): void {
     <!-- 悬浮小圆：通用悬浮层的一个业务（音乐播放器），内容与容器解耦。
          z-index / 角落由 FloatLayer 统一管；圆形封面播放时旋转、暂停停，下方大字是当前正在唱的那句。 -->
     <!-- 位置由 playback.floatPosition 配置作为统一参数传入，通用层只认参数；点击小圆切暂停/继续 -->
-    <FloatLayer id="music-disc" :visible="floatDiscVisible" :position="floatDiscPosition">
+    <FloatLayer
+      id="music-disc"
+      :visible="floatDiscVisible"
+      :position="floatDiscPosition"
+      :top-inset="isLandscape ? 8 : screen.statusBarHeight"
+    >
       <!-- 固定宽度内容层：歌词再长也不撑宽容器，FloatLayer 的 translateX(-50%) 基准恒定，
            位置不会左右移动；小圆与歌词都在此层内居中，整体严格顶部居中 -->
       <view class="float-disc-body">
