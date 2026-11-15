@@ -20,18 +20,27 @@ export interface SecureResponse {
   header: Record<string, string>
 }
 
+/**
+ * 网关 REST 调用的超时（毫秒）。网关与 App 同机（回环 127.0.0.1），正常应毫秒级返回；
+ * 但若上游（如内置来源经 adb reverse 指向 Mac 9529）不可达，uni.request 默认不超时，
+ * 会永久挂起导致 settings 四个下拉 forever disabled（length 0、无错误提示）。
+ * 这里统一兜底超时，让请求失败而非挂死，从而走 catch 分支给出可用状态/提示。
+ */
+const REQUEST_TIMEOUT_MS = 10_000
+
 function uniRequest(opts: {
   url: string
   method: string
   data?: unknown
   header?: Record<string, string>
 }): Promise<SecureResponse> {
-  return new Promise((resolve, reject) => {
+  const network = new Promise<SecureResponse>((resolve, reject) => {
     uni.request({
       url: opts.url,
       method: opts.method as UniApp.RequestOptions['method'],
       data: opts.data as UniApp.RequestOptions['data'],
       header: opts.header,
+      timeout: REQUEST_TIMEOUT_MS,
       success: (res) =>
         resolve({
           statusCode: res.statusCode,
@@ -41,6 +50,15 @@ function uniRequest(opts: {
       fail: (err) => reject(err),
     })
   })
+  // 双保险：部分 uni-app 运行时的 uni.request 不认 timeout 选项而永久挂起，
+  // 这里用 Promise.race + 手动计时兜底，确保超时 reject，绝不让请求卡死。
+  const guard = new Promise<never>((_, reject) =>
+    setTimeout(
+      () => reject(new Error(`secureRequest 超时(${REQUEST_TIMEOUT_MS}ms): ${opts.method} ${opts.url}`)),
+      REQUEST_TIMEOUT_MS,
+    ),
+  )
+  return Promise.race([network, guard])
 }
 
 /**

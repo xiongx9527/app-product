@@ -35,6 +35,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+from datetime import datetime
 from urllib.parse import urlparse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,8 +66,17 @@ problems: list[str] = []
 hints: list[str] = []
 
 
+def _ts() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def out(text: str = "") -> None:
+    """启动期输出逐行带时间戳；空行保持空行，不塞时间。"""
+    print(f"{_ts()} {text}" if text else "", flush=True)
+
+
 def line(text: str) -> None:
-    print(f"[check] {text}", flush=True)
+    out(f"[check] {text}")
 
 
 def problem(text: str) -> None:
@@ -306,21 +316,21 @@ def finish() -> int:
         line("环境检查通过")
         return 0
 
-    print("", flush=True)
+    out()
     line("环境检查未通过，服务不会启动。")
     line("启动脚本只检查依赖，不会自动安装；请手动执行下面的命令：")
-    print("", flush=True)
+    out()
     line("安装脚本（推荐，一次装齐当前模式所需依赖）：")
     for item in install_script_hint():
-        print(item, flush=True)
+        out(item)
 
     if hints:
-        print("", flush=True)
+        out()
         line("也可以只补缺失项：")
         for item in hints:
-            print(f"  {item}", flush=True)
+            out(f"  {item}")
 
-    print("", flush=True)
+    out()
     line("修复后重新运行启动命令；完整说明见 model-proxy/README.md。")
     return 1
 

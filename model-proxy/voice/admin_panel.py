@@ -53,6 +53,13 @@ MASKED_KEYS = {
     "VOICE_API_KEY_FILE",
     "LLM_UPSTREAM_POOL",
     "EMBED_UPSTREAM_POOL",  # 向量上游池（含 api_key 的 JSON，整串打码），与 LLM 池数据独立
+    # ASR / TTS 的上游与 DeepSeek 密钥同样含明文 api-key：既绝不能回传明文，
+    # 也要脱敏成 HIDDEN 哨兵——前端 hasProvKey 靠「值等于 HIDDEN」判定「已配置」，
+    # 不在此集合里会让 GET 返回明文、刷新页面后前端误判成「没配置」（用户以为 key 丢了）。
+    "STT_UPSTREAM_API_KEY",
+    "TTS_UPSTREAM_API_KEY",
+    "STT_DEEPSEEK_API_KEY",
+    "TTS_DEEPSEEK_API_KEY",
 }
 HIDDEN = "********"
 
@@ -483,7 +490,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
     <label data-i18n="cfg.provUrl">服务地址（固定）</label>
     <input id="provUrl" type="text" readonly title="${t('cfg.provUrlFixed')}" />
     <label data-i18n="common.apiKey">API Key</label>
-    <input id="provKey" type="password" autocomplete="off" data-i18n-ph="common.blankKeep" placeholder="（留空=不修改）" />
+    <input id="provKey" type="password" autocomplete="off" data-i18n-ph="common.blankKeep" placeholder="（留空=清空）" />
     <div class="row" style="justify-content:flex-end;margin-top:16px; gap:8px">
       <button class="sec" id="provCancel" data-i18n="common.cancel">取消</button>
       <button id="provSave" data-i18n="common.save">保存</button>
@@ -533,7 +540,7 @@ const I18N = {
     "cfg.addModelPh": "输入模型名后点添加",
     "cfg.customApi": "DashScope",
     "cfg.deepseek": "DeepSeek",
-    "cfg.dsUrlFixed": "服务地址固定为官方入口 https://api.deepseek.com（无需填写）；模型/音色用「↻ 刷新」或音色目录维护。",
+    "cfg.dsUrlFixed": "服务地址固定为 https://api.deepseek.com（无需填写）；模型/音色用「↻ 刷新」或音色目录维护。",
     "cfg.dsNeedKey": "已选择 DeepSeek：请先填写 API Key 并保存",
     "cfg.savedNeedKeyDash": "DashScope 未配置 API Key，勾选已保存但调用会失败",
     "cfg.savedNeedKeyDs": "DeepSeek 未配置 API Key，勾选已保存但调用会失败",
@@ -541,16 +548,17 @@ const I18N = {
     "cfg.provEditPrefix": "编辑提供商（",
     "cfg.provEditTitle": "编辑提供商：",
     "cfg.provUrl": "服务地址（固定）",
-    "cfg.provUrlFixed": "服务地址固定为官方入口 https://dashscope.aliyuncs.com（无需填写）；模型用「↻ 刷新」拉取后勾选。",
-    "cfg.provUrlFixedShort": "官方入口",
+    "cfg.provUrlFixed": "服务地址固定为 https://dashscope.aliyuncs.com（无需填写）；模型用「↻ 刷新」拉取后勾选。",
+    "cfg.provUrlFixedShort": "已配置",
     "cfg.provNeedKey": "已选择 DashScope：请先填写 API Key 并保存",
     "cfg.provNeedKeyShort": "未填写 API Key（点此填写）",
-    "cfg.provUrlFixed": "服务地址固定为官方入口 https://dashscope.aliyuncs.com",
-    "cfg.provUrlFixedShort": "官方入口",
+    "cfg.provUrlFixed": "服务地址固定为 https://dashscope.aliyuncs.com",
+    "cfg.provUrlFixedShort": "已配置",
     "cfg.provNeedKey": "已选择 DashScope：请先填写 API Key 并保存",
     "cfg.provNeedKeyShort": "未填写 API Key（点此填写）",
     "cfg.provIncomplete": "已选择上游：请先填写服务地址与模型，再保存",
-    "common.blankKeep": "（留空=不修改）",
+    "common.blankKeep": "（留空=清空）",
+    "common.configuredKeep": "已配置（留空=清空）",
     "cfg.apiKeyAuth": "是否启用 API-Key 鉴权",
     "cfg.apiKeyList": "API Key 列表（一行一个；填 auto 自动生成）",
     "cfg.ipAllow": "IP 白名单（一行一个 IP 或 CIDR；留空=不限制）",
@@ -740,7 +748,7 @@ const I18N = {
     "cfg.addModelPh": "Type a model name, then Add",
     "cfg.customApi": "DashScope",
     "cfg.deepseek": "DeepSeek",
-    "cfg.dsUrlFixed": "Base URL is fixed to the official endpoint https://api.deepseek.com (no need to fill); use ↻ Refresh or the voice catalog to maintain models/voices.",
+    "cfg.dsUrlFixed": "Base URL is fixed to https://api.deepseek.com (no need to fill); use ↻ Refresh or the voice catalog to maintain models/voices.",
     "cfg.dsNeedKey": "DeepSeek selected: fill in the API Key and save first",
     "cfg.savedNeedKeyDash": "DashScope API Key missing; selection saved but calls will fail",
     "cfg.savedNeedKeyDs": "DeepSeek API Key missing; selection saved but calls will fail",
@@ -748,12 +756,13 @@ const I18N = {
     "cfg.provEditPrefix": "Edit provider (",
     "cfg.provEditTitle": "Edit provider: ",
     "cfg.provUrl": "Base URL (fixed)",
-    "cfg.provUrlFixed": "Base URL is fixed to the official endpoint https://dashscope.aliyuncs.com (no need to fill); use ↻ Refresh to fetch models.",
-    "cfg.provUrlFixedShort": "official endpoint",
+    "cfg.provUrlFixed": "Base URL is fixed to https://dashscope.aliyuncs.com (no need to fill); use ↻ Refresh to fetch models.",
+    "cfg.provUrlFixedShort": "Configured",
     "cfg.provNeedKey": "DashScope selected: fill in the API Key and save first",
     "cfg.provNeedKeyShort": "API Key missing (click to fill)",
     "cfg.provIncomplete": "Upstream selected: fill in the base URL and model before saving",
-    "common.blankKeep": "(blank = keep current)",
+    "common.blankKeep": "(blank = clear)",
+    "common.configuredKeep": "Configured (blank = clear)",
     "cfg.apiKeyAuth": "Enable API-Key auth",
     "cfg.apiKeyList": "API Key list (one per line; fill \"auto\" to auto-generate)",
     "cfg.ipAllow": "IP allowlist (one IP or CIDR per line; blank = no restriction)",
@@ -1051,7 +1060,7 @@ async function loadConfig(){
     ['llm','asr','tts'].forEach(t=>CFG_TABS[t].forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); }));
     // 向量默认模型（embeddings 测试兜底；向后兼容旧的 LLM_EMBED_MODEL）
     embedDefModel = (cfgOrig.EMBED_UPSTREAM_MODEL || cfgOrig.LLM_EMBED_MODEL || '').trim();
-    // ASR/TTS 提供商状态回填：provider、上游地址/模型/模型列表（Key 不回显，留空=不修改）
+    // ASR/TTS 提供商状态回填：provider、上游地址/模型/模型列表（Key 从专用接口回填，与 LLM 编辑框一致）
     const provOf = (v) => (v === 'dashscope' || v === 'openai_audio')
       ? 'custom' : (v === 'deepseek' ? 'deepseek' : 'builtin');
     asrProvider = provOf(cfgOrig.STT_PROVIDER);
@@ -1067,9 +1076,10 @@ async function loadConfig(){
     // - 点提供商后的「↻ 刷新」按钮：把 cands 展开为基础库全量候选，并保留勾选与默认标记，用于增删。
     //   之所以不在默认视图自动显示全量候选，是因为「取消勾选 = 想停用」时列表仍显示候选会让人误以为没保存。
     try{
-      const [catalog, enabled] = await Promise.all([
+      const [catalog, enabled, secrets] = await Promise.all([
         fetch('/admin/api/speech-models',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
         fetch('/admin/api/enabled-models',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+        fetch('/admin/api/speech-secrets',{credentials:'same-origin'}).then(r=>r.ok?r.json():{}).catch(()=>({})),
       ]);
       const catRows = (catalog && Array.isArray(catalog.models)) ? catalog.models : [];
       const enRows  = (enabled && Array.isArray(enabled.models)) ? enabled.models : [];
@@ -1086,6 +1096,13 @@ async function loadConfig(){
       };
       Object.entries(SLOTS).forEach(([key, e]) => {
         const [kind, provider] = key.split(':');
+        // 与 LLM 编辑框一致：从专用接口取真实 Key 预填进密码框（显示为点）；内置无 Key。
+        // 取不到（接口异常）保持 undefined —— 保存时不下发，避免把已存的 Key 误清空。
+        if (provider !== 'builtin') {
+          const cap = kind.toUpperCase();
+          const cfgKey = cap + (provider === 'deepseek' ? '_DEEPSEEK_API_KEY' : '_UPSTREAM_API_KEY');
+          e.key = secrets ? secrets[cfgKey] : undefined;
+        }
         const en = enRows.filter(x => x.kind===kind && x.provider===provider);
         const enModels = en.map(x => x.model).filter(Boolean);
         // 默认视图只显示「已启用」的模型；全不勾选时 cands 为空（整行清空），
@@ -1437,7 +1454,8 @@ function saveAccModal(){
 }
 
 // ── ASR/TTS 上游（dashscope）的弹框编辑与保存 ──
-// provEdit[kind] 是编辑暂存；Key 不回显（cfgOrig 里是打码值），留空 = 不修改已存的 Key。
+// provEdit[kind] 是编辑暂存；Key 从 /admin/api/speech-secrets 取真值回填（与 LLM 一致），
+// 留空 = 清空该 Key（下发空串即删）；undefined 表示本次未取到，保存时不下发以免误删。
 let provModalKind = null;       // 'stt' | 'tts'
 let provModalProvider = 'dashscope';   // 'dashscope' | 'deepseek'
 function openProvModal(kind, provider){
@@ -1447,10 +1465,15 @@ function openProvModal(kind, provider){
   document.getElementById('provModalTitle').textContent =
     t('cfg.provEditTitle') + (kind === 'stt' ? 'ASR' : 'TTS') + ' · ' +
     (provModalProvider === 'deepseek' ? t('cfg.deepseek') : t('cfg.customApi'));
-  // 服务地址固定为厂商官方入口，只读展示、不可修改
+  // 服务地址固定为厂商地址，只读展示、不可修改
   document.getElementById('provUrl').value = provModalProvider === 'deepseek'
     ? 'https://api.deepseek.com' : 'https://dashscope.aliyuncs.com';
-  document.getElementById('provKey').value = e.key || '';
+  const pk = document.getElementById('provKey');
+  pk.value = e.key || '';
+  // 已配置但本次会话内存里没真值（如刚刷新过页面）：明确提示「已配置」，避免误以为 key 丢了。
+  const cap = kind.toUpperCase();
+  const cfgKey = cap + (provModalProvider === 'deepseek' ? '_DEEPSEEK_API_KEY' : '_UPSTREAM_API_KEY');
+  pk.placeholder = (e.key || cfgOrig[cfgKey] === HIDDEN_SENTINEL) ? t('common.configuredKeep') : t('common.blankKeep');
   document.getElementById('provModal').classList.add('show');
 }
 function saveProvModal(){
@@ -1459,7 +1482,7 @@ function saveProvModal(){
   const e = provSlot(kind, provModalProvider);
   e.url = document.getElementById('provUrl').value.trim();
   const k = document.getElementById('provKey').value;
-  if (k) e.key = k;          // 留空 = 不修改已存 Key
+  e.key = k;                 // 留空 = 清空该 Key（与 LLM 一致）；保存时下发空串即删除
   document.getElementById('provModal').classList.remove('show');
   if (kind === 'stt') paintAsrTable(); else paintTtsTable();
 }
@@ -1490,14 +1513,14 @@ async function saveProvConfig(kind){
   // 有勾选就必须有默认：只勾 checkbox 时 def 可能还没设置，回退到第一个勾选，
   // 否则 config_kv 的默认模型会是空、与启用表里标了 is_default 的那条对不上。
   const defOf = (x, picked) => (x.def && picked.includes(x.def)) ? x.def : (picked[0] || '');
-  if (e.key) patch[cap + '_UPSTREAM_API_KEY'] = e.key;
+  if (e.key !== undefined) patch[cap + '_UPSTREAM_API_KEY'] = e.key;   // undefined=未取到，不下发；''=清空
   {
     const picked = pickedOf(e);
     patch[cap + '_UPSTREAM_MODELS'] = JSON.stringify(picked);
     patch[cap + '_UPSTREAM_MODEL'] = defOf(e, picked);
   }
   const dsk = provEdit[kind + 'Deepseek'];
-  if (dsk.key) patch[cap + '_DEEPSEEK_API_KEY'] = dsk.key;
+  if (dsk.key !== undefined) patch[cap + '_DEEPSEEK_API_KEY'] = dsk.key;   // undefined=未取到，不下发；''=清空
   {
     const picked = pickedOf(dsk);
     patch[cap + '_DEEPSEEK_MODELS'] = JSON.stringify(picked);
@@ -1669,13 +1692,13 @@ let ttsProvider = 'builtin';
 // 上游配置的编辑暂存：初始值来自 cfgOrig（loadConfig 回填）；Key 不回显，留空=不修改。
 // builtin 槽是固定白名单（只读子表，结构上与上游行统一，不落库）。
 let provEdit = {
-  stt: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
-  tts: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
+  stt: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
+  tts: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
   sttBuiltin: { cands: ['sensevoice-small'], sel: new Set(['sensevoice-small']), def: 'sensevoice-small' },
   ttsBuiltin: { cands: ['edge-tts'], sel: new Set(['edge-tts']), def: 'edge-tts' },
   // DeepSeek 官方语音（地址固定、只填 api-key；ASR/TTS 各自一把 Key）
-  sttDeepseek: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
-  ttsDeepseek: { url: '', key: '', model: '', cands: [], sel: new Set(), def: '', avail: {} },
+  sttDeepseek: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
+  ttsDeepseek: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
 };
 
 // ASR/TTS 模型目录（来自 /admin/api/speech-models，DB 维护）：每条含 provider + protocol。
@@ -2281,7 +2304,7 @@ async function renderDashboard(){
 
   app.appendChild(buildConfigCard());
 
-  app.appendChild(el(`<div class="card" id="testCard"><h2>${t('common.test')}</h2>
+  app.appendChild(el(`<div class="card collapsed" id="testCard"><h2>${t('common.test')}</h2>
     <label>${t('common.authHint')}</label>
     <input id="testKey" type="password" placeholder="${t('common.apiKeyOptional')}" />
     <div class="tabs">
@@ -3180,6 +3203,18 @@ def register_admin_routes(
         """向量（embeddings）上游按提供商分组返回：与 LLM 结构完全一致，但数据独立存储
         （EMBED_UPSTREAM_POOL），互不影响——改一个不会同步/覆盖另一个。"""
         return admin_pool("EMBED", "EMBED_UPSTREAM_VENDOR", "EMBED_UPSTREAM_MODEL")
+
+    @app.get("/admin/api/speech-secrets", dependencies=[Depends(require_admin)])
+    def admin_speech_secrets():
+        """ASR/TTS 上游（dashscope / deepseek）的 API Key 真实值：仅供编辑框预填（与 LLM 池同口径，
+        明文返回、仅本地同源可达）。通用 /admin/api/config 仍打码，密钥不在此泄露。"""
+        cfg = config_store.instance().all()
+        return {
+            "STT_UPSTREAM_API_KEY": cfg.get("STT_UPSTREAM_API_KEY") or "",
+            "TTS_UPSTREAM_API_KEY": cfg.get("TTS_UPSTREAM_API_KEY") or "",
+            "STT_DEEPSEEK_API_KEY": cfg.get("STT_DEEPSEEK_API_KEY") or "",
+            "TTS_DEEPSEEK_API_KEY": cfg.get("TTS_DEEPSEEK_API_KEY") or "",
+        }
 
     def admin_pool(cap: str, def_vendor_key: str, def_model_key: str):
         """上游池按提供商分组返回：每组含厂商、协议、去重模型列表、账号清单（地址/Key/本账号模型）。

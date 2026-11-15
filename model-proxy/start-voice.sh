@@ -51,12 +51,17 @@ usage() {
 }
 
 die() {
-  printf '错误: %s\n' "$*" >&2
+  printf '%s 错误: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
   exit 1
 }
 
 log() {
-  printf '%s\n' "$*"
+  # 后台启动时本脚本输出会进 voice.log：逐行带时间戳，与 uvicorn 日志格式一致。
+  if [ -z "${1:-}" ]; then
+    printf '\n'
+  else
+    printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+  fi
 }
 
 while [ $# -gt 0 ]; do

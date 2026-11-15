@@ -130,8 +130,8 @@ do_start() {
       printf '%s\n' "$check_output" >>"$LOG_FILE"
     fi
     {
-      printf '启动失败：依赖检查未通过时，请按上方 [check] 提示手动安装。\n'
-      printf '启动脚本不会自动安装依赖；完整日志用 ./model-proxy/voice.sh log 查看。\n'
+      printf '%s 启动失败：依赖检查未通过时，请按上方 [check] 提示手动安装。\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+      printf '%s 启动脚本不会自动安装依赖；完整日志用 ./model-proxy/voice.sh log 查看。\n' "$(date '+%Y-%m-%d %H:%M:%S')"
     } >>"$LOG_FILE"
     log "语音服务启动失败：依赖检查未通过。"
     log_tail
@@ -163,8 +163,8 @@ do_start() {
 
   rm -f "$PID_FILE"
   {
-    printf '启动失败：请查看上方日志里的错误信息。\n'
-    printf '若是依赖问题，按 [check] 提示手动安装；启动脚本不会自动安装。\n'
+    printf '%s 启动失败：请查看上方日志里的错误信息。\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+    printf '%s 若是依赖问题，按 [check] 提示手动安装；启动脚本不会自动安装。\n' "$(date '+%Y-%m-%d %H:%M:%S')"
   } >>"$LOG_FILE"
   log "语音服务启动失败。"
   log_tail

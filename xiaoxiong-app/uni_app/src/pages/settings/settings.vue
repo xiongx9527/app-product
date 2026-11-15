@@ -202,43 +202,28 @@ function currentProviderSettings() {
 
 async function loadLlmModels(): Promise<void> {
   llmModelHint.value = ''
-  const provider = appConfig.voice.provider
-  const settings = currentProviderSettings()
-  // 前端只与网关通信：模型列表由网关持有来源地址并中转拉取，前端只传 provider。
-  // 仅百炼需要用户本机 api-key（密钥只落本机，必须由前端带来）；内置无需任何密钥。
-  const qs = new URLSearchParams({ provider })
-  // api-key 只落本机，必须由前端带来；内置非必填（可空），百炼必带。地址默认由网关持有中转，
-  // 但当前选中的来源地址（voice.url，如自建 MAAS 实例）也要带上：让网关从「真实在用的地址」
-  // 拉模型目录，而不是默认云端地址——否则列表里的模型名和真实推理地址对不上，会「模型异常」。
-  // 不传 url 时网关回退自身默认地址，旧行为不变。
-  if (settings.url) qs.set('url', settings.url)
-  if (settings.apiKey) qs.set('apiKey', settings.apiKey)
   try {
-    const res = await secureRequest({
-      url: `${resolveGatewayHttpBase()}/api/admin/llm-models?${qs.toString()}`,
-      method: 'GET',
-    })
+    // 用纯字符串拼接，不依赖 URLSearchParams：App 逻辑层 JS 引擎对 Web API 支持不齐，
+    // 早期在 try 外抛错会让整个 load 静默失败、数组停在 [] → 下拉 forever disabled。
+    const provider = appConfig.voice.provider
+    const settings = currentProviderSettings()
+    const parts = [`provider=${encodeURIComponent(provider)}`]
+    if (provider !== 'builtin') {
+      if (settings.url) parts.push(`url=${encodeURIComponent(settings.url)}`)
+      if (settings.apiKey) parts.push(`apiKey=${encodeURIComponent(settings.apiKey)}`)
+    }
+    const url = `${resolveGatewayHttpBase()}/api/admin/llm-models?${parts.join('&')}`
+    const res = await secureRequest({ url, method: 'GET' })
     const data = res.data as { models?: string[] } | null
     if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.models) && data.models.length) {
-      // 内置来源：首位放「沿用来源默认」空选项，允许不选（空串 = 用 9529 自身默认模型）。
-      // 百炼必须带真实模型，不放空选项。
       const withDefault = provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
       llmModels.value = [...withDefault, ...data.models.map((m) => ({ value: m, label: m }))]
-      const settings = currentProviderSettings()
-      if (settings.model && !data.models.includes(settings.model)) {
-        // 选中的模型已不在列表里：内置回退「沿用来源默认」，百炼必须选一个真实模型。
-        settings.model = provider === 'builtin' ? '' : data.models[0]
-      } else if (!settings.model && provider === 'dashscope') {
-        // 百炼 LLM 模型必填：没选时默认选第一个，保证开箱即连得上。
-        settings.model = data.models[0]
-      }
-      // 内置 LLM 模型留空 = 沿用来源默认，不做强制选择。
     } else {
       llmModels.value = provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
       llmModelHint.value = t('settings.voice.llmModelEmpty')
     }
-  } catch {
-    llmModels.value = provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
+  } catch (e) {
+    llmModels.value = appConfig.voice.provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
     llmModelHint.value = t('settings.voice.llmModelFailed')
   }
 }
@@ -260,17 +245,18 @@ const asrModelHint = ref('')
 
 async function loadAsrModels(): Promise<void> {
   asrModelHint.value = ''
-  const provider = appConfig.voice.provider
-  const settings = currentProviderSettings()
-  // 前端只与网关通信：模型目录由网关持有来源地址并中转，前端只传 provider + capability。
-  // api-key 只落本机、由前端带来：百炼必带；内置本地服务默认不校验，但自建实例开启
-  // API-Key 鉴权（VOICE_API_KEY_AUTH）后同样要带上。地址始终由网关配置持有。
-  const qs = new URLSearchParams({ provider, capability: 'asr' })
-  if (settings.url) qs.set('url', settings.url)
-  if (settings.apiKey) qs.set('apiKey', settings.apiKey)
   try {
+    // 前端只与网关通信：模型目录由网关持有来源地址并中转，前端只传 provider + capability。
+    // 纯字符串拼接，不依赖 URLSearchParams（App 逻辑层 Web API 支持不齐）。
+    const provider = appConfig.voice.provider
+    const settings = currentProviderSettings()
+    const parts = [`provider=${encodeURIComponent(provider)}`, 'capability=asr']
+    if (provider !== 'builtin') {
+      if (settings.url) parts.push(`url=${encodeURIComponent(settings.url)}`)
+      if (settings.apiKey) parts.push(`apiKey=${encodeURIComponent(settings.apiKey)}`)
+    }
     const res = await secureRequest({
-      url: `${resolveGatewayHttpBase()}/api/admin/voice-models?${qs.toString()}`,
+      url: `${resolveGatewayHttpBase()}/api/admin/voice-models?${parts.join('&')}`,
       method: 'GET',
     })
     const data = res.data as { models?: string[] } | null
@@ -283,7 +269,7 @@ async function loadAsrModels(): Promise<void> {
       asrModels.value = [USE_SOURCE_DEFAULT.value]
       asrModelHint.value = t('settings.voice.asrModelEmpty')
     }
-  } catch {
+  } catch (e) {
     asrModels.value = [USE_SOURCE_DEFAULT.value]
     asrModelHint.value = t('settings.voice.asrModelFailed')
   }
@@ -295,14 +281,16 @@ const ttsModelHint = ref('')
 
 async function loadTtsModels(): Promise<void> {
   ttsModelHint.value = ''
-  const provider = appConfig.voice.provider
-  const settings = currentProviderSettings()
-  const qs = new URLSearchParams({ provider, capability: 'tts' })
-  if (settings.url) qs.set('url', settings.url)
-  if (settings.apiKey) qs.set('apiKey', settings.apiKey)
   try {
+    const provider = appConfig.voice.provider
+    const settings = currentProviderSettings()
+    const parts = [`provider=${encodeURIComponent(provider)}`, 'capability=tts']
+    if (provider !== 'builtin') {
+      if (settings.url) parts.push(`url=${encodeURIComponent(settings.url)}`)
+      if (settings.apiKey) parts.push(`apiKey=${encodeURIComponent(settings.apiKey)}`)
+    }
     const res = await secureRequest({
-      url: `${resolveGatewayHttpBase()}/api/admin/voice-models?${qs.toString()}`,
+      url: `${resolveGatewayHttpBase()}/api/admin/voice-models?${parts.join('&')}`,
       method: 'GET',
     })
     const data = res.data as { models?: string[] } | null
@@ -314,7 +302,7 @@ async function loadTtsModels(): Promise<void> {
       ttsModels.value = [USE_SOURCE_DEFAULT.value]
       ttsModelHint.value = t('settings.voice.ttsModelEmpty')
     }
-  } catch {
+  } catch (e) {
     ttsModels.value = [USE_SOURCE_DEFAULT.value]
     ttsModelHint.value = t('settings.voice.ttsModelFailed')
   }
@@ -358,15 +346,15 @@ const ttsVoiceHint = ref('')
 async function loadTtsVoices(): Promise<void> {
   ttsVoiceHint.value = ''
   voiceModelMap.clear()
-  const provider = appConfig.voice.provider
-  const settings = currentProviderSettings()
-  // 前端只与网关通信：把 provider、当前语言与来源 api-key 带给网关，由网关按 lang 拼出
-  // 本地化标签；内置 9529 开启鉴权时，网关用这个 Key 去拉实时音色目录。
-  const qs = new URLSearchParams({ provider, lang: appConfig.language })
-  if (settings.apiKey) qs.set('apiKey', settings.apiKey)
   try {
+    const provider = appConfig.voice.provider
+    const settings = currentProviderSettings()
+    // 纯字符串拼接，不依赖 URLSearchParams（App 逻辑层 Web API 支持不齐）。
+    const parts = [`provider=${encodeURIComponent(provider)}`, `lang=${encodeURIComponent(appConfig.language)}`]
+    // 内置来源不传密钥（由网关持有）；仅非内置才带当前选中的来源 api-key。
+    if (provider !== 'builtin' && settings.apiKey) parts.push(`apiKey=${encodeURIComponent(settings.apiKey)}`)
     const res = await secureRequest({
-      url: `${resolveGatewayHttpBase()}/api/admin/tts-voices?${qs.toString()}`,
+      url: `${resolveGatewayHttpBase()}/api/admin/tts-voices?${parts.join('&')}`,
       method: 'GET',
     })
     const data = res.data as {
@@ -403,7 +391,7 @@ async function loadTtsVoices(): Promise<void> {
       ttsVoices.value = []
       ttsVoiceHint.value = t('settings.voice.ttsVoiceEmpty')
     }
-  } catch {
+  } catch (e) {
     ttsVoices.value = []
     ttsVoiceHint.value = t('settings.voice.ttsVoiceFailed')
   }
@@ -629,44 +617,36 @@ watch(
         />
         <text class="row-label">{{ t('settings.voice.llmModel') }}</text>
         <SelectRow
-          :hint="t('settings.voice.llmModelHint')"
           :options="llmModels"
           :model-value="appConfig.voice.builtin.model ?? ''"
           :disabled="llmModels.length === 0"
           :searchable="llmModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.builtin.model = v)"
         />
-        <text v-if="llmModelHint" class="hint" @tap="loadLlmModels">{{ llmModelHint }}</text>
         <text class="row-label">{{ t('settings.voice.asrModel') }}</text>
         <SelectRow
-          :hint="t('settings.voice.asrModelHint')"
           :options="asrModels"
           :model-value="appConfig.voice.builtin.asrModel ?? ''"
           :disabled="asrModels.length === 0"
           :searchable="asrModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.builtin.asrModel = v)"
         />
-        <text v-if="asrModelHint" class="hint" @tap="loadAsrModels">{{ asrModelHint }}</text>
         <text class="row-label">{{ t('settings.voice.ttsModel') }}</text>
         <SelectRow
-          :hint="t('settings.voice.ttsModelHint')"
           :options="ttsModels"
           :model-value="appConfig.voice.builtin.ttsModel ?? ''"
           :disabled="ttsModels.length === 0"
           :searchable="ttsModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.builtin.ttsModel = v)"
         />
-        <text v-if="ttsModelHint" class="hint" @tap="loadTtsModels">{{ ttsModelHint }}</text>
         <text class="row-label">{{ t('settings.voice.ttsVoice') }}</text>
         <SelectRow
-          :hint="t('settings.voice.ttsVoiceHint')"
           :options="ttsVoices"
           :model-value="appConfig.voice.builtin.voice ?? ''"
           :disabled="ttsVoices.length === 0"
           :searchable="ttsVoices.length > 0"
           @update:model-value="onSelectVoice"
         />
-        <text v-if="ttsVoiceHint" class="hint" @tap="loadTtsVoices">{{ ttsVoiceHint }}</text>
       </view>
 
       <!-- 百炼：地址与密钥都可改；默认指向云端，也可填业务空间专属域名 -->
@@ -690,44 +670,36 @@ watch(
         </view>
         <text class="row-label">{{ t('settings.voice.llmModel') }}</text>
         <SelectRow
-          :hint="t('settings.voice.llmModelHint')"
           :options="llmModels"
           :model-value="appConfig.voice.dashscope.model ?? ''"
           :disabled="llmModels.length === 0"
           :searchable="llmModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.dashscope.model = v)"
         />
-        <text v-if="llmModelHint" class="hint" @tap="loadLlmModels">{{ llmModelHint }}</text>
         <text class="row-label">{{ t('settings.voice.asrModel') }}</text>
         <SelectRow
-          :hint="t('settings.voice.asrModelHint')"
           :options="asrModels"
           :model-value="appConfig.voice.dashscope.asrModel ?? ''"
           :disabled="asrModels.length === 0"
           :searchable="asrModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.dashscope.asrModel = v)"
         />
-        <text v-if="asrModelHint" class="hint" @tap="loadAsrModels">{{ asrModelHint }}</text>
         <text class="row-label">{{ t('settings.voice.ttsModel') }}</text>
         <SelectRow
-          :hint="t('settings.voice.ttsModelHint')"
           :options="ttsModels"
           :model-value="appConfig.voice.dashscope.ttsModel ?? ''"
           :disabled="ttsModels.length === 0"
           :searchable="ttsModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.dashscope.ttsModel = v)"
         />
-        <text v-if="ttsModelHint" class="hint" @tap="loadTtsModels">{{ ttsModelHint }}</text>
         <text class="row-label">{{ t('settings.voice.ttsVoice') }}</text>
         <SelectRow
-          :hint="t('settings.voice.ttsVoiceHint')"
           :options="ttsVoices"
           :model-value="appConfig.voice.dashscope.voice ?? ''"
           :disabled="ttsVoices.length === 0"
           :searchable="ttsVoices.length > 0"
           @update:model-value="onSelectVoice"
         />
-        <text v-if="ttsVoiceHint" class="hint" @tap="loadTtsVoices">{{ ttsVoiceHint }}</text>
       </template>
 
       <!-- 恢复默认 + 一键检测同一行：检测按钮在最右侧 -->

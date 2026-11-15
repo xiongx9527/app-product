@@ -10,11 +10,16 @@
 //    否则 Android 会把 Service 判为 ANR 杀掉。
 package com.xiaoxiong.assistant.gateway;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
+import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 
+import androidx.core.app.NotificationCompat;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import java.io.BufferedReader;
@@ -43,6 +48,12 @@ public class GatewayNodeService extends Service {
         System.loadLibrary("gatewaynode");
     }
 
+    /** 前台服务常驻通知：让系统（荣耀 iaware / 华为 trustsbase）把网关当作「用户可见」进程，
+     *  不再静默查杀后台 Service；否则 :gateway 进程会被厂商策略拦在启动之外或运行中被杀，
+     *  表现就是「网关连不上 / 下拉无数据」。 */
+    private static final String CHANNEL_ID = "gateway_foreground";
+    private static final int NOTIF_ID = 1;
+
     // 在后台线程调 node::Start；参数 = node 的 argv（argv[0] 占位，argv[1] 为 bundle 路径）。
     // homeDir / cacheDir 用于设置 GATEWAY_HOME / TMPDIR 等（Android 无 /tmp）。
     private native void nativeStartNode(String homeDir, String cacheDir, String[] nodeArgs);
@@ -50,6 +61,13 @@ public class GatewayNodeService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // 必须在 onStartCommand 返回前（这里就在 onCreate 主线程）把自己提升为前台服务，
+        // 否则 targetSdk≥26 会在数秒内 ANR 杀掉。通知创建失败也绝不影响网关本体：try/catch 兜底。
+        try {
+            startForeground(NOTIF_ID, buildForegroundNotification());
+        } catch (Throwable t) {
+            Log.e(TAG, "startForeground failed, gateway still runs in background", t);
+        }
         File home = getNoBackupFilesDir(); // /data/user/0/<pkg>/no_backup
         File cache = getCacheDir();         // /data/user/0/<pkg>/cache
         try {
@@ -65,6 +83,28 @@ public class GatewayNodeService extends Service {
         }, "gateway-node").start();
 
         pollPort(home);
+    }
+
+    /** 构建前台服务常驻通知（API 26+ 需通知渠道）。失败返回 null 由调用方兜底。 */
+    private Notification buildForegroundNotification() {
+        final String title = "小熊助手网关";
+        final String text = "本地语音网关运行中";
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_ID, "网关前台服务", NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("语音助手本地网关常驻，保证离线语音可用");
+            ch.setShowBadge(false);
+            NotificationManager mgr = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (mgr != null) mgr.createNotificationChannel(ch);
+        }
+        NotificationCompat.Builder b = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE);
+        return b.build();
     }
 
     // 把 assets/gateway/ 整体拷到 home（首启或版本变更时）。

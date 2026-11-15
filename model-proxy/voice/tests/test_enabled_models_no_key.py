@@ -159,8 +159,11 @@ def main() -> int:
 
     # ── 6) 默认视图只显示已启用的模型，↻ 才展开全量 ───────────────────
     # 加载回填：候选只取「已启用」(enModels)，不再把基础库全量当候选。
+    # 默认视图候选只取「已启用」(enModels)：不再把基础库全量当兜底候选，
+    # 否则取消勾选保存后列表仍会残留全部候选（用户要求「没勾选的不要显示」）。
     check("前端: 默认视图候选只取已启用(enModels)，不展全量",
-          "e.cands = enModels.length ? [...new Set(enModels)] : [...new Set(base)];" in src
+          "e.cands = [...new Set(enModels)];" in src
+          and "enModels.length ? [...new Set(enModels)] : [...new Set(base)]" not in src
           and "[...new Set([...base, ...en.map(x=>x.model)])]" not in src)
     # ↻ 刷新处理器仍把候选展开为基础库全量（rows），保留勾选/默认用于增删。
     check("前端: ↻ 刷新仍展开基础库全量候选",

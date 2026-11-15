@@ -81,7 +81,9 @@ function likeFromTask(task: UniSocketTask | undefined | null): WsLike | null {
     like.readyState = WS_OPEN
     like.onopen?.()
   })
-  task.onMessage((res) => like.onmessage?.({ data: res.data }))
+  task.onMessage((res) => {
+    like.onmessage?.({ data: res.data })
+  })
   task.onClose(() => {
     like.readyState = 3
     like.onclose?.()
@@ -142,8 +144,14 @@ function likeFromGlobal(url: string): WsLike {
 
 /**
  * 建 socket：浏览器（H5）用原生 WebSocket；App 端逻辑层（v8 服务上下文）没有 WebSocket
- * 全局，走 uni.connectSocket——三种返回形态都兼容：SocketTask / Promise<SocketTask> /
- * undefined（退全局回调 API）。两边都没有才抛「当前环境不支持 WebSocket」。
+ * 全局，走 uni.connectSocket。
+ *
+ * 关键（真机血泪）：DCloud 的 uni.connectSocket 被 promisify 包装——若不传回调，返回的是
+ * Promise 且 resolve 出来只有 errMsg（拿不到 SocketTask）；此时若退回 uni.onSocketMessage
+ * 全局回调，运行时只把消息投递给 socketTasks[0]，反复建连/重连后归属错乱，ASR 下行全部丢失
+ * （表现为喊「小熊小熊」永远唤不醒）。解法：传一个 success 空回调，让 promisify 走 hasCallback
+ * 分支——uni.connectSocket 会「同步返回」真正的 SocketTask（带 onOpen/onMessage/send），
+ * 于是用 likeFromTask 注册每一条连接自己的局部回调，不依赖有缺陷的全局回调，也不重复建连。
  */
 function createSocket(url: string): Promise<WsLike> {
   if (typeof WebSocket !== 'undefined') {
@@ -152,25 +160,32 @@ function createSocket(url: string): Promise<WsLike> {
     return Promise.resolve(ws as unknown as WsLike)
   }
   const connect = (uni as unknown as {
-    connectSocket?: (o: { url: string }) => UniSocketTask | Promise<UniSocketTask> | undefined
+    connectSocket?: (o: {
+      url: string
+      success?: () => void
+      fail?: (e: unknown) => void
+    }) => UniSocketTask | Promise<UniSocketTask> | undefined
   } | undefined)?.connectSocket
   if (typeof connect !== 'function') {
     return Promise.reject(new Error('当前环境不支持 WebSocket'))
   }
   let ret: UniSocketTask | Promise<UniSocketTask> | undefined
   try {
-    ret = connect({ url })
+    // 传 success/fail 空回调：强制 promisify 走同步返回 SocketTask 分支（见上方注释）
+    ret = connect({ url, success: () => {}, fail: () => {} })
   } catch (e) {
     return Promise.reject(e instanceof Error ? e : new Error(String(e)))
   }
   if (ret && typeof (ret as UniSocketTask).onOpen === 'function') {
-    const like = likeFromTask(ret as UniSocketTask)
-    return like ? Promise.resolve(like) : Promise.resolve(likeFromGlobal(url))
+    // 同步返回的 SocketTask：局部回调，可靠且单连接
+    return Promise.resolve(likeFromTask(ret as UniSocketTask) as WsLike)
   }
+  // 兜底：极少数运行时即使传了回调仍返回 Promise，解析后再取 SocketTask
   if (ret && typeof (ret as Promise<UniSocketTask>).then === 'function') {
-    return Promise.resolve(ret as Promise<UniSocketTask>).then(
-      (t) => likeFromTask(t) ?? likeFromGlobal(url),
-    )
+    return Promise.resolve(ret as Promise<UniSocketTask>).then((t) => {
+      const like = likeFromTask(t)
+      return like ?? likeFromGlobal(url)
+    })
   }
   return Promise.resolve(likeFromGlobal(url))
 }

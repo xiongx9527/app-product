@@ -120,7 +120,9 @@ export function loadConfig(): GatewayConfig {
     rsaFrontendPublicKey: process.env.RSA_FRONTEND_PUBLIC_KEY ?? '',
     timeZone: process.env.TIME_ZONE ?? 'Asia/Shanghai',
     // 内置 / DashScope 的默认根地址：仅作兜底（客户端未带 url 时用），由部署环境变量决定。
-    voiceBuiltinUrl: process.env.VOICE_BUILTIN_URL ?? '',
+    // 内置语音服务地址：缺省回退到本机 9529（开发联调经 adb reverse 隧道可达 Mac 网关）。
+    // 真机用户如用自建本地 AI 服务，应通过 VOICE_BUILTIN_URL 覆盖此默认；前端不感知具体地址。
+    voiceBuiltinUrl: process.env.VOICE_BUILTIN_URL ?? 'http://127.0.0.1:9529',
     voiceDashscopeUrl: process.env.VOICE_DASHSCOPE_URL ?? '',
     ws: { path: process.env.WS_PATH ?? '/ws' },
     // 以下 provider / baseUrl 仅为类型占位，真实值由客户端设置（session.start.voice）

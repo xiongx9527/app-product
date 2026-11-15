@@ -27,7 +27,8 @@ import catalog  # 目录种子数据（seed/*.json）
 
 # ── 连接与缓存（模块级单例）────────────────────────────────────────
 _db_path: str | None = None
-_conn: sqlite3.Connection | None = None
+# 每线程一条连接：共享单连接被线程池并发 execute() 会触发 sqlite3.InterfaceError。
+_conn_local = threading.local()
 _lock = threading.Lock()
 _auto_seed = True
 
@@ -58,12 +59,16 @@ def set_auto_seed(enabled: bool) -> None:
 
 
 def _conn_get() -> sqlite3.Connection:
-    global _conn
-    if _conn is None:
-        # check_same_thread=False：FastAPI 异步 handler 可能在不同线程回调。
-        _conn = sqlite3.connect(_db_path, check_same_thread=False)
-        _conn.row_factory = sqlite3.Row
-    return _conn
+    # 每个线程各持一条连接，避免单连接被 anyio 线程池并发 execute() 时触发
+    # sqlite3.InterfaceError（bad parameter or other API misuse）——这是 admin
+    # 请求偶发 500、保存偶发未落库的根因。写操作仍由 _lock 串行化，防止多
+    # 条连接同时写造成 database is locked。
+    c = getattr(_conn_local, "c", None)
+    if c is None:
+        c = sqlite3.connect(_db_path, check_same_thread=False, timeout=5.0)
+        c.row_factory = sqlite3.Row
+        _conn_local.c = c
+    return c
 
 
 # 管理员会话有效期（秒），与 admin_panel.SESSION_TTL 保持一致。

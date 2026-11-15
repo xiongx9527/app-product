@@ -81,6 +81,7 @@ import hmac
 import io
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -99,6 +100,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 import uvicorn
+from uvicorn.logging import AccessFormatter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import llm_protocols  # LLM 上游多协议适配层
@@ -111,6 +113,12 @@ import model_catalog  # 统一模型目录（LLM / TTS / STT 三端口，对齐 
 from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
+
+
+def _startup_log(msg: str = "", **_kwargs: Any) -> None:
+    """启动期打印逐行带时间戳，与 uvicorn 日志前缀一致；兼容 print 的 flush 参数。"""
+    print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}" if msg else "", flush=True)
+
 
 # 与网关契约保持一致：上行 16k，下行 24k；两边都是 16bit 单声道。
 SAMPLE_RATE = 16000
@@ -338,7 +346,7 @@ def _auto_generated_key() -> str:
         return existing
     generated = secrets.token_urlsafe(32)
     _write_api_key(path, generated)
-    print(f"[local-ai] 已生成 API Key：{path}", flush=True)
+    _startup_log(f"[local-ai] 已生成 API Key：{path}", flush=True)
     _auto_api_key = generated
     return generated
 
@@ -405,6 +413,46 @@ def client_ip(request: Request) -> str:
     对端 IP 即真实来源。若将来确实经可信代理接入，再按可信代理列表显式放通。
     """
     return request.client.host if request.client else ""
+
+
+def client_ip_for_log(conn: Request | WebSocket) -> str:
+    """日志 / 审计用的客户端 IP：X-Forwarded-For 首项 → X-Real-IP → 直连对端。
+
+    只用于记录，不参与鉴权：白名单 / API-Key 走 client_ip()（request.client.host）。
+    uvicorn 默认只信任来自 127.0.0.1 的 X-Forwarded-For（forwarded_allow_ips），
+    非本机来源的伪造头不会进入鉴权；这里额外解析一份用于审计留痕与 X-Real-IP。
+    非法或超长的头值一律丢弃，避免污染日志与库。
+    Request 与 WebSocket 都有 .client / .headers，故两者共用。
+    """
+    peer = conn.client.host if conn.client else ""
+    xff = conn.headers.get("x-forwarded-for") or ""
+    candidate = xff.split(",")[0].strip() if xff else ""
+    if not candidate:
+        candidate = (conn.headers.get("x-real-ip") or "").strip()
+    if candidate and len(candidate) <= 64:
+        try:
+            ipaddress.ip_address(candidate)
+            return candidate
+        except ValueError:
+            pass
+    return peer
+
+
+def _strip_port(addr: str) -> str:
+    """access 日志去掉端口：'127.0.0.1:50070' → '127.0.0.1'，'[::1]:50070' → '[::1]'。"""
+    if addr.startswith("[") and "]" in addr:
+        return addr[: addr.index("]") + 1]
+    return addr.rsplit(":", 1)[0] if ":" in addr else addr
+
+
+class _IpOnlyAccessFormatter(AccessFormatter):
+    """uvicorn 默认 client_addr 带端口，这里只保留 IP；时间前缀等其余格式不变。"""
+
+    def formatMessage(self, record):
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[0], str):
+            record.args = (_strip_port(args[0]),) + args[1:]
+        return super().formatMessage(record)
 
 
 def ip_allowed(ip: str, allow: list) -> bool:
@@ -624,6 +672,39 @@ async def security_middleware(request: Request, call_next):
                 headers={"WWW-Authenticate": "Bearer"},
             )
     return await call_next(request)
+
+
+# 需要把客户端 IP 写进审计表的请求：语音数据接口 + 管理面板保存配置。
+_AUDIT_VOICE_PREFIX = "/voice/"
+_AUDIT_CONFIG_SAVE = "/admin/api/config"
+
+
+@app.middleware("http")
+async def client_ip_audit_middleware(request: Request, call_next):
+    """记录客户端 IP 到审计表；解析结果只用于日志 / 审计，不回传鉴权。
+
+    注册在 security_middleware 之外层，能覆盖它的 401 / 403 提前返回，
+    被拒绝的请求也留痕。写库放线程池，避免同步 sqlite 阻塞事件循环。
+    """
+    log_ip = client_ip_for_log(request)
+    response = await call_next(request)
+    path = request.url.path
+    if request.method != "OPTIONS" and (
+        path.startswith(_AUDIT_VOICE_PREFIX)
+        or (path == _AUDIT_CONFIG_SAVE and request.method == "POST")
+    ):
+        detail = f"{request.method} {path} -> {response.status_code}"
+        try:
+            await asyncio.to_thread(voice_db.append_audit, log_ip, "http.request", detail)
+        except Exception:  # noqa: BLE001  审计失败不能影响业务响应
+            pass
+        peer = client_ip(request)
+        # 只有代理带来不同来源时额外打一行，避免与去端口后的 access 日志重复刷屏。
+        if log_ip != peer:
+            logging.getLogger("uvicorn.error").info(
+                "client=%s (forwarded, peer=%s) %s", log_ip, peer, detail
+            )
+    return response
 
 
 # OpenAI 风格音色名 -> edge-tts 中文神经音色，方便直接填 openai/alloy 之类的值。
@@ -3075,25 +3156,25 @@ def main(argv=None) -> None:
     store = config_store.configure(db_path, remote_dsn, redis_url)
     seeded = store.seed_from_conf(_file_values())
     if seeded:
-        print(
+        _startup_log(
             f"[local-ai] 数据库: 首次初始化，已从 voice.conf 播种 {seeded} 项到 {db_path}",
             flush=True,
         )
     else:
-        print(f"[local-ai] 数据库: {db_path}（配置以数据库为准）", flush=True)
+        _startup_log(f"[local-ai] 数据库: {db_path}（配置以数据库为准）", flush=True)
     if remote_dsn:
-        print("[local-ai] 远程库: 已配置，保存 / 启动时会与本地同步", flush=True)
+        _startup_log("[local-ai] 远程库: 已配置，保存 / 启动时会与本地同步", flush=True)
     if redis_url:
-        print("[local-ai] 远程缓存: Redis（REDIS_URL 已配置，缓存走 Redis 不落库）", flush=True)
+        _startup_log("[local-ai] 远程缓存: Redis（REDIS_URL 已配置，缓存走 Redis 不落库）", flush=True)
         # 启动时先把远端配置合并到本地，保证「本地与远程一致」。
         if remote_dsn:
             try:
                 import asyncio
 
                 asyncio.run(store.sync_pull())
-                print("[local-ai] 远程库: 已拉取远端配置合并到本地", flush=True)
+                _startup_log("[local-ai] 远程库: 已拉取远端配置合并到本地", flush=True)
             except Exception as e:  # noqa: BLE001
-                print(
+                _startup_log(
                     f"[local-ai] 远程库: 启动时拉取失败（忽略，继续用本地）: {e}",
                     flush=True,
                 )
@@ -3111,50 +3192,50 @@ def main(argv=None) -> None:
 
     # 启动时把关键状态打出来，避免“服务起来了但模型没下/ffmpeg 没装”这种静默失败。
     config_exists = os.path.isfile(_config_path)
-    print(
+    _startup_log(
         f"[local-ai] 配置 : {_config_path}"
         f"{'' if config_exists else '（不存在，使用默认值）'}",
         flush=True,
     )
-    print("[local-ai] 接口 : LLM /llm，Voice /voice", flush=True)
+    _startup_log("[local-ai] 接口 : LLM /llm，Voice /voice", flush=True)
 
     if llm_enabled():
-        print(
+        _startup_log(
             f"[local-ai] LLM  : 代理 {llm_base_url()}"
             f"（地址池共 {len(upstream_pool.load_pool('LLM'))} 个）"
             f"{'（模型 ' + llm_model_override() + '）' if llm_model_override() else ''}",
             flush=True,
         )
     else:
-        print(
+        _startup_log(
             "[local-ai] LLM  : 未启用（在 voice.conf 配置 LLM_UPSTREAM_POOL 或 "
             "LLM_UPSTREAM_BASE_URL 即可启用）",
             flush=True,
         )
 
     # STT 固定走本地 SenseVoice，不接上游；可用性由管理面板 ASR「内置」行按需检测。
-    print(
+    _startup_log(
         f"[local-ai] STT  : 内置 SenseVoice-small @ {sensevoice_dir()}；"
         "可用性在管理面板 ASR「内置」行点「测试可用」按需检测",
         flush=True,
     )
 
-    print(f"[local-ai] TTS  : 内置 edge-tts（音色 {tts_voice()}）", flush=True)
-    print(
+    _startup_log(f"[local-ai] TTS  : 内置 edge-tts（音色 {tts_voice()}）", flush=True)
+    _startup_log(
         f"[local-ai] ffmpeg: {'已找到' if ffmpeg_path() else '未找到（TTS 的 wav 输出不可用）'}",
         flush=True,
     )
 
     if api_key_auth_enabled():
         ks = resolve_api_keys()
-        print(f"[local-ai] 鉴权 : 开启（{len(ks)} 个 Key）", flush=True)
+        _startup_log(f"[local-ai] 鉴权 : 开启（{len(ks)} 个 Key）", flush=True)
     else:
-        print("[local-ai] 鉴权 : 关闭", flush=True)
+        _startup_log("[local-ai] 鉴权 : 关闭", flush=True)
     allow = _parse_ip_allow()
     if allow:
-        print(f"[local-ai] IP白名单: 启用（{len(allow)} 条）", flush=True)
+        _startup_log(f"[local-ai] IP白名单: 启用（{len(allow)} 条）", flush=True)
     else:
-        print("[local-ai] IP白名单: 关闭（不限制来源）", flush=True)
+        _startup_log("[local-ai] IP白名单: 关闭（不限制来源）", flush=True)
 
     # 管理面板：把 Web 控制台挂到同一个 9529 端口，用 admin.conf 的独立账号密码保护。
     # 与语音 / LLM 接口同进程，但走 /admin 前缀且单独鉴权，不干扰推理接口。
@@ -3176,7 +3257,7 @@ def main(argv=None) -> None:
         if _p.startswith("/admin") or _p in _HIDE_PATH_EXACT:
             _r.include_in_schema = False
 
-    print(
+    _startup_log(
         f"[local-ai] 管理 : http://{host}:{port}/admin "
         f"（账号密码见 {os.path.join(VOICE_HOME, 'admin.conf')}）",
         flush=True,
@@ -3185,10 +3266,24 @@ def main(argv=None) -> None:
     # 上游地址池健康探测：后台线程定期探活，配合运行期失败累计，自动把挂掉的
     # 上游从轮询里摘掉、冷却恢复后再放回。与 uvicorn 主事件循环解耦。
     upstream_pool.start_health_probing()
-    print("[local-ai] 上游 : 地址池健康探测已启动（多地址 + 账号池，健康优先 + 轮询）", flush=True)
+    _startup_log("[local-ai] 上游 : 地址池健康探测已启动（多地址 + 账号池，健康优先 + 轮询）", flush=True)
 
-    print(f"[local-ai] 监听 : http://{host}:{port}", flush=True)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    _startup_log(f"[local-ai] 监听 : http://{host}:{port}", flush=True)
+    # uvicorn 默认日志格式不含时间，排查 500 / traceback 时无法定位发生时刻。
+    # 基于默认 LOGGING_CONFIG 只改 formatter 的 fmt/datefmt，handler / logger 结构保持原样。
+    import copy
+    from uvicorn.config import LOGGING_CONFIG
+
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    datefmt = "%Y-%m-%d %H:%M:%S"  # 与 voice.sh 的 "=== start @ ... ===" 对齐
+    log_config["formatters"]["default"]["fmt"] = "%(asctime)s %(levelprefix)s %(message)s"
+    log_config["formatters"]["default"]["datefmt"] = datefmt
+    log_config["formatters"]["access"]["fmt"] = (
+        '%(asctime)s %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+    )
+    log_config["formatters"]["access"]["datefmt"] = datefmt
+    log_config["formatters"]["access"]["()"] = _IpOnlyAccessFormatter
+    uvicorn.run(app, host=host, port=port, log_level="info", log_config=log_config)
 
 
 if __name__ == "__main__":

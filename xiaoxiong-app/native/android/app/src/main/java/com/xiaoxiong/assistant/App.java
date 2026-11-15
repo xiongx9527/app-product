@@ -11,8 +11,12 @@ package com.xiaoxiong.assistant;
 import android.content.Intent;
 import android.util.Log;
 
+import androidx.core.content.ContextCompat;
+
 import com.xiaoxiong.assistant.gateway.GatewayNodeService;
+import com.xiaoxiong.assistant.wake.WakeModule;
 import io.dcloud.application.DCloudApplication;
+import io.dcloud.feature.uniapp.UniSDKEngine;
 
 public class App extends DCloudApplication {
     private static final String TAG = "XiaoxiongApp";
@@ -22,13 +26,36 @@ public class App extends DCloudApplication {
         super.onCreate();
         // 仅主进程拉起网关；:gateway 进程跳过，避免自我重复初始化。
         if (isMainProcess()) {
+            registerNativeModules();
             try {
-                startService(new Intent(this, GatewayNodeService.class));
-                Log.i(TAG, "gateway service start requested (main process)");
+                // 用 startForegroundService 拉起（API 26+ 前台服务的正确入口）；
+                // GatewayNodeService.onCreate 会立即 startForeground，二者配套避免 ANR。
+                ContextCompat.startForegroundService(this, new Intent(this, GatewayNodeService.class));
+                Log.i(TAG, "gateway foreground service start requested (main process)");
             } catch (Throwable e) {
                 // 启动失败不应拖垮 App 启动：网关缺失时客户端走 H5/外部网关兜底。
                 Log.e(TAG, "start gateway service failed", e);
             }
+        }
+    }
+
+    /**
+     * 代码注册自定义原生插件。
+     *
+     * 为什么必须代码注册：uni.requireNativePlugin(id) 在引擎里等价于 weex 的 requireModule(id)，
+     * 查的是 WXSDKEngine.registerModule 建立的模块注册表；dcloud_properties.xml 里的 <feature>
+     * 是老式 plus.bridge.exec 插件机制，对继承 UniModule / @UniJSMethod 的插件无效。
+     * 只在 xml 里声明而不在这里 registerUniModule，requireNativePlugin('app-product-wake')
+     * 会永远返回 undefined → 前端 PCM 采集链路整条断掉 → 喊「小熊小熊」无反应。
+     *
+     * 必须在 super.onCreate() 之后（DCloud 引擎已初始化）调用，第三参 false = 非单例。
+     */
+    private void registerNativeModules() {
+        try {
+            boolean ok = UniSDKEngine.registerUniModule("app-product-wake", WakeModule.class, false);
+            Log.i(TAG, "registerUniModule(app-product-wake) => " + ok);
+        } catch (Throwable e) {
+            Log.e(TAG, "registerUniModule(app-product-wake) failed", e);
         }
     }
 

@@ -5,6 +5,9 @@
     <!-- 网关独立进程以前台服务保活：荣耀等厂商会静默查杀普通后台 Service，
          网关一死整条语音链路就断，故必须前台化 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- dataSync 前台服务类型权限：API 34+ 声明 foregroundServiceType=dataSync 必须配套，
+         否则系统报「does not have any types」并在宽限期后停服 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
@@ -54,11 +57,14 @@
             android:name="dcloud_appkey"
             android:value="9867037791e68521e8dfb7605311adf0" />
 
-        <!-- 网关独立进程：加载 libnode.so 跑 gateway.bundle.mjs，与 UI 进程隔离 -->
+        <!-- 网关独立进程：加载 libnode.so 跑 gateway.bundle.mjs，与 UI 进程隔离。
+             foregroundServiceType=dataSync：允许在后台（App 未前台时）启动前台服务，
+             规避荣耀 iaware / 华为 trustsbase 对普通后台 Service 的静默拦截。 -->
         <service
             android:name="com.xiaoxiong.assistant.gateway.GatewayNodeService"
             android:process=":gateway"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

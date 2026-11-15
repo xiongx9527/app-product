@@ -377,5 +377,7 @@ console.log('\n下一步（网关同包，详见 xiaoxiong-app/native/android/�
 console.log('  1. 原生源码/Manifest/CMake 已就位在 native/android/app/，本脚本只注入了前端 www、网关 bundle 与 libnode.so。')
 console.log('  2. 进 SDK 壳目录构建（app 模块由 settings.gradle 的 include \':app\' 关联）：')
 console.log('       cd xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS && ./gradlew :app:clean :app:assembleDebug')
-console.log('  3. 装到设备：adb install -r app/build/outputs/apk/debug/app-debug.apk')
+console.log('  3. 装到设备（必须走安装脚本，它会重加 Doze 白名单，否则荣耀/华为 iaware 会拦掉 :gateway 启动）：')
+console.log('       node scripts/install-android-offline.mjs')
+console.log('       （裸 adb install -r 重装会清空白名单，导致「网关连不上/下拉无数据」复发，请勿直接用）')
 console.log('  4. 真机验证「一键检测」：网关应正常（地址可达即「已接入」，内置源永不报「未选择模型」）。')
