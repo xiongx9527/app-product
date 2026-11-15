@@ -7,7 +7,8 @@
 // 职责（与 JS 侧 appCapture.ts / appPlayback.ts / providers/native.ts 的接口一一对应）：
 //   PCM 采集（对话/唤醒的音频来源）：startPcm / stopPcm / onPcmFrame / onPcmError
 //   TTS 播放（App 逻辑层无 WebAudio，网关下发的 24k PCM 只能由原生 AudioTrack 播）：
-//     startPlayback / playPcm / stopPlayback / onPlaybackIdle
+//     startPlayback / playPcm({data:[...]}) / stopPlayback / onPlaybackIdle
+//   playPcm 必须收 JSONObject（内包 data 数组），不能收 JSONArray——weex/fastjson 会把裸数组当 JSONObject 解析而失败。
 //   声学唤醒占位（KWS 模型未集成前不触发 onWake；唤醒判定当前由网关 ASR + JS matchWakeWord 完成）：
 //     start / stop / onWake / onError
 //
@@ -157,17 +158,60 @@ public class WakeModule extends UniModule {
         }
     }
 
-    /** JS 传 0–255 字节数组（DCloud 桥转 JSONArray），逐字节还原成有符号 PCM 写进 AudioTrack。 */
+    /** JS 传 {data:[0–255 字节]}。必须包成 JSONObject：DCloud/weex 桥用 fastjson 解析参数，
+     *  直接声明 JSONArray 会让以 '[' 开头的数组被当成 JSONObject 解析而抛
+     *  `expect {, actual [`，playPcm 每帧静默失败（无声 + 卡在播报）。采集 startPcm 用 JSONObject 已验证可行。
+     *
+     *  真机血泪（第二层坑）：包成对象后 `arg.optJSONArray("data")` 仍可能返回 null——weex/fastjson
+     *  在不同版本把 JS number[] 转成 JSONObject 时，data 字段实际是 java.util.List / Object[]，
+     *  而不是 JSONArray（logcat 里 `Missing inline cache for java.lang.Object[] ... prepareArguments`）。
+     *  只认 optJSONArray 会静默 return，导致从不 startPlayback（无声 + 卡在播报）。这里对三种类型都兼容。 */
     @UniJSMethod(uiThread = false)
-    public void playPcm(JSONArray data) {
-        if (data == null || data.length() == 0) return;
+    public void playPcm(JSONObject arg) {
+        if (arg == null) {
+            Log.w(TAG, "playPcm: arg=null");
+            return;
+        }
+        Object raw = arg.opt("data");
+        int n;
+        byte[] pcm;
+        if (raw instanceof JSONArray) {
+            JSONArray ja = (JSONArray) raw;
+            n = ja.length();
+            pcm = new byte[n];
+            for (int i = 0; i < n; i++) pcm[i] = (byte) (ja.optInt(i) & 0xff);
+        } else if (raw instanceof java.util.List) {
+            java.util.List<?> list = (java.util.List<?>) raw;
+            n = list.size();
+            pcm = new byte[n];
+            for (int i = 0; i < n; i++) {
+                Object v = list.get(i);
+                int iv = (v instanceof Number)
+                        ? ((Number) v).intValue()
+                        : (int) Double.parseDouble(String.valueOf(v));
+                pcm[i] = (byte) (iv & 0xff);
+            }
+        } else if (raw != null && raw.getClass().isArray()) {
+            n = java.lang.reflect.Array.getLength(raw);
+            pcm = new byte[n];
+            for (int i = 0; i < n; i++) {
+                Object v = java.lang.reflect.Array.get(raw, i);
+                int iv = (v instanceof Number)
+                        ? ((Number) v).intValue()
+                        : (int) Double.parseDouble(String.valueOf(v));
+                pcm[i] = (byte) (iv & 0xff);
+            }
+        } else {
+            Log.w(TAG, "playPcm: data unsupported type=" + (raw == null ? "null" : raw.getClass().getName()));
+            return;
+        }
+        if (n == 0) return;
+        // 每轮首帧打一次，确认 data 真实类型与字节数，避免再次盲猜
+        if (writtenFrames == 0) {
+            Log.i(TAG, "playPcm first frame: dataCls=" + raw.getClass().getName() + " n=" + n + " b0=" + pcm[0]);
+        }
         if (playTrack == null || !playRunning) startPlayback(playSampleRate);
         if (playTrack == null) return;
-        int n = data.length();
-        byte[] pcm = new byte[n];
-        for (int i = 0; i < n; i++) {
-            pcm[i] = (byte) (data.optInt(i) & 0xff);
-        }
         int written = playTrack.write(pcm, 0, n);
         if (written > 0) {
             synchronized (playLock) {

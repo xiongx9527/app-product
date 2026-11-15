@@ -11,8 +11,10 @@
 
 interface NativePlaybackModule {
   startPlayback?(sampleRate: number): void
-  /** JS 传 0–255 的字节数组，DCloud 桥转成原生 JSONArray */
-  playPcm?(data: number[]): void
+  /** JS 传 { data: 0–255 字节数组 }。必须包成对象：DCloud/weex 桥用 fastjson 解析参数，
+   *  直接传 JS 数组会以 `[` 开头被误判成 JSONObject 而抛 `expect {, actual [`（playPcm 静默失败、无声）。
+   *  采集 startPcm(JSONObject) 走的就是对象路径，已验证可行。 */
+  playPcm?(arg: { data: number[] }): void
   stopPlayback?(): void
   /** keepAlive 回调：每次播放队列清空且录音头追上写入进度时回传 true */
   onPlaybackIdle?(callback: (idle: boolean) => void): void
@@ -89,7 +91,7 @@ export function appPlayPcm(pcm: ArrayBuffer, sampleRate = 24000): void {
   const data: number[] = new Array(bytes.length)
   for (let i = 0; i < bytes.length; i += 1) data[i] = bytes[i] & 0xff
   playbackInFlight = true
-  mod.playPcm(data)
+  mod.playPcm({ data })
 }
 
 /**
