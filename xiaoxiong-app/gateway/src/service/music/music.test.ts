@@ -261,7 +261,7 @@ describe('B 站搜索兜底源', () => {
    */
   function biliFetcher(
     titlesOf: (keyword: string) => string[],
-    audioUrl: (bvid: string) => string = (b) => `https://bili/${b}.mp4`
+    audioUrl: (bvid: string) => string = (b) => `https://bili/${b}.m4s`
   ): MusicFetcher {
     let currentTitles: string[] = []
     const titleOf = (bvid: string): string => {
@@ -302,7 +302,7 @@ describe('B 站搜索兜底源', () => {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ code: 0, data: { durl: [{ url: audioUrl(bvid) }] } }),
+        json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: audioUrl(bvid) }] } } }),
         text: async () => '',
       }
     }
@@ -413,7 +413,7 @@ describe('B 站搜索兜底源', () => {
     // 让第一个 BVID 的 playurl 返回无 mp4 流，应自动换到第二个
     const wrapped: MusicFetcher = async (url, init) => {
       if (url.includes('wbi/playurl') && url.includes('BV0000000000')) {
-        return { ok: true, status: 200, json: async () => ({ code: 0, data: { durl: [] } }), text: async () => '' }
+        return { ok: true, status: 200, json: async () => ({ code: 0, data: { dash: { audio: [] } } }), text: async () => '' }
       }
       return base(url, init)
     }
@@ -446,7 +446,7 @@ describe('B 站搜索兜底源', () => {
         return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 1, title: '《稻香》周杰伦 完整版' } }), text: async () => '' }
       }
       // wbi/playurl
-      return { ok: true, status: 200, json: async () => ({ code: 0, data: { durl: [{ url: `https://bili/${BaiduBV}.mp4` }] } }), text: async () => '' }
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: `https://bili/${BaiduBV}.m4s` }] } } }), text: async () => '' }
     }
     const source = createBilibiliSearchSource({}, fake)
     const track = await source.resolve('周杰伦 稻香')
@@ -472,7 +472,7 @@ describe('B 站搜索兜底源', () => {
         // 百度找回的却是无关视频，严格匹配应拒绝
         return { ok: true, status: 200, json: async () => ({ code: 0, data: { cid: 1, title: ' unrelated video about cats' } }), text: async () => '' }
       }
-      return { ok: true, status: 200, json: async () => ({ code: 0, data: { durl: [{ url: 'x' }] } }), text: async () => '' }
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { dash: { audio: [{ bandwidth: 1, baseUrl: 'x' }] } } }), text: async () => '' }
     }
     const source = createBilibiliSearchSource({}, fake)
     await expect(source.resolve('周杰伦 稻香')).rejects.toThrow()
@@ -490,7 +490,7 @@ describe('B 站搜索兜底源', () => {
       if (url.includes('x/web-interface/nav')) {
         return { ok: true, status: 200, json: async () => ({ data: { wbi_img: { img_url: 'i', sub_url: 's' } } }), text: async () => '' }
       }
-      return { ok: true, status: 200, json: async () => ({ code: 0, data: { durl: [] } }), text: async () => '' }
+      return { ok: true, status: 200, json: async () => ({ code: 0, data: { dash: { audio: [] } } }), text: async () => '' }
     }
     const source = createBilibiliSearchSource({}, fake)
     await expect(source.resolve('周杰伦 稻香')).rejects.toThrow()

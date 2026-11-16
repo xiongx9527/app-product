@@ -104,6 +104,8 @@ export interface VoiceSessionDeps {
   weatherQuery?: () => Promise<string>
   /** 单轮 LLM 超时（毫秒）：超时主动舍弃本轮、断开下行播放、立即播友好兜底。测试注入更小值。 */
   llmTimeoutMs?: number
+  /** TTS 帧间看门狗（毫秒）：上游挂起不产帧时断开本句，对话链绝不卡死。测试注入更小值。 */
+  ttsFrameGapMs?: number
   /** 选中某件后补抓它的详情页（优惠说明/品牌/权威时间/大图）；测试可注入桩避免联网。
    *  缺省走数据源自身的 detailUrl + parseDetail，拿不到就返回 null（卡片用列表数据照常展示）。 */
   dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
@@ -1258,25 +1260,47 @@ export class VoiceSessionService {
     await this.speakReply(confirm)
   }
 
-  /** 口播一句短确认：复用 TTS 下发链路（tts.start → 流式 → tts.end），不进 LLM。 */
+  /**
+   * 口播一句短确认：复用 TTS 下发链路（tts.start → 流式 → tts.end），不进 LLM。
+   * 两种语境：
+   * - 空闲直连（finalize 链，processing=false）：自管 turn 与播放等待（arm + tighten + await）。
+   * - runTurn 串行链内（直连命令回放 / LLM 超时兜底，processing=true）：turn 与播放等待都归
+   *   runTurn——这里绝不 ++this.turn（会把 runTurn 的 turn 快照弄失效、链 break、队列从此
+   *   无人消费，正是「排队卡死」的根因），也不 arm/cancel 等待；runTurn 的 await playback
+   *   等兜底句真正播完回执后才 shift 下一句，避免下一句被客户端抗重复挡掉而无声。
+   */
   private async speakReply(text: string): Promise<void> {
-    const turn = ++this.turn
-    this.cancelled = false
-    this.spoken.length = 0
-    this.downlinkBytes = 0
-    const playback = this.armPlaybackWait()
+    if (!this.processing) {
+      const turn = ++this.turn
+      this.cancelled = false
+      this.spoken.length = 0
+      this.downlinkBytes = 0
+      const playback = this.armPlaybackWait()
+      this.speaking = true
+      this.playbackPending = true
+      this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
+      this.deps.send({ type: 'llm.delta', text })
+      this.deps.send({ type: 'llm.done' })
+      await this.speakSentence(text, turn)
+      if (this.turn === turn && !this.cancelled) {
+        this.speaking = false
+        this.deps.send({ type: 'tts.end' })
+      }
+      this.tightenPlaybackTimeout()
+      await playback
+      return
+    }
+    // runTurn 链内：状态、事件、音频都发，但 turn/等待全归 runTurn
     this.speaking = true
     this.playbackPending = true
     this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
     this.deps.send({ type: 'llm.delta', text })
     this.deps.send({ type: 'llm.done' })
-    await this.speakSentence(text, turn)
-    if (this.turn === turn && !this.cancelled) {
+    await this.speakSentence(text, this.turn)
+    if (!this.skipRequested && !this.cancelled) {
       this.speaking = false
       this.deps.send({ type: 'tts.end' })
     }
-    this.tightenPlaybackTimeout()
-    await playback
   }
 
   /** 供位置类工具实时读取会话最近一次上报的设备位置。 */
@@ -1324,13 +1348,16 @@ export class VoiceSessionService {
     if (this.halfDuplex && !this.echo.muted()) this.syncDuplex()
     const vad = this.vad.push(chunk, { strict: false })
     for (const frame of vad.frames) {
-      void this.asr.push(frame).then((partial) => {
-        // 播报期间只做唤醒词识别（用定稿），实时草稿不上发给客户端，避免回声刷屏。
-        // 噪声幻觉碎片（The/Yeah 等纯英文虚词）也不刷草稿，否则界面下方一直闪英文噪声。
-        if (partial && !this.playbackPending && !isNoise(partial)) {
-          this.deps.send({ type: 'asr.partial', text: partial })
-        }
-      })
+      void this.asr.push(frame)
+        .then((partial) => {
+          // 实时草稿随识别下发：噪声幻觉碎片（The/Yeah 等纯英文虚词）不刷草稿；
+          // 播报期间助手自己话被麦收回的回声草稿也不刷（resemblesSpoken 比对当前口播），
+          // 但用户的插话草稿要照常下发——用户要求插话识别能显示出来、与「正在思考/正在播放」并存。
+          if (partial && !isNoise(partial) && !(this.playbackPending && resemblesSpoken(partial, this.spoken))) {
+            this.deps.send({ type: 'asr.partial', text: partial })
+          }
+        })
+        .catch(() => undefined)
     }
     // 只有真正的人声帧才重置句末计时：静音帧持续到达也会让计时器自然到期
     if (vad.voiced) this.armEndpoint()
@@ -1354,11 +1381,30 @@ export class VoiceSessionService {
     }, this.deps.asrEndpointMs)
   }
 
+  /** 上次「识别失败」提示时间：30s 节流，避免连环失败时提示音刷屏。 */
+  private lastAsrFailNoticeAt = 0
+
+  /** ASR 上游出错/超时的兜底提示：下发 asr-error 提示音（客户端本地播「没听清，再说一遍」）。 */
+  private notifyAsrFailed(): void {
+    const now = Date.now()
+    if (now - this.lastAsrFailNoticeAt < 30_000) return
+    this.lastAsrFailNoticeAt = now
+    this.deps.send({ type: 'client.cue', cue: 'asr-error' })
+  }
+
   private async finalizeUtterance(): Promise<void> {
     // 打断/关闭后串行链里可能还挂着定稿，不能让它再发 asr.final 或排队
     if (!this.active || this.cancelled) return
     // 只有确认用户说完了（静音够久）才定稿；中间结果从不触发回复
-    const text = await this.asr.finalize()
+    let text: string
+    try {
+      text = await this.asr.finalize()
+    } catch {
+      // ASR 上游出错/超时：不能静默吞掉让用户以为卡死（用户要求有兜底、有提示）。
+      // 节流下发 asr-error 提示音（客户端本地 mp3「没听清，再说一遍」），30s 内不重复。
+      this.notifyAsrFailed()
+      return
+    }
     if (!this.active || this.cancelled) return
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
     // 不进模型也不进队列，避免凭空多出一轮回答和 TTS。
@@ -1633,37 +1679,64 @@ export class VoiceSessionService {
         this.deps.send({ type: 'tts.end' })
       } else if (!ttsStarted && !stale()) {
         // 整句都不可念（大模型泄漏的控制符 / 空回复 / 只剩符号）：绝不当作正文念出来，
-        // 给一句兜底口播，让人能自然重说一遍。
+        // 给一句兜底口播，让人能自然重说一遍。兜底句有 TTS 下发，返回 true 让 runTurn
+        // 等它播完回执再 shift 队列下一句。
         await this.speakReply(messages(this.lang).llmFallthrough())
+        return true
       }
       return ttsStarted
     } catch {
       if (stale()) return ttsStarted
-      // 超时或任何 LLM 异常：主动舍弃本轮、断开下行、给友好兜底，不 sendError 技术错误
+      // 超时或任何 LLM 异常：主动舍弃本轮、断开下行、给友好兜底，不 sendError 技术错误。
+      // 不 cancelPlaybackWait：兜底口播仍由 runTurn 的 await playback 等它真正播完——
+      // 若提前解除，下一句会在兜底句还在播时下发，被客户端 isSpeaking 抗重复挡掉而无声，
+      // asr.final 也被挡导致排队角标不动（「排队卡死」的完整因果链，2026-11-16 实锤）。
       timedOut = true
       if (ttsStarted) this.deps.send({ type: 'tts.stop' })
       this.speaking = false
       this.playbackPending = false
-      this.cancelPlaybackWait()
       await this.speakReply(messages(this.lang).llmUnavailable())
-      return ttsStarted
+      return true
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer)
     }
   }
 
+  /**
+   * 下发一句 TTS：流式合成逐帧转发。带帧间看门狗——上游（builtin / dashscope ws）挂起
+   * 不产帧也不报错时，`await ttsChain` 会永久挂起且在 LLM 超时看门狗覆盖之外，整链死锁、
+   * 队列再没人消费（用户要求「TTS 也要超时兜底，不能卡死对话」）。流式合成帧间隔为毫秒级，
+   * 帧间超时即判上游挂死：断开本句、已收到的帧照播，tts.end 照常收尾，对话链继续。
+   */
   private async speakSentence(sentence: string, turn: number): Promise<void> {
     if (this.turn !== turn || this.cancelled || this.skipRequested) return
     this.spoken.push(sentence)
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
-    for await (const frame of this.tts.synthesize(sentence)) {
-      if (this.turn !== turn || this.cancelled || this.skipRequested) return
-      this.downlinkBytes += frame.byteLength
-      this.echo.onDownlink()
-      // 每下发一帧就把回声保护窗口往后挪：窗口始终盖住「最后一帧之后的一小段余音」
-      this.echoUntil = Date.now() + 1200
-      this.deps.sendAudio(frame)
+    const gapMs = this.deps.ttsFrameGapMs ?? 15_000
+    const iterator = this.tts.synthesize(sentence)[Symbol.asyncIterator]()
+    try {
+      for (;;) {
+        let timer: ReturnType<typeof setTimeout> | null = null
+        const next = await Promise.race([
+          iterator.next(),
+          new Promise<'gap-timeout'>((resolve) => {
+            timer = setTimeout(() => resolve('gap-timeout'), gapMs)
+          }),
+        ])
+        if (timer) clearTimeout(timer)
+        // 帧间超时：上游挂死，断开本句（不算错误，已收到的帧照播，链继续）
+        if (next === 'gap-timeout' || next.done) break
+        const frame = next.value
+        if (this.turn !== turn || this.cancelled || this.skipRequested) return
+        this.downlinkBytes += frame.byteLength
+        this.echo.onDownlink()
+        // 每下发一帧就把回声保护窗口往后挪：窗口始终盖住「最后一帧之后的一小段余音」
+        this.echoUntil = Date.now() + 1200
+        this.deps.sendAudio(frame)
+      }
+    } finally {
+      void iterator.return?.()
     }
   }
 

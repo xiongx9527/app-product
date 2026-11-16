@@ -215,10 +215,11 @@ export type ServerEvent =
   /** 语音「切换播放模式」：让客户端在「悬浮小圆」与「普通播放条」之间切换。
    *  mode 省略表示客户端自行 toggle 当前模式；指定 float/player 则直接切到对应模式。 */
   | { type: 'client.playMode'; mode?: 'float' | 'player' }
-  /** 让客户端播一条「能力不可用」提示音（网关侧 /static/cues/<cue>.mp3）：
-   *  ASR/TTS/LLM 未就绪时，网关在本帧前无法用语音播报，改用预录提示音告知用户。
-   *  只需传提示音名，客户端按名拉取播放，不下发具体文案（提示音已含人声）。 */
-  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' }
+  /** 让客户端播一条「能力不可用 / 运行中瞬时失败」提示音（客户端打包内本地 mp3，唯一一份）：
+   *  ASR/TTS/LLM 未就绪时，网关在本帧前无法用语音播报，改用预录提示音告知用户；
+   *  asr-error 是运行中识别失败/超时的瞬时提示（health 不覆盖），由网关节流下发。
+   *  只需传提示音名，客户端按名播放打包内文件，不下发具体文案（提示音已含人声）。 */
+  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' | 'asr-error' }
   | { type: 'error'; code: ServerErrorCode; message: string }
 
 /** 契约定义的错误码 */

@@ -139,6 +139,55 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let answerHasTts = false
   /** 等播放队列清空的取消函数：新轮次开始时作废上一轮的等待 */
   let cancelPlaybackIdle: (() => void) | null = null
+  /** 播完回执兜底定时器：idle 回调链丢失时强制收尾，保证网关的队列持续推进 */
+  let playbackDoneFallback: ReturnType<typeof setTimeout> | null = null
+  /** 插话已入队：此后不再显示识别草稿（说话尾音晚到的 partial 不回填），有排队角标就够了 */
+  let queuedHideLive = false
+  /** 「正在思考」安抚提示计时器：思考超过 10s 播本地 mp3（稍等一下），每轮最多一次 */
+  let thinkingCueTimer: ReturnType<typeof setTimeout> | null = null
+  let thinkingCueFired = false
+
+  /** 思考阶段起计时：超过 10s 还没开始播报就播 thinking.mp3，让用户知道没卡死。 */
+  function armThinkingCue(): void {
+    disarmThinkingCue()
+    thinkingCueFired = false
+    thinkingCueTimer = setTimeout(() => {
+      thinkingCueTimer = null
+      // 只在还在思考（未开始播报/已完成）时播；每轮最多一次
+      if (phase.value === 'thinking' && !thinkingCueFired) {
+        thinkingCueFired = true
+        void playPromptCue('thinking')
+      }
+    }, 10_000)
+  }
+
+  /** 思考结束（开始播报 / 播报中 / 完成）时撤销计时。 */
+  function disarmThinkingCue(): void {
+    if (thinkingCueTimer) {
+      clearTimeout(thinkingCueTimer)
+      thinkingCueTimer = null
+    }
+  }
+  /**
+   * TTS 播完（或兜底超时）后的统一收尾：复位播报状态、记回声窗口、发播完回执。
+   * idle 回调与 12s 兜底共用；重复触发无害（复位幂等，网关回执侧 resolve 幂等）。
+   */
+  function onPlaybackSettled(): void {
+    if (playbackDoneFallback) {
+      clearTimeout(playbackDoneFallback)
+      playbackDoneFallback = null
+    }
+    cancelPlaybackIdle = null
+    duckMusic(false)
+    isSpeaking.value = false
+    // 真正播完这一刻记为「最近一次说话」，覆盖其后的回声窗口：
+    // 助手话里若带「小熊小熊」，被麦收回后 2s 内的唤醒词识别当回声忽略。
+    lastSpokeAt = Date.now()
+    phase.value = 'done'
+    markAnswerDone()
+    // 播完回执：网关等它才消费排队的下一句，保证上一句完整播完
+    transport.notifyPlaybackDone()
+  }
   /**
    * 抗重复下发：同一首歌（url+title）在 2s 内被重复下发（重连/重武装竞态、或任何未知的双发）
    * 只播一次，避免「放两遍」。下一首/换源是不同的 url，不受影响。
@@ -334,12 +383,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
           break
         }
-        // 监听阶段把实时识别文字作为「草稿」展示在页面下方，不进「你说」卡片；
-        // 本轮（思考/回答/播报）或排队未消费时不更新，避免顶掉定稿。
-        // 播报（TTS）进行中也不更新：其它声音不该被当成实时识别刷出来。
-        if (mode === 'dialog' && !assistantBusy && !queuePending.value && !isSpeaking.value) {
+        // 实时识别草稿展示在页面下方：空闲监听与忙时插话（思考/播报）都显示，
+        // 与「正在思考/正在播放」并存。但插话已入队（queuedHideLive）后不再显示——
+        // 说话尾音晚到的 partial 会把草稿又填回来，用户明确要求「入队后有排队角标就够了」。
+        // 状态切换仍只在空闲时：忙时不把 phase 改成 listening，避免顶掉思考/播报展示。
+        if (mode === 'dialog') {
+          if (queuedHideLive) break
           liveText.value = event.text
-          if (phase.value !== 'listening') phase.value = 'listening'
+          if (!assistantBusy && !queuePending.value && !isSpeaking.value && phase.value !== 'listening') {
+            phase.value = 'listening'
+          }
         }
         break
       case 'asr.queued':
@@ -350,10 +403,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           skipCurrentAndGreet(event.text)
           break
         }
-        // 只更新排队数量（「我说」卡片右上角的红标）；不展示多余提示文字，
-        // 这句话等播完轮到它才由 asr.final 进入「我说」卡片
+        // 更新排队数量（「我说」卡片右上角的红标）。插话已入队：清掉下方草稿区的识别文字
+        // （用户要求：进入排队后识别文字不再显示，由排队角标表达）；这句话等播完轮到它
+        // 才由 asr.final 进入「我说」卡片正文。
         if (mode === 'dialog') {
           queuePending.value = Math.max(queuePending.value, event.position)
+          queuedHideLive = true
+          liveText.value = ''
         }
         break
       case 'asr.rejected':
@@ -384,10 +440,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           break
         }
         // 播报（TTS）还没结束：其它声音一律忽略，不显示、不发起新轮次
+        //（插话原文已随 asr.queued 进队列角标，入队后识别文字不再显示）
         if (isSpeaking.value) break
         // 定稿后这一句进入队列成为「当前项」，你说始终显示队列当前项（不显示监听草稿）。
         // 直接采信服务端的权威剩余数，避免拒收/超时等路径下本地计数漂移。
         queuePending.value = event.queueRemaining
+        // 这句已出队进入处理：恢复草稿显示（下一句插话的实时识别又能看见了）
+        queuedHideLive = false
         transcript.value = event.text
         // 清掉监听草稿与队列溢出提示；这句轮到被处理，溢出横幅自然失效
         liveText.value = ''
@@ -398,6 +457,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         thinkingDone.value = false
         replyDone.value = false
         phase.value = 'thinking'
+        armThinkingCue()
         assistantTextStarted = false
         assistantBusy = true
         answerHasTts = false
@@ -417,6 +477,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         }
         reply.value += event.text
         if (phase.value !== 'speaking') phase.value = 'replying'
+        disarmThinkingCue()
         break
       case 'llm.done':
         thinkingDone.value = true
@@ -449,23 +510,17 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         phase.value = 'done'
         markAnswerDone()
         break
-      case 'tts.end':
+      case 'tts.end': {
         // 网关下发完 ≠ 客户端播完：播完前保持静音上行、挂起 T1，
         // 否则尾音被收回当成用户说话，或还没播完就触发「还在吗」。
         cancelPendingIdle()
-        cancelPlaybackIdle = waitPlaybackIdle(() => {
-          cancelPlaybackIdle = null
-          duckMusic(false)
-          isSpeaking.value = false
-          // 真正播完这一刻记为「最近一次说话」，覆盖其后的回声窗口：
-          // 助手话里若带「小熊小熊」，被麦收回后 2s 内的唤醒词识别当回声忽略。
-          lastSpokeAt = Date.now()
-          phase.value = 'done'
-          markAnswerDone()
-          // 播完回执：网关等它才消费排队的下一句，保证上一句完整播完
-          transport.notifyPlaybackDone()
-        })
+        // 播完回执兜底：App 端 AudioTrack idle 回调链若丢失（历史坑），这里永不触发，
+        // 网关就每句白等 30s 超时——表现正是「队列有数据却不处理」。超时后强制走
+        // 与 idle 相同的收尾（复位 + notifyPlaybackDone），保证队列持续推进。
+        playbackDoneFallback = setTimeout(onPlaybackSettled, 12_000)
+        cancelPlaybackIdle = waitPlaybackIdle(onPlaybackSettled)
         break
+      }
       case 'media.play': {
         // proxy 标记由网关按频道判定（B 站等防盗链直链需走网关 /music/stream 代理补 Referer）；
         // 客户端不再写死任何频道名，只按此标记决定是否拼代理地址。
@@ -549,15 +604,21 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         errorMessage.value = event.message
         phase.value = 'idle'
         assistantBusy = false
+        queuedHideLive = false
         queuePending.value = 0
         liveText.value = ''
         queueFullMsg.value = ''
         cancelPendingIdle()
+        disarmThinkingCue()
         dispatch({ type: 'ERROR' })
         break
       case 'client.cue':
         // 能力不可用提示音统一由本地 health 报告驱动（watch health 里的 playPromptCueSequence）。
         // 网关这条 client.cue 在真机上时有时无，不能作为唯一触发源；此处刻意不播，避免与 health 双份叠音。
+        // 例外：asr-error 是「运行中识别失败/超时」的瞬时提示（health 不覆盖），按网关节流触发播放。
+        if (event.cue === 'asr-error') {
+          void playPromptCue('asrError')
+        }
         break
     }
   }
@@ -573,6 +634,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   function cancelPendingIdle(): void {
     cancelPlaybackIdle?.()
     cancelPlaybackIdle = null
+    // 兜底定时器一并作废：取消等待 = 不再发播完回执（如被打断/重开新轮），防误触发
+    if (playbackDoneFallback) {
+      clearTimeout(playbackDoneFallback)
+      playbackDoneFallback = null
+    }
   }
 
   /** 网关是否真正可用：WS 连通且不在建连/重连中。网关指 WS 本身，与 ASR/LLM/TTS 上游无关。 */
@@ -643,6 +709,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       case 'endSession':
         cancelPendingIdle()
+        disarmThinkingCue()
+        queuedHideLive = false
         stopTts()
         isSpeaking.value = false
         queuePending.value = 0
@@ -653,6 +721,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       case 'cancelSession':
         cancelPendingIdle()
+        disarmThinkingCue()
+        queuedHideLive = false
         stopTts()
         transport.sendCancel()
         isSpeaking.value = false
@@ -1082,6 +1152,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     musicVolume,
     setMusicVolume,
     musicError: musicState.musicError,
+    musicErrorDetail: musicState.musicErrorDetail,
     musicVisible: musicState.visible,
     musicTitle: musicState.title,
     musicCover,

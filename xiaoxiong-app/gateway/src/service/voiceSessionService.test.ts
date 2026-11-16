@@ -72,10 +72,18 @@ function createHarness(
     finalizeText?: string
     /** 多轮定稿文本队列：每次 finalize 依次取一个，用尽后重复最后一个 */
     finalizeTexts?: string[]
+    /** asr.push 返回的实时草稿：驱动 handleBinary 的 asr.partial 下发条件验证 */
+    partialText?: string
     musicSourceFactory?: () => MusicSource
     candidateFetcher?: (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
     /** 句末静音定稿阈值（毫秒）；默认 10ms，贴近真实长停顿测试时调大 */
     asrEndpointMs?: number
+    /** LLM 超时（ms）：注入小值验证超时兜底 + 队列继续消费（回归排队卡死） */
+    llmTimeoutMs?: number
+    /** TTS 帧间看门狗（ms）：注入小值验证上游挂起时链不死 */
+    ttsFrameGapMs?: number
+    /** TTS 合成挂起：吐一帧后永不结束（验证帧间看门狗） */
+    ttsStall?: boolean
     /** 预置记忆：全新会话 start 时由 getMemories 返回，用于验证系统提示注入 */
     memories?: Array<{ key: string; value: string; updatedAt: number }>
     /** 设备标识；传 null 可验证「无 deviceId 不注入记忆」。默认 test-device */
@@ -155,7 +163,13 @@ function createHarness(
   const asr: AsrProvider = {
     async push() {
       frames += 1
-      return null
+      // partialText 注入：验证 handleBinary 的 asr.partial 下发条件（插话放行 / 回声抑制）。
+      // 只在「播报窗口」（tts.end 已下发、playback_done 未回）生效，避免空闲监听期的
+      // speakUtterance 自身上行把草稿提前刷出来干扰断言。
+      if (!opts.partialText) return null
+      const playbackWindow = events.some((e) => e.type === 'tts.end')
+      if (!playbackWindow) return null
+      return opts.partialText
     },
     async finalize() {
       if (opts.finalizeTexts?.length) {
@@ -171,6 +185,8 @@ function createHarness(
   const tts: TtsProvider = {
     async *synthesize() {
       for (const frame of ttsFrames) yield frame
+      // 模拟 TTS 上游挂起：吐完注入帧后永不结束，验证帧间看门狗断开本句、对话链不死
+      if (opts.ttsStall) await new Promise<void>(() => undefined)
     },
   }
 
@@ -205,6 +221,8 @@ function createHarness(
     send: (event) => events.push(event),
     sendAudio: () => {},
     asrEndpointMs: opts.asrEndpointMs ?? 10,
+    llmTimeoutMs: opts.llmTimeoutMs,
+    ttsFrameGapMs: opts.ttsFrameGapMs,
     musicSourceFactory: opts.musicSourceFactory,
     candidateFetcher: opts.candidateFetcher,
     dealsQuery: opts.dealsQuery,
@@ -1966,6 +1984,116 @@ describe('择吉日/时间/日期直连（绕开 LLM）', () => {
     expect(spoken).toContain('现在是')
     expect(spoken).not.toContain('农历')
     expect(h.agentCalls()).toBe(0)
+  })
+})
+
+describe('TTS 帧间看门狗（上游挂起不卡死对话链）', () => {
+  it('TTS 合成挂起：帧间超时断开本句、tts.end 照常收尾，链继续处理下一句', async () => {
+    const h = createHarness({
+      finalizeTexts: ['你好，随便聊聊', '你好，聊聊第二个话题'],
+      ttsFrames: [loudFrame()],
+      ttsStall: true,
+      ttsFrameGapMs: 60,
+    })
+    await startDialog(h.service)
+    await speakUtterance(h) // 首句：一帧后上游挂起 → 看门狗 60ms 断开
+    h.finishReply() // harness 的 reply 等手动收口；收口后 runAgent 走到 await ttsChain（被看门狗断开）
+    await sleep(200)
+    // tts.start 发过；看门狗断开后 tts.end 照常下发（客户端播已有帧后回执，链不死）
+    expect(h.events.some((e) => e.type === 'tts.start')).toBe(true)
+    expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
+    h.playbackDone()
+    await sleep(30)
+    await speakUtterance(h) // 第二句：processing 已复位，正常进入 agent
+    await sleep(60)
+    expect(h.agentCalls()).toBe(2)
+  })
+})
+
+describe('LLM 超时兜底与队列续跑（回归：排队卡死）', () => {
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+  function finals(h: Harness): Array<{ text: string; queueRemaining: number }> {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'asr.final' }> => e.type === 'asr.final')
+      .map((e) => ({ text: e.text, queueRemaining: e.queueRemaining }))
+  }
+
+  it('LLM 超时：兜底口播播完后队列继续消费，不再卡死', async () => {
+    const h = createHarness({
+      // delayDelta 让 agent 挂起，50ms 超时触发兜底口播
+      delayDelta: true,
+      finalizeTexts: ['你好，随便聊聊', '你好，聊聊第二个话题'],
+      ttsFrames: [loudFrame()],
+      llmTimeoutMs: 50,
+    })
+    await startDialog(h.service)
+    await speakUtterance(h) // 首句 → LLM 超时 → 兜底口播（ttsStarted=true）
+    await sleep(120)
+    // 超时窗口内插话一句进队列
+    await speakUtterance(h)
+    await sleep(30)
+    expect(h.events.some((e) => e.type === 'asr.queued')).toBe(true)
+
+    // 兜底句播完回执 → runTurn shift 下一句 → 第二句同样超时兜底 → 播完
+    h.playbackDone()
+    await sleep(200)
+    h.playbackDone()
+    await sleep(120)
+
+    // 关键断言：两句都被消费（agent 各调一次）、队列清空、口播含兜底文案
+    expect(h.agentCalls()).toBe(2)
+    const all = finals(h)
+    expect(all.some((f) => f.text === '你好，聊聊第二个话题' && f.queueRemaining === 0)).toBe(true)
+    expect(texts(h)).toContain('这边一时没接上，你稍后再问我一次好吗？')
+  })
+})
+
+describe('插话草稿下发（与思考/播报并存展示）', () => {
+  function partials(h: Harness): string[] {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'asr.partial' }> => e.type === 'asr.partial')
+      .map((e) => e.text)
+  }
+
+  it('播报中用户插话草稿照常下发（识别能显示出来），助手原话回声草稿被抑制', async () => {
+    // 先播一句：finishReply 进入播报（playbackPending=true、spoken 已记录口播原文）
+    const h = createHarness({
+      delayDelta: true,
+      finalizeText: '你好，随便聊聊',
+      replyText: '好的，我来说一句。',
+      ttsFrames: [loudFrame()],
+      partialText: '我想问下一个问题',
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
+
+    // 播报期间上行一帧：草稿是用户插话（非口播原文）→ 放行下发，界面可与播报并存显示
+    h.service.handleBinary(loudFrame())
+    await sleep(10)
+    expect(partials(h)).toContain('我想问下一个问题')
+
+    const h2 = createHarness({
+      delayDelta: true,
+      finalizeText: '你好，随便聊聊',
+      replyText: '好的，我来说一句。',
+      ttsFrames: [loudFrame()],
+      partialText: '好的，我来说一句',
+    })
+    await startDialog(h2.service)
+    await speakUtterance(h2)
+    h2.finishReply()
+    await sleep(40)
+    h2.service.handleBinary(loudFrame())
+    await sleep(10)
+    expect(partials(h2)).toHaveLength(0)
   })
 })
 

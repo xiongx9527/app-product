@@ -20,8 +20,14 @@
 后五个在 `useAssistant` 连上网关后由 `speakCapabilityProblems()` 检查 `/api/health` 与设备权限，
 先播麦克风权限，再对未就绪的能力按顺序（ASR → TTS → LLM → 网络）逐条播报，给出听得见的失效反馈。
 
-后五个文件同时也复制到了网关侧 `gateway/static/cues/`，由网关经 HTTP（`/static/cues/<name>.mp3`）
-下发给客户端播放（见 `contracts/README.md`）。客户端优先从网关拉取，拉取失败才回退到本目录的打包文件。
+提示音文件**只在客户端打包内存一份**（本目录），不再复制到网关侧、也不经网关 HTTP 下发——
+断网 / 网关异常 / App 离线时照样能播（App 端原生 playCue 从 apk assets 直读）。网关侧旧的
+`gateway/static/cues/` 与 `/static/cues/*` 端点已移除（见 `contracts/README.md`）。
+`client.cue` 事件只传提示音名，客户端按名播本目录文件。
+
+另外两个运行中瞬时提示：
+- `asr-error.mp3`：语音识别失败/超时（网关在 ASR 定稿异常时节流下发 `client.cue('asr-error')`），文案「不好意思，我没听清，你再说一遍好吗」
+- `thinking.mp3`：「正在思考」超过 10s 仍未开始播报时由客户端本地播放，安抚用户不是卡死，文案「稍等一下，我还在想哈」
 
 H5 端使用 WebAudio 生成提示音 + Toast 兜底，不依赖这些文件；
 App 端通过 `uni.createInnerAudioContext()` 播放。

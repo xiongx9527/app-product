@@ -8,7 +8,7 @@
 //   3. 不主动退出——nodejs-mobile 在 node::Start / node_start 内阻塞事件循环，进程/线程常驻。
 //
 // 环境（GATEWAY_HOME / GATEWAY_MODE / DOCS_ENABLED / GATEWAY_PORT / GATEWAY_PORT_FILE 等）
-// 由原生层在启动前 setenv，server.ts 已据此配置（见 server.ts 的 CUE_DIR 与 listen 分支）。
+// 由原生层在启动前 setenv，server.ts 已据此配置（见 server.ts 的 listen 分支）。
 import { createGateway } from '../server'
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'

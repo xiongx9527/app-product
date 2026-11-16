@@ -76,9 +76,10 @@ export type ServerEvent =
   | { type: 'client.location.request' }
   /** 语音「切换播放模式」：在悬浮小圆 / 普通播放条间切换；mode 省略=客户端自行 toggle，float/player=直接指定 */
   | { type: 'client.playMode'; mode?: 'float' | 'player' }
-  /** 让客户端播一条「能力不可用」提示音（网关 /static/cues/<cue>.mp3）；
-   *  ASR/TTS/LLM 未就绪时网关没法用语音播报，改发预录提示音让用户听得见。cue 为提示音名。 */
-  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' }
+  /** 让客户端播一条提示音（打包内本地 mp3，唯一一份，不再经网关 HTTP 下发）；
+   *  ASR/TTS/LLM 未就绪时网关没法用语音播报，改发预录提示音让用户听得见。
+   *  asr-error 是运行中识别失败/超时的瞬时提示（health 不覆盖），网关节流下发。cue 为提示音名。 */
+  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' | 'asr-error' }
   | { type: 'error'; code: string; message: string }
 
 /** media.detail 事件负载：详情卡片的全量状态快照（供 useAssistant 持有、渲染器分派）。 */

@@ -171,7 +171,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `client.location.request`：服务端**仅在位置/天气类工具被调用但本会话尚无设备位置时才下发**，客户端据此请求定位授权（manifest 已声明权限）并通过 `session.location` 上报经纬度。不在建连时主动要位置，避免冷启动就弹定位授权框打扰用户；用户没问位置相关问题时完全不触发定位。客户端若已授权/取不到位置则静默跳过，不阻断会话。
 
-`client.cue`：服务端在建连（`session.start`）后一次性探测 ASR/TTS/LLM/外网就绪状态，**任一不可用就下发**对应预录提示音（`asr-down` / `tts-down` / `llm-down` / `network-down`，即网关 `static/cues/<cue>.mp3`）。此时网关还没法用语音播报，只能靠提示音让用户「听得见地」知道能力缺失；探测走与 `/api/health` 同一套带 15s 缓存逻辑，重连/重唤醒都便宜。客户端收到后按名拉取播放，不下发具体文案（提示音已含人声）。与客户端 `/api/health` 轮询互补：客户端负责「运行中 ok→down」的瞬时变化，本事件负责「建连那一刻就已不可用」的兜底（这种情形客户端 watch 的 prev 为空、不会触发，容易静默失效）。
+`client.cue`：服务端在建连（`session.start`）后一次性探测 ASR/TTS/LLM/外网就绪状态，**任一不可用就下发**对应预录提示音名（`asr-down` / `tts-down` / `llm-down` / `network-down`）。此时网关还没法用语音播报，只能靠提示音让用户「听得见地」知道能力缺失；探测走与 `/api/health` 同一套带 15s 缓存逻辑，重连/重唤醒都便宜。客户端收到后按名播放**打包内的本地 mp3**（提示音文件只存一份，位于客户端 `static/audio/`，不再经网关 HTTP 下发），不下发具体文案（提示音已含人声）。`asr-error` 是例外：它是「运行中识别失败/超时」的瞬时提示（health 不覆盖），由网关在 ASR 定稿异常时节流（30s）下发，客户端播本地「没听清，再说一遍」。与客户端 `/api/health` 轮询互补：客户端负责「运行中 ok→down」的瞬时变化，本事件负责「建连那一刻就已不可用」的兜底（这种情形客户端 watch 的 prev 为空、不会触发，容易静默失效）。
 
 `asr.partial` 是网关对已收音频的滚动重识别结果，可重复、可回退，客户端只用于展示；
 `asr.final` 才是定稿文本。**只有 `asr.final` 之后才会请求大模型**，中间结果不会触发回复。
@@ -232,7 +232,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 - 数据格式：`application/json`。
 - 参数加密：由网关开关 `PARAM_ENCRYPT` 控制。开启时，`/api/*` 的请求体/响应体为密文（见下文），关闭时为明文 JSON。例外：`/api/openapi.json`（Swagger 契约文档）始终明文返回——它是公开文档，且浏览器里的 Swagger UI 没有解密能力，加密后页面无法渲染。
 - 数据库只在网关落地（SQLite），客户端经这些接口读写，不直接写业务数据。
-- **跨域（CORS）**：所有 `/api/*` 响应（含 `/api/health`、`/api/openapi.json`）与 `/static/cues/*` 均带 `access-control-allow-origin: *`，便于 H5 调试页（与网关不同端口）直接调用；并对 `DELETE` / 带自定义头等会触发浏览器预检的请求正确响应 `OPTIONS`（返回 `204` + `access-control-allow-methods` / `access-control-allow-headers`），否则浏览器会直接拦截实际请求。这是第一方通信，不依赖 CORS 做鉴权。
+- **跨域（CORS）**：所有 `/api/*` 响应（含 `/api/health`、`/api/openapi.json`）均带 `access-control-allow-origin: *`，便于 H5 调试页（与网关不同端口）直接调用；并对 `DELETE` / 带自定义头等会触发浏览器预检的请求正确响应 `OPTIONS`（返回 `204` + `access-control-allow-methods` / `access-control-allow-headers`），否则浏览器会直接拦截实际请求。这是第一方通信，不依赖 CORS 做鉴权。
 
 ### 端点
 
@@ -241,13 +241,11 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 - 响应 `200`：`{ "ok": true }`
 
-#### GET /static/cues/<name>.mp3
-「能力/权限不可用」提示音文件（网络 / ASR / TTS / LLM 未就绪、或麦克风未授权时客户端从网关拉取播放）。
-定位是非必须能力，只显示状态、不播提示音。
-
-- 允许的名字（白名单，其余 404）：`network-down` / `asr-down` / `tts-down` / `llm-down` / `mic-denied`。
-- 响应 `200`：`audio/mpeg`；带 `access-control-allow-origin: *`（供 H5 跨端口加载）与 `cache-control: public, max-age=3600`。
-- 路径含 `..` 或非白名单名字一律 `404`。
+#### 提示音文件（已改为客户端本地，无此 HTTP 端点）
+「能力/权限不可用」提示音（网络 / ASR / TTS / LLM 未就绪、麦克风未授权、识别失败、思考超时）
+全部为客户端打包内的本地 mp3（`uni_app/src/static/audio/`，唯一一份，App 离线也能播）。
+历史上曾由网关经 `/static/cues/<name>.mp3` 下发，该端点已移除；`client.cue` 只传提示音名，
+客户端按名播打包内文件。
 - 客户端优先从网关拉取，拉取失败时回退到打包内的 `static/audio/<name>.mp3`。
 
 #### 会话记录 sessions

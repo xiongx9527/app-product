@@ -51,6 +51,7 @@ const {
   setMusicVolume,
   reportVolume,
   musicError,
+  musicErrorDetail,
   musicVisible,
   musicTitle,
   musicCover,
@@ -528,7 +529,7 @@ function onOrbTap(): void {
           </view>
         </view>
       </view>
-      <text v-if="musicError" class="music-error">{{ t('music.error') }}</text>
+      <text v-if="musicError" class="music-error">{{ t('music.error') }}{{ musicErrorDetail }}</text>
       <!-- 播放进度行：暂停/继续按钮提到进度条之前（同一行），其余空间给进度条/直播标识 -->
       <view class="music-progress">
         <view class="music-ctrl" :aria-label="musicEnded ? t('music.resume') : musicPaused ? t('music.resume') : t('music.pause')" @tap="onTogglePause">
@@ -881,6 +882,7 @@ function onOrbTap(): void {
 
 .music-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1232,7 +1234,10 @@ function onOrbTap(): void {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  flex: 1;
+  /* flex-basis 220px：竖屏窄宽度时标题区保住 220px（放不下就让按钮区 wrap 到下一行），
+     不再被 5 个 40px 按钮 + 78px 留声机挤成逐字竖排；横屏宽度足够时仍单行铺满。
+     文字左对齐紧跟留声机，与其同行居中对齐（用户要求留声机与文字对齐、不一上一下）。 */
+  flex: 1 1 220px;
 }
 
 .music-label {

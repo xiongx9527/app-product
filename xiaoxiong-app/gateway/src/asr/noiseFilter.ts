@@ -53,6 +53,16 @@ const EN_FILLER_WORDS = new Set([
   'the', 'a', 'an', 'yeah', 'yes', 'no', 'ok', 'okay', 'oh', 'uh', 'um',
   'hmm', 'mm', 'huh', 'well', 'so', 'um', 'er', 'ah', 'hey', 'wow',
   'music', 'applause', 'silence', 'thanks', 'thank', 'you', 'please',
+  // 代词/系动词/介词连词等高频虚词：中文会话里 SenseVoice 对回声/静音段稳定冒出的
+  // 纯英文碎片还包括 she / he / it / is 等单独词（用户 2026-11-16 实测反馈）。
+  // 保持「整段全是虚词」边界：含实义词（歌名/人名）或中文/数字的短句都不在此拦。
+  'she', 'he', 'it', 'they', 'them', 'him', 'her', 'his', 'its', 'we', 'us',
+  'me', 'my', 'our', 'i', 'this', 'that', 'these', 'those', 'there', 'here',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'am', 'do', 'does',
+  'did', 'done', 'have', 'has', 'had', 'will', 'would', 'can', 'could',
+  'should', 'shall', 'and', 'but', 'or', 'nor', 'to', 'of', 'in', 'on',
+  'at', 'by', 'for', 'with', 'from', 'up', 'down', 'out', 'off', 'again',
+  'then', 'now', 'just', 'still', 'even', 'ever', 'very', 'too', 'also',
 ])
 
 function isShortEnglishFragment(text: string): boolean {
@@ -72,6 +82,12 @@ export function isNoise(text: string): boolean {
   if (!core) return true
   if (HALLUCINATIONS.has(core.toLowerCase())) return true
   if (isShortEnglishFragment(text)) return true
+  // 单个拉丁字母（H / E / B…）：ASR 对静音/回声的字母级幻觉，任何语言下都不是有效指令
+  //（英文有效词至少两个字母；用户 2026-11-16 实测高频复现「H.」）。
+  if (core.length === 1 && /[a-z]/i.test(core)) return true
+  // 极短纯假名（はい / うん…）：中文/英文会话里冒出的日语碎片同样是静音/回声幻觉
+  //（用户实测「はい.」被当成用户说话触发了一轮回答）。
+  if (core.length <= 4 && /^[\p{Script=Hiragana}\p{Script=Katakana}]+$/u.test(core)) return true
   // 单字：只有语气词当噪声，实义单字（如「滚」「好」）保留
   if (core.length === 1) return FILLERS.has(core)
   return false

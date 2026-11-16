@@ -4,15 +4,18 @@ import type { SubtitleLine } from '../../../protocol'
 
 /**
  * 从 B 站视频抽取可播放音轨（免费、无需登录）：
- * 先用 wbi 签名拿 view（得到 cid），再签名拿 playurl，取 mp4 直链。
- * 该直链带防盗链（需 Referer），由网关 /music/stream 代理转发。
+ * 先用 wbi 签名拿 view（得到 cid），再签名拿 playurl（dash 纯音频流），
+ * 取码率最高的音频直链。该直链带防盗链（需 Referer），由网关 /music/stream 代理转发。
  * 解析逻辑用注入的 fetcher 单测覆盖；线上可用性属尽力而为。
  *
- * 为什么不用 dash 音频流（fnval=16 的 .m4s）：那是无 moov 头的 fMP4 片段，
- * 浏览器内核（H5 调试）能播，但 App 端原生播放器（InnerAudioContext/MediaPlayer）
- * 解不了裸 fMP4，表现为「非歌曲宝的音频没声音」。mp4 durl（fnval=0 + platform=html5）
- * 是带 moov 的完整 mp4（音视频合流），全端可播——InnerAudioContext 只出音频、不渲染画面，
- * 正合「听」的用途；音质略低于 dash 高码率，可播性优先。
+ * 为什么用 dash 纯音轨（fnval=16 的 .m4s）而不是 mp4 durl（2026-11-16 真机实证）：
+ * - mp4 durl（fnval=0 + platform=html5）是**音视频合流** mp4，且 ffprobe 证实第一条轨道是
+ *   h264 视频轨（aac 在后）。DCloud AudioPlayer（InnerAudioContext 底层 NuPlayer）取第一条
+ *   轨道当音频 → 解出无声、不触发 onError、NuPlayer 0 帧 + getDuration INT_MIN。
+ * - dash 纯音轨 m4s 实测（ffprobe）：**moov 在头部**（ftyp@4/moov@36）、纯 AAC 音频、
+ *   无视频轨 → AudioPlayer 取第一条轨道就是音频，真机可播。
+ * - 曾经「dash 无 moov」的结论被本轮实证推翻：content-type 是 application/octet-stream，
+ *   由 /music/stream 按扩展名统一标成 audio/mp4 后可播。
  */
 
 const UA =
@@ -87,9 +90,8 @@ export async function extractBilibiliAudio(
   const cid = String(view.data.cid)
 
   const wts2 = String(Math.floor(Date.now() / 1000))
-  // fnval=0 + platform=html5：拿 mp4 durl（带 moov 的完整 mp4，App 原生播放器可播）；
-  // 参数全集参与 wbi 签名，少一个都会报 -403 校验失败。
-  const plParams = { bvid, cid, fnval: '0', high_quality: '1', platform: 'html5', qn: '64', wts: wts2 }
+  // fnval=16：dash 纯音频流（m4s 带前置 moov、纯 AAC）。参数全集参与 wbi 签名，少一个报 -403。
+  const plParams = { bvid, cid, fnval: '16', qn: '16', wts: wts2 }
   const qs = Object.entries(plParams)
     .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
     .join('&')
@@ -100,13 +102,16 @@ export async function extractBilibiliAudio(
   const pl = (await plResp.json()) as {
     code?: number
     message?: string
-    data?: { durl?: Array<{ url?: string | null }> }
+    data?: { dash?: { audio?: Array<{ baseUrl?: string | null; bandwidth?: number }> } }
   }
-  const mp4 = pl.data?.durl?.find((d) => d.url)?.url
-  if (pl.code !== 0 || !mp4) {
-    throw new Error(`bilibili playurl 失败：${pl.message ?? '无 mp4 音视频流'}`)
+  const audio = [...(pl.data?.dash?.audio ?? [])].sort(
+    (a, b) => (b.bandwidth ?? 0) - (a.bandwidth ?? 0)
+  )[0]
+  const url = audio?.baseUrl
+  if (pl.code !== 0 || !url) {
+    throw new Error(`bilibili playurl 失败：${pl.message ?? '无音频流'}`)
   }
-  return { url: mp4, title: view.data.title }
+  return { url, title: view.data.title }
 }
 
 /** 从任意 URL 里抽取 BVID；命中返回 BVID，否则返回 null。 */

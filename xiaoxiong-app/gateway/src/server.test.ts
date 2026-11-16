@@ -76,7 +76,8 @@ it('REST health', async () => {
   const res = await fetch(`http://127.0.0.1:${base.port}/api/health`)
   expect(res.status).toBe(200)
   expect((await res.json() as { ok: boolean }).ok).toBe(true)
-})
+  // /api/health 会真探外网多个源，网络波动时耗时不定（与 cors.test.ts 同因），放宽超时。
+}, 15000)
 
 it('REST create + list session', async () => {
   const created = await fetch(`http://127.0.0.1:${base.port}/api/sessions`, {

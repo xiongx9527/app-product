@@ -1,8 +1,5 @@
 import 'dotenv/config'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFile } from 'node:fs/promises'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { loadConfig } from './config'
 import { createDb } from './db/client'
@@ -144,13 +141,8 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
         await handleMusicStream(req, res, url.searchParams)
         return
       }
-      // 提示音：网关把「能力不可用」提示（网络 / ASR / TTS / LLM 未就绪）的本地录音
-      // 经 HTTP 下发给客户端，客户端从网关拉取播放（打包内文件作兜底）。仅放行白名单里的四个文件，
-      // 用 basename 校验 + 禁止 `..` 防目录穿越；允许跨域，便于 H5（与网关不同端口）直接加载。
-      if (url.pathname.startsWith('/static/cues/')) {
-        await serveCue(res, url.pathname)
-        return
-      }
+      // 提示音不再经网关下发：全部走客户端打包内本地文件（唯一一份），断网 / 网关异常都能播。
+      // 旧的 /static/cues/* HTTP 通道已移除，客户端 promptPlayer 只从 /static/audio/ 取。
       res.writeHead(404)
       res.end('not found')
     } catch (err) {
@@ -199,46 +191,6 @@ function writeJson(
 ): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...extraHeaders })
   res.end(JSON.stringify(body))
-}
-
-// 桌面版按源码相对位置找提示音；离线包里 bundle 位于 assets，import.meta.url 指向 bundle
-// 自身、相对路径会落到错误目录，故内嵌模式由原生层注入 GATEWAY_HOME（解包后的私有目录）。
-const CUE_DIR = process.env.GATEWAY_HOME
-  ? path.join(process.env.GATEWAY_HOME, 'static', 'cues')
-  : fileURLToPath(new URL('../static/cues', import.meta.url))
-const ALLOWED_CUES = new Set(['network-down', 'asr-down', 'tts-down', 'llm-down', 'mic-denied'])
-
-/** 仅放行白名单内的提示音文件；校验扩展名 + 禁止 `..`，杜绝目录穿越。 */
-async function serveCue(res: ServerResponse, pathname: string): Promise<void> {
-  const raw = pathname.slice('/static/cues/'.length).split('?')[0]
-  // 只允许 <name>.mp3 且 name 在白名单内；禁止路径分隔与 `..`，杜绝目录穿越。
-  if (
-    !raw.endsWith('.mp3') ||
-    raw.includes('/') ||
-    raw.includes('..')
-  ) {
-    res.writeHead(404)
-    res.end('not found')
-    return
-  }
-  const name = raw.slice(0, -4)
-  if (!ALLOWED_CUES.has(name)) {
-    res.writeHead(404)
-    res.end('not found')
-    return
-  }
-  try {
-    const data = await readFile(path.join(CUE_DIR, raw))
-    res.writeHead(200, {
-      'content-type': 'audio/mpeg',
-      'access-control-allow-origin': '*',
-      'cache-control': 'public, max-age=3600',
-    })
-    res.end(data)
-  } catch {
-    res.writeHead(404)
-    res.end('not found')
-  }
 }
 
 function readBody(req: IncomingMessage): Promise<string> {

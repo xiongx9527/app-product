@@ -28,6 +28,15 @@ describe('ASR 杂音过滤', () => {
     expect(isNoise('Oh yeah')).toBe(true)
     expect(isNoise('the, the')).toBe(true)
     expect(isNoise('OK.')).toBe(true)
+    // 用户 2026-11-16 实测新增的高频碎片：代词/系动词单独成句也拦
+    expect(isNoise('she')).toBe(true)
+    expect(isNoise('She.')).toBe(true)
+    expect(isNoise('he is')).toBe(true)
+    expect(isNoise('it is the')).toBe(true)
+    // 字母级幻觉：单个拉丁字母单独出现一律拦
+    expect(isNoise('H')).toBe(true)
+    expect(isNoise('H.')).toBe(true)
+    expect(isNoise('e')).toBe(true)
   })
 
   it('中英混排、英文歌名、纯数字选号、实义短句都不误杀', () => {

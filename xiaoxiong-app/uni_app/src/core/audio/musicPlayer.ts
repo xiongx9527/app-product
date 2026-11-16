@@ -25,6 +25,8 @@ const ended = ref(false)
 const loopRemaining = ref(0)
 /** 播放是否出错（如地址失效/网络不通/被浏览器自动播放策略拦截）；用于界面提示，不弹浮层 */
 const musicError = ref(false)
+/** 临时诊断：播放错误详情（errCode/errMsg），定位「B站 mp4 播不了」后删除 */
+const musicErrorDetail = ref('')
 /** 音乐播放音量（0–1）；界面滑块控制，TTS 播报时按 DUCK_FACTOR 压低。 */
 const musicVolume = ref(0.5)
 /** TTS 播报时压低音乐的系数（与播放器自身音量相乘）。 */
@@ -80,10 +82,13 @@ function ensureContext(): UniApp.InnerAudioContext | null {
     paused.value = false
     ended.value = true
   })
-  instance.onError(() => {
+  instance.onError((err?: { errMsg?: string; errCode?: number | string }) => {
     playing.value = false
     paused.value = false
     musicError.value = true
+    // 临时诊断打点（定位「B站 mp4 播不了」）：把错误码/描述并进提示文案，CDP 可读，定位后删除
+    const detail = err?.errMsg || err?.errCode ? ` [diag ${err?.errCode ?? ''} ${err?.errMsg ?? ''}]` : ' [diag no-detail]'
+    musicErrorDetail.value = detail
   })
   // H5 的 onTimeUpdate 回调不带参数（uni-h5 直接 callback()），
   // 只能从 context 上读 currentTime / duration；原生端同样支持这两个 getter。
@@ -315,6 +320,7 @@ export const musicState = {
   ended,
   loopRemaining,
   musicError,
+  musicErrorDetail,
   musicVolume,
   visible,
   title,

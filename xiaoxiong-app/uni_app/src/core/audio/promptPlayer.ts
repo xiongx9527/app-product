@@ -1,4 +1,3 @@
-import { resolveGatewayHttpBase } from '@/core/transport'
 import { duckMusic } from './musicPlayer'
 import { appPlayCue, isAppCueSupported } from './appCue'
 
@@ -12,6 +11,10 @@ export type PromptCue =
   | 'ttsDown'
   | 'llmDown'
   | 'micDenied'
+  /** 识别失败/超时的运行中瞬时提示（建连 health 不覆盖）：「没听清，再说一遍」 */
+  | 'asrError'
+  /** 思考超时的安抚提示：「稍等一下，我还在想」 */
+  | 'thinking'
 
 const CUE_FILE: Record<PromptCue, string> = {
   greeting: 'greeting',
@@ -23,21 +26,12 @@ const CUE_FILE: Record<PromptCue, string> = {
   ttsDown: 'tts-down',
   llmDown: 'llm-down',
   micDenied: 'mic-denied',
+  asrError: 'asr-error',
+  thinking: 'thinking',
 }
 
-/** 「能力不可用」提示由网关经 HTTP 下发（/static/cues/<file>.mp3），其余提示音走打包内的本地文件。
- * 注意：gatewayDown 故意不在此列表——网关本身连不上时不可能从网关拉取，必须直接播打包内的本地文件。 */
-const GATEWAY_CUES: ReadonlyArray<PromptCue> = [
-  'networkDown',
-  'asrDown',
-  'ttsDown',
-  'llmDown',
-  'micDenied',
-]
-
-function isGatewayCue(cue: PromptCue): boolean {
-  return GATEWAY_CUES.includes(cue)
-}
+/** 提示音全部走客户端打包内的本地文件（/static/audio/，唯一一份，mp3 不在网关侧再放副本）：
+ * 断网 / 网关异常 / App 离线时提示音照样能出声（原生 playCue 从 apk assets 直接读）。 */
 
 /** 临时排查埋点：把提示音链路事件暴露给 UI（useAssistant 注册 sink，显示到行内错误条）。 */
 let cueDebugSink: ((msg: string) => void) | null = null
@@ -58,14 +52,9 @@ function bundledCueUrl(cue: PromptCue): string {
   return `/static/audio/${CUE_FILE[cue]}.mp3`
 }
 
-/** 提示音实际地址。App 端一律播打包内本地文件：能力不可用提示更不该依赖网关 HTTP
- * （网关刚启动、能力挂掉时正是要播的时候）；H5 保留网关 HTTP 优先，同链路同音色。 */
+/** 提示音实际地址：全部走打包内本地文件（唯一一份），App 端原生 playCue 从 apk assets 直读、
+ * H5 走同路径；能力不可用提示更不该依赖网关 HTTP（网关刚挂时正是要播的时候）。 */
 function cueUrl(cue: PromptCue): string {
-  // #ifdef H5
-  if (isGatewayCue(cue)) {
-    return `${resolveGatewayHttpBase()}/static/cues/${CUE_FILE[cue]}.mp3`
-  }
-  // #endif
   return bundledCueUrl(cue)
 }
 
@@ -83,6 +72,9 @@ const CUE_MUTE_MS: Record<PromptCue, number> = {
   ttsDown: 3600,
   llmDown: 3700,
   micDenied: 6200,
+  // asr-error ≈3.1s / thinking ≈2.0s（edge-tts XiaoxiaoNeural），留一点尾音余量
+  asrError: 3400,
+  thinking: 2300,
 }
 
 let cueMuteUntil = 0
@@ -174,16 +166,12 @@ function playHtmlAudioCue(cue: PromptCue): void {
   const fallback = (): void => {
     if (handled) return
     handled = true
-    if (isGatewayCue(cue) && cueUrl(cue) !== bundledCueUrl(cue)) {
-      // 网关拉取失败：回退到打包内本地文件，仍失败才用合成音
-      try {
-        const f = new Audio(bundledCueUrl(cue))
-        const r = f.play()
-        if (r && typeof r.catch === 'function') r.catch(() => playWebAudioCue(cue))
-      } catch {
-        playWebAudioCue(cue)
-      }
-    } else {
+    // 本地文件播放失败：仍失败才用合成音
+    try {
+      const f = new Audio(bundledCueUrl(cue))
+      const r = f.play()
+      if (r && typeof r.catch === 'function') r.catch(() => playWebAudioCue(cue))
+    } catch {
       playWebAudioCue(cue)
     }
   }
@@ -328,10 +316,8 @@ function playAppCue(cue: PromptCue): void {
   }
   const src = cueUrl(cue)
   playOneCue(cue, src, () => {
-    if (isGatewayCue(cue) && src !== bundledCueUrl(cue)) {
-      // 网关拉取失败：状态类提示回退到打包内本地文件，仍不阻断状态机
-      playOneCue(cue, bundledCueUrl(cue))
-    }
+    // 本地文件播放失败：重试一次本地路径，仍不阻断状态机
+    playOneCue(cue, bundledCueUrl(cue))
   })
 }
 
