@@ -6,7 +6,7 @@
  *
  * 用法：
  *   node scripts/package-ios-offline.mjs \
- *     --sdk /path/to/HBuilder-Hello \          # iOS 离线 SDK 工程根目录（含 .xcodeproj 与 Pandora/）
+ *     --sdk /path/to/HBuilder-SDK \            # iOS 离线 SDK 工程根目录（含 .xcodeproj 与 Pandora/；内层工程为官方 HBuilder-Hello）
  *     --appid __UNI_XXXXXXXX \                  # DCloud 开发者中心的 appid（必须非空，且与 AppKey 对应）
  *     [--appkey xxxxxxxx]                       # 可选：AppKey 字符串，写入 Info.plist 的 dcloud_appkey
  *     [--plist /path/Info.plist]                # 可选：覆盖主目标 Info.plist 路径
@@ -29,15 +29,14 @@
  *      注意：DCloud 标准布局里 .xcodeproj 在工程根目录，而 Pandora/源码在子目录；pbxproj 里 gateway 用
  *      `../gateway` 指向工程根，故脚本把网关放到 .xcodeproj 的父目录（而非 --sdk 子目录），其余资源仍在 --sdk。
  *   5. NodeMobile.xcframework → <--sdk>/Frameworks/NodeMobile.xcframework（digidem iOS full 包）
- *   6. [--no-launch-storyboard] 启动图改 UILaunchScreen 纯配置 + storyboard 移出 Resources（见上方参数说明）
- *   7. 生成 GATEWAY_INTEGRATION.md（Xcode 里还需手动点几下的步骤清单）
+ *   6. 网关 framework：构建 native/ios/app/XiaoxiongGateway.xcodeproj（内含 GatewayNode/GatewayLauncher），
+ *      产物拷到 <--sdk>/Frameworks/XiaoxiongGateway.framework，并调 ios-integrate.rb（xcodeproj gem，幂等）
+ *      自动接入壳工程：link + Embed(CodeSignOnCopy)、NodeMobile/gateway 资源兜底、
+ *      清理旧式手动注入的 Swift 文件、patch AppDelegate.m 调 [GatewayLauncher startEmbeddedGateway]
+ *   7. [--no-launch-storyboard] 启动图改 UILaunchScreen 纯配置 + storyboard 移出 Resources（见上方参数说明）
  *
- * 脚本不负责（需 Xcode 手动或在 IDE 里做，详见生成的 GATEWAY_INTEGRATION.md）：
- *   - 把 gateway/ 与 NodeMobile.xcframework 加入主 target（Embedded Binaries / Copy Bundle Resources）
- *   - 把 GatewayNode.swift + AppDelegate+Gateway.swift 加入主 target
- *   - 在 AppDelegate.application(didFinishLaunching) 里调用 GatewayNode.shared.start() / xiaoxiong_startEmbeddedGateway()
- *   - 选 Team / 证书 / 描述文件、设 Bundle Identifier（必须与 DCloud AppKey 申请时一致）
- *   - 接入 app-product-wake 原生插件（否则唤醒与 PCM 采集不可用）
+ * 全程无手动 Xcode 步骤：壳工程可随时换新（放好官方 SDK 壳重跑本脚本即可恢复集成）。
+ * 壳工程的真机构建与装机用 native/ios/reprovision.sh。
  *
  * 注意：Archive 出 IPA 不需要 appid/AppKey；只有装到设备上「能启动运行」才需要，且 appid、Bundle Identifier、
  * 证书三者必须与 DCloud 开发者中心申请 AppKey 时填的一致，否则启动报「未配置appkey或配置错误」。
@@ -87,12 +86,22 @@ function copyDir(src, dest) {
   }
 }
 
+/** 安全 stat：悬空 symlink（Pods/旧 build 产物里常见）返回 null，不让遍历炸掉 */
+function safeStat(p) {
+  try {
+    return statSync(p)
+  } catch {
+    return null
+  }
+}
+
 /** 递归找出目录下所有同名文件 */
 function findFiles(dir, filename, acc = []) {
   if (!existsSync(dir)) return acc
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
-    if (statSync(p).isDirectory()) findFiles(p, filename, acc)
+    const st = safeStat(p)
+    if (st?.isDirectory()) findFiles(p, filename, acc)
     else if (name === filename) acc.push(p)
   }
   return acc
@@ -103,7 +112,8 @@ function findDirs(dir, dirnameMatch, acc = []) {
   if (!existsSync(dir)) return acc
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
-    if (!statSync(p).isDirectory()) continue
+    const st = safeStat(p)
+    if (!st?.isDirectory()) continue
     if (name === dirnameMatch) acc.push(p)
     else findDirs(p, dirnameMatch, acc)
   }
@@ -115,7 +125,8 @@ function findDirsEndsWith(dir, suffix, acc = []) {
   if (!existsSync(dir)) return acc
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
-    if (!statSync(p).isDirectory()) continue
+    const st = safeStat(p)
+    if (!st?.isDirectory()) continue
     if (name.endsWith(suffix)) acc.push(p)
     else findDirsEndsWith(p, suffix, acc)
   }
@@ -225,10 +236,11 @@ function findFilesEndsWith(dir, nameEndsWith, acc = []) {
   if (!existsSync(dir)) return acc
   for (const name of readdirSync(dir)) {
     const p = join(dir, name)
-    if (!statSync(p).isDirectory()) {
-      if (name.endsWith(nameEndsWith)) acc.push(p)
-    } else {
+    const st = safeStat(p)
+    if (st?.isDirectory()) {
       findFilesEndsWith(p, nameEndsWith, acc)
+    } else {
+      if (name.endsWith(nameEndsWith)) acc.push(p)
     }
   }
   return acc
@@ -396,40 +408,56 @@ if (args.nodeIos) {
   console.warn('[warn] 未提供 --node-ios：IPA 不含 Node 运行时，内嵌网关无法启动（下载 digidem ios 包后用 --node-ios 指向其解压目录）')
 }
 
-// ── 7) 生成 Xcode 集成清单 ──
-const integrationMd = `# iOS 内嵌网关 —— Xcode 手动集成清单
+// ── 7) 网关 framework：构建 XiaoxiongGateway 并自动接入壳工程（替代旧手动清单）──
+const factoryDir = join(projectRoot, 'native', 'ios', 'app')
+const factoryProj = join(factoryDir, 'XiaoxiongGateway.xcodeproj')
+if (!existsSync(factoryProj)) {
+  console.error(`[error] 未找到工厂工程 ${factoryProj}（见 native/ios/app/README.md）`)
+  process.exit(1)
+}
 
-本文件由 package-ios-offline.mjs 生成。脚本已完成的文件/plist 级接入见上方日志；
-以下需在 Xcode 里手动点几下（无法纯脚本改 .pbxproj，且需你本机的签名）。
+// 7a) 构建产物落工厂自己的 .build（gitignore），避免污染全局 DerivedData 难以定位
+const fwDerivedData = join(factoryDir, '.build')
+console.log('[step] 构建网关 framework (XiaoxiongGateway) ...')
+const fwBuild = spawnSync('xcodebuild', [
+  '-project', factoryProj, '-scheme', 'XiaoxiongGateway',
+  '-configuration', 'Release', '-destination', 'generic/platform=iOS',
+  'CODE_SIGNING_ALLOWED=NO', '-derivedDataPath', fwDerivedData, 'build',
+], { stdio: 'inherit' })
+if (fwBuild.status !== 0) {
+  console.error('[error] XiaoxiongGateway framework 构建失败')
+  process.exit(1)
+}
+const fwProduct = join(fwDerivedData, 'Build', 'Products', 'Release-iphoneos', 'XiaoxiongGateway.framework')
+if (!existsSync(fwProduct)) {
+  console.error(`[error] 未找到 framework 产物: ${fwProduct}`)
+  process.exit(1)
+}
 
-## A. 加入原生代码（主 target）
-1. 把 \`xiaoxiong-app/native/ios/app/GatewayNode.swift\` 与 \`AppDelegate+Gateway.swift\` 拖入工程主 target（勾选 target membership）。
-2. 打开工程 AppDelegate（类名通常 \`AppDelegate\`），在 \`application(_:didFinishLaunchingWithOptions:)\` 返回前加：
-   \`\`\`swift
-   GatewayNode.shared.start()
-   GatewayNode.shared.awaitPort { url in NSLog("[gateway] 内嵌网关就绪: \\(url)") }
-   // 或用分类方法：self.xiaoxiong_startEmbeddedGateway()
-   \`\`\`
+// 7b) 产物拷到壳工程 Frameworks/（Embed & Sign 由壳工程构建时完成）
+const fwDest = join(resolveGatewayDestDir(), 'Frameworks', 'XiaoxiongGateway.framework')
+rmSync(fwDest, { recursive: true, force: true })
+copyDir(fwProduct, fwDest)
+console.log(`[ok] XiaoxiongGateway.framework -> ${fwDest}`)
 
-## B. 加入网关资产（主 target，Copy Bundle Resources）
-3. 把工程目录下的 \`gateway/\` 文件夹（含 gateway.bundle.mjs + static/cues）拖入工程，**选「Create folder references」**，
-   保证构建后出现在 App Bundle 的 gateway/ 子目录（GatewayNode.swift 从 \`Bundle.main\` 的 subdirectory:"gateway" 读取）。
+// 7c) ios-integrate.rb（xcodeproj gem，幂等）：link + Embed、NodeMobile/gateway 兜底、
+//     清理旧式手动注入的 Swift 文件、patch AppDelegate.m
+const shellXcodeproj = findXcodeproj(args.sdk)[0]
+if (!shellXcodeproj) {
+  console.error('[error] 在 --sdk 下找不到壳工程 .xcodeproj')
+  process.exit(1)
+}
+const integrateRb = join(__dirname, 'ios-integrate.rb')
+console.log('[step] 自动集成壳工程 (ios-integrate.rb) ...')
+const integ = spawnSync('ruby', [integrateRb, '--project', shellXcodeproj, '--framework', 'XiaoxiongGateway'], { stdio: 'inherit' })
+if (integ.status !== 0) {
+  console.error('[error] 壳工程集成失败')
+  process.exit(1)
+}
 
-## C. 接入 Node 运行时（主 target，Embedded Binaries）
-4. 把工程目录下的 \`Frameworks/NodeMobile.xcframework\` 拖入工程，在 Signing & Capabilities → **Frameworks, Libraries, and Embedded Content** 里设为 **Embed & Sign**。
-   - 必须用 digidem 的 **full** flavour（含 full-icu，网关 \`\\p{...}\` 正则才不会崩）；lite 不行。
-   - 仅 arm64 真机 + arm64 模拟器切片，**无 x86_64 模拟器切片** → 本机 Intel Mac 模拟器跑不了，须真机（arm64 iPad）或 Apple Silicon Mac。
-
-## D. 签名与运行
-5. Signing & Capabilities：选你的 Team / 证书 / 描述文件（描述文件须含 iPad UDID）。
-6. Bundle Identifier 设为 \`com.xiaoxiong.assistant\`（须与 DCloud 开发者中心申请 AppKey 时填的一致）。
-7. AppKey 已写入 Info.plist 的 \`dcloud_appkey\`；若未提供 --appkey，先补上再跑。
-8. 选设备/Generic iOS Device → Archive 出 IPA，或 Xcode 直接 Run 到 iPad。
-9. （语音唤醒/采集）接入 app-product-wake 原生插件，否则唤不醒、采不到 PCM。
-`
-writeFileSync(join(args.sdk, 'GATEWAY_INTEGRATION.md'), integrationMd)
-console.log(`[ok] 已生成 Xcode 集成清单: ${join(args.sdk, 'GATEWAY_INTEGRATION.md')}`)
+// 旧手动清单已作废（集成已自动化），清掉历史遗留文件
+rmSync(join(args.sdk, 'GATEWAY_INTEGRATION.md'), { force: true })
 
 console.log('\n下一步：')
-console.log('  1. 打开上面的 GATEWAY_INTEGRATION.md，在 Xcode 里完成 A~D 手动步骤')
-console.log('  2. 设备联调：iPad 装好后，门户首屏会等 _documents/gateway.url 出现再连 ws://127.0.0.1:<port>/ws')
+console.log('  1. 壳工程真机构建与装机：native/ios/reprovision.sh（设备离线/待信任不报错）')
+console.log('  2. 设备联调：App 启动后网关就绪写 _documents/gateway.url，前端连 ws://127.0.0.1:8787/ws')

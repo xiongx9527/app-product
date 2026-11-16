@@ -73,6 +73,9 @@ xiaoxiong-app/native/android/app/libs/
 xiaoxiong-app/native/android/app/build/
 xiaoxiong-app/native/android/app/.cxx/
 
+# iOS 原生工厂（native/ios/app）的构建产物（package-ios-offline.mjs 的 xcodebuild -derivedDataPath）
+xiaoxiong-app/native/ios/app/.build/
+
 # 网关依赖锁文件
 apps/gateway/package-lock.json
 
