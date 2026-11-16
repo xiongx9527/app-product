@@ -2,6 +2,17 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { summarizeProvider, buildHealth, clearProbeCache } from './health'
 import type { GatewayConfig } from '../config'
 
+/** 外网探测目标：与 health.ts 的 EXTERNAL_HOSTS 保持一致（含百度/B站/歌曲宝/什么值得买/SomaFM）。 */
+function isExternalHost(url: string): boolean {
+  return [
+    'baidu.com',
+    'bilibili.com',
+    'gequbao.com',
+    'smzdm.com',
+    'somafm.com',
+  ].some((h) => url.includes(h))
+}
+
 describe('summarizeProvider', () => {
   it('stub：未接入真实引擎，configured=false', () => {
     const s = summarizeProvider('stub', false)
@@ -79,7 +90,7 @@ describe('buildHealth：ASR/TTS 功能性探测，根路径不再决定判定', 
         return { status: 200, body: JSON.stringify({ text: '' }) }
       if (url.endsWith('/v1/audio/speech') && method === 'POST')
         return { status: 200, body: 'x'.repeat(100) } // > 44 字节，视为非空音频
-      if (url.includes('baidu.com') || url.includes('bilibili.com')) return { status: 200 }
+      if (isExternalHost(url)) return { status: 200 }
       if (url.includes('/api/tags') || url.includes('/v1/models')) return { status: 200 } // LLM 兜底探测
       return { status: 404 }
     })
@@ -94,7 +105,7 @@ describe('buildHealth：ASR/TTS 功能性探测，根路径不再决定判定', 
       if (url.endsWith('/v1/audio/transcriptions') && method === 'POST') return { status: 502 }
       if (url.endsWith('/v1/audio/speech') && method === 'POST')
         return { status: 200, body: 'x'.repeat(100) }
-      if (url.includes('baidu.com') || url.includes('bilibili.com')) return { status: 200 }
+      if (isExternalHost(url)) return { status: 200 }
       if (url.includes('/api/tags') || url.includes('/v1/models')) return { status: 200 }
       return { status: 404 }
     })

@@ -471,10 +471,9 @@ export class WebSocketTransport implements AssistantTransport {
         defaultVolume: appConfig.playback.defaultVolume,
         autoLoop: appConfig.playback.autoLoop ?? false,
       },
-      // 推荐条数（好价商品 / 开源工具）：来自客户端设置页，网关据此作为工具默认条数（缺省 3、范围 1–10）。
+      // 推荐条数（好价商品）：来自客户端设置页，网关据此作为工具默认条数（缺省 3、范围 1–10）。
       recommend: {
         dealsCount: appConfig.recommend.dealsCount,
-        opensourceCount: appConfig.recommend.opensourceCount,
       },
       // 记忆设置：自动记忆（自动抽取）开关与合并（摘要）阈值/频率，来自客户端设置页。
       // 缺省关；手动指令不受此开关影响。阈值/频率缺省由网关运行配置决定。

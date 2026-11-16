@@ -5,7 +5,6 @@ import {
   DEFAULT_TIMEZONE,
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
-  languageLabel,
   normalizeTimezone,
 } from './constants'
 import {
@@ -23,7 +22,6 @@ export {
   DEFAULT_TIMEZONE,
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
-  languageLabel,
   normalizeTimezone,
 } from './constants'
 export {

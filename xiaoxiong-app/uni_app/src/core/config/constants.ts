@@ -84,10 +84,3 @@ export function detectLanguage(): AppLanguage {
   }
   return DEFAULT_LANGUAGE
 }
-
-export function languageLabel(value: string): string {
-  return (
-    LANGUAGE_OPTIONS.find((item) => item.value === value)?.label ??
-    normalizeLanguage(value)
-  )
-}

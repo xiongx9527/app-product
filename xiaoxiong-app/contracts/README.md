@@ -49,7 +49,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }, "recommend": { "dealsCount": 3, "opensourceCount": 3 }, "mcp": { "servers": [ { "name": "fs", "transport": "stdio", "command": "npx @modelcontextprotocol/server-filesystem", "args": ["/tmp"] } ] } }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }, "recommend": { "dealsCount": 3 }, "mcp": { "servers": [ { "name": "fs", "transport": "stdio", "command": "npx @modelcontextprotocol/server-filesystem", "args": ["/tmp"] } ] } }
 { "type": "audio.chunk", "seq": 1 }
 { "type": "session.cancel" }
 { "type": "session.skip_current" }

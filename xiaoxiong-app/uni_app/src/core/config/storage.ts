@@ -62,12 +62,11 @@ export function createDefaultPlayback(): PlaybackConfig {
 
 const DEFAULT_RECOMMEND: RecommendConfig = {
   dealsCount: 3,
-  opensourceCount: 3,
 }
 
-/** 默认推荐设置：好价商品 / 开源工具均推荐 3 条，范围 1–10。 */
+/** 默认推荐设置：好价商品推荐 3 条，范围 1–10。 */
 export function createDefaultRecommend(): RecommendConfig {
-  return { dealsCount: DEFAULT_RECOMMEND.dealsCount, opensourceCount: DEFAULT_RECOMMEND.opensourceCount }
+  return { dealsCount: DEFAULT_RECOMMEND.dealsCount }
 }
 
 export function createDefaultConfig(): AppConfig {
@@ -284,8 +283,8 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
 }
 
 /**
- * 归一化推荐设置：dealsCount / opensourceCount 只接受 1–10 的整数，缺省/非法回退 3。
- * 与网关工具上限一致（好价/开源工具收敛到 1–10），避免下发网关不认识的条数。
+ * 归一化推荐设置：dealsCount 只接受 1–10 的整数，缺省/非法回退 3。
+ * 与网关工具上限一致（好价工具收敛到 1–10），避免下发网关不认识的条数。
  */
 function normalizeRecommend(raw: unknown): RecommendConfig {
   const source = isRecord(raw) ? raw : {}
@@ -296,7 +295,6 @@ function normalizeRecommend(raw: unknown): RecommendConfig {
   }
   return {
     dealsCount: toCount(source.dealsCount, DEFAULT_RECOMMEND.dealsCount),
-    opensourceCount: toCount(source.opensourceCount, DEFAULT_RECOMMEND.opensourceCount),
   }
 }
 

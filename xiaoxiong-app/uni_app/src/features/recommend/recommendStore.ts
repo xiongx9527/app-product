@@ -4,8 +4,8 @@ import type { DetailItem, MediaDetail } from '@/core/transport/types'
 /**
  * 推荐结果持久化（客户端本地）。
  *
- * 助手每次推荐好价商品（media.detail.kind=deals）或开源工具（kind=project）时，
- * 把返回的条目按 link（缺省回退 title）去重后追加进对应列表并落盘，使「推荐设置」里的列表入口
+ * 助手每次推荐好价商品（media.detail.kind=deals）时，
+ * 把返回的条目按 link（缺省回退 title）去重后追加进列表并落盘，使「好价设置」里的列表入口
  * 能像「我的收藏」一样回看历史推荐。上限 100 条，超出丢弃最旧的。
  *
  * 与 favoritesStore 的区别：这里真正持久化（uni.setStorageSync），因为推荐结果来自联网抓取、
@@ -13,7 +13,6 @@ import type { DetailItem, MediaDetail } from '@/core/transport/types'
  */
 const STORAGE_KEYS = {
   deals: 'app-product.recommend.deals.v1',
-  opensource: 'app-product.recommend.opensource.v1',
 } as const
 
 /** 单条推荐记录：何时推荐 + 原始 DetailItem（统一字段契约，不感知业务）。 */
@@ -49,7 +48,6 @@ function save(key: string, list: RecommendEntry[]): void {
 }
 
 const deals = ref<RecommendEntry[]>(load(STORAGE_KEYS.deals))
-const opensource = ref<RecommendEntry[]>(load(STORAGE_KEYS.opensource))
 
 /** 去重主键：优先 link（商品/项目页地址），缺失时用 title。 */
 function keyOf(item: DetailItem): string {
@@ -83,7 +81,7 @@ function clearStore(store: typeof deals, key: string): void {
 }
 
 /**
- * 捕获一次推荐结果：按 media.detail.kind 分流到好价/开源列表。
+ * 捕获一次推荐结果：好价商品（media.detail.kind=deals）落进好价列表。
  * 仅在列表形态（selectedIndex 为空，非详情/收起）且有条目时收，避免选中单条时重复写。
  */
 export function captureRecommendation(detail: MediaDetail): void {
@@ -92,7 +90,6 @@ export function captureRecommendation(detail: MediaDetail): void {
   const items = detail.items
   if (!items || !items.length) return
   if (detail.kind === 'deals') addTo(deals, STORAGE_KEYS.deals, items)
-  else if (detail.kind === 'project') addTo(opensource, STORAGE_KEYS.opensource, items)
 }
 
 export function useDeals() {
@@ -100,13 +97,5 @@ export function useDeals() {
     entries: deals,
     remove: (item: DetailItem) => removeFrom(deals, STORAGE_KEYS.deals, item),
     clear: () => clearStore(deals, STORAGE_KEYS.deals),
-  }
-}
-
-export function useOpenSource() {
-  return {
-    entries: opensource,
-    remove: (item: DetailItem) => removeFrom(opensource, STORAGE_KEYS.opensource, item),
-    clear: () => clearStore(opensource, STORAGE_KEYS.opensource),
   }
 }

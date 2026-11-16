@@ -206,13 +206,10 @@ const zhCN: Messages = {
   'settings.playback.defaultVolume': '默认音量',
   'settings.playback.defaultVolumeHint': '新播放的默认音量（0–100%）',
 
-  'settings.recommend.title': '推荐设置',
-  'settings.recommend.dealsCount': '好价商品推荐数量',
+  'settings.recommend.title': '好价设置',
+  'settings.recommend.dealsCount': '推荐数量',
   'settings.recommend.dealsCountHint': '每次推荐好价商品展示几条，1–10，默认 3',
-  'settings.recommend.opensourceCount': '开源工具推荐数量',
-  'settings.recommend.opensourceCountHint': '每次推荐开源工具展示几个，1–10，默认 3',
   'settings.recommend.deals': '好价商品收藏',
-  'settings.recommend.opensource': '开源工具收藏',
 
   'settings.mcp.title': 'MCP设置',
   'settings.mcp.pageTitle': 'MCP服务',
@@ -260,13 +257,6 @@ const zhCN: Messages = {
   'deals.remove': '移除',
   'deals.addedAt': '推荐于 {time}',
   'deals.cleared': '已清空',
-
-  'opensource.title': '开源工具收藏',
-  'opensource.empty': '还没有推荐记录。让助手「推荐开源工具」后，推荐过的会保存在这里',
-  'opensource.open': '打开',
-  'opensource.remove': '移除',
-  'opensource.addedAt': '推荐于 {time}',
-  'opensource.cleared': '已清空',
 
   'card.thinking': '思考',
   'card.done': '已完成',

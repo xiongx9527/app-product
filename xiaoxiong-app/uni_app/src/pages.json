@@ -29,13 +29,6 @@
       }
     },
     {
-      "path": "pages/opensource/opensource",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "开源工具收藏"
-      }
-    },
-    {
       "path": "pages/longmemory/longmemory",
       "style": {
         "navigationStyle": "custom",

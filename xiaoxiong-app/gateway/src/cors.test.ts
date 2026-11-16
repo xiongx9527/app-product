@@ -105,7 +105,8 @@ it('GET /api/health（带 Origin）返回 200 + CORS 头（能力自检允许跨
   expect(res.headers.get('access-control-allow-origin')).toBe('*')
   const body = (await res.json()) as { ok: boolean }
   expect(body.ok).toBe(true)
-})
+  // 本用例测 CORS 头；/api/health 会真探外网多个源，网络波动时耗时不定，放宽超时避免全量并行下假失败。
+}, 15000)
 
 it('DELETE 清空全部（key 缺省）跨域也返回 CORS 头', async () => {
   // 再补一条，验证清空路径

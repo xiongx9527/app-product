@@ -80,7 +80,6 @@ describe('createAgentService 带 mcpServers', () => {
       undefined,
       undefined,
       undefined,
-      undefined,
       [{ name: 'ignored', transport: 'stdio', command: 'nope' }] // 非法项被跳过，不影响构造
     )
     expect(agent.mcpClients).toEqual([])

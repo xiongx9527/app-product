@@ -163,7 +163,8 @@ function createHarness(
         textIdx += 1
         return t
       }
-      return opts.finalizeText ?? '今天天气怎么样'
+      // 默认用中性闲聊句：不命中天气/时间/商品/音乐等任何直连命令，确保验证的是 agent 路径
+      return opts.finalizeText ?? '你好，随便聊聊'
     },
     reset() {},
   }
@@ -393,7 +394,7 @@ describe('语音会话：句末判定、排队与去噪', () => {
     // 三次定稿依次为：首句指令、思考期插话、播报期唤醒词。
     const h = createHarness({
       delayDelta: true,
-      finalizeTexts: ['今天天气怎么样', '明天天气怎么样', '小熊小熊'],
+      finalizeTexts: ['你好，聊聊第一个话题', '你好，聊聊第二个话题', '小熊小熊'],
     })
     await startDialog(h.service)
     await speakUtterance(h) // 首句 → agent(1)，delayDelta 制造「思考中」窗口
@@ -420,7 +421,7 @@ describe('语音会话：句末判定、排队与去噪', () => {
     // 队列未被清空：普通问句被 shift 出来继续处理；唤醒词没有被当成一句话交给 LLM
     expect(h.agentCalls()).toBe(2)
     const finals = h.events.filter((e) => e.type === 'asr.final')
-    expect(finals[finals.length - 1]).toMatchObject({ text: '明天天气怎么样', queueRemaining: 0 })
+    expect(finals[finals.length - 1]).toMatchObject({ text: '你好，聊聊第二个话题', queueRemaining: 0 })
     expect(finals.some((e) => e.type === 'asr.final' && e.text === '小熊小熊')).toBe(false)
     h.finishReply()
     await sleep(10)
@@ -429,7 +430,7 @@ describe('语音会话：句末判定、排队与去噪', () => {
   it('队列已满：asr.rejected 仍带回识别原文，供客户端识别唤醒词打断', async () => {
     const h = createHarness({
       delayDelta: true,
-      finalizeTexts: ['今天天气怎么样', '插话1', '插话2', '插话3', '小熊小熊'],
+      finalizeTexts: ['你好，随便聊聊', '插话1', '插话2', '插话3', '小熊小熊'],
     })
     await startDialog(h.service)
     await speakUtterance(h) // 首句 → agent(1)，思考中
@@ -723,40 +724,6 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
     expect(detail?.items.map((i) => i.title)).toEqual(['无线蓝牙耳机', '云南咖啡豆 500g'])
   })
 
-  it('开源项目卡片：工具层下发列表后，说「第二个」切到该条详情、不进 LLM', async () => {
-    const h = createHarness({ finalizeTexts: ['推荐点开源项目', '第二个'] })
-    await startDialog(h.service)
-    await speakUtterance(h)
-    await sleep(20)
-    h.playbackDone()
-    await sleep(20)
-
-    const items = [
-      { index: 1, title: 'UIEIP', link: 'https://x/uieip', fields: [{ label: '定位', value: '低代码平台' }] },
-      { index: 2, title: 'vmr', link: 'https://x/vmr', fields: [{ label: '定位', value: 'SDK 版本管理' }] },
-    ]
-    // 工具层通过 emit 通道下发列表卡片（网关在此旁听并记住列表）
-    h.emitMedia({ type: 'media.detail', kind: 'project', items })
-    await sleep(20)
-    expect(h.events.some((e) => e.type === 'media.detail' && e.kind === 'project')).toBe(true)
-
-    const agentCallsBefore = h.agentCalls()
-    await speakUtterance(h)
-    await sleep(30)
-
-    const selected = h.events.filter(
-      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
-        e.type === 'media.detail' && e.selectedIndex !== undefined,
-    )
-    expect(selected).toHaveLength(1)
-    expect(selected[0].kind).toBe('project')
-    expect(selected[0].selectedIndex).toBe(2)
-    expect(selected[0].items.map((i) => i.title)).toEqual(['UIEIP', 'vmr'])
-    // 只口播一句确认，不复述简介；这句不进 LLM
-    expect(texts(h)).toContain('第 2 个开源项目')
-    expect(h.agentCalls()).toBe(agentCallsBefore)
-  })
-
   it('说「第三件」（商品量词）也能选中第 3 件，且不会落到点歌/大模型', async () => {
     const three: Deal[] = [
       ...sampleDeals,
@@ -840,42 +807,6 @@ describe('音乐控制直连命令：我说卡片与口播文案', () => {
         e.type === 'media.detail' && e.selectedIndex !== undefined,
     )
     expect(selected).toHaveLength(1)
-    expect(selected[0].selectedIndex).toBe(2)
-  })
-
-  it('开源项目同样：含糊话后列表仍在，再说「第二个」能选中', async () => {
-    const h = createHarness({ finalizeTexts: ['推荐点开源项目', '那个怎么样', '第二个'] })
-    await startDialog(h.service)
-    await speakUtterance(h)
-    await sleep(20)
-    h.playbackDone()
-    await sleep(20)
-
-    h.emitMedia({
-      type: 'media.detail',
-      kind: 'project',
-      items: [
-        { index: 1, title: 'UIEIP', fields: [{ label: '定位', value: '低代码平台' }] },
-        { index: 2, title: 'vmr', fields: [{ label: '定位', value: 'SDK 版本管理' }] },
-      ],
-    })
-    await sleep(20)
-
-    h.playbackDone()
-    await sleep(20)
-    await speakUtterance(h)
-    await sleep(30)
-    h.playbackDone()
-    await sleep(20)
-    await speakUtterance(h)
-    await sleep(30)
-
-    const selected = h.events.filter(
-      (e): e is Extract<ServerEvent, { type: 'media.detail' }> =>
-        e.type === 'media.detail' && e.selectedIndex !== undefined,
-    )
-    expect(selected).toHaveLength(1)
-    expect(selected[0].kind).toBe('project')
     expect(selected[0].selectedIndex).toBe(2)
   })
 
@@ -2637,33 +2568,6 @@ describe('英文会话：选号重问文案本地化', () => {
     expect(h.agentCalls()).toBe(before)
   })
 
-  it('开源项目：en-US 说越界编号 → 英文重问', async () => {
-    const h = createHarness({ finalizeTexts: ['推荐点开源项目', '9'] })
-    await startDialog(h.service, 'en-US')
-    await speakUtterance(h)
-    await sleep(20)
-    h.playbackDone()
-    await sleep(20)
-
-    h.emitMedia({
-      type: 'media.detail',
-      kind: 'project',
-      items: [
-        { index: 1, title: 'UIEIP', fields: [{ label: 'Tagline', value: 'Low-code' }] },
-        { index: 2, title: 'vmr', fields: [{ label: 'Tagline', value: 'SDK manager' }] },
-      ],
-    })
-    await sleep(20)
-    h.playbackDone()
-    await sleep(20)
-    const before = h.agentCalls()
-    await speakUtterance(h)
-    await sleep(30)
-
-    expect(spoken(h)).toContain("Didn't catch which project")
-    expect(spoken(h)).not.toContain('没听清是第几个')
-    expect(h.agentCalls()).toBe(before)
-  })
 })
 
 describe('语音会话：自动记忆（抽取 + 摘要）', () => {
@@ -2692,7 +2596,7 @@ describe('语音会话：自动记忆（抽取 + 摘要）', () => {
     expect(h.extractCalls()).toBeGreaterThan(0)
     // 抽取上下文至少包含本轮用户原话
     const last = h.lastExtractHistory().at(-1) ?? []
-    expect(last.some((t) => t.includes('今天天气'))).toBe(true)
+    expect(last.some((t) => t.includes('随便聊聊'))).toBe(true)
     expect(h.savedMemories()).toContainEqual({ key: '作息', value: '七点起床' })
   })
 

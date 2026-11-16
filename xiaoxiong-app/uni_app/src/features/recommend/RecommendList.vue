@@ -7,7 +7,7 @@ import { useThemeStyle } from '@/core/composables/useTheme'
 import { readScreenInfo } from '@/core/adaptation/screen'
 
 /**
- * 推荐列表通用视图（好价商品 / 开源工具共用）：分页展示持久化的推荐条目。
+ * 好价商品推荐列表视图：分页展示持久化的推荐条目。
  * 只依赖统一 DetailItem 契约，不感知业务字段；打开/移除动作由父页面注入，
  * 因为「打开」在不同端行为不同（这里统一走复制链接），父页面只提供回调。
  */
@@ -25,11 +25,11 @@ const props = defineProps<{
 
 const showHead = props.showHead !== false
 
-// 根元素响应式绑定主题变量：deals / opensource 两个列表页共用本组件，主题自动生效
+// 根元素响应式绑定主题变量：好价列表页使用本组件，主题自动生效
 const { themeStyle, dataTheme } = useThemeStyle()
 
 // 顶部留白内联注入（与 SubPageNav 同一来源 statusBarHeight + 12），不依赖 scoped CSS：
-// 这两页已开 navigationStyle: custom，状态栏让位必须由本组件自己处理，否则标题会顶进状态栏。
+// 该页已开 navigationStyle: custom，状态栏让位必须由本组件自己处理，否则标题会顶进状态栏。
 const pageStyle = { paddingTop: `${readScreenInfo().statusBarHeight + 12}px` }
 
 /** 返回：列表页均由设置页 navigateTo 进入，直接 navigateBack 即可；异常时兜底回首页。 */

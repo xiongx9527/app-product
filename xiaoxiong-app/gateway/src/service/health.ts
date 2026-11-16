@@ -302,11 +302,17 @@ async function buildStatus(
 }
 
 /**
- * 外网连通性探测：并行探测几个点歌功能实际依赖的外网源（百度 / B 站），
- * 任一可达即视为外网正常。全部超时/失败才报不可达——用于提前暴露
- * 「点歌、天气等需联网功能会失败」这一类问题，而非等用户点了才发现。
+ * 外网连通性探测：并行探测功能实际依赖的外网源——搜索（百度）、点歌（B 站 / 歌曲宝）、
+ * 好价商品（什么值得买）、网络电台（SomaFM）。任一可达即视为外网正常；全部超时/失败才报
+ * 不可达，用于提前暴露「点歌 / 好价 / 电台等需联网功能会失败」，而非等用户点了才发现。
  */
-const EXTERNAL_HOSTS = ['https://www.baidu.com', 'https://www.bilibili.com']
+const EXTERNAL_HOSTS = [
+  'https://www.baidu.com',
+  'https://www.bilibili.com',
+  'https://www.gequbao.com',
+  'https://www.smzdm.com',
+  'https://somafm.com',
+]
 
 async function probeExternal(): Promise<NetworkStatus> {
   const results = await Promise.allSettled(
@@ -319,7 +325,7 @@ async function probeExternal(): Promise<NetworkStatus> {
   }
   return {
     reachable: false,
-    message: '外网不可达（点歌 / 天气等需联网的功能将失败）',
+    message: '外网不可达（点歌 / 好价 / 电台等需联网的功能将失败）',
   }
 }
 

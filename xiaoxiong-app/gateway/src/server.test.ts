@@ -6,7 +6,8 @@ import type { GatewayConfig } from './config'
 import { generateRsaKeyPair, encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
 
 const base: GatewayConfig = {
-  port: 8799,
+  // 用高位端口，避免与真机联调常驻的网关进程（默认 8799）抢端口导致 EADDRINUSE
+  port: 18799,
   apiBase: '/api',
   paramEncrypt: false,
   rsaBackendPrivateKey: '',

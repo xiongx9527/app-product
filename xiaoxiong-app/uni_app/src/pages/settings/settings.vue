@@ -153,8 +153,8 @@ function setConsolidateEvery(e: any): void {
 }
 
 /** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
- * MCP 设置默认展开，让「打开设置即可见、可添加」；样式与其余分区一致（标题右侧带收起/展开箭头）。 */
-type SettingsGroup = 'general' | 'memory' | 'voice' | 'playback' | 'recommend' | 'mcp'
+ * 各分区一律默认折叠，样式一致（标题右侧带收起/展开箭头）。 */
+type SettingsGroup = 'general' | 'voice' | 'playback' | 'recommend' | 'memory' | 'mcp'
 const expanded = ref<SettingsGroup | null>(null)
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
@@ -172,18 +172,10 @@ function clampCount(v: number): number {
 function setDealsCount(e: any): void {
   appConfig.recommend.dealsCount = clampCount(e.detail.value)
 }
-function setOpensourceCount(e: any): void {
-  appConfig.recommend.opensourceCount = clampCount(e.detail.value)
-}
 
 /** 进入好价商品列表页：查看助手推荐过的商品。 */
 function openDeals(): void {
   uni.navigateTo({ url: '/pages/deals/deals' })
-}
-
-/** 进入开源工具列表页：查看助手推荐过的开源工具/软件。 */
-function openOpenSource(): void {
-  uni.navigateTo({ url: '/pages/opensource/opensource' })
 }
 
 /** 进入 MCP 服务器配置页：增删一组 MCP 服务器（stdio / sse / http）。 */
@@ -504,95 +496,6 @@ watch(
         </view>
       </template>
     </view>
-
-    <!-- MCP 服务器：用户自行填写，网关据此连上并把其工具注册进助手工具箱。
-         与其它分区一样走折叠逻辑（标题右侧带收起/展开箭头），默认展开，打开设置即可见、一点直达配置页。 -->
-    <view class="group">
-      <view class="group-head" @tap="toggleGroup('mcp')">
-        <text class="group-title">{{ t('settings.mcp.title') }}</text>
-        <view class="group-chevron" :class="{ open: isOpen('mcp') }" />
-      </view>
-      <template v-if="isOpen('mcp')">
-        <!-- 总开关：关闭则整体停用 MCP，不向网关下发任何服务器 -->
-        <view class="setting-row">
-          <view class="setting-text">
-            <text class="row-label">{{ t('settings.mcp.enabled') }}</text>
-            <text class="hint">{{ t('settings.mcp.enabledHint') }}</text>
-          </view>
-          <switch
-            :checked="appConfig.mcp.enabled"
-            color="#6c8cff"
-            @change="(e: any) => (appConfig.mcp.enabled = e.detail.value)"
-          />
-        </view>
-        <view class="entry" @tap="openMcpServers">
-          <view class="row-text">
-            <text class="row-label">{{ t('settings.mcp.open') }}</text>
-            <text class="hint">{{ t('settings.mcp.openHint') }}</text>
-          </view>
-          <text class="entry-arrow">›</text>
-        </view>
-      </template>
-    </view>
-
-    <!-- 记忆设置：自动记忆开关 + 长期记忆入口（独立分页列表页），置于通用设置之后、便于找到 -->
-    <view class="group">
-      <view class="group-head" @tap="toggleGroup('memory')">
-        <text class="group-title">{{ t('settings.memory.title') }}</text>
-        <view class="group-chevron" :class="{ open: isOpen('memory') }" />
-      </view>
-      <template v-if="isOpen('memory')">
-      <text class="hint">{{ t('settings.memory.sub') }}</text>
-
-      <!-- 自动记忆开关：开启后对话里自动抽取并沉淀长期记忆；手动指令始终生效。 -->
-      <view class="setting-row">
-        <view class="row-text">
-          <text class="row-label">{{ t('settings.memory.autoMemory') }}</text>
-          <text class="hint">{{ t('settings.memory.autoMemoryHint') }}</text>
-        </view>
-        <switch
-          class="setting-switch"
-          :checked="appConfig.memory.autoMemory"
-          color="#6c8cff"
-          @change="(e: any) => (appConfig.memory.autoMemory = e.detail.value)"
-        />
-      </view>
-
-      <!-- 合并（摘要）阈值：记忆条数达到此值才周期性合并去重；0 表示每轮都合并 -->
-      <view class="setting-row column">
-        <text class="row-label">{{ t('settings.memory.consolidateThreshold') }}</text>
-        <input
-          class="input"
-          type="number"
-          :value="appConfig.memory.consolidateThreshold"
-          @change="setConsolidateThreshold"
-        />
-        <text class="hint">{{ t('settings.memory.consolidateThresholdHint') }}</text>
-      </view>
-
-      <!-- 合并（摘要）频率：每这么多次抽取触发一次合并 -->
-      <view class="setting-row column">
-        <text class="row-label">{{ t('settings.memory.consolidateEvery') }}</text>
-        <input
-          class="input"
-          type="number"
-          :value="appConfig.memory.consolidateEvery"
-          @change="setConsolidateEvery"
-        />
-        <text class="hint">{{ t('settings.memory.consolidateEveryHint') }}</text>
-      </view>
-
-      <!-- 长期记忆入口：跳转到分页列表页，可检索 / 单条删除 / 清空。 -->
-      <view class="entry" @tap="openLongMemory">
-        <view class="row-text">
-          <text class="row-label">{{ t('settings.memory.openLong') }}</text>
-          <text class="hint">{{ t('settings.memory.openLongHint') }}</text>
-        </view>
-        <text class="entry-arrow">›</text>
-      </view>
-      </template>
-    </view>
-
     <!-- 语音服务（ASR / LLM / TTS 共用一份配置） -->
     <view class="group">
       <view class="group-head" @tap="toggleGroup('voice')">
@@ -720,7 +623,6 @@ watch(
       </view>
       </template>
     </view>
-
     <!-- 播放设置（音乐播放源等），默认折叠 -->
     <view class="group">
       <view class="group-head" @tap="toggleGroup('playback')">
@@ -843,8 +745,7 @@ watch(
         <button class="reset" @tap="onResetPlayback">{{ t('settings.reset') }}</button>
       </template>
     </view>
-
-    <!-- 推荐设置（好价商品 / 开源工具推荐条数），默认折叠，位于播放设置之后 -->
+    <!-- 好价设置（好价商品推荐条数），默认折叠，位于播放设置之后 -->
     <view class="group">
       <view class="group-head" @tap="toggleGroup('recommend')">
         <text class="group-title">{{ t('settings.recommend.title') }}</text>
@@ -863,32 +764,99 @@ watch(
           <text class="hint">{{ t('settings.recommend.dealsCountHint') }}</text>
         </view>
 
-        <!-- 开源工具推荐条数：1–10，默认 3；同上 -->
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.recommend.opensourceCount') }}</text>
-          <input
-            class="input"
-            type="number"
-            :value="appConfig.recommend.opensourceCount"
-            @change="setOpensourceCount"
-          />
-          <text class="hint">{{ t('settings.recommend.opensourceCountHint') }}</text>
-        </view>
-
         <!-- 好价商品列表入口：查看助手推荐过的商品（持久化，仿收藏） -->
         <view class="entry" @tap="openDeals">
           <text class="entry-label">{{ t('settings.recommend.deals') }}</text>
           <text class="entry-arrow">›</text>
         </view>
+      </template>
+    </view>
+    <!-- 记忆设置：自动记忆开关 + 长期记忆入口（独立分页列表页） -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('memory')">
+        <text class="group-title">{{ t('settings.memory.title') }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('memory') }" />
+      </view>
+      <template v-if="isOpen('memory')">
+      <text class="hint">{{ t('settings.memory.sub') }}</text>
 
-        <!-- 开源工具列表入口：查看助手推荐过的开源工具/软件 -->
-        <view class="entry" @tap="openOpenSource">
-          <text class="entry-label">{{ t('settings.recommend.opensource') }}</text>
+      <!-- 自动记忆开关：开启后对话里自动抽取并沉淀长期记忆；手动指令始终生效。 -->
+      <view class="setting-row">
+        <view class="row-text">
+          <text class="row-label">{{ t('settings.memory.autoMemory') }}</text>
+          <text class="hint">{{ t('settings.memory.autoMemoryHint') }}</text>
+        </view>
+        <switch
+          class="setting-switch"
+          :checked="appConfig.memory.autoMemory"
+          color="#6c8cff"
+          @change="(e: any) => (appConfig.memory.autoMemory = e.detail.value)"
+        />
+      </view>
+
+      <!-- 合并（摘要）阈值：记忆条数达到此值才周期性合并去重；0 表示每轮都合并 -->
+      <view class="setting-row column">
+        <text class="row-label">{{ t('settings.memory.consolidateThreshold') }}</text>
+        <input
+          class="input"
+          type="number"
+          :value="appConfig.memory.consolidateThreshold"
+          @change="setConsolidateThreshold"
+        />
+        <text class="hint">{{ t('settings.memory.consolidateThresholdHint') }}</text>
+      </view>
+
+      <!-- 合并（摘要）频率：每这么多次抽取触发一次合并 -->
+      <view class="setting-row column">
+        <text class="row-label">{{ t('settings.memory.consolidateEvery') }}</text>
+        <input
+          class="input"
+          type="number"
+          :value="appConfig.memory.consolidateEvery"
+          @change="setConsolidateEvery"
+        />
+        <text class="hint">{{ t('settings.memory.consolidateEveryHint') }}</text>
+      </view>
+
+      <!-- 长期记忆入口：跳转到分页列表页，可检索 / 单条删除 / 清空。 -->
+      <view class="entry" @tap="openLongMemory">
+        <view class="row-text">
+          <text class="row-label">{{ t('settings.memory.openLong') }}</text>
+          <text class="hint">{{ t('settings.memory.openLongHint') }}</text>
+        </view>
+        <text class="entry-arrow">›</text>
+      </view>
+      </template>
+    </view>
+    <!-- MCP 服务器：用户自行填写，网关据此连上并把其工具注册进助手工具箱。
+         与其它分区一样走折叠逻辑（标题右侧带收起/展开箭头），置于末尾。 -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('mcp')">
+        <text class="group-title">{{ t('settings.mcp.title') }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('mcp') }" />
+      </view>
+      <template v-if="isOpen('mcp')">
+        <!-- 总开关：关闭则整体停用 MCP，不向网关下发任何服务器 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.mcp.enabled') }}</text>
+            <text class="hint">{{ t('settings.mcp.enabledHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.mcp.enabled"
+            color="#6c8cff"
+            @change="(e: any) => (appConfig.mcp.enabled = e.detail.value)"
+          />
+        </view>
+        <view class="entry" @tap="openMcpServers">
+          <view class="row-text">
+            <text class="row-label">{{ t('settings.mcp.open') }}</text>
+            <text class="hint">{{ t('settings.mcp.openHint') }}</text>
+          </view>
           <text class="entry-arrow">›</text>
         </view>
       </template>
     </view>
-
     <!-- 记忆设置 -->
     <button class="save" :disabled="saving" @tap="onSave">{{ t('settings.save') }}</button>
     <!-- 仅失败时行内红字报错：连不上网关要如实告知，不谎报成功；成功不显示文字 -->

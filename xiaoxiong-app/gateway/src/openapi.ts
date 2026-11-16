@@ -211,7 +211,7 @@ export const openApiSpec = {
       NetworkStatus: {
         type: 'object',
         properties: {
-          reachable: { type: 'boolean', description: '能否访问外网（百度 / B 站任一可达即视为可达）' },
+          reachable: { type: 'boolean', description: '能否访问外网（百度 / B 站 / 歌曲宝 / 什么值得买 / SomaFM 任一可达即视为可达）' },
           message: { type: 'string', description: '人类可读状态' },
           host: { type: 'string', description: '成功连通的外网主机 host:port（不可达时无）' },
         },

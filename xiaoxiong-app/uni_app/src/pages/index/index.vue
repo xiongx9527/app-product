@@ -79,8 +79,8 @@ const {
 } = useAssistant()
 
 /**
- * 助手推荐结果（好价商品 / 开源工具）按 media.detail.kind 自动收进本地列表，
- * 让「推荐设置」里的列表入口能回看历史推荐。只在列表形态（未选中单条）时收，避免重复写。
+ * 助手推荐的好价商品（media.detail.kind=deals）自动收进本地列表，
+ * 让「好价设置」里的列表入口能回看历史推荐。只在列表形态（未选中单条）时收，避免重复写。
  */
 watch(detailCard, (d) => {
   if (d) captureRecommendation(d)
@@ -147,7 +147,7 @@ const lyricFontSize = computed(() => {
 const screen = ref<ScreenInfo>(readScreenInfo())
 
 // 内边距全部由 :style 内联注入，不依赖 scoped CSS 规则：
-// uni-app 视图层在子页（如好价商品推荐/开源工具推荐共用的 RecommendList）↔ 主页往返时，
+// uni-app 视图层在子页（如好价商品推荐用的 RecommendList）↔ 主页往返时，
 // 偶尔会丢失主页 scoped 的 .page 规则，导致 paddingTop 归零、齿轮顶到状态栏（回归 bug）。
 // 内联样式不受该问题影响，故 padding 全走这里。
 // 竖屏顶部让出状态栏（statusBarHeight）+ 6px；横屏状态栏转到侧边、顶部无障碍，取适中 12px：

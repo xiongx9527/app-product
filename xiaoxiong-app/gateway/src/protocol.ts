@@ -106,10 +106,10 @@ export type ClientMessage =
        */
       playback?: { source?: string; autoSubtitle?: boolean; defaultLoop?: number; defaultVolume?: number; autoLoop?: boolean }
       /**
-       * 推荐设置：好价商品 / 开源工具每次推荐的条数，来自客户端设置页，缺省各 3。
-       * 网关据此作为好价/开源工具未显式指定条数时的默认（工具上限 1–10）。
+       * 推荐设置：好价商品每次推荐的条数，来自客户端设置页，缺省 3。
+       * 网关据此作为好价工具未显式指定条数时的默认（工具上限 1–10）。
        */
-      recommend?: { dealsCount?: number; opensourceCount?: number }
+      recommend?: { dealsCount?: number }
       /**
        * 记忆设置：来自客户端设置页。当前仅自动记忆（自动抽取）开关与合并（摘要）的相关参数。
        * 手动指令（记录下 / 帮我记 等）不受 auto 开关影响，始终生效。
