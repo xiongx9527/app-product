@@ -338,44 +338,25 @@ async function probeExternal(): Promise<NetworkStatus> {
  * 连通探测（只 GET 根路径）会漏掉「地址通、但调模型被拒」这类故障——典型如欠费 / 额度不足 /
  * 模型名不存在 / 密钥无权限：端点照样可达，真正对话才炸。deep 检测（一键检测按钮）走这条，
  * 把上游真实报错（如「余额不足」）带回到界面，而不是误报「正常」。
- * 未选模型（model 为空，含内置源「使用来源默认」）时：
- *   - 内置（builtin）来源模型可留空，由本地 AI 服务默认模型兜底，无论地址可达与否都不报
- *     「未选择模型」——对内置源而言「没选模型」不是故障，地址不可达才如实说地址不可达；
- *   - 其它来源（如百炼）模型必填，仍如实提示未选模型、不可假绿。
+ * 未选模型（model 为空，含「使用来源默认」）时：模型不是必填——运行时会回退网关默认模型，
+ * 「没选模型」不是故障，不报「未选择模型」；按地址可达性给状态，文案与其它能力统一。
  */
 async function probeLlmDeep(
   baseUrl: string,
   apiKey: string | undefined,
   model: string,
-  provider?: string,
   timeoutMs = 8000,
 ): Promise<ProviderStatus> {
   const endpoint = hostOf(baseUrl)
   if (!model) {
-    // 没显式选模型（含内置源「使用来源默认」）：没法真正调用对话接口，按地址可达性给状态。
+    // 没显式选模型：没法真正调用对话接口，按地址可达性给状态（模型非必填，不算故障）。
     const hostUp = await probe(baseUrl, apiKey)
-    // 内置（builtin）来源：模型可留空（本地 AI 服务默认模型兜底），「没选模型」不是故障，
-    // 永远不报「未选择模型」；地址不可达就如实说地址不可达，与是否选了模型无关。
-    if (provider === 'builtin') {
-      return {
-        provider: 'llm',
-        configured: true,
-        reachable: hostUp,
-        endpoint,
-        message: hostUp
-          ? `已接入（${endpoint}），使用默认模型`
-          : `内置语音服务地址不可达（${endpoint}），请检查来源地址`,
-      }
-    }
-    // 其它来源（如百炼）模型必填，如实提示未选模型、不可假绿。
     return {
       provider: 'llm',
       configured: true,
-      reachable: false,
+      reachable: hostUp,
       endpoint,
-      message: hostUp
-        ? `未选择模型，无法验证对话能力（${endpoint}）`
-        : `未选择模型，且地址不可达（${endpoint}）`,
+      message: hostUp ? `已接入（${endpoint}）` : `已配置但地址不可达（${endpoint}）`,
     }
   }
   try {
@@ -438,8 +419,8 @@ export async function buildHealth(
   // LLM：deep（一键检测）走真正调用模型，能暴露欠费 / 模型名 / 密钥这类「连通但不可用」故障；
   // 其余（30s 轮询）只做连通探测，避免每次轮询都真打模型烧额度。
   // 一键检测（deep）对 LLM 走真实对话调用；内置来源若没选模型（沿用来源默认），
-  // 解析出 9529 实际可服务的模型来验证可用性，避免假红「未选择模型，无法验证对话能力」
-  // —— 内置模型由后端兜底，未选不等于不可用。
+  // 解析出 9529 实际可服务的模型来验证真实可用性（能解析出就真调，验证更准）；
+  // 解析不出则 probeLlmDeep 按地址可达性给状态——模型非必填，不算故障。
   let llmDeepModel = resolved.llm.model
   if (deep && !llmDeepModel && resolved.llm.provider === 'builtin') {
     try {
@@ -447,11 +428,11 @@ export async function buildHealth(
       const models = await listLlmModels('builtin', config, resolved.llm.apiKey, root)
       if (models.length) llmDeepModel = models[0]
     } catch {
-      // 解析失败则维持空，probeLlmDeep 仍会给出「无法验证」提示
+      // 解析失败则维持空，probeLlmDeep 按地址可达性给状态
     }
   }
   const llm = deep
-    ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, llmDeepModel, resolved.llm.provider)
+    ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, llmDeepModel)
     : await buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey, deep)
   return { asr, llm, tts, network }
 }

@@ -1,0 +1,72 @@
+# comet-execution: managed-run
+schema: comet.native.v4
+name: fix-speech-noise-interrupt-playback
+language: zh-CN
+phase: build
+status: active
+state_version: 3
+brief: brief.md
+document_constraints_version: 3
+spec_changes: []
+workspace:
+  isolation: current
+  change_branch: main
+  target_branch: main
+  finish: null
+loop:
+  stage: building
+  goal_cycle: 1
+  iteration: 1
+  attempt: 0
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: submit-builder-candidate
+acceptance:
+  - id: A1
+    source: brief.md
+    text: 中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift
+      的歌」这类中英混排与英文正常短指令不受影响。
+    result: pending
+    reason: null
+  - id: A2
+    source: brief.md
+    text: 播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。
+    result: pending
+    reason: null
+  - id: A3
+    source: brief.md
+    text: 界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。
+    result: pending
+    reason: null
+  - id: A4
+    source: brief.md
+    text: 点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。
+    result: pending
+    reason: null
+  - id: A5
+    source: brief.md
+    text: 竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。
+    result: pending
+    reason: null
+builder_handoff: null
+blockers: []
+verification: null
+history: []
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pending
+verification_report: null
+archived: false
+created_at: 2026-11-16T03:42:58.513Z
+run_checkpoint: {"schema":"comet.workflow-run-checkpoint.v1","hash":"dc14ca0dcadb61eb4aa50747fc46af62ba39d9bf5eed10a642d5c369fc449c5e","run":{"protocolVersion":1,"schemaVersion":1,"runId":"fix-speech-noise-interrupt-playback","revision":1,"workflow":{"id":"comet-native","version":"4","hash":"a4e64ffbd76a550331a69bca1a149bcae73b6fabe8117152be4bfc1abf28d8eb"},"definitionHashes":{"[\"comet-native\",\"4\"]":"a4e64ffbd76a550331a69bca1a149bcae73b6fabe8117152be4bfc1abf28d8eb"},"initialStateHash":"3b1d7d6b613a702834bba98a0fdedbed366f4ba06463db3d88575745960462f7","input":{"artifactRootRef":"docs","name":"fix-speech-noise-interrupt-playback","task":"现在很容易识别 The、yeah、she 等英文词。现在打断、插话感觉非常困难。有时间有排队中的数据，它不处理了。提示播放失败，可换个风格或者检查网络。播放器模式样式乱了，你可以截图看下。"},"state":{"acceptance":[{"id":"A1","reason":null,"result":"pending","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","reason":null,"result":"pending","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","reason":null,"result":"pending","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","reason":null,"result":"pending","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","reason":null,"result":"pending","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"archived":false,"blockers":[],"brief":"brief.md","builder_handoff":null,"created_at":"2026-11-16T03:42:58.513Z","document_constraints_version":3,"history":[],"history_overflow":{"dropped_entries":0,"first_dropped_at":null,"last_dropped_at":null,"outcome_counts":{"blocked":0,"execution-error":0,"fail":0,"pass":0,"recovery":0}},"language":"zh-CN","loop":{"attempt":0,"execution_failure_count":0,"failed_iteration_count":0,"goal_cycle":1,"iteration":1,"next_action":"submit-builder-candidate","no_progress_count":0,"previous_unresolved_ids":[],"retry_epoch":0,"stage":"building"},"name":"fix-speech-noise-interrupt-playback","phase":"build","schema":"comet.native.v4","spec_changes":[],"state_version":3,"status":"active","verification":null,"verification_report":null,"verification_result":"pending","workspace":{"change_branch":"main","finish":null,"isolation":"current","target_branch":"main"}},"status":"running","sequence":3,"actions":[{"attempt":1,"claim":{"executorId":"comet-native-cli","token":"portable-44182af4fa91988277c3318d1d25bed11eb52fb879a88090404aa54db15bf645"},"executionOrigin":{"workflow":{"hash":"a4e64ffbd76a550331a69bca1a149bcae73b6fabe8117152be4bfc1abf28d8eb","id":"comet-native","version":"4"}},"id":"fix-speech-noise-interrupt-playback:1","input":{"input":{"artifactRootRef":"docs","name":"fix-speech-noise-interrupt-playback","task":"现在很容易识别 The、yeah、she 等英文词。现在打断、插话感觉非常困难。有时间有排队中的数据，它不处理了。提示播放失败，可换个风格或者检查网络。播放器模式样式乱了，你可以截图看下。"},"outputs":{}},"inputHash":"42da8b45b76faf8079e76ac3627f16181340fd2ce2120aa6c22857a1c9374c00","outcome":{"actionId":"fix-speech-noise-interrupt-playback:1","attempt":1,"claimToken":"portable-44182af4fa91988277c3318d1d25bed11eb52fb879a88090404aa54db15bf645","inputHash":"42da8b45b76faf8079e76ac3627f16181340fd2ce2120aa6c22857a1c9374c00","outcomeId":"8dfdfcd4-b251-4ecb-bdfe-a463ea9b94f1","output":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]},"status":"succeeded"},"protocolVersion":1,"receipts":[{"hash":"8afda84be439a5f50949b9a8b7b91be9abeeeca8853e5c4078155da734e25750","outcomeId":"8dfdfcd4-b251-4ecb-bdfe-a463ea9b94f1"}],"reconciliations":[],"ref":"native-shape-prepare","requiredCapabilities":[],"retry":"manual","runId":"fix-speech-noise-interrupt-playback","status":"succeeded","stepId":"shape.prepare","type":"call_tool"},{"attempt":1,"claim":{"executorId":"native-host","sessionId":"main-fix-speech-noise-20261116","token":"portable-a913716381cbccf9a79d2430e0f35f03600a394c519c155f75b3a4d31cd3d8c1"},"executionOrigin":{"workflow":{"hash":"a4e64ffbd76a550331a69bca1a149bcae73b6fabe8117152be4bfc1abf28d8eb","id":"comet-native","version":"4"}},"id":"fix-speech-noise-interrupt-playback:3","input":{"input":{"artifactRootRef":"docs","name":"fix-speech-noise-interrupt-playback","task":"现在很容易识别 The、yeah、she 等英文词。现在打断、插话感觉非常困难。有时间有排队中的数据，它不处理了。提示播放失败，可换个风格或者检查网络。播放器模式样式乱了，你可以截图看下。"},"outputs":{"shape.confirm":{"choice":"approved","proposal":{"input":{"artifactRootRef":"docs","name":"fix-speech-noise-interrupt-playback","task":"现在很容易识别 The、yeah、she 等英文词。现在打断、插话感觉非常困难。有时间有排队中的数据，它不处理了。提示播放失败，可换个风格或者检查网络。播放器模式样式乱了，你可以截图看下。"},"outputs":{"shape.prepare":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]}}}},"shape.prepare":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]}}},"inputHash":"12024ee35218901a1902e9f5234bcd8651ffe13ee3aed966470be35fbf895741","protocolVersion":1,"reason":"Portable recovery requires reconciliation of external execution","receipts":[],"reconciliations":[],"ref":"native-builder","requiredCapabilities":[],"retry":"manual","runId":"fix-speech-noise-interrupt-playback","status":"unknown","stepId":"build.builder","type":"handoff"}],"actionContexts":{"fix-speech-noise-interrupt-playback:1":{"results":{},"sequence":1},"fix-speech-noise-interrupt-playback:3":{"results":{"shape.confirm":{"sequence":2,"value":{"choice":"approved","proposal":{"input":{"artifactRootRef":"docs","name":"fix-speech-noise-interrupt-playback","task":"现在很容易识别 The、yeah、she 等英文词。现在打断、插话感觉非常困难。有时间有排队中的数据，它不处理了。提示播放失败，可换个风格或者检查网络。播放器模式样式乱了，你可以截图看下。"},"outputs":{"shape.prepare":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]}}}}},"shape.prepare":{"sequence":1,"value":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]}}},"sequence":3}},"waits":[{"id":"fix-speech-noise-interrupt-playback:2","stepId":"shape.confirm","sequence":2,"status":"resolved","proposal":{"input":{"artifactRootRef":"docs","name":"fix-speech-noise-interrupt-playback","task":"现在很容易识别 The、yeah、she 等英文词。现在打断、插话感觉非常困难。有时间有排队中的数据，它不处理了。提示播放失败，可换个风格或者检查网络。播放器模式样式乱了，你可以截图看下。"},"outputs":{"shape.prepare":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]}}},"proposalHash":"653fa236d842ede3eea60a8fc97c8be9b41e3ef198a60c608d5e6c691a0cee58","choices":["approved","rejected"],"results":{"shape.prepare":{"sequence":1,"value":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]}}},"decision":{"id":"9994254cbfa76042388692d1410aae49f44cfdf3440a4f6e767266147a138d48","choice":"approved","proposalHash":"653fa236d842ede3eea60a8fc97c8be9b41e3ef198a60c608d5e6c691a0cee58"}}],"ready":[],"joins":{},"outputs":{"shape.confirm":{"sequence":2,"value":{"choice":"approved","proposal":{"input":{"artifactRootRef":"docs","name":"fix-speech-noise-interrupt-playback","task":"现在很容易识别 The、yeah、she 等英文词。现在打断、插话感觉非常困难。有时间有排队中的数据，它不处理了。提示播放失败，可换个风格或者检查网络。播放器模式样式乱了，你可以截图看下。"},"outputs":{"shape.prepare":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]}}}}},"shape.prepare":{"sequence":1,"value":{"acceptance":[{"id":"A1","source":"brief.md","text":"中文会话里说或播放中出现 The / Yeah / She 这类纯英文虚词碎片，不被展示为用户说话、不触发对话回复；而「Taylor Swift 的歌」这类中英混排与英文正常短指令不受影响。"},{"id":"A2","source":"brief.md","text":"播报 / 思考期间插话能按现有约定排队；喊「小熊小熊」能跳过当前句并继续队列。"},{"id":"A3","source":"brief.md","text":"界面显示有排队句时，队列会继续被消费（播完一句接下一句），不再出现永久卡住。"},{"id":"A4","source":"brief.md","text":"点歌不再出现非预期来源导致的「播放失败，可换个风格或检查网络」；确因上游失败时提示如实反映。"},{"id":"A5","source":"brief.md","text":"竖屏播放条：标题横排完整显示、控制按钮排列整齐不互相挤压；横屏同样正常。"}],"children":null,"specChanges":[]}}},"children":[],"lineage":[]},"sourceRevision":4,"sourceHash":"7ed319c309f67e0d15cf774edac049422214e2a4cabc42486279ab7ee7761b3a"}

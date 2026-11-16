@@ -21,6 +21,7 @@
     "cheerio": "^1.0.0",
     "dotenv": "^18.0.9",
     "drizzle-orm": "1.0.0-rc.5",
+    "lunar-javascript": "^1.7.8",
     "swagger-ui-dist": "^5.34.1",
     "ws": "^8.18.0"
   },

@@ -14,9 +14,20 @@ export interface Messages {
     accepted: (position: number, size: number) => string
     full: () => string
   }
-  /** 时间直连口播：入参是按会话时区算好的时/分，按 lang 生成自然语言，不进大模型 */
+  /** 时间/日期直连口播：入参是按会话时区算好的时/分与日期主体/星期/农历（均为中文格式，历法表述不随语言英化），按 lang 生成自然语言，不进大模型 */
   clock: {
     now: (h: number, m: number) => string
+    /** 问日期（星期几 / 几月几号）：dateBody=「2026年11月16日」weekday=「星期一」lunar=「农历十月初八」，固定中文，不随 lang 变英文 */
+    date: (dateBody: string, weekday: string, lunar: string) => string
+  }
+  /** 择吉日直连口播：日期/宜忌串为固定中文（黄历数据 + lunar 算法产出），按 lang 拼句，不进大模型 */
+  auspicious: {
+    /** 带事项：activity 为口语事项（搬家/嫁娶），days 为「X月X日（星期X，农历X月X）」逗号串 */
+    found: (activity: string, days: string) => string
+    /** 泛吉日（没说事项）：days 为「X月X日（星期X，农历X月X，宜A、B）」串 */
+    best: (days: string) => string
+    /** 30 天都没找到宜该事项的日子 */
+    none: (activity: string) => string
   }
   /** 大模型超时/不可用时的友好兜底：不让用户干等、也不暴露技术故障，按 lang 本地化 */
   llmUnavailable: () => string
@@ -171,6 +182,12 @@ const zhCN: Messages = {
   },
   clock: {
     now: (h, m) => (m ? `现在是${h}点${m}分。` : `现在是${h}点整。`),
+    date: (dateBody, weekday, lunar) => `今天是${dateBody}，${weekday}，${lunar}。`,
+  },
+  auspicious: {
+    found: (activity, days) => `帮你翻了黄历，最近的宜${activity}吉日：${days}。`,
+    best: (days) => `帮你翻了黄历，最近最合适的日子：${days}。`,
+    none: (activity) => `这一个月的黄历里都没找到宜${activity}的日子，换个事项或过阵子再问问我吧。`,
   },
   llmUnavailable: () => '这边一时没接上，你稍后再问我一次好吗？',
   music: {
@@ -387,6 +404,14 @@ const en: Messages = {
   sources: { smzdm: 'SMZDM' },
   clock: {
     now: (h, m) => (m ? `It's ${h}:${String(m).padStart(2, '0')}.` : `It's ${h} o'clock.`),
+    // 历法表述（阳历日期/星期/农历）固定中文——英文月份/星期表述不自然，用户明确要求不要英化
+    date: (dateBody, weekday, lunar) => `Today is ${dateBody} ${weekday} (${lunar}).`,
+  },
+  auspicious: {
+    // 日期/宜忌串为固定中文（历法表述不随语言英化，与日期直连同口径）
+    found: (activity, days) => `Checked the almanac. Upcoming auspicious days for ${activity}: ${days}.`,
+    best: (days) => `Checked the almanac. The most suitable upcoming days: ${days}.`,
+    none: (activity) => `No almanac day for ${activity} in the coming month. Try another activity or ask again later.`,
   },
   llmUnavailable: () => "I couldn't connect this time. Could you ask me again in a moment?",
 }

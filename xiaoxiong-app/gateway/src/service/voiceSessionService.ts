@@ -1,5 +1,6 @@
 import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
+import { Solar } from 'lunar-javascript'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
 import type { ClientMessage, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
@@ -32,7 +33,8 @@ import { detectMemoryCommand } from './memoryControl'
 import { pickDeals, preferenceKeywords } from './dealsPreference'
 import { detectSubtitleCommand } from './subtitleControl'
 import { detectPlayModeCommand } from './playModeControl'
-import { detectTimeCommand } from './timeControl'
+import { detectTimeCommandKind } from './timeControl'
+import { detectAuspiciousQuery, type AuspiciousQuery } from './auspiciousControl'
 import { detectWeatherCommand } from './weatherControl'
 import { detectProductQuery } from './productCatalog'
 import { createWeatherTool } from './tools/weatherTool'
@@ -814,9 +816,17 @@ export class VoiceSessionService {
    * 返回 true 表示已被直连命令消费。
    */
   private async handleDirectCommand(text: string): Promise<boolean> {
-    // 时间/天气：答案确定或来自独立数据源，绕开慢大模型直接口播，不让用户干等。
-    if (detectTimeCommand(text)) {
-      await this.runTimeCommand()
+    // 择吉日/黄历：库内置权威宜忌数据、答案确定，绕开大模型直连；必须排在时间直连之前，
+    // 防止未来时间正则扩展出「日子」类词后抢走「推荐个吉日」。
+    const auspicious = detectAuspiciousQuery(text)
+    if (auspicious) {
+      await this.runAuspiciousCommand(auspicious)
+      return true
+    }
+    // 时间/日期/天气：答案确定或来自独立数据源，绕开慢大模型直接口播，不让用户干等。
+    const timeKind = detectTimeCommandKind(text)
+    if (timeKind) {
+      await this.runTimeCommand(timeKind)
       return true
     }
     if (detectWeatherCommand(text)) {
@@ -867,17 +877,114 @@ export class VoiceSessionService {
     return false
   }
 
-  /** 时间直连：本地时钟按会话时区取时/分，直接口播，零网络、零 LLM。 */
-  private async runTimeCommand(): Promise<void> {
-    const parts = new Intl.DateTimeFormat('en-GB', {
+  /**
+   * 时间/日期直连：本地时钟按会话时区取值，直接口播，零网络、零 LLM。
+   * 按识别出的意图分流——问时间只报时分；问日期（星期几 / 几月几号）必须报全
+   * 「X年X月X日 星期X」；两样都问就都报。日期文案按 lang 本地化（weekday 由 Intl 产出）。
+   */
+  /**
+   * 择吉日直连：用 lunar-javascript 内置的权威黄历宜忌数据扫未来日期，直接口播，
+   * 零网络、零 LLM。带事项（「搬家吉日」）找宜该事项的日子；没说事项推荐宜较多的日子。
+   * 日期/星期/农历串固定中文（与日期直连同口径，不随语言英化）；扫 30 天，报前 3 个。
+   */
+  private async runAuspiciousCommand(q: AuspiciousQuery): Promise<void> {
+    const m = messages(this.lang)
+    // 起点日按会话时区取（与时间直连同一套 en-GB parts 手法，不依赖进程本地时区）
+    const todayParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: this.timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      weekday: 'short',
+    }).formatToParts(new Date())
+    const pick = (type: string) => todayParts.find((p) => p.type === type)?.value ?? ''
+    const WEEKDAY_ZH: Record<string, string> = {
+      Sun: '星期日', Mon: '星期一', Tue: '星期二', Wed: '星期三',
+      Thu: '星期四', Fri: '星期五', Sat: '星期六',
+    }
+    const startY = Number(pick('year'))
+    const startMo = Number(pick('month'))
+    const startD = Number(pick('day'))
+    // 用 UTC 时间轴逐日 +1（无时区漂移），每格按序号构造 Solar.fromYmd
+    const baseMs = Date.UTC(startY, startMo - 1, startD)
+    const SCAN_DAYS = 30
+    const REPORT_LIMIT = 3
+    const matched: string[] = []
+    for (let i = 0; i < SCAN_DAYS && matched.length < REPORT_LIMIT; i += 1) {
+      const dt = new Date(baseMs + i * 86400000)
+      const y = dt.getUTCFullYear()
+      const mo = dt.getUTCMonth() + 1
+      const d = dt.getUTCDate()
+      const weekday = WEEKDAY_ZH[['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dt.getUTCDay()]] ?? ''
+      const lunar = Solar.fromYmd(y, mo, d).getLunar()
+      const yi = lunar.getDayYi()
+      const leap = lunar.getMonth() < 0 ? '闰' : ''
+      // 带事项：只报日期；泛吉日：顺带报当天前 3 个宜词，让用户知道那天适合什么
+      const dayLabel =
+        `${mo}月${d}日（${weekday}，农历${leap}${lunar.getMonthInChinese()}月${lunar.getDayInChinese()}`
+        + (q.yiWords.length ? '' : `，宜${yi.slice(0, 3).join('、')}`) + '）'
+      const isMatch =
+        q.yiWords.length > 0
+          ? q.yiWords.some((w) => yi.includes(w))
+          : yi.length >= 4
+      if (isMatch) matched.push(dayLabel)
+    }
+    if (!matched.length) {
+      await this.speakReply(m.auspicious.none(q.activity ?? '这件事'))
+      return
+    }
+    const daysText = matched.join('、')
+    await this.speakReply(
+      q.activity ? m.auspicious.found(q.activity, daysText) : m.auspicious.best(daysText),
+    )
+  }
+
+  private async runTimeCommand(kind: 'time' | 'date' | 'both'): Promise<void> {
+    const m = messages(this.lang)
+    const now = new Date()
+    const timeParts = new Intl.DateTimeFormat('en-GB', {
       timeZone: this.timezone,
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
-    }).formatToParts(new Date())
-    const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0)
-    const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
-    await this.speakReply(messages(this.lang).clock.now(h, m))
+    }).formatToParts(now)
+    const h = Number(timeParts.find((p) => p.type === 'hour')?.value ?? 0)
+    const min = Number(timeParts.find((p) => p.type === 'minute')?.value ?? 0)
+    if (kind === 'time') {
+      await this.speakReply(m.clock.now(h, min))
+      return
+    }
+    // 历法表述固定中文，且绝不依赖 Intl 的中文 locale：设备端 NodeMobile 是 small-ICU，
+    // Intl.DateTimeFormat('zh-CN') 会静默 fallback 成英文（报出 November 16, 2026）。
+    // 故数字统一用 en-GB 拿（数字格式无 locale 问题），中文「年月日/星期」自己拼、星期用固定映射表。
+    const allParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: this.timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(now)
+    const pick = (type: string) => allParts.find((p) => p.type === type)?.value ?? ''
+    const y = Number(pick('year'))
+    const mo = Number(pick('month'))
+    const d = Number(pick('day'))
+    // en-GB weekday short（Sun/Mon/...）→ 中文星期；映射表稳定，不依赖 ICU
+    const WEEKDAY_ZH: Record<string, string> = {
+      Sun: '星期日', Mon: '星期一', Tue: '星期二', Wed: '星期三',
+      Thu: '星期四', Fri: '星期五', Sat: '星期六',
+    }
+    const weekday = WEEKDAY_ZH[pick('weekday')] ?? ''
+    const dateBody = `${y}年${mo}月${d}日`
+    // 农历取自 lunar-javascript 算法库（权威农历数据，非编造）；闰月带「闰」字。
+    // 用会话时区格式化出的 Y/M/D 构造（Solar.fromYmd），避免 Solar.fromDate 依赖进程本地时区。
+    const lunar = Solar.fromYmd(y, mo, d).getLunar()
+    const leap = lunar.getMonth() < 0 ? '闰' : ''
+    const lunarText = `农历${leap}${lunar.getMonthInChinese()}月${lunar.getDayInChinese()}`
+    const dateText = m.clock.date(dateBody, weekday, lunarText)
+    await this.speakReply(kind === 'date' ? dateText : `${dateText}${m.clock.now(h, min)}`)
   }
 
   /** 天气直连：复用天气数据源（懒加载位置），不进 LLM。超时/失败给友好兜底。 */

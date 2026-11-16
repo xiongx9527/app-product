@@ -1922,6 +1922,53 @@ describe('推荐意图：只列候选绝不自动播放', () => {
   })
 })
 
+describe('择吉日/时间/日期直连（绕开 LLM）', () => {
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('「推荐个搬家吉日」：扫黄历宜忌直连口播，含农历与阳历，不进 LLM', async () => {
+    const h = createHarness({ finalizeText: '推荐个搬家吉日' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const spoken = texts(h)
+    expect(spoken).toContain('黄历')
+    expect(spoken).toContain('农历')
+    expect(spoken).toContain('月')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('「今天星期几」：报全阳历+星期+农历（只报时分是漏答），不进 LLM', async () => {
+    const h = createHarness({ finalizeText: '今天星期几' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const spoken = texts(h)
+    expect(spoken).toContain('今天是')
+    expect(spoken).toContain('星期')
+    expect(spoken).toContain('农历')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('「现在几点」：只报时分，不带农历日期', async () => {
+    const h = createHarness({ finalizeText: '现在几点' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const spoken = texts(h)
+    expect(spoken).toContain('现在是')
+    expect(spoken).not.toContain('农历')
+    expect(h.agentCalls()).toBe(0)
+  })
+})
+
 describe('音量控制直连命令（绕开 LLM）', () => {
   const playSource = (resolve: MusicSource['resolve']): MusicSource => ({ resolve })
 

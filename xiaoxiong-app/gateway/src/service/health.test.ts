@@ -128,11 +128,18 @@ describe('buildHealth：deep 模式 LLM 未选模型不得假绿', () => {
   const dashscopeVoice = (model: string) =>
     ({ provider: 'dashscope', url: 'https://llm-x.maas.aliyuncs.com', apiKey: 'k', model }) as unknown as import('../voiceConfig').VoiceConfig
 
-  it('未选模型：即使主机可达，也不得报 reachable=true（避免假绿）', async () => {
-    stubFetch(() => ({ status: 200 })) // 主机通，但没模型
+  it('未选模型：模型非必填（运行时回退网关默认），主机可达 ⇒ reachable=true，文案与其它能力统一', async () => {
+    stubFetch(() => ({ status: 200 })) // 主机通；未选模型不算故障
+    const h = await buildHealth(CONFIG, dashscopeVoice(''), true)
+    expect(h.llm.reachable).toBe(true)
+    expect(h.llm.message).toContain('已接入')
+  })
+
+  it('未选模型且地址不可达 ⇒ reachable=false，统一文案「已配置但地址不可达」', async () => {
+    stubFetch(() => null)
     const h = await buildHealth(CONFIG, dashscopeVoice(''), true)
     expect(h.llm.reachable).toBe(false)
-    expect(h.llm.message).toContain('未选择模型')
+    expect(h.llm.message).toContain('已配置但地址不可达')
   })
 
   it('选了模型：真正调用 /chat/completions，连通 200 ⇒ reachable=true', async () => {
