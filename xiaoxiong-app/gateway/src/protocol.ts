@@ -153,6 +153,8 @@ export type ClientMessage =
   | { type: 'session.playback'; source?: string; autoSubtitle?: boolean; defaultLoop?: number; defaultVolume?: number; autoLoop?: boolean }
   /** 客户端本地播放队列清空后回执：网关据此才消费排队的下一句 */
   | { type: 'session.playback_done' }
+  /** 临时诊断：客户端上报 onPcm 发送端真实状态，网关落盘定位「播报插话识别不到」（定位后移除） */
+  | { type: 'session.diag'; state: string; speaking: boolean; cue: boolean; muted: boolean; frames: number; rms: number; connected: boolean }
   /** 客户端点「换一首 / 换个风格」：网关用当前音乐源解析下一首并下发 media.play */
   | { type: 'music.next'; genre?: string }
   /** 客户端拖动音量滑块后回执当前音量（0–1），网关据此保持音量状态同步，供「调大/调小」相对增减用 */

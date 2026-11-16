@@ -1,5 +1,6 @@
 import { markMicGranted, hasMicBeenGranted } from './micEvidence'
 import { readAppPermissionsSync } from '@/core/permission/permissionStatus'
+import { getDeviceId } from '@/core/config/deviceId'
 
 /**
  * App 端实时 PCM 采集：走 app-product-wake 原生插件扩展的 PCM 接口。
@@ -23,6 +24,8 @@ export const APP_PCM_CONFIG = {
 } as const
 
 interface NativePcmModule {
+  /** 配置原生 PCM 直连网关（绕开播报期失效的 weex 回调）；标量 String 参数可靠过桥 */
+  configureDirectUpload?(deviceId: string): void
   startPcm?(options: {
     sampleRate: number
     channels: number
@@ -135,6 +138,13 @@ export function startAppCapture(
   }
 
   try {
+    // 配置原生 PCM 直连网关上报：绕开播报期失效的 weex keepAlive 回调。
+    // 失败不影响 startPcm（旧基座无此方法时只走 weex 回调，降级为原状）。
+    try {
+      instance.configureDirectUpload?.(getDeviceId())
+    } catch {
+      // 降级：旧基座不支持原生直连
+    }
     instance.startPcm?.({ ...APP_PCM_CONFIG })
     running = true
     markMicGranted()

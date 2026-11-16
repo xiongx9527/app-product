@@ -24,6 +24,38 @@ function deviceIdFromRequest(req: IncomingMessage): string | null {
   return id && id.length > 0 ? id : null
 }
 
+/** query 参数 role=pcm 表示「音频专用连接」：原生 WakeModule 用它直接上报 PCM，
+ *  绕开播报期失效的 weex keepAlive 回调。这类连接只喂音频帧、绝不 bindTransport，
+ *  否则会把 session 的事件下发抢到原生连接、JS 收不到 asr.partial/tts.start。 */
+function queryParam(req: IncomingMessage, key: string): string | null {
+  const raw = req.url ?? ''
+  const q = raw.indexOf('?')
+  if (q === -1) return null
+  return new URLSearchParams(raw.slice(q + 1)).get(key)
+}
+
+/**
+ * 音频专用连接：原生直连上报 PCM。只把二进制帧喂给既有 session（按 deviceId 复用），
+ * 不建 session、不 bindTransport、不注册心跳/清理，绝不影响 JS 主连接的事件收发。
+ */
+function createPcmUploadConnection(ws: WebSocket, req: IncomingMessage): () => void {
+  const deviceId = deviceIdFromRequest(req)
+  const onMessage = (data: RawData, isBinary: boolean): void => {
+    if (!isBinary || !deviceId) return
+    const session = getSession(deviceId)
+    if (!session) return // 主连接还没建 session，丢弃这几帧
+    const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
+    session.handleBinary(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+  }
+  ws.on('message', onMessage)
+  const cleanup = (): void => {
+    ws.off('message', onMessage)
+  }
+  ws.on('close', cleanup)
+  ws.on('error', cleanup)
+  return cleanup
+}
+
 /**
  * WebSocket 语音 controller：只负责连接生命周期、帧路由、心跳，
  * 业务编排交给 VoiceSessionService。
@@ -32,6 +64,8 @@ function deviceIdFromRequest(req: IncomingMessage): string | null {
  * 仅 session.end 才从注册表移除并销毁会话。
  */
 export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps: VoiceControllerDeps): () => void {
+  // 原生 PCM 直连上报连接：只喂音频帧，不参与 session/事件绑定
+  if (queryParam(req, 'role') === 'pcm') return createPcmUploadConnection(ws, req)
   const { config, data } = deps
   const deviceId = deviceIdFromRequest(req)
 

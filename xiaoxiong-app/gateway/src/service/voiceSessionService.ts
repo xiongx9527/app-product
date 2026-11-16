@@ -400,6 +400,13 @@ export class VoiceSessionService {
       case 'session.playback_done':
         this.resolvePlayback()
         break
+      case 'session.diag':
+        // 临时诊断：客户端 onPcm 真实状态落盘（定位后移除）
+        bargeDiag(
+          `CLIENT state=${msg.state} speaking=${msg.speaking} cue=${msg.cue} `
+          + `muted=${msg.muted} frames=${msg.frames} rms=${msg.rms} connected=${msg.connected} pb=${this.playbackPending}`
+        )
+        break
       case 'music.next':
         // 客户端点「换一首 / 换个风格」：直接用当前音乐源解析下一首并下发 media.play，
         // 不必走一轮 ASR→LLM（按钮已经是明确的指令）。

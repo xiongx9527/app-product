@@ -144,13 +144,24 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 播完回执兜底定时器：idle 回调链丢失时强制收尾，保证网关的队列持续推进 */
   let playbackDoneFallback: ReturnType<typeof setTimeout> | null = null
   /**
-   * 插话已入队：隐藏识别草稿直到这个时刻（说话尾音晚到的 partial 不回填），有排队角标就够了。
-   * 用时间戳而非布尔标志：旧实现入队后把标志卡成 true，而播报期 asr.final 因 isSpeaking 提前 break、
-   * 永远走不到重置那行，导致之后每一句新插话的 partial 都被挡、说话当下看不到文字。
-   * 改成 2 秒窗口后，尾音被挡住，下一句新插话的 partial 能照常显示。
+   * 插话已入队：说话尾音晚到的 partial 不回填草稿，有排队角标就够了。
+   * 早期用「入队后 2 秒内无条件挡所有 partial」，但会误伤紧接的新插话：上一句刚入队设下窗口，
+   * 下一句说话当下的 partial 正好落在窗口内被挡，界面就看不到正在识别的文字（真机复现：连续说
+   * 「截一下」→「停一下」，后句 partial 全被前句窗口吃掉）。改为只挡「与刚入队文本一致的尾音」，
+   * 新句的 partial 文本不同，立即照常显示。用时间戳 + 文本双重判据，不用布尔标志（旧布尔会永久卡死）。
    */
   let queuedHideUntil = 0
+  /** 最近一次入队的原文，用来区分「尾音回填」与「下一句新插话」 */
+  let queuedText = ''
   const QUEUED_HIDE_MS = 2000
+  /** 尾音 partial 与入队原文视为同一句：去掉标点后相等，或互为前缀（部分识别先短后长） */
+  function isTailOfQueued(partial: string): boolean {
+    if (!queuedText) return false
+    const strip = (s: string): string => s.replace(/[。，,.！!？?\s]/g, '')
+    const a = strip(partial)
+    const b = strip(queuedText)
+    return !!a && !!b && (a === b || a.startsWith(b) || b.startsWith(a))
+  }
   /** 「正在思考」安抚提示计时器：思考超过 10s 播本地 mp3（稍等一下），每轮最多一次 */
   let thinkingCueTimer: ReturnType<typeof setTimeout> | null = null
   let thinkingCueFired = false
@@ -414,10 +425,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
             skipCurrentAndGreet(event.text)
             break
           }
-          // 插话刚入队后的 2 秒内不显示草稿——说话尾音晚到的 partial 会把草稿又填回来，
-          // 用户要求「入队后有排队角标就够了」。窗口过后新插话的 partial 照常显示，
-          // 解决旧布尔标志永久卡死导致「every 句插话说话当下都看不到文字」。
-          if (Date.now() < queuedHideUntil) break
+          // 刚入队那句的尾音 partial 不回填草稿（有排队角标就够了）；但紧接的新插话要照常显示——
+          // 只看时间窗口会把下一句说话当下的 partial 一起挡掉（真机复现），故改成按文本判断：
+          // 只有与刚入队原文一致/互为前缀的尾音才挡，新句文本不同立即显示。
+          if (Date.now() < queuedHideUntil && isTailOfQueued(event.text)) break
           liveText.value = event.text
           if (!assistantBusy && !queuePending.value && !isSpeaking.value && phase.value !== 'listening') {
             phase.value = 'listening'
@@ -438,6 +449,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         if (mode === 'dialog') {
           queuePending.value = Math.max(queuePending.value, event.position)
           queuedHideUntil = Date.now() + QUEUED_HIDE_MS
+          queuedText = event.text
           liveText.value = ''
         }
         break
@@ -482,6 +494,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         queuePending.value = event.queueRemaining
         // 这句已出队进入处理：恢复草稿显示（下一句插话的实时识别又能看见了）
         queuedHideUntil = 0
+        queuedText = ''
         transcript.value = event.text
         // 清掉监听草稿与队列溢出提示；这句轮到被处理，溢出横幅自然失效
         liveText.value = ''
@@ -693,6 +706,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         phase.value = 'idle'
         assistantBusy = false
         queuedHideUntil = 0
+        queuedText = ''
         queuePending.value = 0
         liveText.value = ''
         queueFullMsg.value = ''
@@ -799,6 +813,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         cancelPendingIdle()
         disarmThinkingCue()
         queuedHideUntil = 0
+        queuedText = ''
         stopTts()
         isSpeaking.value = false
         queuePending.value = 0
@@ -811,6 +826,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         cancelPendingIdle()
         disarmThinkingCue()
         queuedHideUntil = 0
+        queuedText = ''
         stopTts()
         transport.sendCancel()
         isSpeaking.value = false
@@ -909,47 +925,46 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   async function ensureCapture(): Promise<void> {
     if (capturing) return
-    // 播报期间继续保持上行：用户插话要能识别并排队，不能掐掉麦克风。
-    // 回声由 App 端 AEC + 网关文本比对（resemblesSpoken）处理。
-    // 只有本地提示音（扬声器外放的固定短音）期间把上行帧清零。
-    // 关键：播报期（isSpeaking）即使 cueMuteUntil 因提示音去重被延长，也绝不清零——
-    // 真机诊断实锤：播报期采集端有声（rms 0.13）但网关收到全 0，正是这里误清零，
-    // 导致 VAD 收不到人声、没有 asr.partial，用户「说话当下看不到识别文字、难插话」。
-    // 提示音的回声交给下游文本层过滤，不再用「掐麦」这种会连真人一起掐掉的方式。
-    // 临时诊断：节流统计发送端状态，定位「采集端有声但网关收不到」断在哪一环
+    // 上行掐麦只在「待唤醒」态生效：待唤醒时播 greeting「我在」，若不清零会被 ASR 收回
+    // 造成自己唤醒自己。一旦进入对话（listening/thinking/replying/speaking/done），
+    // 用户随时可能说话，**绝不能掐麦**——回声交给 App 端 AEC + 网关文本层 resemblesSpoken +
+    // 唤醒回声窗口处理。
+    //
+    // 血泪：旧条件是 isPromptCuePlaying() && !isSpeaking.value。播报期 isSpeaking 一旦被
+    // 状态机误置 false，又恰逢 cue 窗口（greeting/thinking/asr-error 提示音）——而 asr-error
+    // 因上行静音→识别失败→下发 asr-error→延长 cue 窗口 3.4s——形成恶性循环，播报全程上行
+    // 被清零（真机铁证：采集端 rms 0.137，网关收到 0.0001），插话永远识别不到。
+    // 改为「仅 standby 掐麦」后，对话态永不掐麦，从根上斩断循环。
+    // 临时诊断：每 2s 把 onPcm 的真实状态经 WS 文本消息上报网关落盘（定位后移除）
     let diagFrames = 0
-    let diagMuted = 0
+    let diagRms = 0
     let diagAt = Date.now()
     const onPcm = (pcm: ArrayBuffer): void => {
-      const muted = isPromptCuePlaying() && !isSpeaking.value
+      const cue = isPromptCuePlaying()
+      const muted = state.value === 'standby' && cue
       diagFrames += 1
-      if (muted) diagMuted += 1
-      // 每 ~2s 写一次（逻辑层无 logcat，用 setStorageSync 落盘供 run-as 读）
+      {
+        const dv = new DataView(pcm)
+        const n = Math.floor(pcm.byteLength / 2)
+        let sum = 0
+        for (let i = 0; i < n; i += 1) {
+          const s = dv.getInt16(i * 2, true) / 32768
+          sum += s * s
+        }
+        diagRms = n ? Math.sqrt(sum / n) : 0
+      }
       const now = Date.now()
       if (now - diagAt >= 2000) {
-        try {
-          let rmsSum = 0
-          const dv = new DataView(pcm)
-          const n = Math.floor(pcm.byteLength / 2)
-          for (let i = 0; i < n; i += 1) {
-            const s = dv.getInt16(i * 2, true) / 32768
-            rmsSum += s * s
-          }
-          const rms = n ? Math.sqrt(rmsSum / n) : 0
-          uni.setStorageSync('__pcm_send_diag', {
-            t: now,
-            frames: diagFrames,
-            muted: diagMuted,
-            speaking: isSpeaking.value,
-            cue: isPromptCuePlaying(),
-            connected: transport.isConnected(),
-            rms: Number(rms.toFixed(4)),
-          })
-        } catch {
-          // 诊断写失败不影响主流程
-        }
+        transport.sendDiag?.({
+          state: state.value,
+          speaking: isSpeaking.value,
+          cue,
+          muted,
+          frames: diagFrames,
+          rms: Number(diagRms.toFixed(4)),
+          connected: transport.isConnected(),
+        })
         diagFrames = 0
-        diagMuted = 0
         diagAt = now
       }
       transport.sendAudioChunk(muted ? new ArrayBuffer(pcm.byteLength) : pcm)

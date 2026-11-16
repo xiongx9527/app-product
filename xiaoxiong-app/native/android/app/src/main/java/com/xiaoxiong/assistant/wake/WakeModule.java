@@ -68,6 +68,9 @@ public class WakeModule extends UniModule {
         Log.i(TAG, "WakeModule instantiated");
     }
 
+    // 原生 PCM 直连网关上报（绕开播报期失效的 weex keepAlive 回调）
+    private PcmUploader pcmUploader;
+
     // ---- 采集状态 ----
     private AudioRecord recorder;
     /** 采集端 AEC：抵消扬声器外放的音乐/提示音/TTS 回声，避免被 ASR 识别成指令。 */
@@ -105,6 +108,21 @@ public class WakeModule extends UniModule {
     private static final String CUE_ASSET_PREFIX = "apps/__UNI__145C29C/www/static/audio/";
 
     // ---- PCM 采集接口（core/audio/appCapture.ts 使用）----
+
+    /** 配置原生 PCM 直连上报：JS 把 deviceId 传进来，采集帧将同时经原生 WS 直发网关，
+     *  绕开播报期失效的 weex keepAlive 回调。标量 String 参数可靠过桥。 */
+    @UniJSMethod(uiThread = false)
+    public void configureDirectUpload(String deviceId) {
+        try {
+            Context ctx = safeContext();
+            if (ctx == null) return;
+            pcmUploader = PcmUploader.get(ctx);
+            pcmUploader.configure(deviceId);
+            Log.i(TAG, "configureDirectUpload called");
+        } catch (Throwable e) {
+            Log.w(TAG, "configureDirectUpload failed: " + e.getMessage());
+        }
+    }
 
     @UniJSMethod(uiThread = false)
     public void onPcmFrame(UniJSCallback cb) {
@@ -530,6 +548,11 @@ public class WakeModule extends UniModule {
                 } catch (Throwable ignored) {
                     // 回调失败（如 JS 已解绑）忽略，继续采集
                 }
+            }
+            // 原生 PCM 直连网关：只在播报期（weex 回调失效）启用，补上 JS 收不到的帧；
+            // 非播报期 weex 回调正常，仍由 JS 主连接发送，避免两路重复导致 ASR 收到重叠音频。
+            if (pcmUploader != null && playRunning) {
+                pcmUploader.upload(frame.clone());
             }
         }
         Log.i(TAG, "captureLoop ended, total frames=" + count);
