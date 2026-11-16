@@ -58,8 +58,10 @@ public class WakeModule extends UniModule {
      *  （已用原生 PCM 直连修复），降音量并非解药、反让播报太小声，故调回清晰值。
      *  前端 useAssistant.ts 的 TTS_VOLUME_NORMAL/TTS_VOLUME_DUCK 须与此同步。 */
     private static final float PLAYBACK_VOLUME = 0.7f;
-    /** duck 时压到的音量：低到人声信噪比高、ASR 识别准，又不至于听不见。 */
-    private static final float DUCK_VOLUME = 0.25f;
+    /** duck 时压到的音量：必须够低，否则残余 TTS 回声盖住用户说话、ASR 把中文「停一下」识别成
+     *  Yeah/Okay/The 等英文碎片并被当噪声过滤，插话文字就出不来（真机实锤：0.25 时全是英文碎片，
+     *  0.05 时中文能识别）。用户开口瞬间压低、说完恢复 0.7，平时播报音量不受影响。 */
+    private static final float DUCK_VOLUME = 0.05f;
     /** 当前播报音量（0–1），可被 duck 动态改写；起播时按此值 setVolume。 */
     private volatile float playbackVolume = PLAYBACK_VOLUME;
 
@@ -87,6 +89,17 @@ public class WakeModule extends UniModule {
     /** 播空事件是否已通知前端：每次写入新 PCM 重置，播空后只通知一次。 */
     private volatile boolean idleNotified = true;
     private final Object playLock = new Object();
+
+    // ---- 原生本地 barge-in duck ----
+    // 为什么在原生做：网关 audio.duck 事件要经 weex 下行回 JS 再回调原生 setPlaybackVolume，
+    // 而播报期 weex 回调被 TTS 下行冲击丢弃（与上行 PCM keepAlive 失效同一根因），duck 指令到不了。
+    // 原生采集循环手里就有每帧 rms 和 playRunning，直接据此压/放 AudioTrack 音量，绕开整条不可靠链路。
+    /** 人声能量阈值：超过就认定用户开口（与网关 FRAME 诊断 0.02 同量级） */
+    private static final double LOCAL_DUCK_RMS = 0.02;
+    /** 静音多久恢复播报音量 */
+    private static final long LOCAL_DUCK_RELEASE_MS = 800;
+    private volatile boolean localDucked = false;
+    private volatile long lastVoiceMs = 0;
 
     // JS 侧注册的回调；keepAlive 模式可多次调用。
     private UniJSCallback pcmFrameCb;
@@ -184,8 +197,9 @@ public class WakeModule extends UniModule {
                 playTrack = null;
                 return;
             }
-            // 起播音量：若上一轮还停在 duck 状态，沿用 duck 值，避免新句开头一瞬间满音量炸耳。
-            playTrack.setVolume(playbackVolume);
+            // 新句开始：清掉上一句的本地 duck 状态，从正常音量起播（第一帧若仍有人声会立刻再 duck）
+            localDucked = false;
+            applyPlaybackVolume();
             playTrack.play();
             synchronized (playLock) {
                 writtenFrames = 0;
@@ -212,13 +226,18 @@ public class WakeModule extends UniModule {
     @UniJSMethod(uiThread = false)
     public void setPlaybackVolume(int percent) {
         playbackVolume = Math.max(0f, Math.min(1f, percent / 100f));
-        if (playTrack != null) {
-            try {
-                playTrack.setVolume(playbackVolume);
-            } catch (Throwable ignored) {
-            }
+        applyPlaybackVolume();
+        Log.i(TAG, "setPlaybackVolume: percent=" + percent + " volume=" + playbackVolume + " localDucked=" + localDucked);
+    }
+
+    /** 把当前音量应用到 AudioTrack：原生本地 duck 优先于 JS 设的 playbackVolume。 */
+    private void applyPlaybackVolume() {
+        if (playTrack == null) return;
+        float v = localDucked ? DUCK_VOLUME : playbackVolume;
+        try {
+            playTrack.setVolume(v);
+        } catch (Throwable ignored) {
         }
-        Log.i(TAG, "setPlaybackVolume: percent=" + percent + " volume=" + playbackVolume);
     }
 
     /** JS 直接传 base64 字符串（不包对象）。真机血泪（四层坑，逐层挖出来）：
@@ -385,6 +404,7 @@ public class WakeModule extends UniModule {
 
     private void stopPlaybackInternal() {
         playRunning = false;
+        localDucked = false;
         if (idlePollThread != null) {
             idlePollThread.interrupt();
             try {
@@ -527,15 +547,27 @@ public class WakeModule extends UniModule {
             if (read != frameBytes) continue; // 不足一帧（罕见），丢弃以保证分片时长恒定
             count++;
             long nowMs = System.currentTimeMillis();
+            // 每帧算 rms（int16 平方和，开销极小）：既供诊断，也供原生本地 duck。
+            double sum = 0;
+            for (int i = 0; i + 1 < read; i += 2) {
+                int s = (short) (((frame[i + 1] & 0xff) << 8) | (frame[i] & 0xff));
+                sum += (double) s * s;
+            }
+            double rms = Math.sqrt(sum / (read / 2)) / 32768.0;
             if (nowMs - diagAt >= DIAG_EVERY_MS) {
                 diagAt = nowMs;
-                double sum = 0;
-                for (int i = 0; i + 1 < read; i += 2) {
-                    int s = (short) (((frame[i + 1] & 0xff) << 8) | (frame[i] & 0xff));
-                    sum += (double) s * s;
-                }
-                double rms = Math.sqrt(sum / (read / 2)) / 32768.0;
                 Log.i(TAG, "PCM-DIAG rms=" + String.format("%.4f", rms) + " play=" + playRunning);
+            }
+            // 原生本地 duck：播报期检测到真人开口就压低 TTS，静音超时恢复。
+            // 只在 playRunning 时生效，不碰非播报期；按时间戳去抖，避免每帧 setVolume 刷屏。
+            if (playRunning) {
+                if (rms > LOCAL_DUCK_RMS) lastVoiceMs = nowMs;
+                boolean shouldDuck = (nowMs - lastVoiceMs) < LOCAL_DUCK_RELEASE_MS;
+                if (shouldDuck != localDucked) {
+                    localDucked = shouldDuck;
+                    applyPlaybackVolume();
+                    Log.i(TAG, "LOCAL-DUCK " + (localDucked ? "on" : "off") + " rms=" + String.format("%.4f", rms));
+                }
             }
             if (count % LOG_EVERY_FRAMES == 0) {
                 Log.d(TAG, "pcm frames=" + count + " (" + (count * FRAME_MS) + "ms)");

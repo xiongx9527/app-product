@@ -228,7 +228,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 早先为治「播报期插话难」压到 0.2/0.04，但真凶是 weex 回调失效（已用原生直连修复），
   // 降音量并非解药、反而让播报太小声，故调回清晰值。原生默认音量须与此同步。
   const TTS_VOLUME_NORMAL = 0.7
-  const TTS_VOLUME_DUCK = 0.25
+  const TTS_VOLUME_DUCK = 0.05
   const PARTIAL_SKIP_MS = 2500
   /**
    * 网关还有几句排队没轮到：期间「你说」必须锁在当前句，
@@ -446,14 +446,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           skipCurrentAndGreet(event.text)
           break
         }
-        // 更新排队数量（「我说」卡片右上角的红标）。插话已入队：清掉下方草稿区的识别文字
-        // （进入排队后识别文字不再显示，由排队角标表达）；这句话等播完轮到它
-        // 才由 asr.final 进入「我说」卡片正文。
+        // 与「正在思考」阶段一致：定稿原文要显示出来。播报期高频 asr.partial 经 weex 下行
+        // 可能被 TTS 冲击丢失，导致说话当下看不到文字；定稿事件 asr.queued 低频、可靠到达，
+        // 这里把它的 text 显示出来兜底，让用户一定能看到这句插话识别成了什么。
+        // 排队数量仍由右上角角标表达；这句播完轮到它时再由 asr.final 进「我说」正文。
         if (mode === 'dialog') {
           queuePending.value = Math.max(queuePending.value, event.position)
           queuedHideUntil = Date.now() + QUEUED_HIDE_MS
           queuedText = event.text
-          liveText.value = ''
+          liveText.value = event.text
         }
         break
       case 'asr.rejected':
