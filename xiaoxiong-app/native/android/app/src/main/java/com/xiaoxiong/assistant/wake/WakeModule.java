@@ -53,14 +53,13 @@ public class WakeModule extends UniModule {
     private static final int FRAME_MS = 32;
     /** 每多少帧打一次统计日志，避免刷屏。 */
     private static final int LOG_EVERY_FRAMES = 50;
-    /** TTS 播报音量（0–1）。对标「播放音乐插话很顺」：音乐默认 0.5、TTS 播报时再被 duck
-     *  到 0.5×0.2=0.1，所以音乐外放回声一直很弱、人声信噪比高、插话识别准。
-     *  TTS 播报是对内容的主体验，不能压到 0.1 听不清，取 0.2 —— 比之前 0.5 再降 60%，
-     *  真机诊断证明 0.5 时 TTS 回声仍混进采集（说话 rms 仅 0.06、ASR 出英文乱码），
-     *  降到 0.2 让回声弱、AEC 双讲不再压人声，插话识别才准。 */
-    private static final float PLAYBACK_VOLUME = 0.2f;
-    /** duck 时压到的音量：几乎静音，让麦克风只收到用户人声、ASR 识别准。 */
-    private static final float DUCK_VOLUME = 0.04f;
+    /** TTS 播报音量（0–1）：正常播报取清晰值，插话 duck 时压低但仍能听清。
+     *  早先为治「播报期插话难」压到 0.2，但真凶是 weex keepAlive 回调在播报期失效
+     *  （已用原生 PCM 直连修复），降音量并非解药、反让播报太小声，故调回清晰值。
+     *  前端 useAssistant.ts 的 TTS_VOLUME_NORMAL/TTS_VOLUME_DUCK 须与此同步。 */
+    private static final float PLAYBACK_VOLUME = 0.7f;
+    /** duck 时压到的音量：低到人声信噪比高、ASR 识别准，又不至于听不见。 */
+    private static final float DUCK_VOLUME = 0.25f;
     /** 当前播报音量（0–1），可被 duck 动态改写；起播时按此值 setVolume。 */
     private volatile float playbackVolume = PLAYBACK_VOLUME;
 

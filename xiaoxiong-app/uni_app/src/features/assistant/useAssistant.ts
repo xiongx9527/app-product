@@ -224,8 +224,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 播报期 partial 命中唤醒词打断的节流：流式识别连续多帧命中只打一次，避免重复招呼/重复跳过。 */
   let lastPartialSkipAt = 0
   /** barge-in duck 音量：正常播报 0.2（与原生 PLAYBACK_VOLUME 一致），用户开口压到 0.04。 */
-  const TTS_VOLUME_NORMAL = 0.2
-  const TTS_VOLUME_DUCK = 0.04
+  // TTS 播报音量（0–1）：正常清晰，插话 duck 时压低但仍能听清。
+  // 早先为治「播报期插话难」压到 0.2/0.04，但真凶是 weex 回调失效（已用原生直连修复），
+  // 降音量并非解药、反而让播报太小声，故调回清晰值。原生默认音量须与此同步。
+  const TTS_VOLUME_NORMAL = 0.7
+  const TTS_VOLUME_DUCK = 0.25
   const PARTIAL_SKIP_MS = 2500
   /**
    * 网关还有几句排队没轮到：期间「你说」必须锁在当前句，
