@@ -107,9 +107,10 @@ function onTogglePlayMode(): void {
     // 仅在有歌词数据时点亮，不会凭空造出字幕。
     if (subtitle.value) subtitleVisible.value = true
   } else {
-    // 关悬浮小圆（切到普通播放条）：收起字幕面板，不让「与悬浮互斥」逻辑在下方自动弹出
-    // 一整份歌词框。用户关的是悬浮框，不是要换一种形式看歌词。
-    closeSubtitle()
+    // 切到普通播放条：字幕面板该跟着出现——「自动显示字幕」开着且已有字幕数据（含「暂无字幕」
+    // 的空列表）时点亮，否则用户从悬浮态切回来会看不到任何字幕框。之前这里调 closeSubtitle()
+    // 把 visible 置 false，正是「手动切到普通模式后字幕框不出现」的原因。
+    if (subtitle.value && (appConfig.playback.autoSubtitle ?? true)) subtitleVisible.value = true
   }
 }
 
@@ -556,7 +557,7 @@ function onOrbTap(): void {
       </view>
     </view>
 
-    <!-- 字幕面板与悬浮互斥：悬浮小圆已用大字显示当前歌词，不再叠一份完整字幕列表。
+    <!-- 字幕面板与悬浮小圆互斥：悬浮小圆已用单行大字显示当前这句歌词，不再叠一份完整字幕列表。
          同时绑定本地播放状态 musicVisible：本地已停止/收起播放时一律不显示，
          避免「停了歌却从悬浮态反向露出歌词框」——网关仍在推歌词也不能让它亮起来。 -->
     <view v-if="subtitle && subtitleVisible && !floatDiscVisible && musicVisible" class="subtitle">

@@ -35,7 +35,7 @@ import { detectSubtitleCommand } from './subtitleControl'
 import { detectPlayModeCommand } from './playModeControl'
 import { detectTimeCommandKind } from './timeControl'
 import { detectAuspiciousQuery, type AuspiciousQuery } from './auspiciousControl'
-import { ensureAdtsFile, adtsKeyFor } from '../controller/musicStreamController'
+import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
 import { detectWeatherCommand } from './weatherControl'
 import { detectProductQuery } from './productCatalog'
 import { createWeatherTool } from './tools/weatherTool'
@@ -572,6 +572,7 @@ export class VoiceSessionService {
    */
   private async emitAutoSubtitle(title: string, artist?: string, reuse = false): Promise<boolean> {
     if (!this.autoSubtitle) {
+      recordMusicDiag(`subtitle skip: autoSubtitle=off title=${title.slice(0, 16)}`)
       this.subtitleActive = false
       return false
     }
@@ -584,16 +585,19 @@ export class VoiceSessionService {
     }
     const source = this.musicSource
     if (!source?.getSubtitle) {
+      recordMusicDiag('subtitle skip: source has no getSubtitle')
       this.subtitleActive = false
       return false
     }
     try {
       const lines = await source.getSubtitle(artist ?? '', title)
+      recordMusicDiag(`subtitle emit lines=${(lines ?? []).length} title=${title.slice(0, 16)}`)
       this.lastSubtitleLines = lines ?? []
       this.deps.send({ type: 'media.subtitle', title, artist, lines: lines ?? [] })
       this.subtitleActive = (lines ?? []).length > 0
       return this.subtitleActive
     } catch {
+      recordMusicDiag('subtitle fail: getSubtitle threw')
       this.lastSubtitleLines = null
       this.subtitleActive = false
       // 字幕失败不影响播放
@@ -1409,12 +1413,18 @@ export class VoiceSessionService {
 
   private armEndpoint(): void {
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
+    // 播报期插话用更短的句末等待：默认 2500ms 是为「说话中途思考停顿」留的余量，
+    // 但播报时用户说的是「停一下」这类短指令，等 2.5 秒才定稿体感就是「插话没反应」。
+    // 播报期压到 1 秒，说完马上定稿入队。
+    const wait = this.playbackPending
+      ? Math.min(this.deps.asrEndpointMs, 1000)
+      : this.deps.asrEndpointMs
     this.endpointTimer = setTimeout(() => {
       // 串行而非丢弃：上一句还没交给大模型时，下一句也必须在链里排队等
       this.finalizeChain = this.finalizeChain
         .then(() => this.finalizeUtterance())
         .catch(() => undefined)
-    }, this.deps.asrEndpointMs)
+    }, wait)
   }
 
   /** 上次「识别失败」提示时间：30s 节流，避免连环失败时提示音刷屏。 */

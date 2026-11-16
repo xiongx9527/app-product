@@ -140,9 +140,9 @@ describe('app config', () => {
     expect(config.playback.source).toBe('baidu')
   })
 
-  it('默认开启悬浮，位置顶部居中，当前字幕 18px / 白色', () => {
+  it('默认普通播放条（悬浮关闭），位置顶部居中，当前字幕 18px / 白色', () => {
     const p = createDefaultConfig().playback
-    expect(p.floatPlayer).toBe(true)
+    expect(p.floatPlayer).toBe(false)
     expect(p.floatPosition).toBe('top-center')
     expect(p.subtitleFontSize).toBe(18)
     expect(p.subtitleColor).toBe('#ffffff')
@@ -157,7 +157,7 @@ describe('app config', () => {
         subtitleColor: 'red',
       },
     })
-    expect(config.playback.floatPlayer).toBe(true)
+    expect(config.playback.floatPlayer).toBe(false)
     expect(config.playback.floatPosition).toBe('top-center')
     expect(config.playback.subtitleFontSize).toBe(18)
     expect(config.playback.subtitleColor).toBe('#ffffff')
