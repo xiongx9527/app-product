@@ -35,6 +35,7 @@ import { detectSubtitleCommand } from './subtitleControl'
 import { detectPlayModeCommand } from './playModeControl'
 import { detectTimeCommandKind } from './timeControl'
 import { detectAuspiciousQuery, type AuspiciousQuery } from './auspiciousControl'
+import { ensureAdtsCached } from '../controller/musicStreamController'
 import { detectWeatherCommand } from './weatherControl'
 import { detectProductQuery } from './productCatalog'
 import { createWeatherTool } from './tools/weatherTool'
@@ -490,6 +491,9 @@ export class VoiceSessionService {
       proxy: needsProxy(track.channel, track.url),
       ...(this.autoLoop && this.defaultLoop > 1 ? { loop: this.defaultLoop } : {}),
     })
+    // dash 纯音轨预热：客户端拿到 media.play 就会立刻请求 /music/stream，若缓存未热，
+    // 全量拉取+转封装的 2 秒延迟会让 DCloud AudioPlayer prepare 超时（无声）。下发前先转好。
+    this.prewarmDashAudio(track)
     // 自动字幕：开关开启时，「换一首」同样是一次播放，同源尽力拉取字幕下发，与 playTrack 一致。
     void this.emitAutoSubtitle(track.title, this.lastTrack?.artist)
   }
@@ -534,9 +538,21 @@ export class VoiceSessionService {
       ...(effectiveLoop && effectiveLoop > 1 ? { loop: effectiveLoop } : {}),
       ...(track.cover ? { cover: track.cover } : {}),
     })
+    // dash 纯音轨预热（同换一首）：必须在客户端发起 /music/stream 请求前把 ADTS 缓存准备好。
+    this.prewarmDashAudio(track)
     // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示，不弹面板）。
     void this.emitAutoSubtitle(track.title, artist, reuseSubtitle)
     await this.speakReply(confirm)
+  }
+
+  /**
+   * dash 纯音轨（.m4s）预热：转封装进 /music/stream 的缓存，让客户端首次请求秒回。
+   * B站直链每次解析都变（签名/deadline），不预热则每次首播都要现场拉 11MB+转封装，
+   * DCloud AudioPlayer prepare 超时就无声。失败静默：预热失败时客户端请求会现场转（慢但能用）。
+   */
+  private prewarmDashAudio(track: { url: string; channel?: string }): void {
+    if (!needsProxy(track.channel, track.url) || !track.url.includes('.m4s')) return
+    void ensureAdtsCached(track.url).catch(() => undefined)
   }
 
   /**
@@ -1346,7 +1362,11 @@ export class VoiceSessionService {
     if (!this.active) return
     // 帧一直会来，顺手把到期的回声抑制恢复掉
     if (this.halfDuplex && !this.echo.muted()) this.syncDuplex()
-    const vad = this.vad.push(chunk, { strict: false })
+    // 播报期间启用保守 VAD（门槛加倍 + 更长连续帧）：TTS 回声残余会把普通阈值下的
+    // 「有人声」一直撑着，句末静音判定永不满足——用户插话后永远等不到 finalize、进不了
+    // 队列，表现即「播报中太难插话」。strict 模式下只有真正的用户语音才维持 voiced，
+    // 说完停顿 endpoint 到期 → finalize → 入队。
+    const vad = this.vad.push(chunk, { strict: this.playbackPending })
     for (const frame of vad.frames) {
       void this.asr.push(frame)
         .then((partial) => {

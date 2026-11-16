@@ -383,11 +383,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
           break
         }
-        // 实时识别草稿展示在页面下方：空闲监听与忙时插话（思考/播报）都显示，
-        // 与「正在思考/正在播放」并存。但插话已入队（queuedHideLive）后不再显示——
-        // 说话尾音晚到的 partial 会把草稿又填回来，用户明确要求「入队后有排队角标就够了」。
-        // 状态切换仍只在空闲时：忙时不把 phase 改成 listening，避免顶掉思考/播报展示。
+        // confirming（T2 倒计时）下用户一开口就要取消退下：partial 是说话过程中的流式识别，
+        // 比等 asr.final（endpointMs 静音 + 识别链 2.5s+）早得多——否则 T2 先炸、话被吞
+        //（用户实测「刚好卡在要退下的时机就退下了」）。listening 态下重置 T1 同理早触发。
         if (mode === 'dialog') {
+          dispatch({ type: 'USER_SPEECH' })
+          // 插话已入队（queuedHideLive）后不再显示草稿——说话尾音晚到的 partial 会把草稿
+          // 又填回来，用户明确要求「入队后有排队角标就够了」。
           if (queuedHideLive) break
           liveText.value = event.text
           if (!assistantBusy && !queuePending.value && !isSpeaking.value && phase.value !== 'listening') {

@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
+import { fmp4BufferToAdts } from '../service/music/fmp4ToAdts'
 
 /**
  * B 站音轨直链带防盗链（必须带 Referer），而客户端 InnerAudioContext 无法自定义请求头，
@@ -94,6 +95,16 @@ export async function handleMusicStream(
     res.end('invalid or disallowed url')
     return
   }
+  // B 站 dash 纯音轨（.m4s）是 fragmented MP4：设备 NuPlayer 对 dash brand 嗅探失败
+  // （cannot create extractor → 无声），需要转封装成 ADTS 裸 AAC（见 fmp4ToAdts.ts）。
+  // 必须走「全量转封装 + 缓存 + 完整响应」模式：流式转封装只支持从头播，播放器 seek/
+  // 重播/续传发出的中途 Range 请求会从非 box 边界开始，转出来的流是坏的（时好时坏的根源）。
+  // 全量转完是标准 ADTS 文件（带 content-length），对任意 Range 在 ADTS buffer 上切片即可。
+  // 分流必须在首次上游拉取之前：转封装内部自行全量拉取，不吃客户端的 Range。
+  if (inferAudioContentType(raw) === 'audio/mp4' && raw.includes('.m4s')) {
+    await serveDashAudioAsAdts(req, res, raw)
+    return
+  }
   let upstream: Response
   try {
     upstream = await fetchValidated(raw, req.headers.range)
@@ -111,9 +122,6 @@ export async function handleMusicStream(
     const v = upstream.headers.get(key)
     if (v) headers[key] = v
   }
-  // B 站 dash 音轨是 .m4s（fMP4/AAC），上游有时标成 application/octet-stream，有时标成
-  // video/mp4（其实是纯音频流）。浏览器 <audio>/InnerAudioContext 对这两种标签都可能拒绝解码
-  // （MEDIA_ERR_SRC_NOT_SUPPORTED），必须按扩展名统一标成 audio/mp4 才能稳定播放。
   const ct = headers['content-type']
   if (!ct || ct === 'application/octet-stream' || ct === 'video/mp4') {
     headers['content-type'] = inferAudioContentType(raw)
@@ -127,4 +135,100 @@ export async function handleMusicStream(
   const stream = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0])
   stream.on('error', () => res.destroy())
   stream.pipe(res)
+}
+
+/** dash 音轨的 ADTS 转换缓存（url → 完整 ADTS buffer）：LRU 上限 2 首，防 NodeMobile 内存膨胀。 */
+const adtsCache = new Map<string, Buffer>()
+const ADTS_CACHE_MAX = 2
+/** 防并发重复转封装：同一 url 的 in-flight promise 共享 */
+const adtsInflight = new Map<string, Promise<Buffer>>()
+
+/**
+ * 确保 dash 音轨已转封装进缓存（media.play 下发前预热用）：
+ * B站直链每次解析都变（签名/deadline），缓存 key 无法跨次命中——客户端首次请求时若缓存
+ * 未热，全量拉取+转封装要 2 秒以上，DCloud AudioPlayer 的 prepare 会超时失败（无声）。
+ * 所以网关在「下发 media.play 之前」就后台预热，客户端请求到达时秒回。
+ */
+export async function ensureAdtsCached(raw: string): Promise<Buffer> {
+  const cached = adtsCache.get(raw)
+  if (cached) return cached
+  const inflight = adtsInflight.get(raw)
+  if (inflight) {
+    return inflight
+  }
+  const job = (async (): Promise<Buffer> => {
+    const upstreamAll = await fetchValidated(raw, undefined)
+    if (!upstreamAll.body) throw new Error('upstream empty body')
+    const full = Buffer.from(await upstreamAll.arrayBuffer())
+    const adts = fmp4BufferToAdts(full)
+    if (adtsCache.size >= ADTS_CACHE_MAX) {
+      const oldest = adtsCache.keys().next().value
+      if (oldest !== undefined) adtsCache.delete(oldest)
+    }
+    adtsCache.set(raw, adts)
+    return adts
+  })()
+  adtsInflight.set(raw, job)
+  try {
+    return await job
+  } finally {
+    adtsInflight.delete(raw)
+  }
+}
+
+/**
+ * 全量拉取 dash 音轨 → 转 ADTS → 缓存 → 按客户端 Range 在 ADTS buffer 上切片响应。
+ * 上游必须全量拉（不带 Range）：转封装需要从 ftyp box 边界开始。
+ */
+async function serveDashAudioAsAdts(
+  req: IncomingMessage,
+  res: ServerResponse,
+  raw: string
+): Promise<void> {
+  let adts = adtsCache.get(raw)
+  if (!adts) {
+    try {
+      adts = await ensureAdtsCached(raw)
+    } catch (err) {
+      res.writeHead(502)
+      res.end(`transcode error: ${(err as Error).message}`)
+      return
+    }
+  }
+  if (!adts) {
+    res.writeHead(502)
+    res.end('transcode failed')
+    return
+  }
+  const rangeHeader = req.headers.range
+  // 客户端 Range 切片（对完整 ADTS 文件任意段都有效，seek/重播/续传全支持）
+  const m = rangeHeader ? /bytes=(\d+)-(\d*)/.exec(rangeHeader) : null
+  if (m) {
+    const start = Math.min(Number(m[1]), Math.max(0, adts.length - 1))
+    const end = m[2] ? Math.min(Number(m[2]), adts.length - 1) : adts.length - 1
+    res.writeHead(206, {
+      'Access-Control-Allow-Origin': '*',
+      'content-type': 'audio/aac',
+      'content-length': String(end - start + 1),
+      'content-range': `bytes ${start}-${end}/${adts.length}`,
+      'Accept-Ranges': 'bytes',
+    })
+    if (req.method === 'HEAD') {
+      res.end()
+      return
+    }
+    res.end(adts.subarray(start, end + 1))
+    return
+  }
+  res.writeHead(200, {
+    'Access-Control-Allow-Origin': '*',
+    'content-type': 'audio/aac',
+    'content-length': String(adts.length),
+    'Accept-Ranges': 'bytes',
+  })
+  if (req.method === 'HEAD') {
+    res.end()
+    return
+  }
+  res.end(adts)
 }
