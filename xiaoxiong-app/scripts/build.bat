@@ -13,7 +13,7 @@ rem
 rem 说明：
 rem   - 构建配置按环境拆分：scripts\.build_env.dev / .test / .pro（不入库，从 .build_env.example 复制填值）。
 rem   - 本脚本直接解析这些 bash 风格（KEY=value，# 注释）的配置，不再另建 .bat 配置，保持单一真相源。
-rem   - ANDROID_SDK_DIR 指向 DCloud 离线 SDK 壳（HBuilder-Integrate-AS）；NODE_LIB 留空则用 app 模块已内置的 libnode.so。
+rem   - ANDROID_SDK_DIR 指向 DCloud 离线 SDK 壳（HBuilder-SDK）；NODE_LIB 留空则用 app 模块已内置的 libnode.so。
 
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "ROOT=%%~fI"
@@ -54,7 +54,7 @@ if defined APPKEY (set "THE_APPKEY=%APPKEY%") else (set "THE_APPKEY=%ANDROID_APP
 
 rem —— 前置检查 ——
 if "%ANDROID_SDK_DIR%"=="" (
-  echo 请在 .build_env.%ENV% 设置 ANDROID_SDK_DIR（指向 DCloud 离线 SDK 壳 HBuilder-Integrate-AS 目录） >&2
+  echo 请在 .build_env.%ENV% 设置 ANDROID_SDK_DIR（指向 DCloud 离线 SDK 壳 HBuilder-SDK 目录） >&2
   exit /b 1
 )
 if not exist "%ANDROID_SDK_DIR%" (

@@ -5,7 +5,7 @@
  * 目录结构与配置，省去手动拷贝出错。
  *
  * 工程二分（见 xiaoxiong-app/native/android/）：
- *   - sdk/  = DCloud 离线打包工程壳（HBuilder-Integrate-AS，仅含 gradlew/settings.gradle/引擎 aar），
+ *   - sdk/  = DCloud 离线打包工程壳（HBuilder-SDK，仅含 gradlew/settings.gradle/引擎 aar），
  *            体积大、不入库（.gitignore 已忽略 xiaoxiong-app/native/android/sdk/）。
  *   - app/  = 我们的「原生工厂」（native/android/app），含全部 Java 源码、JNI 桥、AndroidManifest、
  *            dcloud_properties 与已预置的网关 Service/Application 声明；这是可直接打开构建的 Android 模块，入库。
@@ -13,7 +13,7 @@
  *
  * 用法：
  *   node scripts/package-android-offline.mjs \
- *     --sdk <HBuilder-Integrate-AS 路径> \     # DCloud 离线 SDK 壳根；缺省默认 xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS
+ *     --sdk <HBuilder-SDK 路径> \     # DCloud 离线 SDK 壳根；缺省默认 xiaoxiong-app/native/android/sdk/HBuilder-SDK
  *     --appid __UNI_XXXXXXXX \                  # DCloud 开发者中心的 appid（必须非空，且与 AppKey 对应）
  *     [--appkey xxxxxxxx]                       # 可选：AppKey 字符串，写入 app 模块 AndroidManifest 的 dcloud_appkey meta-data（已预置，可覆盖）
  *     [--node-lib /path/to/digidem-android]     # 可选：digidem android 包解压目录（内含各 ABI 的 libnode.so）；app 模块已内置，可用它刷新
@@ -25,7 +25,7 @@
  *
  * 脚本只做「生成物接入」（前端 www、网关 bundle、libnode.so 与可选 AppKey）；Java/CMake/Manifest/
  * dcloud_properties 这些「源」都已在 app/ 模块里就位，脚本仅做幂等兜底，不新增源文件。
- * 构建与签名见 app/build.gradle（引擎 aar 从 ../sdk/libs 引用，keystore 从 ../sdk/HBuilder-Integrate-AS 引用）。
+ * 构建与签名见 app/build.gradle（引擎 aar 从 ../sdk/libs 引用，keystore 从 ../sdk/HBuilder-SDK 引用）。
  *
  * 注意：编译出 APK 不需要 appid/AppKey；只有装到设备上「能启动运行」才需要，且 appid、包名、证书 SHA1 三者
  * 必须与 DCloud 开发者中心申请 AppKey 时填的一致，否则启动时报「未配置appkey或配置错误」。
@@ -45,7 +45,7 @@ const nativeAndroid = resolve(projectRoot, 'native', 'android', 'app') // 我们
 const VALID_ABIS = new Set(['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86', 'armeabi'])
 
 function parseArgs(argv) {
-  const out = { gateway: true, sdk: resolve(projectRoot, 'native', 'android', 'sdk', 'HBuilder-Integrate-AS') }
+  const out = { gateway: true, sdk: resolve(projectRoot, 'native', 'android', 'sdk', 'HBuilder-SDK') }
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]
     if (a === '--sdk') out.sdk = argv[++i]
@@ -84,12 +84,12 @@ function findFiles(dir, filename, acc = []) {
 
 const args = parseArgs(process.argv.slice(2))
 if (!args.appid) {
-  console.error('用法: node scripts/package-android-offline.mjs --appid <appid> [--sdk <HBuilder-Integrate-AS 路径>] [--appkey <AppKey字符串>] [--node-lib <digidem android 解压目录>] [--no-gateway>]')
-  console.error('  --sdk 缺省默认 xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS（DCloud 离线 SDK 壳，已随工程放置）；用其它 SDK 时再用 --sdk 覆盖')
+  console.error('用法: node scripts/package-android-offline.mjs --appid <appid> [--sdk <HBuilder-SDK 路径>] [--appkey <AppKey字符串>] [--node-lib <digidem android 解压目录>] [--no-gateway>]')
+  console.error('  --sdk 缺省默认 xiaoxiong-app/native/android/sdk/HBuilder-SDK（DCloud 离线 SDK 壳，已随工程放置）；用其它 SDK 时再用 --sdk 覆盖')
   process.exit(1)
 }
 if (!existsSync(args.sdk)) {
-  console.error(`离线 SDK 工程不存在: ${args.sdk}（可把 DCloud 离线 SDK 解压到 xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS，或用 --sdk 指定）`)
+  console.error(`离线 SDK 工程不存在: ${args.sdk}（可把 DCloud 离线 SDK 解压到 xiaoxiong-app/native/android/sdk/HBuilder-SDK，或用 --sdk 指定）`)
   process.exit(1)
 }
 // app 模块是固定的原生工厂（native/android/app）；SDK 壳通过 settings.gradle 的 include ':app' 关联它。
@@ -376,7 +376,7 @@ if (existsSync(androidManifestPath)) {
 console.log('\n下一步（网关同包，详见 xiaoxiong-app/native/android/）：')
 console.log('  1. 原生源码/Manifest/CMake 已就位在 native/android/app/，本脚本只注入了前端 www、网关 bundle 与 libnode.so。')
 console.log('  2. 进 SDK 壳目录构建（app 模块由 settings.gradle 的 include \':app\' 关联）：')
-console.log('       cd xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS && ./gradlew :app:clean :app:assembleDebug')
+console.log('       cd xiaoxiong-app/native/android/sdk/HBuilder-SDK && ./gradlew :app:clean :app:assembleDebug')
 console.log('  3. 装到设备（必须走安装脚本，它会重加 Doze 白名单，否则荣耀/华为 iaware 会拦掉 :gateway 启动）：')
 console.log('       node scripts/install-android-offline.mjs')
 console.log('       （裸 adb install -r 重装会清空白名单，导致「网关连不上/下拉无数据」复发，请勿直接用）')

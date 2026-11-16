@@ -20,10 +20,10 @@ android {
             config {
                 keyAlias 'xiaoxiong'
                 keyPassword 'xiaoxiong-dev-2026'
-                // keystore 随 DCloud 离线 SDK 壳一起放在 native/android/sdk/HBuilder-Integrate-AS/ 下
+                // keystore 随 DCloud 离线 SDK 壳一起放在 native/android/sdk/HBuilder-SDK/ 下
                 // （SDK 壳不入库，但本机/CI 解压 SDK 后即存在）。Gradle 的 file() 相对本 module 目录
-                // （native/android/app/），故 ../../sdk/HBuilder-Integrate-AS/ 指到 SDK 壳根。
-                storeFile file('../sdk/HBuilder-Integrate-AS/xiaoxiong-release.keystore')
+                // （native/android/app/），故 ../../sdk/HBuilder-SDK/ 指到 SDK 壳根。
+                storeFile file('../sdk/HBuilder-SDK/xiaoxiong-release.keystore')
                 storePassword 'xiaoxiong-dev-2026'
                 v1SigningEnabled true
                 v2SigningEnabled true

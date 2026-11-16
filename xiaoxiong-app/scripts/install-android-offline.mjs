@@ -69,7 +69,7 @@ console.log(`[ok] 设备已连接: ${devices[0].trim()}`)
 
 // 1) APK 存在性
 if (!existsSync(args.apk)) {
-  console.error(`[error] 未找到 APK: ${args.apk}\n       请先构建：cd xiaoxiong-app/native/android/sdk/HBuilder-Integrate-AS && ./gradlew :app:assembleDebug`)
+  console.error(`[error] 未找到 APK: ${args.apk}\n       请先构建：cd xiaoxiong-app/native/android/sdk/HBuilder-SDK && ./gradlew :app:assembleDebug`)
   process.exit(1)
 }
 

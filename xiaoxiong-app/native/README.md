@@ -52,7 +52,7 @@ gateway/src/embedded/
 
 ```sh
 node xiaoxiong-app/uni_app/scripts/package-android-offline.mjs \
-  --sdk ~/Downloads/Android-SDK@5.34.../HBuilder-Integrate-AS \
+  --sdk ~/Downloads/Android-SDK@5.34.../HBuilder-SDK \
   --appid __UNI_XXXXXXXX --appkey <AppKey> \
   --node-lib <digidem-android 包解压目录>   # nodejs-mobile-android-24.20.0-0.zip
 ```
@@ -62,9 +62,9 @@ node xiaoxiong-app/uni_app/scripts/package-android-offline.mjs \
 - `--no-gateway` 可退回纯 uni-app 资源接入；`--gateway-bundle` / `--gateway-cues` 可覆盖默认路径。
 - `assets/gateway/` 布局：`gateway.bundle.mjs`（顶层）+ `static/cues/*.mp3`（子目录，对应 `server.ts` 的 `CUE_DIR=<GATEWAY_HOME>/static/cues`）。`GatewayNodeService.extractAssets` 递归把整个目录拷到 `no_backup`。
 
-## Android 集成（DCloud 离线 SDK `HBuilder-Integrate-AS/simpleDemo`）
+## Android 集成（DCloud 离线 SDK `HBuilder-SDK/simpleDemo`）
 
-**2026-11-10 已落位到真实工程并 `assembleDebug` 验证通过**（本机 SDK 工程路径见 `~/Downloads/Android-SDK@5.34.../HBuilder-Integrate-AS`）：
+**2026-11-10 已落位到真实工程并 `assembleDebug` 验证通过**（本机 SDK 工程路径见 `~/Downloads/Android-SDK@5.34.../HBuilder-SDK`）：
 
 1. **Java**：`GatewayNodeService.java` → `src/main/java/com/xiaoxiong/assistant/gateway/GatewayNodeService.java`。
    - `static { System.loadLibrary("node"); System.loadLibrary("gatewaynode"); }`：先显式加载 `libnode.so` 再加载 JNI 桥，保证 `DT_NEEDED` 解析。

@@ -60,7 +60,9 @@ apps/gateway/data/app.db
 # 部署/打包时从官方下载离线 SDK 解压到对应目录即可，或用 --sdk / IOS_SDK_DIR 指定其它位置。
 # 真正的「原生工厂」（我们自己的原生源码）在 native/android/app/ 与 native/ios/app/，正常入库、不忽略。
 xiaoxiong-app/native/android/sdk/
-xiaoxiong-app/native/ios/sdk/HBuilder-Hello/
+xiaoxiong-app/native/ios/sdk/HBuilder-SDK/
+xiaoxiong-app/native/ios/sdk/SDK/
+xiaoxiong-app/native/ios/sdk/uniapp.podspec
 
 # Android 原生工厂（native/android/app）的生成物，由 package-android-offline.mjs 注入，不入库：
 # 前端 www、内嵌网关资产、libnode.so、引擎 aar 副本、构建缓存。

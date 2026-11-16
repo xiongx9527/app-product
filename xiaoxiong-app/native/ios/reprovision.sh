@@ -30,7 +30,7 @@ source "$SCRIPT_DIR/build.local"
 # build.local 里 IOS_SDK 可写成三种形式，统一解析为绝对路径：
 #   /abs/path          → 直接用
 #   ~/Downloads/...    → 展开 ~ 为用户主目录
-#   sdk/HBuilder-Hello → 相对本脚本所在 native/ios 解析（新约定：SDK 放 native/ios/sdk/ 下）
+#   sdk/HBuilder-SDK → 相对本脚本所在 native/ios 解析（新约定：SDK 放 native/ios/sdk/ 下，两平台目录名统一）
 case "$IOS_SDK" in
   /*)  SDK="$IOS_SDK" ;;
   ~*)  SDK="${IOS_SDK/#\~/$HOME}" ;;
@@ -111,7 +111,7 @@ for udid in "${UDIDS[@]}"; do
       reason="待处理：Xcode 缺该 iOS 版本的 DeviceSupport"
       echo "        $reason"
     else
-      echo "        $reason，详见 $BUILD_LOG"
+      echo "        ${reason}，详见 $BUILD_LOG"
       grep -iE 'error:|No profiles|no identities' "$BUILD_LOG" | tail -5
     fi
     SKIP_LIST+=("$udid : $reason")
@@ -120,7 +120,7 @@ for udid in "${UDIDS[@]}"; do
   fi
 
   if [ ! -d "$APP" ]; then
-    echo "        找不到产物 .app: $APP，跳过"
+    echo "        找不到产物 .app: ${APP}，跳过"
     SKIP_LIST+=("$udid : 产物缺失")
     echo
     continue
@@ -148,7 +148,7 @@ for udid in "${UDIDS[@]}"; do
     elif grep -qi 'Developer Mode' "$INSTALL_LOG"; then
       reason="待处理：iOS 16+ 未开开发者模式"
     fi
-    echo "        $reason，详见 $INSTALL_LOG"
+    echo "        ${reason}，详见 $INSTALL_LOG"
     grep -iE 'error|0xe8008015|not found|not explicitly|Unable' "$INSTALL_LOG" | tail -4
     SKIP_LIST+=("$udid : $reason")
   fi

@@ -8,8 +8,8 @@
 #   NODE_LIB         digidem android 包解压目录（含各 ABI 的 libnode.so）；留空则用 app 模块已内置的 libnode.so
 #   ANDROID_SDK_DIR  DCloud 离线 SDK 壳根目录（一般不改；换 SDK 时用绝对路径覆盖）
 #   IOS_SDK_DIR      iOS 离线 SDK 工程根目录（package-ios-offline.mjs 的 --sdk）。
-#                     默认指向 native/ios/sdk/HBuilder-Hello（与 Android SDK 同目录约定）；
-#                     把官方下载的 HBuilder-Hello 解压到该处即可，一般无需填写。
+#                     默认指向 native/ios/sdk/HBuilder-SDK（与 Android SDK 同目录约定，目录名两平台统一）；
+#                     把官方下载的 iOS 离线 SDK（内层工程 HBuilder-Hello）解压到该处即可，一般无需填写。
 #   NODE_IOS         digidem ios 包解压目录（含 NodeMobile.xcframework）；iOS 构建用，留空则跳过
 #   APP_DISPLAY_NAME 应用显示名（文字，如「小熊助手」）；改写 Android strings.xml / iOS Info.plist 的显示名
 #   APP_ICON_DIR     品牌资源目录（含 icon.png / splash.png / push.png）；留空则按环境回退 native/branding/<env>/，
