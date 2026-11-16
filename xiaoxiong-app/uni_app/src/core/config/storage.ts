@@ -38,8 +38,8 @@ const DEFAULT_PLAYBACK: PlaybackConfig = {
   defaultLoop: 3,
   autoLoop: false,
   defaultVolume: 0.5,
-  // 默认普通播放条：悬浮小圆是可选的花哨形态，用户没主动打开就不该默认出现
-  floatPlayer: false,
+  // 默认悬浮小圆（酷狗式）：用户明确要求默认打开
+  floatPlayer: true,
   floatPosition: 'top-center',
   subtitleFontSize: DEFAULT_SUBTITLE_FONT_SIZE,
   subtitleColor: DEFAULT_SUBTITLE_COLOR,
@@ -253,8 +253,8 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
   // 默认音量：夹紧到 0–1，缺省/非法回退 0.5。
   const rawVol = Number(source.defaultVolume)
   const defaultVolume = Number.isFinite(rawVol) ? Math.min(1, Math.max(0, rawVol)) : 0.5
-  // 悬浮小圆播放器：boolean，缺省关闭（默认普通播放条；纯客户端 UI 开关，不下发网关）。
-  const floatPlayer = typeof source.floatPlayer === 'boolean' ? source.floatPlayer : false
+  // 悬浮小圆播放器：boolean，缺省开启（默认悬浮小圆；纯客户端 UI 开关，不下发网关）。
+  const floatPlayer = typeof source.floatPlayer === 'boolean' ? source.floatPlayer : true
   // 悬浮位置：只接受通用悬浮层的预设 key，非法/缺省回退「顶部居中」。
   const rawPos = typeof source.floatPosition === 'string' ? source.floatPosition : ''
   const floatPosition: FloatPositionKey =

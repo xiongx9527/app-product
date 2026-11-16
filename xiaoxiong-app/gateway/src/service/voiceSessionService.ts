@@ -1377,11 +1377,12 @@ export class VoiceSessionService {
     if (!this.active) return
     // 帧一直会来，顺手把到期的回声抑制恢复掉
     if (this.halfDuplex && !this.echo.muted()) this.syncDuplex()
-    // 播报期间启用保守 VAD（门槛加倍 + 更长连续帧）：TTS 回声残余会把普通阈值下的
-    // 「有人声」一直撑着，句末静音判定永不满足——用户插话后永远等不到 finalize、进不了
-    // 队列，表现即「播报中太难插话」。strict 模式下只有真正的用户语音才维持 voiced，
-    // 说完停顿 endpoint 到期 → finalize → 入队。
-    const vad = this.vad.push(chunk, { strict: this.playbackPending })
+    // 播报期与思考/空闲期用同一套 VAD 门槛：早先给播报期加过 strict（门槛加倍），
+    // 想靠它挡 TTS 回声，但回声防护其实由下游文本层的 resemblesSpoken（草稿/定稿）
+    // 和 App 端 AEC 负责，VAD 加倍只会把用户正常音量的插话也一起挡在门外——
+    // 没有帧喂给 ASR 就没有 asr.partial，说话当下看不到识别文字，体感「播报时很难插话」。
+    // 用户要求播报期识别与思考期一致，故不再传 strict。
+    const vad = this.vad.push(chunk)
     for (const frame of vad.frames) {
       void this.asr.push(frame)
         .then((partial) => {

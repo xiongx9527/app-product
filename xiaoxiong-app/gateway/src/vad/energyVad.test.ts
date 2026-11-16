@@ -66,17 +66,21 @@ describe('EnergyVad 自适应噪声底', () => {
     expect(vad.push(frame(0.04), { now: 9000 }).voiced).toBe(false)
   })
 
-  it('播报期间用 strict 门槛：需要更多连续帧才认打断', () => {
+  it('播报期间用 strict 门槛：门槛更高，但短促插话（2 帧）仍能确认', () => {
     const vad = new EnergyVad()
     const a = vad.push(frame(0.3), { now: 0, strict: true })
-    const b = vad.push(frame(0.3), { now: 100, strict: true })
     expect(a.started).toBe(false)
-    expect(b.started).toBe(false)
 
-    const c = vad.push(frame(0.3), { now: 200, strict: true })
-    const d = vad.push(frame(0.3), { now: 300, strict: true })
-    expect(c.started).toBe(false)
-    expect(d.started).toBe(true)
+    const b = vad.push(frame(0.3), { now: 100, strict: true })
+    expect(b.started).toBe(true)
+  })
+
+  it('播报期间正常音量（略高于普通门槛）的插话也能被识别，不被双倍门槛吃掉', () => {
+    const vad = new EnergyVad()
+    // 普通门槛约 0.024；0.05 是正常说话音量，旧的双倍门槛（0.048）勉强、四帧要求直接吞掉
+    vad.push(frame(0.05), { now: 0, strict: true })
+    const second = vad.push(frame(0.05), { now: 100, strict: true })
+    expect(second.started).toBe(true)
   })
 
   it('句中短停顿（默认 hangoverMs=800）不结束当前句，避免被切断', () => {

@@ -407,7 +407,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           break
         }
         // 更新排队数量（「我说」卡片右上角的红标）。插话已入队：清掉下方草稿区的识别文字
-        // （用户要求：进入排队后识别文字不再显示，由排队角标表达）；这句话等播完轮到它
+        // （进入排队后识别文字不再显示，由排队角标表达）；这句话等播完轮到它
         // 才由 asr.final 进入「我说」卡片正文。
         if (mode === 'dialog') {
           queuePending.value = Math.max(queuePending.value, event.position)
@@ -552,19 +552,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           uni.downloadFile({
             url: shortUrl,
             success: (r) => {
-              if (r.statusCode !== 200 || !r.tempFilePath) {
-                errorMessage.value =
-                  '[diag dl] status=' + String(r.statusCode) + ' url=' + shortUrl.slice(0, 70)
-                return
-              }
+              if (r.statusCode !== 200 || !r.tempFilePath) return
               playMusic(
                 r.tempFilePath,
                 event.title,
                 event.loop != null ? { loop: event.loop } : undefined
               )
             },
-            fail: (e: any) => {
-              errorMessage.value = '[diag dl-fail] ' + String(e?.errMsg ?? e).slice(0, 100)
+            fail: () => {
+              // 下载失败不静默吞掉：让播放条显示失败态（音乐条会保留并给出提示）
+              musicState.musicError.value = true
             },
           })
         } else if (event.proxy && event.url.includes('.m4s')) {
@@ -827,7 +824,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     phase.value = 'idle'
     assistantBusy = false
     answerHasTts = false
-    console.warn('[wake] enterWake()')
     await ensureCapture()
     // 网关可能刚重启过，本地标志会过期；一律以传输层的真实连接状态为准
     if (transport.isConnected()) {
@@ -838,10 +834,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     try {
       await transport.connect('wake')
       void announceMicIfNeeded()
-    } catch (err: any) {
+    } catch {
       // 建连失败交给自动重连；确认连不上由「重连耗尽」统一播报，此处静默。
-      // 临时诊断打点：把真实 errMsg 显示到首页 error 区（定位「无法连接网关」根因后删除）
-      errorMessage.value = '[diag wake] ' + String(err?.errMsg ?? err?.message ?? err).slice(0, 120)
     }
   }
 
@@ -854,9 +848,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
     try {
       await transport.connect('dialog')
-    } catch (err: any) {
+    } catch {
       // 切到对话时建连失败：自动重连兜底，静默；连不上由「重连耗尽」统一播报
-      errorMessage.value = '[diag dialog] ' + String(err?.errMsg ?? err?.message ?? err).slice(0, 120)
     }
   }
 
@@ -897,7 +890,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
 
     if (isAppCaptureSupported()) {
-      console.warn('[wake] ensureCapture: App 分支')
       // 原生 AudioRecord 需要运行时麦克风权限，且框架不会代请求，必须前端先申请。
       const granted = await requestMicPermission()
       if (!granted) {
@@ -948,9 +940,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    */
   let enabling = false
   async function enable(): Promise<void> {
-    console.warn('[wake] enable() called')
-    // 临时诊断打点：enable 是否被调用/是否被防重入锁挡住（定位后删除）
-    errorMessage.value = '[diag] enable called, enabling=' + String(enabling)
     if (enabling) return // 防重入：connect 触发的连接恢复回调会试图自动重开
     enabling = true
     try {

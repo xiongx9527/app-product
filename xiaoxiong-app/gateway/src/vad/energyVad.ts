@@ -65,9 +65,15 @@ const DEFAULTS = {
   fallRate: 0.3,
 }
 
-/** strict 模式的门槛倍数与连续帧要求。 */
-const STRICT_MULTIPLIER = 2
-const STRICT_START_FACTOR = 2
+/**
+ * strict 模式的门槛倍数与连续帧要求。
+ * 早期用「门槛 ×2 + 连续 4 帧」，播报期插话要连续 1 秒以上大声说话才确认，
+ * 用户短促的「停一下」永远进不了 ASR（体感「播报时根本不会识别」）。
+ * App 端已有 AEC（VOICE_COMMUNICATION + AcousticEchoCanceler），回声残留小，
+ * 1.4 倍门槛 + 2 帧（512ms）足以区分真人插话与回声。
+ */
+const STRICT_MULTIPLIER = 1.4
+const STRICT_START_FACTOR = 1
 
 /** 底噪允许区间：下限防止归零后过度灵敏，上限防止持续噪声把门限顶到天上。 */
 const NOISE_FLOOR_MIN = 0.0005

@@ -304,6 +304,34 @@ describe('语音会话：句末判定、排队与去噪', () => {
     h.finishReply()
   })
 
+  it('播报期短促插话（2 帧 ≈512ms）也能进队列——旧的四帧要求会让它完全不识别', async () => {
+    const h = createHarness()
+    await startDialog(h.service)
+    await speakUtterance(h)
+    expect(h.agentCalls()).toBe(1)
+    // 必须等 TTS 真正开播（playbackPending=true）再插话，否则测的是普通门槛
+    for (let i = 0; i < 100 && !h.events.some((e) => e.type === 'tts.start'); i += 1) await sleep(10)
+    expect(h.events.some((e) => e.type === 'tts.start')).toBe(true)
+
+    // 让 VAD 退出上一句：播报中天然有静音间隙（>hangover 800ms），不退出就测不到「开口判定」
+    await sleep(900)
+    h.service.handleBinary(silentFrame())
+
+    // 播报中：只持续 2 帧（≈512ms）的短促插话。旧实现要求连续 4 帧（≈1 秒）才确认开口，
+    // 「停一下」这种半秒短句永远确认不了，用户体感「播报时根本不识别」。
+    h.service.handleBinary(loudFrame())
+    h.service.handleBinary(loudFrame())
+    await sleep(60)
+
+    const queued = h.events.filter((e) => e.type === 'asr.queued')
+    expect(queued).toHaveLength(1)
+    // 仍不打断当前句、不发起新轮次
+    expect(h.events.some((e) => e.type === 'tts.stop')).toBe(false)
+    expect(h.agentCalls()).toBe(1)
+    h.finishReply()
+    await sleep(10)
+  })
+
   it('播报期间插话排队：当前句播完后按序处理，不中途打断', async () => {
     const h = createHarness()
     await startDialog(h.service)
