@@ -25,9 +25,10 @@
 `gateway/static/cues/` 与 `/static/cues/*` 端点已移除（见 `contracts/README.md`）。
 `client.cue` 事件只传提示音名，客户端按名播本目录文件。
 
-另外两个运行中瞬时提示：
+另外三个运行中瞬时提示：
 - `asr-error.mp3`：语音识别失败/超时（网关在 ASR 定稿异常时节流下发 `client.cue('asr-error')`），文案「不好意思，我没听清，你再说一遍好吗」
 - `thinking.mp3`：「正在思考」超过 10s 仍未开始播报时由客户端本地播放，安抚用户不是卡死，文案「稍等一下，我还在想哈」
+- `queue-full.mp3`：插话队列已满（网关下发 `asr.rejected` / `reason=queue-full` 时客户端播放），文案与网关 `queue.full()` 一致「你说的太多了，我记不住」；与「我说」卡片右上角话术同时给出听得见的反馈
 
 H5 端使用 WebAudio 生成提示音 + Toast 兜底，不依赖这些文件；
 App 端通过 `uni.createInnerAudioContext()` 播放。

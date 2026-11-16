@@ -24,6 +24,16 @@ function silentFrame(samples = 1600): Uint8Array {
   return new Uint8Array(samples * 2)
 }
 
+/**
+ * 正常说话音量帧（RMS≈0.03，约 loudFrame 12000 的 1/12）：模拟用户正常音量而非大喊，
+ * 用来验证播报期这种音量也能进 ASR 并下发草稿，让说话当下有识别文字。
+ */
+function normalFrame(samples = 1600): Uint8Array {
+  const pcm = new Int16Array(samples)
+  for (let i = 0; i < samples; i += 1) pcm[i] = i % 2 === 0 ? 1000 : -1000
+  return new Uint8Array(pcm.buffer)
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -2122,6 +2132,34 @@ describe('插话草稿下发（与思考/播报并存展示）', () => {
     h2.service.handleBinary(loudFrame())
     await sleep(10)
     expect(partials(h2)).toHaveLength(0)
+  })
+
+  it('播报期正常音量（非大喊）插话也能下发草稿——说话当下能显示文字', async () => {
+    // 用户可见行为回归：播报期说一句正常音量（非 loudFrame 大喊）的插话，必须下发
+    // asr.partial 让客户端显示识别草稿。曾因播报期用 strict VAD 抬高门槛，正常音量
+    // 进不了 ASR、没有草稿文字，用户体感「播报时很难插话」。
+    const h = createHarness({
+      delayDelta: true,
+      finalizeText: '你好，随便聊聊',
+      replyText: '好的，我来说一句。',
+      ttsFrames: [loudFrame()],
+      partialText: '停一下',
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    expect(h.events.some((e) => e.type === 'tts.end')).toBe(true)
+
+    // 让 VAD 退出上一句的 voiced 状态，确保这里测的是「新开口第一帧」
+    await sleep(900)
+    h.service.handleBinary(silentFrame())
+
+    // 两帧正常音量插话（VAD 需连续 2 帧确认开口）→ 下发草稿
+    h.service.handleBinary(normalFrame())
+    h.service.handleBinary(normalFrame())
+    await sleep(10)
+    expect(partials(h)).toContain('停一下')
   })
 })
 

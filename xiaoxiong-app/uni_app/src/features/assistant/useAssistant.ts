@@ -203,6 +203,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    */
   let lastSpokeAt = 0
   const WAKE_ECHO_MS = 2000
+  /** 播报期 partial 命中唤醒词打断的节流：流式识别连续多帧命中只打一次，避免重复招呼/重复跳过。 */
+  let lastPartialSkipAt = 0
+  const PARTIAL_SKIP_MS = 2500
   /**
    * 网关还有几句排队没轮到：期间「你说」必须锁在当前句，
    * 中间识别结果、播完回执都不能把文字顶掉。
@@ -389,6 +392,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         //（用户实测「刚好卡在要退下的时机就退下了」）。listening 态下重置 T1 同理早触发。
         if (mode === 'dialog') {
           dispatch({ type: 'USER_SPEECH' })
+          // 播报中 partial 命中「小熊小熊」= 用户嫌这句太长、想立刻打断：流式识别到就打断，
+          // 不等 asr.final 定稿（那要再等 endpoint 1 秒 + 识别链，体感「打断很困难」）。
+          // 回声已被网关 resemblesSpoken 在 partial 层挡掉，这里不会把助手自己话当打断。
+          if (
+            isSpeaking.value &&
+            Date.now() - lastPartialSkipAt >= PARTIAL_SKIP_MS &&
+            matchWakeWord(event.text, DEFAULT_WAKE_WORDS)
+          ) {
+            lastPartialSkipAt = Date.now()
+            skipCurrentAndGreet(event.text)
+            break
+          }
           // 插话已入队（queuedHideLive）后不再显示草稿——说话尾音晚到的 partial 会把草稿
           // 又填回来，用户明确要求「入队后有排队角标就够了」。
           if (queuedHideLive) break
@@ -423,7 +438,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           break
         }
         // 专用话术显示在「我说」卡片右上角（与排队数量徽标同位置同款式），不进正文、不弹浮层
-        if (mode === 'dialog') queueFullMsg.value = event.message
+        // 同时播一声 mp3「你说的太多了，我记不住」：队列满也要有听得见的反馈，
+        // 否则用户说话后既没入队、正文又不变，会以为没识别到。playPromptCue 内部对
+        // 相同 cue 有节流，连续多句被拒不会叠播成一串。
+        if (mode === 'dialog') {
+          queueFullMsg.value = event.message
+          playPromptCue('queueFull')
+        }
         break
       case 'asr.final':
         if (mode === 'wake') {

@@ -15,6 +15,8 @@ export type PromptCue =
   | 'asrError'
   /** 思考超时的安抚提示：「稍等一下，我还在想」 */
   | 'thinking'
+  /** 插话队列已满：「你说的太多了，我记不住」 */
+  | 'queueFull'
 
 const CUE_FILE: Record<PromptCue, string> = {
   greeting: 'greeting',
@@ -28,6 +30,7 @@ const CUE_FILE: Record<PromptCue, string> = {
   micDenied: 'mic-denied',
   asrError: 'asr-error',
   thinking: 'thinking',
+  queueFull: 'queue-full',
 }
 
 /** 提示音全部走客户端打包内的本地文件（/static/audio/，唯一一份，mp3 不在网关侧再放副本）：
@@ -72,9 +75,10 @@ const CUE_MUTE_MS: Record<PromptCue, number> = {
   ttsDown: 3600,
   llmDown: 3700,
   micDenied: 6200,
-  // asr-error ≈3.1s / thinking ≈2.0s（edge-tts XiaoxiaoNeural），留一点尾音余量
+  // asr-error ≈3.1s / thinking ≈2.0s / queue-full ≈2.8s（edge-tts XiaoxiaoNeural），留一点尾音余量
   asrError: 3400,
   thinking: 2300,
+  queueFull: 3100,
 }
 
 let cueMuteUntil = 0

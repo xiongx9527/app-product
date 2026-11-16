@@ -53,6 +53,11 @@ public class WakeModule extends UniModule {
     private static final int FRAME_MS = 32;
     /** 每多少帧打一次统计日志，避免刷屏。 */
     private static final int LOG_EVERY_FRAMES = 50;
+    /** TTS 播报音量（0–1）。播放音乐默认 0.5，播报对齐到同一水平：
+     *  满音量 1.0 外放的 TTS 回声会被 VOICE_COMMUNICATION 麦克风采回，AEC 双讲抑制时把
+     *  用户插话一起压掉，表现为「播报时插话很难」；真机对比「播放音乐插话很顺」正是音量差。
+     *  降到与音乐一致后回声弱、AEC 压力小、用户也敢开口，插话识别明显变顺。 */
+    private static final float PLAYBACK_VOLUME = 0.5f;
 
     public WakeModule() {
         Log.i(TAG, "WakeModule instantiated");
@@ -157,6 +162,8 @@ public class WakeModule extends UniModule {
                 playTrack = null;
                 return;
             }
+            // 播报音量对齐音乐默认音量（0.5），降低外放回声对采集/AEC 与插话识别的干扰。
+            playTrack.setVolume(PLAYBACK_VOLUME, PLAYBACK_VOLUME);
             playTrack.play();
             synchronized (playLock) {
                 writtenFrames = 0;
@@ -164,7 +171,8 @@ public class WakeModule extends UniModule {
             }
             playRunning = true;
             startIdlePolling();
-            Log.i(TAG, "AudioTrack started: " + playSampleRate + "Hz/mono/16bit, buf=" + bufSize);
+            Log.i(TAG, "AudioTrack started: " + playSampleRate + "Hz/mono/16bit, buf=" + bufSize
+                    + ", volume=" + PLAYBACK_VOLUME);
         } catch (Throwable e) {
             Log.e(TAG, "startPlayback failed: " + e.getMessage(), e);
             playRunning = false;
