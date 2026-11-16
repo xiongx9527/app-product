@@ -1,6 +1,9 @@
 import type { TtsProvider } from './provider'
 import type { VendorParams } from '../config'
 
+/** 单次合成的硬超时：上游慢/挂起时主动 abort 断开、舍弃这帧音频，不拖死一轮播报。 */
+const TTS_TIMEOUT_MS = 8000
+
 /**
  * 对接本地语音服务（openai-voice，OpenAI 兼容）的 TTS。
  *
@@ -32,6 +35,7 @@ export class HttpVoiceTts implements TtsProvider {
           speed: 1.0,
           ...this.params,
         }),
+        signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
       })
       if (!res.ok || !res.body) {
         yield* this.silence(text)

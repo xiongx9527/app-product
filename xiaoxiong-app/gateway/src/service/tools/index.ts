@@ -22,9 +22,6 @@ import { createMusicSearchTool } from './musicSearchTool'
 import { createSubtitleTool } from './subtitleTool'
 import { createDealsTool } from './dealsTool'
 import { createSmzdmSource, type DealsSource } from '../deals'
-import { createOpenSourceTool } from './opensourceTool'
-import { createOschinaSource, type OpenSourceSource } from '../opensource'
-import { preferenceKeywords } from '../dealsPreference'
 import type { MusicSource } from '../music/types'
 import {
   createRememberTool,
@@ -67,8 +64,6 @@ export { createMusicSearchTool, MUSIC_SEARCH_TOOL_NAME } from './musicSearchTool
 export { createSubtitleTool, SUBTITLE_TOOL_NAME } from './subtitleTool'
 export { createDealsTool, DEALS_TOOL_NAME } from './dealsTool'
 export { createSmzdmSource, parseDeals, formatDeals, filterDeals, type Deal, type DealsSource, type DealsFetcher, type DealsOptions } from '../deals'
-export { createOpenSourceTool, OPENSOURCE_TOOL_NAME } from './opensourceTool'
-export { createOschinaSource, parseOschina, formatProjects, filterProjects, type OpenSourceProject, type OpenSourceSource, type OpenSourceFetcher, type OpenSourceOptions } from '../opensource'
 export {
   createRememberTool,
   createRecallTool,
@@ -86,7 +81,6 @@ export {
  * musicSource + emit 同时具备时才注册音乐类工具（播放/停止/搜索/字幕）：
  * 前者决定「播什么源」，后者决定「下发给客户端」；缺一（离线测试/未配置音乐源）则不注册。
  * dealsSource 为好价数据源，由组合根注入，缺省用 smzdm 源；后续接新源只换这里。
- * opensourceSource 为开源工具/软件数据源，缺省用 oschina 源；后续接新源只换这里。
  */
 export function createToolkit(
   lang: Lang | string,
@@ -101,9 +95,7 @@ export function createToolkit(
   defaultVolume?: number,
   autoLoop?: boolean,
   dealsCount?: number,
-  opensourceCount?: number,
   dealsSource: DealsSource = createSmzdmSource(),
-  opensourceSource: OpenSourceSource = createOschinaSource(),
   /** 自动记忆（自动抽取）开关：来自客户端 session.start.memory.auto，缺省关。开启时助手才会主动调用 remember 沉淀长期记忆。 */
   autoMemory: boolean = false
 ): Toolkit {
@@ -115,22 +107,6 @@ export function createToolkit(
     createCurrentLocationTool(lang, locationProvider, requestLocation),
     createWeatherTool(lang, locationProvider, undefined, requestLocation),
     createDealsTool(lang, { source: dealsSource, defaultLimit: dealsCount }),
-    createOpenSourceTool(lang, {
-      source: opensourceSource,
-      defaultLimit: opensourceCount,
-      // 结构化结果经同一条 emit 通道下发成 media.detail(kind: project) 卡片
-      onResults: emit ? (items) => emit({ type: 'media.detail', kind: 'project', items }) : undefined,
-      // 泛推荐结合长期记忆：与商品同一套偏好关键词，读失败就当作没有记忆
-      getPreferenceKeywords: memoryStore
-        ? async () => {
-            try {
-              return preferenceKeywords(await memoryStore.list())
-            } catch {
-              return []
-            }
-          }
-        : undefined,
-    }),
   ]
   // 媒体指令需要 emit 把指令下发给客户端，且需要 musicSource 决定播什么；
   // 两者都齐才注册音乐工具，否则（离线测试 / 客户端未配置音乐源）不注册，避免空转。

@@ -2,7 +2,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, DetailItem, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
+import type { ClientMessage, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
 import type { GatewayConfig } from '../config'
 import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
@@ -32,6 +32,10 @@ import { detectMemoryCommand } from './memoryControl'
 import { pickDeals, preferenceKeywords } from './dealsPreference'
 import { detectSubtitleCommand } from './subtitleControl'
 import { detectPlayModeCommand } from './playModeControl'
+import { detectTimeCommand } from './timeControl'
+import { detectWeatherCommand } from './weatherControl'
+import { detectProductQuery } from './productCatalog'
+import { createWeatherTool } from './tools/weatherTool'
 import { messages } from '../i18n'
 import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -41,6 +45,12 @@ import { buildHealth } from './health'
 
 /** 播报期间最多排几句用户插话，超出直接拒收。 */
 const MAX_QUEUE = 3
+
+/**
+ * 单轮 LLM 的硬超时（毫秒）：上游慢/挂起时主动舍弃本轮、断开下行播放，
+ * 立即播友好兜底，不让用户干等。测试可经 deps.llmTimeoutMs 注入更短的值。
+ */
+const DEFAULT_LLM_TIMEOUT_MS = 15000
 
 /** 自动记忆抽取时，喂给抽取引擎的「最近用户原话」最多保留几句（足够判断稳定性即可）。 */
 const MAX_HISTORY_TURNS = 8
@@ -68,7 +78,6 @@ export interface VoiceSessionDeps {
     defaultVolume?: number,
     autoLoop?: boolean,
     dealsCount?: number,
-    opensourceCount?: number,
     getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null,
     autoMemory?: boolean,
     mcpServers?: McpServerConfig[]
@@ -88,7 +97,11 @@ export interface VoiceSessionDeps {
   candidateFetcher?: CandidateFetcher
   /** 查询商品/好价：测试可注入桩避免联网。一次返回口播文本 + 结构化 Deal[]，
    *  缺省用 createDealsTool.snapshot（工具与直连共用同一抓取缓存，零二次抓取）。 */
-  dealsQuery?: () => Promise<DealsSnapshot>
+  dealsQuery?: (keyword?: string | null) => Promise<DealsSnapshot>
+  /** 天气查询：测试可注入桩避免联网。缺省用 createWeatherTool.call（懒加载位置 + 自带超时）。 */
+  weatherQuery?: () => Promise<string>
+  /** 单轮 LLM 超时（毫秒）：超时主动舍弃本轮、断开下行播放、立即播友好兜底。测试注入更小值。 */
+  llmTimeoutMs?: number
   /** 选中某件后补抓它的详情页（优惠说明/品牌/权威时间/大图）；测试可注入桩避免联网。
    *  缺省走数据源自身的 detailUrl + parseDetail，拿不到就返回 null（卡片用列表数据照常展示）。 */
   dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
@@ -191,8 +204,6 @@ export class VoiceSessionService {
   private autoLoop = false
   /** 好价商品推荐条数：来自客户端设置页 session.start.recommend.dealsCount，缺省 3，范围 1–10。 */
   private dealsCount = 3
-  /** 开源工具推荐条数：来自客户端设置页 session.start.recommend.opensourceCount，缺省 3，范围 1–10。 */
-  private opensourceCount = 3
   /** 自动记忆（自动抽取）开关：来自客户端设置页 session.start.memory.auto，缺省关。开启时助手才会主动沉淀长期记忆。 */
   private autoMemory = false
   /** 自动记忆合并（摘要）阈值：来自客户端设置页 session.start.memory.consolidateThreshold，缺省走模块常量/网关配置。 */
@@ -217,8 +228,6 @@ export class VoiceSessionService {
    * 商品数据只经 media.detail 下发，绝不进 session.start.voice.params 共用通道。
    */
   private pendingDeals: { items: Deal[]; query: string } | null = null
-  /** 开源项目卡片（工具层直接下发）：留住列表，供下一轮「第二个」语音选号。 */
-  private pendingProjects: { items: DetailItem[] } | null = null
   /** 上一轮「换一首」没找到同类型的歌，正等用户确认是否换其它风格（不直接乱播） */
   private pendingNextFallback = false
   private mode: 'wake' | 'dialog' = 'dialog'
@@ -312,7 +321,6 @@ export class VoiceSessionService {
           return Number.isFinite(n) ? Math.min(10, Math.max(1, Math.floor(n))) : fallback
         }
         this.dealsCount = toCount(rc?.dealsCount, 3)
-        this.opensourceCount = toCount(rc?.opensourceCount, 3)
         // 自动记忆开关：来自客户端设置页（session.start.memory.auto），缺省关。
         // 仅控制助手是否主动沉淀长期记忆；手动指令（记录下 / 帮我记 等）始终生效。
         this.autoMemory = typeof msg.memory?.auto === 'boolean' ? msg.memory.auto : false
@@ -626,7 +634,6 @@ export class VoiceSessionService {
     this.pendingCandidates = { items: ranked, query }
     // 点歌候选与商品候选互斥：同时挂着会让「第二个」到底选歌还是选商品产生歧义。
     this.pendingDeals = null
-    this.pendingProjects = null
     const labels = items.map((c) => (c.artist ? `${c.title}，${c.artist}` : c.title))
     await this.speakReply(
       (recommend ? m.recommend(labels) : m.candidates(labels)) + m.chooseHint()
@@ -807,6 +814,15 @@ export class VoiceSessionService {
    * 返回 true 表示已被直连命令消费。
    */
   private async handleDirectCommand(text: string): Promise<boolean> {
+    // 时间/天气：答案确定或来自独立数据源，绕开慢大模型直接口播，不让用户干等。
+    if (detectTimeCommand(text)) {
+      await this.runTimeCommand()
+      return true
+    }
+    if (detectWeatherCommand(text)) {
+      await this.runWeatherCommand()
+      return true
+    }
     const memCmd = detectMemoryCommand(text)
     if (memCmd && this.deviceId) {
       await this.runMemoryCommand(memCmd)
@@ -837,8 +853,13 @@ export class VoiceSessionService {
       return true
     }
     // 商品/好价查询放最后：不抢记忆/音量/字幕/播放模式/音乐等既有直连命令。
-    // 高置信泛查询（有什么折扣、便宜的东西、查询商品…）绕开 LLM 直接查；
-    // 单独「东西/商品/买卖」等泛词不在此拦，交给 LLM 结合上下文判断，避免误触发。
+    // 实物商品名/交易词（推荐一款空调、买卖…）→ 带关键词走站内真搜索；
+    // 好价信号句（有什么折扣、便宜的东西…）→ 限定好价 feed；都绕开 LLM 直接查。
+    const product = detectProductQuery(text)
+    if (product) {
+      await this.runDealsCommand(product.keyword)
+      return true
+    }
     if (detectDealsCommand(text)) {
       await this.runDealsCommand()
       return true
@@ -846,23 +867,59 @@ export class VoiceSessionService {
     return false
   }
 
+  /** 时间直连：本地时钟按会话时区取时/分，直接口播，零网络、零 LLM。 */
+  private async runTimeCommand(): Promise<void> {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: this.timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date())
+    const h = Number(parts.find((p) => p.type === 'hour')?.value ?? 0)
+    const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0)
+    await this.speakReply(messages(this.lang).clock.now(h, m))
+  }
+
+  /** 天气直连：复用天气数据源（懒加载位置），不进 LLM。超时/失败给友好兜底。 */
+  private async runWeatherCommand(): Promise<void> {
+    const query =
+      this.deps.weatherQuery ??
+      (async (): Promise<string> => {
+        const tool = createWeatherTool(
+          this.lang,
+          () => this.getLocation(),
+          undefined,
+          () => this.requestClientLocation(),
+        )
+        return tool.call()
+      })
+    try {
+      await this.speakReply(await query())
+    } catch {
+      await this.speakReply(messages(this.lang).llmUnavailable())
+    }
+  }
+
   /**
    * 处理「查商品 / 找好价」直接指令（绕开 LLM）：一次查询同时拿到口播文本与结构化 Deal[]。
    * 留住列表供下一轮语音选号；详情只走 media.detail 展示、不进 TTS；商品数据不进 voice.params。
    * dealsQuery 可由测试注入桩避免联网；缺省用 createDealsTool.snapshot（共用抓取缓存，零二次抓取）。
    */
-  private async runDealsCommand(): Promise<void> {
+  private async runDealsCommand(keyword?: string | null): Promise<void> {
     const query =
       this.deps.dealsQuery ??
       (async (): Promise<DealsSnapshot> => {
         // DealsOptions.source 必需（数据源由调用方注入，工具本身不绑定站点）。
         const tool = createDealsTool(this.lang, { source: createSmzdmSource() })
-        // 直连句都是好价信号（打折/优惠/便宜…），显式限定好价 feed；
+        // 具体商品名（推荐一款空调）→ 带关键词走站内真搜索，能搜到普通商品、不限定好价；
+        // 好价信号句（打折/优惠/便宜…）→ 限定好价 feed。
         // 多抓一些候选：下面要按长期记忆偏好挑 3 条，只取 3 条就没有挑选余地。
-        return tool.snapshot({ limit: 10, dealsOnly: true })
+        return keyword
+          ? tool.snapshot({ keyword, limit: 10 })
+          : tool.snapshot({ limit: 10, dealsOnly: true })
       })
     try {
-      const { text, deals } = await query()
+      const { text, deals } = await query(keyword)
       // 「推荐几件」按用户长期记忆里的偏好排序（确定性纯函数，不调 LLM）；
       // 没有记忆或都没命中时等价于取前 3 条，与没有个性化时行为一致。
       const picked = pickDeals(deals, await this.dealPreferenceKeywords(), 3)
@@ -938,15 +995,8 @@ export class VoiceSessionService {
     return true
   }
 
-  /**
-   * 工具层下发的事件统一走这里：透传客户端，同时记住「开源项目列表」供语音选号。
-   * 开源项目由 LLM 调工具产出卡片，网关没有直连路径，因此在这个唯一出口旁听一次；
-   * 商品（deals）是直连下发、自己就持有列表，不走这里。
-   */
+  /** 工具层下发的事件统一走这里透传客户端（商品/天气/时间等都是直连，不旁听）。 */
   private readonly emitToClient = (m: ServerEvent): void => {
-    if (m.type === 'media.detail' && m.kind === 'project' && m.selectedIndex == null && !m.close) {
-      this.pendingProjects = { items: m.items }
-    }
     this.deps.send(m)
   }
 
@@ -959,40 +1009,6 @@ export class VoiceSessionService {
     } catch {
       return null
     }
-  }
-
-  /**
-   * 处理用户对**开源项目编号列表**的语音选择。返回 true 表示这句已被消费。
-   * 与商品选号同一条规则：必须在回声比对之前调用（「第二个」正是刚口播过的词）。
-   * 列表由工具层下发的卡片快照持有，这里只切 selectedIndex 并口播一句确认，
-   * 不复述项目简介（详情只展示、不朗读）。
-   */
-  private async handleProjectSelection(text: string): Promise<boolean> {
-    const pending = this.pendingProjects
-    if (!pending || !pending.items.length) return false
-    const idx = parseSelection(
-      text,
-      pending.items.map((it) => ({ title: it.title, artist: '' })),
-    )
-    if (idx === null) {
-      // 同商品：列表保留；像在报编号就重问，不放行到音乐/LLM 分支
-      if (looksLikeSelectionAttempt(text)) {
-        this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-        await this.speakReply(messages(this.lang).opensource.chooseAgain())
-        return true
-      }
-      return false
-    }
-    this.pendingProjects = null
-    this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-    this.deps.send({
-      type: 'media.detail',
-      kind: 'project',
-      items: pending.items,
-      selectedIndex: idx + 1,
-    })
-    await this.speakReply(messages(this.lang).opensource.detailIntro(idx + 1))
-    return true
   }
 
   /**
@@ -1251,7 +1267,6 @@ export class VoiceSessionService {
     // 上一轮给过商品编号列表，这一句优先当作「说编号 / 点商品名」解析。
     // 同样必须早于回声比对：「第二个」正是刚口播过的词。
     if (this.pendingDeals && await this.handleDealSelection(text)) return
-    if (this.pendingProjects && await this.handleProjectSelection(text)) return
 
     // 上一轮「换一首」没找到同类型的其它歌，正等用户确认是否换其它风格：
     // 把决定权交还给用户。这句优先判定为「接受换其它 / 点名想听什么」。
@@ -1451,6 +1466,7 @@ export class VoiceSessionService {
     let buffer = ''
     let ttsStarted = false
     let ttsChain: Promise<void> = Promise.resolve()
+    let timedOut = false
     const enqueue = (sentence: string) => {
       // 特殊符号/markdown/emoji 只留在界面，不送进 TTS 念出来
       const clean = sanitizeForSpeech(sentence)
@@ -1464,26 +1480,38 @@ export class VoiceSessionService {
       }
       ttsChain = ttsChain.then(() => this.speakSentence(clean, turn))
     }
-    try {
-      const full = await this.agent.reply(
-        text,
-        (delta) => {
-          if (stale()) return
-          this.deps.send({ type: 'llm.delta', text: delta })
-          buffer += delta
-          let cut = sentenceCut(buffer)
-          while (cut > 0) {
-            enqueue(buffer.slice(0, cut))
-            buffer = buffer.slice(cut)
-            cut = sentenceCut(buffer)
-          }
-        },
-        (delta) => {
-          // 思考过程只给界面看，不进 buffer、不进 TTS
-          if (stale()) return
-          this.deps.send({ type: 'llm.thinking', text: delta })
+    // 超时看门狗：上游 LLM 卡住/冷启动慢时，主动舍弃本轮流式增量、断开下行播放，
+    // 立即播友好兜底，不让用户干等、也不暴露技术故障（用户：「不要让用户觉得好慢」）。
+    const timeoutMs = this.deps.llmTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+    const replyPromise = this.agent.reply(
+      text,
+      (delta) => {
+        if (stale() || timedOut) return
+        this.deps.send({ type: 'llm.delta', text: delta })
+        buffer += delta
+        let cut = sentenceCut(buffer)
+        while (cut > 0) {
+          enqueue(buffer.slice(0, cut))
+          buffer = buffer.slice(cut)
+          cut = sentenceCut(buffer)
         }
-      )
+      },
+      (delta) => {
+        // 思考过程只给界面看，不进 buffer、不进 TTS
+        if (stale() || timedOut) return
+        this.deps.send({ type: 'llm.thinking', text: delta })
+      }
+    )
+    // 超时后 replyPromise 仍在跑：挂个空 catch 避免产生未处理 rejection
+    void replyPromise.catch(() => undefined)
+    try {
+      const full = await Promise.race([
+        replyPromise,
+        new Promise<string>((_, reject) => {
+          timeoutTimer = setTimeout(() => reject(new Error('LLM_TIMEOUT')), timeoutMs)
+        }),
+      ])
       if (stale()) {
         this.deps.data.insertCommandLog(this.deviceId, text, 'cancelled')
         return ttsStarted
@@ -1502,10 +1530,18 @@ export class VoiceSessionService {
         await this.speakReply(messages(this.lang).llmFallthrough())
       }
       return ttsStarted
-    } catch (err) {
+    } catch {
       if (stale()) return ttsStarted
-      this.sendError('LLM_ERROR', (err as Error).message)
+      // 超时或任何 LLM 异常：主动舍弃本轮、断开下行、给友好兜底，不 sendError 技术错误
+      timedOut = true
+      if (ttsStarted) this.deps.send({ type: 'tts.stop' })
+      this.speaking = false
+      this.playbackPending = false
+      this.cancelPlaybackWait()
+      await this.speakReply(messages(this.lang).llmUnavailable())
       return ttsStarted
+    } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer)
     }
   }
 
@@ -1627,7 +1663,6 @@ export class VoiceSessionService {
             this.defaultVolume,
             this.autoLoop,
             this.dealsCount,
-            this.opensourceCount,
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
             this.autoMemory,
             this.mcpServers
@@ -1639,7 +1674,6 @@ export class VoiceSessionService {
     // 全新会话：清空跨轮状态并重建 LLM（重武装/re-arm 走上面的早返回，不清商品候选）
     this.pendingCandidates = null
     this.pendingDeals = null
-    this.pendingProjects = null
     this.pendingNextFallback = false
     this.recentUserTurns = []
     this.autoExtractRuns = 0
@@ -1677,7 +1711,6 @@ export class VoiceSessionService {
             this.defaultVolume,
             this.autoLoop,
             this.dealsCount,
-            this.opensourceCount,
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
             this.autoMemory,
             this.mcpServers
@@ -1762,7 +1795,6 @@ export class VoiceSessionService {
     this.queue.length = 0
     this.pendingCandidates = null
     this.pendingDeals = null
-    this.pendingProjects = null
     this.pendingNextFallback = false
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()

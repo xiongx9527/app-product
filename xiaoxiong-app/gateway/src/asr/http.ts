@@ -5,6 +5,11 @@ import type { VendorParams } from '../config'
 const PARTIAL_INTERVAL_MS = 600
 /** 音频短于约 0.4 秒时先不识别，避免半截字在界面上抖。 */
 const PARTIAL_MIN_BYTES = 12800
+/**
+ * 单次识别的硬超时：上游 ASR 卡住时主动 abort 断开连接、舍弃这次识别，
+ * 不让一轮会话被慢服务拖死（用户感知就是「喊了没反应 / 好慢」）。
+ */
+const ASR_TIMEOUT_MS = 6000
 
 /**
  * 对接本地语音服务（openai-voice，OpenAI 兼容）的 ASR。
@@ -93,6 +98,7 @@ export class HttpVoiceAsr implements AsrProvider {
         method: 'POST',
         headers: this.authHeaders({}),
         body: form,
+        signal: AbortSignal.timeout(ASR_TIMEOUT_MS),
       })
       const text = await res.text()
       try {
@@ -102,7 +108,8 @@ export class HttpVoiceAsr implements AsrProvider {
         return text.trim()
       }
     } catch (err) {
-      console.error('[asr] 调用本地语音服务失败：', err)
+      // 超时/断连：舍弃这次识别，partial 静默跳过，定稿回退占位，绝不把会话挂死
+      console.error('[asr] 调用本地语音服务失败（已 abort 断开）：', err)
       return partial ? '' : '（ASR 服务暂不可用）'
     }
   }

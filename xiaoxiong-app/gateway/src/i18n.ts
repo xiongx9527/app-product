@@ -18,6 +18,8 @@ export interface Messages {
   clock: {
     now: (h: number, m: number) => string
   }
+  /** 大模型超时/不可用时的友好兜底：不让用户干等、也不暴露技术故障，按 lang 本地化 */
+  llmUnavailable: () => string
   /** 音乐控制直连命令的口播确认/找不到文案（llm.delta 直接下发客户端，必须本地化） */
   music: {
     playing: (title: string) => string
@@ -100,25 +102,6 @@ export interface Messages {
   }
   /** 数据来源展示名（按 lang 本地化）：值由数据源给 sourceKey，网关查表，客户端不认识 key。 */
   sources: Record<string, string>
-  /** 开源工具/项目：选中后一句确认 + 详情字段 label（列表话术由工具自身产出） */
-  opensource: {
-    detailIntro: (n: number) => string
-    /** 像在报编号但没对上时的重问；列表保留，不交给大模型 */
-    chooseAgain: () => string
-    /** 数据源没给值时的占位文案（不编造具体语言/协议，但字段行要留着） */
-    emptyValue: () => string
-    fieldLabels: {
-      tagline: () => string
-      language: () => string
-      os: () => string
-      desc: () => string
-      time: () => string
-      source: () => string
-      license: () => string
-    }
-  }
-  /** 识别到非当前语言时，提示用户去设置里切换语言 */
-  languageMismatch: (langLabel: string) => string
   /** 大模型整句都不可念（泄漏控制符 / 空回复 / 只剩符号）时的兜底口播：不念垃圾，给一句让人能重说的 */
   llmFallthrough: () => string
   /** 长期记忆：把该设备已记住的内容注入系统提示，让助手「知道你的习惯」 */
@@ -163,10 +146,6 @@ const zhCN: Messages = {
     '音乐控制请用工具：play_music 开始播放、stop_music 停止、pause_music 暂停、resume_music 继续、' +
     'next_music 换一首/换个风格。用户说“放点音乐/来首歌/想听歌”用 play_music；说“换一首/下一首/换个风格/来点别的”' +
     '用 next_music（可带 genre）；说“暂停/先停一下”用 pause_music，说“继续/接着放”用 resume_music，说“关掉/别放了”用 stop_music。' +
-    '查询或推荐开源工具/软件/项目统一用 query_opensource：「开源」「开源项目」「开源工具」「开源数据库」「开源XXX」等说法，' +
-    '以及「有什么好的数据库」「推荐个 AI 工具」「大数据用什么框架」这类找工具软件的求推荐，都调用它、用开源项目回答，不要凭记忆罗列；' +
-    '结果要按 1、2、3、4 逐条念出编号，并提示用户可说编号选择，方便用户回「第2个」；用户回编号时结合上一轮列表回答那一项，不要重新查询、也不要当成点歌。' +
-    '纯知识问答（如「数据库是什么」）才不调用。' +
     '【输出与表达约束】只输出纯文本，禁止任何 Markdown / 格式符号（' +
     '**加粗**、# 标题、列表符号、表格、代码块等）。禁止在调用工具（尤其是音乐工具）前后' +
     '说铺垫废话或道歉（如“好的”“稍等”“对不起，出现…”“让我看看”“Skipping…”之类），' +
@@ -190,6 +169,10 @@ const zhCN: Messages = {
     accepted: (position, size) => `已排到第 ${position} 句（共 ${size} 句），当前回答播完就处理`,
     full: () => '你说的太多了，我记不住。',
   },
+  clock: {
+    now: (h, m) => (m ? `现在是${h}点${m}分。` : `现在是${h}点整。`),
+  },
+  llmUnavailable: () => '这边一时没接上，你稍后再问我一次好吗？',
   music: {
     playing: (title) => `正在为你播放：${title}。`,
     switched: (title) => `已为你切换到：${title}。`,
@@ -262,22 +245,7 @@ const zhCN: Messages = {
       source: () => '来源',
     },
   },
-  sources: { smzdm: '什么值得买', oschina: '开源中国', github: 'GitHub', gitee: 'Gitee' },
-  opensource: {
-    detailIntro: (n) => `已为你打开第 ${n} 个开源项目，请看屏幕。`,
-    chooseAgain: () => '没听清是第几个，请直接说编号，比如第二个。',
-    emptyValue: () => '暂无',
-    fieldLabels: {
-      tagline: () => '定位',
-      language: () => '开发语言',
-      license: () => '开源协议',
-      os: () => '系统',
-      desc: () => '简介',
-      time: () => '收录时间',
-      source: () => '来源',
-    },
-  },
-  languageMismatch: (langLabel) => `当前只识别${langLabel}，这句没有接收；如需用别的语言，请到设置里切换`,
+  sources: { smzdm: '什么值得买' },
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
   memory: {
     context: (items) =>
@@ -325,10 +293,6 @@ const en: Messages = {
     'When the user says "play some music / a song / I want to listen to music", use play_music; ' +
     'when they say "next one / another / a different style / something else", use next_music (genre optional); ' +
     'pause_music for "pause / hold on", resume_music for "resume / keep going", stop_music for "stop / turn it off". ' +
-    'Use query_opensource for all open-source tool/software/project lookups and recommendations: "open source / open-source projects / ' +
-    'open-source tools / open-source databases / open-source XXX", or "any good databases", "recommend an AI tool", "big-data frameworks" — ' +
-    'always call it and answer with open-source projects instead of listing from memory. Read the results out with numbers 1, 2, 3, 4 and invite the user to pick one by number; ' +
-    'when they reply with an ordinal, answer from the previous list — do not query again or treat it as a song request. Only pure knowledge questions ("what is a database") should not. ' +
     '[Output & expression constraints] Output plain text only. No Markdown or formatting symbols ' +
     '(**bold**, # headings, list bullets, tables, code blocks, etc.). ' +
     'Do not add filler or apologies before or after calling a tool (especially music tools) — ' +
@@ -420,21 +384,11 @@ const en: Messages = {
       source: () => 'Source',
     },
   },
-  sources: { smzdm: 'SMZDM', oschina: 'OSCHINA', github: 'GitHub', gitee: 'Gitee' },
-  opensource: {
-    detailIntro: (n) => `Opened project ${n} on screen.`,
-    chooseAgain: () => "Didn't catch which project. Just say the number, e.g. 'number 2'.",
-    emptyValue: () => 'N/A',
-    fieldLabels: {
-      tagline: () => 'Tagline',
-      language: () => 'Language',
-      license: () => 'License',
-      os: () => 'Platform',
-      desc: () => 'Summary',
-      time: () => 'Added',
-      source: () => 'Source',
-    },
+  sources: { smzdm: 'SMZDM' },
+  clock: {
+    now: (h, m) => (m ? `It's ${h}:${String(m).padStart(2, '0')}.` : `It's ${h} o'clock.`),
   },
+  llmUnavailable: () => "I couldn't connect this time. Could you ask me again in a moment?",
 }
 
 const catalogs: Record<string, Messages> = {
@@ -450,16 +404,3 @@ export function messages(lang: Lang | string = 'zh-CN'): Messages {
   return catalogs[prefix] ?? zhCN
 }
 
-/** 语言代码 → 当前会话文案里的可读名称，用于「请切换语言」提示。 */
-const LANGUAGE_LABELS: Record<string, string> = {
-  zh: '中文',
-  en: '英文',
-  ja: '日文',
-  ko: '韩文',
-  ru: '俄文',
-}
-
-export function languageLabel(lang: string): string {
-  const prefix = lang.toLowerCase().split(/[-_]/)[0]
-  return LANGUAGE_LABELS[prefix] ?? lang
-}

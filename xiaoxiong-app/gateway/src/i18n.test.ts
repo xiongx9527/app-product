@@ -62,7 +62,7 @@ describe('英文文案目录（en）', () => {
       expect(m.chooseAgain(), lang).not.toMatch(CJK)
       expect(m.volumeSet(30), lang).not.toMatch(CJK)
       expect(messages(lang).deals.chooseAgain(), lang).not.toMatch(CJK)
-      expect(messages(lang).opensource.chooseAgain(), lang).not.toMatch(CJK)
+      expect(messages(lang).llmUnavailable(), lang).not.toMatch(CJK)
     }
   })
 
@@ -72,7 +72,7 @@ describe('英文文案目录（en）', () => {
   })
 
   /**
-   * music / deals / opensource 三组都已去掉 ...zhCN.xxx 展开，漏项由 tsc 拦截；
+   * music / deals 两组都已去掉 ...zhCN.xxx 展开，漏项由 tsc 拦截；
    * 这里做运行期复核：每一组的键值路径与中文目录完全对齐，且叶子文案不含中文。
    */
   function collect(group: object): Record<string, string> {
@@ -103,10 +103,10 @@ describe('英文文案目录（en）', () => {
     return out
   }
 
-  it('music / deals / opensource 三组结构对齐且无中文残留', () => {
+  it('music / deals 两组结构对齐且无中文残留', () => {
     const zh = messages('zh-CN')
     const en = messages('en')
-    for (const group of ['music', 'deals', 'opensource'] as const) {
+    for (const group of ['music', 'deals'] as const) {
       const zhTexts = collect(zh[group])
       const enTexts = collect(en[group])
       expect(Object.keys(enTexts).sort(), group).toEqual(Object.keys(zhTexts).sort())

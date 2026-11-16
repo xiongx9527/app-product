@@ -513,6 +513,23 @@ def upstream_timeout() -> float:
         return 90.0
 
 
+# 等待连接池中空闲连接的上限。上游挂起时，占满的连接要到 upstream_timeout()
+# 到期才归还；没有这个上限，后续请求会一直排队到 90s 才失败（连接池耗尽）。
+_POOL_WAIT_TIMEOUT = 5.0
+# WS 单条消息的空闲等待上限：半开连接（TCP 未断、但不再发消息）会永久占着
+# 协程与连接，超时后主动关闭释放。长音频分帧上传的帧间隔远小于这个值。
+_WS_RECV_TIMEOUT = 30.0
+
+
+def _upstream_timeout(total: float, connect: float = 10.0) -> httpx.Timeout:
+    """统一构造上游请求超时。
+
+    per-request timeout 会整体覆盖 client 的默认 Timeout，所以 pool 超时必须在
+    每次请求上显式带上；否则池满时排队仍会挂到 total（默认 90s）。
+    """
+    return httpx.Timeout(total, connect=connect, pool=_POOL_WAIT_TIMEOUT)
+
+
 def upstream_error(response: httpx.Response) -> str:
     """尽量从 OpenAI 风格错误体里取 message，取不到就截断原始文本。"""
     try:
@@ -591,7 +608,7 @@ async def fetch_json(url: str, headers: dict[str, str] | None = None):
     """GET 上游 JSON；失败时返回统一错误响应而不是抛 500。"""
     try:
         response = await _shared_http_client().get(
-            url, headers=headers or {}, timeout=upstream_timeout()
+            url, headers=headers or {}, timeout=_upstream_timeout(upstream_timeout())
         )
     except httpx.HTTPError as exc:
         return error_response(502, f"上游 LLM 请求失败: {exc}")
@@ -614,7 +631,7 @@ def _shared_http_client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(upstream_timeout(), connect=10.0),
+            timeout=_upstream_timeout(upstream_timeout()),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
     return _http_client
@@ -1349,7 +1366,7 @@ async def forward_speech_openai(
         "speed": speed,
     }
     headers = {"Authorization": f"Bearer {key}"} if key else {}
-    r = await _shared_http_client().post(url, json=payload, headers=headers, timeout=30)
+    r = await _shared_http_client().post(url, json=payload, headers=headers, timeout=_upstream_timeout(30))
     if r.status_code >= 400:
         raise RuntimeError(f"上游 TTS 失败（{r.status_code}）: {r.text[:200]}")
     return r.content
@@ -1485,7 +1502,7 @@ async def deepseek_tts_bytes(text: str, voice: str, key: str) -> bytes:
         DEEPSEEK_BASE + "/v1/tools/tts",
         json=payload,
         headers={"Authorization": f"Bearer {key}"},
-        timeout=60,
+        timeout=_upstream_timeout(60),
     )
     if r.status_code >= 400:
         raise RuntimeError(f"DeepSeek TTS 失败（{r.status_code}）: {r.text[:200]}")
@@ -1504,7 +1521,7 @@ async def deepseek_asr_text(audio: bytes, key: str) -> str:
         DEEPSEEK_BASE + "/v1/tools/asr",
         headers={"Authorization": f"Bearer {key}"},
         files={"file": ("audio.wav", audio, "audio/wav")},
-        timeout=120,
+        timeout=_upstream_timeout(120),
     )
     if r.status_code >= 400:
         raise RuntimeError(f"DeepSeek ASR 失败（{r.status_code}）: {r.text[:200]}")
@@ -1641,13 +1658,13 @@ async def dashscope_tts_bytes(base: str, key: str, model: str, text: str, voice:
     client = _shared_http_client()
     r = await client.post(url, headers=headers, json={
         "model": model, "input": {"text": text, "voice": voice},
-    }, timeout=60)
+    }, timeout=_upstream_timeout(60))
     if r.status_code >= 400:
         raise RuntimeError(f"DashScope TTS 失败（{r.status_code}）: {r.text[:200]}")
     audio_url = ((r.json().get("output") or {}).get("audio") or {}).get("url") or ""
     if not audio_url:
         raise RuntimeError(f"DashScope TTS 已响应但没有音频 URL: {r.text[:150]}")
-    dl = await client.get(audio_url, timeout=30)
+    dl = await client.get(audio_url, timeout=_upstream_timeout(30))
     if dl.status_code >= 400 or not dl.content:
         raise RuntimeError(f"DashScope 音频下载失败（{dl.status_code}）")
     return dl.content
@@ -1668,7 +1685,7 @@ async def dashscope_asr_text(base: str, key: str, model: str, audio: bytes, fmt:
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     r = await _shared_http_client().post(url, headers=headers, json={
         "model": model, "messages": [{"role": "user", "content": [audio_part]}],
-    }, timeout=60)
+    }, timeout=_upstream_timeout(60))
     if r.status_code >= 400:
         raise RuntimeError(f"DashScope ASR 失败（{r.status_code}）: {r.text[:200]}")
     return ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
@@ -1939,7 +1956,7 @@ async def forward_transcriptions_openai(
     files = {"file": (filename, payload, content_type or "audio/wav")}
     data = {"model": model}
     r = await _shared_http_client().post(
-        url, files=files, data=data, headers=headers, timeout=30
+        url, files=files, data=data, headers=headers, timeout=_upstream_timeout(30)
     )
     if r.status_code >= 400:
         raise RuntimeError(f"上游 ASR 失败（{r.status_code}）: {r.text[:200]}")
@@ -2065,7 +2082,7 @@ async def _translate_text(text: str, target_lang: str) -> tuple[str | None, str 
     try:
         r = await _shared_http_client().post(
             req.url, headers=req.headers, json=req.payload,
-            timeout=upstream_timeout(),
+            timeout=_upstream_timeout(upstream_timeout()),
         )
     except httpx.HTTPError as exc:
         return None, f"翻译上游请求失败: {exc}"
@@ -2212,6 +2229,28 @@ def _ws_safe_json(text: str | None) -> dict | None:
         return None
 
 
+async def _ws_receive(
+    websocket: WebSocket, task_id: str | None = None,
+    timeout: float = _WS_RECV_TIMEOUT,
+) -> dict | None:
+    """带空闲超时的 WS 接收。
+
+    半开连接（TCP 未断、但不再发消息）会让 receive() 永久挂起，占着协程和连接；
+    超时后发 task-failed 并返回 None，由调用方结束子流程 / 关闭连接释放资源。
+    """
+    try:
+        return await asyncio.wait_for(websocket.receive(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            await _ws_send_fail(websocket, task_id, f"接收超时（{timeout:g}s 未收到消息）")
+        except Exception:  # noqa: BLE001  客户端半开时发送也会失败
+            pass
+        logging.getLogger("uvicorn.error").info(
+            "[ws] 接收超时（%gs），释放空闲连接 task_id=%s", timeout, task_id
+        )
+        return None
+
+
 async def _ws_handle_asr(websocket: WebSocket, task_id: str, model: str, payload: dict) -> bool:
     """ASR 子流程：收二进制音频 + finish-task，识别后回 result-generated + task-finished。"""
     stt_provider = (config_value("STT_PROVIDER", "builtin") or "builtin").strip().lower()
@@ -2240,7 +2279,9 @@ async def _ws_handle_asr(websocket: WebSocket, task_id: str, model: str, payload
 
     audio = bytearray()
     while True:
-        msg = await websocket.receive()
+        msg = await _ws_receive(websocket, task_id)
+        if msg is None:
+            return False
         if msg["type"] == "websocket.disconnect":
             return False
         if msg.get("bytes") is not None:
@@ -2308,7 +2349,9 @@ async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload
     text = ""
     finished = False
     while True:
-        msg = await websocket.receive()
+        msg = await _ws_receive(websocket, task_id)
+        if msg is None:
+            return False
         if msg["type"] == "websocket.disconnect":
             return False
         if msg.get("bytes") is not None:
@@ -2359,7 +2402,13 @@ async def ws_inference(websocket: WebSocket):
     task_id: str | None = None
     try:
         while True:
-            msg = await websocket.receive()
+            msg = await _ws_receive(websocket, task_id)
+            if msg is None:
+                try:
+                    await websocket.close(code=4408)
+                except Exception:  # noqa: BLE001  客户端已断时 close 会抛
+                    pass
+                break
             if msg["type"] == "websocket.disconnect":
                 break
             data = _ws_safe_json(msg.get("text"))
@@ -2735,8 +2784,11 @@ async def chat_completions(request: Request):
             # 复用共享连接池；超时仍按每次请求的最新配置传，保证热更新生效。
             response = await _shared_http_client().post(
                 req.url, headers=req.headers, json=req.payload,
-                timeout=upstream_timeout(),
+                timeout=_upstream_timeout(upstream_timeout()),
             )
+        except httpx.PoolTimeout as exc:
+            # 连接池繁忙是本地资源问题，不能记到上游健康状态里误熔断。
+            return error_response(503, f"上游连接池繁忙（等待 {_POOL_WAIT_TIMEOUT:g}s 未拿到连接）：{exc}")
         except httpx.HTTPError as exc:
             upstream_pool.mark_failure("LLM", entry)
             if req_base_url:
@@ -2767,10 +2819,12 @@ async def chat_completions(request: Request):
     # httpx 的 send() 不接受 timeout 参数，超时要在 build_request 时挂到 request 上。
     upstream_req = client.build_request(
         "POST", req.url, headers=req.headers, json=req.payload,
-        timeout=httpx.Timeout(upstream_timeout(), connect=10.0),
+        timeout=_upstream_timeout(upstream_timeout()),
     )
     try:
         response = await client.send(upstream_req, stream=True)
+    except httpx.PoolTimeout as exc:
+        return error_response(503, f"上游连接池繁忙（等待 {_POOL_WAIT_TIMEOUT:g}s 未拿到连接）：{exc}")
     except httpx.HTTPError as exc:
         if req_base_url:
             return error_response(502, f"无法连接 base_url 指定的上游（{entry['base_url']}）：{exc}；请检查地址是否正确、该代理/服务是否已启动。")
@@ -2971,8 +3025,10 @@ async def embeddings(request: Request):
     try:
         response = await _shared_http_client().post(
             req.url, headers=req.headers, json=req.payload,
-            timeout=upstream_timeout(),
+            timeout=_upstream_timeout(upstream_timeout()),
         )
+    except httpx.PoolTimeout as exc:
+        return error_response(503, f"上游连接池繁忙（等待 {_POOL_WAIT_TIMEOUT:g}s 未拿到连接）：{exc}")
     except httpx.HTTPError as exc:
         upstream_pool.mark_failure(cap, entry)
         if req_base_url:
