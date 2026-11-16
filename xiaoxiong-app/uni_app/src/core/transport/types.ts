@@ -50,7 +50,9 @@ export type ServerEvent =
    *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。
    *  proxy 标记该直链带防盗链需经网关 /music/stream 代理；频道→代理判定在网关侧，客户端只认此标记。
    *  cover 为与音频同源的封面图（如歌曲宝详情页），供播放器展示。 */
-  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean; cover?: string }
+  | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean; cover?: string
+      /** dash 音轨短链 key：有值时下载 /music/s/<key>.aac 后本地播放（完整直链 URL 过长会被截断） */
+      streamKey?: string }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
   /** 让客户端暂停当前播放 */

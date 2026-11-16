@@ -358,6 +358,18 @@ function setDeviceProxy(cmd, port) {
   } catch {
     // 个别 ROM 无该键，忽略；http_proxy 已足够
   }
+  // 必须排除本机回环：App 的内嵌网关就跑在设备 127.0.0.1:8787，若也被导向本机代理，
+  // 代理会去连「电脑的」127.0.0.1:8787（那里没有服务）→ App 显示「网关没启动 /
+  // 无法连接网关」，而 adb shell curl 127.0.0.1:8787 不读系统代理所以测出来是 200，
+  // 极易误判成网关坏了（2026-11-16 实锤）。
+  try {
+    cmd.capture([
+      'shell',
+      `settings put global global_http_proxy_exclusion_list "localhost,127.0.0.1,::1"`,
+    ])
+  } catch {
+    // 个别 ROM 无该键，忽略
+  }
   const got = cmd.capture(['shell', 'settings get global http_proxy'])
   if (got !== `127.0.0.1:${port}`) {
     throw new Error(`设备代理写入失败（当前值: ${got || 'null'}）。部分定制 ROM 需手动在「设置 → WLAN → 代理」里填 127.0.0.1:${port}`)

@@ -77,6 +77,23 @@ function isShortEnglishFragment(text: string): boolean {
   return words.every((w) => EN_FILLER_WORDS.has(w))
 }
 
+/**
+ * 中文会话下的「纯外文短句」幻觉：儿童说话 / 环境音被 SenseVoice 识别成英文词序列
+ * （hello baby / oh my god / go go go…）。中文会话里用户不会用纯英文短句下指令（ASR 也
+ * 不懂），整段纯拉丁 ≤6 词且不含中文/数字时按噪声丢弃。
+ * 不误伤：中英混排（Taylor Swift 的歌）、英文歌名带中文前缀、纯数字选号、长英文句（>6 词）。
+ */
+export function isForeignNoise(text: string, lang: string): boolean {
+  if (!lang.toLowerCase().startsWith('zh')) return false
+  const t = text.trim()
+  if (!t) return false
+  if (/[\u4e00-\u9fff]/.test(t)) return false // 含中文 = 混排，放行
+  if (/\d/.test(t)) return false // 含数字（选号 / 型号）放行
+  const words = t.replace(/[^A-Za-z\s']/g, ' ').trim().split(/\s+/).filter(Boolean)
+  if (!words.length) return false
+  return words.length <= 6
+}
+
 export function isNoise(text: string): boolean {
   const core = coreText(text)
   if (!core) return true

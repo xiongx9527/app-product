@@ -30,7 +30,7 @@
  * 注意：编译出 APK 不需要 appid/AppKey；只有装到设备上「能启动运行」才需要，且 appid、包名、证书 SHA1 三者
  * 必须与 DCloud 开发者中心申请 AppKey 时填的一致，否则启动时报「未配置appkey或配置错误」。
  */
-import { existsSync, mkdirSync, readdirSync, copyFileSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, copyFileSync, readFileSync, writeFileSync, statSync, cpSync, rmSync } from 'node:fs'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -63,15 +63,17 @@ function parseArgs(argv) {
 
 function copyDir(src, dest) {
   mkdirSync(dest, { recursive: true })
-  for (const name of readdirSync(src)) {
-    const s = join(src, name)
-    const d = join(dest, name)
-    if (statSync(s).isDirectory()) {
-      // 本机工具型目录不进包：如 static/audio/etts-venv（edge-tts 生成提示音的 Python venv，20MB）
-      if (/[-_]venv$/.test(name) || name === '__pycache__' || name === '.venv') continue
-      copyDir(s, d)
-    } else copyFileSync(s, d)
-  }
+  // cpSync + verbatimSymlinks：符号链接按原样拷（框架包的 Versions/Headers 结构必须保留），
+  // 不解引用——不会把软链指向的 venv 等内容整个拷进来；filter 按名字排除本机工具目录
+  // （如 static/audio/etts-venv，edge-tts 生成提示音的 Python venv，20MB）。
+  cpSync(src, dest, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (s) => {
+      const name = basename(s)
+      return !(/[-_]venv$/.test(name) || name === '__pycache__' || name === '.venv')
+    },
+  })
 }
 
 // 递归找出目录下所有同名文件（digidem 包的 libnode.so 分散在各 ABI 子目录）

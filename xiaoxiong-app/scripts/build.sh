@@ -101,8 +101,9 @@ cd "$UNI_APP"
 rm -rf dist/build/app
 rm -rf node_modules/.vite
 npm run build:app
-# static/ 会被整目录拷进产物：剔除本机工具目录（如 static/audio/etts-venv，20MB Python venv）
-rm -rf dist/build/app/static/audio/etts-venv
+# static/ 会被整目录拷进产物：剔除本机工具目录（规则与 package-*-offline.mjs 的 copyDir 一致：
+# [-_]venv$ 对应 -name "*-venv" 与 "*_venv"，另有 .venv 与 __pycache__）
+find dist/build/app -type d \( -name "*-venv" -o -name "*_venv" -o -name ".venv" -o -name "__pycache__" \) -prune -exec rm -rf {} +
 
 # —— 2. 构建内嵌网关 bundle（与前端、原生一起出包）——
 echo "==> [2/3] 网关 bundle (清理 + npm run build:bundle)"

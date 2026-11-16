@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isNoise, resemblesSpoken, pcmRms } from './noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken, pcmRms } from './noiseFilter'
 
 describe('ASR 杂音过滤', () => {
   it('纯符号、空白、幻觉短词判为噪声', () => {
@@ -59,5 +59,23 @@ describe('ASR 杂音过滤', () => {
     const loud = new Int16Array(160)
     loud.fill(8000)
     expect(pcmRms(new Uint8Array(loud.buffer))).toBeCloseTo(8000 / 32768, 3)
+  })
+})
+
+describe('isForeignNoise（中文会话下的纯外文短句幻觉）', () => {
+  it('中文会话：纯英文短句（儿童/环境幻觉）判为噪声', () => {
+    expect(isForeignNoise('hello baby', 'zh-CN')).toBe(true)
+    expect(isForeignNoise('oh my god', 'zh-CN')).toBe(true)
+    expect(isForeignNoise('go go go', 'zh-CN')).toBe(true)
+    expect(isForeignNoise('what is this', 'zh-CN')).toBe(true)
+  })
+  it('中文会话：中英混排 / 数字 / 长英文句放行', () => {
+    expect(isForeignNoise('Taylor Swift 的歌', 'zh-CN')).toBe(false)
+    expect(isForeignNoise('9', 'zh-CN')).toBe(false)
+    expect(isForeignNoise('播放音乐', 'zh-CN')).toBe(false)
+    expect(isForeignNoise('this is a much longer english sentence here', 'zh-CN')).toBe(false)
+  })
+  it('英文会话不启用该过滤', () => {
+    expect(isForeignNoise('hello baby', 'en-US')).toBe(false)
   })
 })

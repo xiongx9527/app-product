@@ -1,8 +1,21 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
 import { createHash } from 'node:crypto'
-import { createReadStream, createWriteStream, existsSync, readdirSync, unlinkSync } from 'node:fs'
-import { createFmp4ToAdtsStream } from '../service/music/fmp4ToAdts'
+import {
+  closeSync,
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { fmp4BufferToAdts } from '../service/music/fmp4ToAdts'
 
 /**
  * B 站音轨直链带防盗链（必须带 Referer），而客户端 InnerAudioContext 无法自定义请求头，
@@ -149,39 +162,107 @@ export async function handleMusicStream(
 const ADTS_FILE_MAX = 2
 let adtsDir: string | null = null
 
+/** 运行期诊断（NodeMobile 的 console 不进 logcat，改用 /api/diag 查询），环缓冲最近 20 条。 */
+const recentErrors: string[] = []
+export function recordMusicDiag(msg: string): void {
+  recentErrors.push(`${new Date().toISOString()} ${msg}`)
+  if (recentErrors.length > 20) recentErrors.shift()
+}
+export function getMusicDiagnostics(): string[] {
+  return [...recentErrors]
+}
+
 function getAdtsDir(): string {
   if (adtsDir) return adtsDir
   // 内嵌模式由原生层注入 GATEWAY_HOME（解包后的私有目录）；桌面模式用进程 cwd
   const home = process.env.GATEWAY_HOME ?? process.cwd()
   adtsDir = `${home}/cache/adts`
   try {
-    if (!existsSync(adtsDir)) {
-      // mkdirSync 顶层导入太重，惰性 require 避免 bundle 顶层体积
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const fs = require('node:fs') as typeof import('node:fs')
-      fs.mkdirSync(adtsDir, { recursive: true })
-    }
+    if (!existsSync(adtsDir)) mkdirSync(adtsDir, { recursive: true })
   } catch {
     // 目录已存在或创建失败（响应时会再报错）
   }
   return adtsDir
 }
 
+/** 短链 key：md5(url) 前 16 hex。media.play 只下发短链（/music/s/<key>.aac）——
+ * 完整代理 URL 约 1000 字符，DCloud 原生下载器/播放器会截断（实测只发出 936 字节就断），
+ * 长 URL 必然失败；短链 ~45 字符，稳定可用。 */
+export function adtsKeyFor(raw: string): string {
+  return createHash('md5').update(raw).digest('hex').slice(0, 16)
+}
+
 function adtsFileFor(raw: string): string {
-  const hash = createHash('md5').update(raw).digest('hex').slice(0, 16)
-  return `${getAdtsDir()}/${hash}.aac`
+  return `${getAdtsDir()}/${adtsKeyFor(raw)}.aac`
+}
+
+/** 按短链 key 取 ADTS 文件路径（严格校验 16 位 hex，防目录穿越）。 */
+export function adtsPathForKey(key: string): string | null {
+  if (!/^[0-9a-f]{16}$/.test(key)) return null
+  const file = `${getAdtsDir()}/${key}.aac`
+  return existsSync(file) ? file : null
+}
+
+/** 处理 GET/HEAD /music/s/<key>.aac：按短链 key 返回转封装好的 ADTS 文件（支持 Range）。 */
+export async function handleAdtsByKey(
+  req: IncomingMessage,
+  res: ServerResponse,
+  key: string
+): Promise<void> {
+  let file = adtsPathForKey(key)
+  // 预热还没转完时客户端就来取（media.play 不再等预热）：等同一 key 的转封装完成再回，
+  // 避免「播放器已出现但短链 404」。等不到就照常 404。
+  if (!file) {
+    const pending = inFlight.get(key)
+    if (pending) {
+      recordMusicDiag(`adts-by-key wait key=${key.slice(0, 16)}`)
+      try {
+        await pending
+      } catch {
+        // 转封装失败，下面统一 404
+      }
+      file = adtsPathForKey(key)
+    }
+  }
+  if (!file) {
+    recordMusicDiag(`adts-by-key miss key=${key.slice(0, 16)}`)
+    res.writeHead(404)
+    res.end('not found')
+    return
+  }
+  const size = statSync(file).size
+  const rangeHeader = req.headers.range
+  const m = rangeHeader ? /bytes=(\d+)-(\d*)/.exec(rangeHeader) : null
+  const headers: Record<string, string> = {
+    'Access-Control-Allow-Origin': '*',
+    'content-type': 'audio/mpeg',
+    'Accept-Ranges': 'bytes',
+  }
+  if (m) {
+    const start = Math.min(Number(m[1]), Math.max(0, size - 1))
+    const end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1
+    res.writeHead(206, {
+      ...headers,
+      'content-length': String(end - start + 1),
+      'content-range': `bytes ${start}-${end}/${size}`,
+    })
+    if (req.method === 'HEAD') return void res.end()
+    createReadStream(file, { start, end }).on('error', () => res.destroy()).pipe(res)
+    return
+  }
+  res.writeHead(200, { ...headers, 'content-length': String(size) })
+  if (req.method === 'HEAD') return void res.end()
+  createReadStream(file).on('error', () => res.destroy()).pipe(res)
 }
 
 /** LRU 清理：只留最新的 ADTS_FILE_MAX 个文件。 */
 function pruneAdtsFiles(): void {
   try {
     const dir = getAdtsDir()
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const fs = require('node:fs') as typeof import('node:fs')
     const files = readdirSync(dir)
       .map((f) => {
         try {
-          return { f, at: fs.statSync(`${dir}/${f}`).mtimeMs }
+          return { f, at: statSync(`${dir}/${f}`).mtimeMs }
         } catch {
           return { f, at: 0 }
         }
@@ -209,25 +290,91 @@ function pruneAdtsFiles(): void {
  * 所以网关在「下发 media.play 之前」就后台预热，客户端请求到达时秒回。
  * 返回 ADTS 文件路径；同一个 url 的 in-flight promise 共享，防并发重复转封装。
  */
-export async function ensureAdtsFile(raw: string): Promise<string> {
-  const file = adtsFileFor(raw)
-  if (existsSync(file)) return file
-  const upstreamAll = await fetchValidated(raw, undefined)
-  if (!upstreamAll.body) throw new Error('upstream empty body')
-  await new Promise<void>((resolve, reject) => {
-    const src = Readable.fromWeb(upstreamAll.body as Parameters<typeof Readable.fromWeb>[0])
-    const dst = createWriteStream(file)
-    const adts = createFmp4ToAdtsStream()
-    src.on('error', reject)
-    dst.on('error', reject)
-    adts.on('error', reject)
-    dst.on('finish', () => resolve())
-    // 关键：必须经转封装 Transform 再落盘——直接 pipe 会把 fMP4 原样存成文件，
-    // 客户端播本地 fMP4 同样 cannot create extractor（无声）。
-    src.pipe(adts).pipe(dst)
+export function ensureAdtsFile(raw: string): Promise<string> {
+  const key = adtsKeyFor(raw)
+  const existing = inFlight.get(key)
+  if (existing) return existing
+  const p = buildAdtsFile(raw, 0).finally(() => {
+    inFlight.delete(key)
   })
-  pruneAdtsFiles()
-  return file
+  inFlight.set(key, p)
+  return p
+}
+
+/** 同一 url 的转封装进行中任务（key → promise）；短链请求据此等待而不是直接 404。 */
+const inFlight = new Map<string, Promise<string>>()
+
+async function buildAdtsFile(raw: string, attempt: number): Promise<string> {
+  const file = adtsFileFor(raw)
+  if (existsSync(file) && statSync(file).size > 0) return file
+  // 中间产物：原始 fMP4 先落盘（可续传），再从文件流式转封装（内存 O(box)）。
+  const fmp4 = `${file}.fmp4`
+  try {
+    let total = 0
+    for (let round = 0; round < 4; round += 1) {
+      const have = existsSync(fmp4) ? statSync(fmp4).size : 0
+      if (total > 0 && have >= total) break
+      // B站 CDN 对「同一直链重复全量 GET」会限流断流（实测每次固定断在 9534444 字节），
+      // 续传必须用 Range 从已有字节处继续，重新全量拉只会再次断在同一位置。
+      const upstream = await fetchValidated(raw, have > 0 ? `bytes=${have}-` : undefined)
+      if (!upstream.body) throw new Error('upstream empty body')
+      const cl = upstream.headers.get('content-length')
+      const cr = upstream.headers.get('content-range')
+      const crTotal = cr ? Number(cr.split('/')[1]) : NaN
+      if (Number.isFinite(crTotal) && crTotal > 0) total = crTotal
+      else if (cl && have === 0) total = Number(cl)
+      let got = 0
+      await new Promise<void>((resolve, reject) => {
+        const src = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0])
+        const dst = createWriteStream(fmp4, { flags: have > 0 ? 'a' : 'w' })
+        src.on('data', (c: Buffer) => {
+          got += c.byteLength
+        })
+        src.on('error', reject)
+        dst.on('error', reject)
+        dst.on('finish', resolve)
+        src.pipe(dst)
+      })
+      const nowHave = existsSync(fmp4) ? statSync(fmp4).size : 0
+      recordMusicDiag(`fmp4 pull round=${round} have=${have} got=${got} now=${nowHave} total=${total}`)
+      if (nowHave <= have) break // 上游没有给出更多数据，避免死循环
+    }
+    if (!existsSync(fmp4) || statSync(fmp4).size <= 0) throw new Error('fmp4 empty after pull')
+    // 同步全量转封装（fmp4BufferToAdts 已在 Mac 用真实数据验证）：设备上流式 Transform
+    // 从文件读时输出恒为 0（NodeMobile 下 Readable/Transform 行为差异），改用一次性转换。
+    // 内存峰值约 in(9.5MB)+out(11MB)，NodeMobile 可承受（此前 26MB 双持才是压力边界）。
+    const head = Buffer.alloc(16)
+    try {
+      const fd = openSync(fmp4, 'r')
+      const n = readSync(fd, head, 0, 16, 0)
+      closeSync(fd)
+      recordMusicDiag('fmp4 head=' + head.subarray(0, n).toString('hex'))
+    } catch {
+      recordMusicDiag('fmp4 head read failed')
+    }
+    const full = readFileSync(fmp4)
+    const adtsBuf = fmp4BufferToAdts(full)
+    writeFileSync(file, adtsBuf)
+    recordMusicDiag(`transcoded sync in=${full.length} out=${adtsBuf.length}`)
+    try {
+      unlinkSync(fmp4)
+    } catch {
+      // 清理失败无碍
+    }
+    pruneAdtsFiles()
+    const size = existsSync(file) ? statSync(file).size : 0
+    if (size <= 0) throw new Error(`transcode produced empty file: ${file}`)
+    return file
+  } catch (err) {
+    recordMusicDiag(`ensureAdtsFile fail(attempt ${attempt}): ${(err as Error).message}`)
+    try {
+      if (existsSync(file)) unlinkSync(file)
+    } catch {
+      // 清理失败不影响重试（会覆盖写）
+    }
+    if (attempt < 1) return buildAdtsFile(raw, attempt + 1)
+    throw err
+  }
 }
 
 /**
@@ -249,9 +396,7 @@ async function serveDashAudioAsAdts(
   }
   const stat = (() => {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const fs = require('node:fs') as typeof import('node:fs')
-      return fs.statSync(file)
+      return statSync(file)
     } catch {
       return null
     }

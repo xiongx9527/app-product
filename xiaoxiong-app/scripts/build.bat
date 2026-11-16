@@ -69,14 +69,20 @@ if not "%NODE_LIB%"=="" set EXTRA=%EXTRA% --node-lib "%NODE_LIB%"
 if not "%APP_ICON_DIR%"=="" set EXTRA=%EXTRA% --icon-dir "%APP_ICON_DIR%"
 
 rem —— 1. 构建 uni-app 前端资源 ——
-echo ==^> [1/3] 前端资源 (npm run build:app)  [env=%ENV% platform=%PLATFORM%]
+echo ==^> [1/3] 前端资源 (清理 + npm run build:app)  [env=%ENV% platform=%PLATFORM%]
 cd /d "%ROOT%\uni_app"
+rem 全量重编译原则（与 build.sh 一致）：uni/vite 有缓存，曾产出「时间戳新、内容旧」的产物，构建前必须清产物与缓存
+if exist "dist\build\app" rd /s /q "dist\build\app"
+if exist "node_modules\.vite" rd /s /q "node_modules\.vite"
 call npm run build:app
 if errorlevel 1 exit /b 1
+rem static/ 会被整目录拷进产物：剔除本机工具目录（规则与 package-android-offline.mjs 的 copyDir 一致）
+for /d /r "dist\build\app" %%d in (*-venv *_venv .venv __pycache__) do rd /s /q "%%d" 2>nul
 
 rem —— 2. 构建内嵌网关 bundle（与前端、原生一起出包）——
-echo ==^> [2/3] 网关 bundle (npm run build:bundle)
+echo ==^> [2/3] 网关 bundle (清理 + npm run build:bundle)
 cd /d "%ROOT%\gateway"
+if exist "dist" rd /s /q "dist"
 call npm run build:bundle
 if errorlevel 1 exit /b 1
 set "GATEWAY_BUNDLE=%ROOT%\gateway\dist\gateway.bundle.mjs"

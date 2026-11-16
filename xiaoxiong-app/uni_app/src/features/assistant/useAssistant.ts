@@ -7,6 +7,7 @@ import {
 } from '@/core/audio/promptPlayer'
 import {
   playMusic,
+  preloadMusic,
   stopMusic,
   pauseMusic,
   resumeMusic,
@@ -524,9 +525,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       }
       case 'media.play': {
-        // 临时诊断打点：确认 media.play 到达及代理分支（定位后删除）
-        errorMessage.value =
-          '[diag media.play] proxy=' + String(event.proxy) + ' m4s=' + String(event.url.includes('.m4s'))
         // proxy 标记由网关按频道判定（B 站等防盗链直链需走网关 /music/stream 代理补 Referer）；
         // 客户端不再写死任何频道名，只按此标记决定是否拼代理地址。
         const playUrl = event.proxy
@@ -541,11 +539,35 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         if (sig === lastMediaPlaySig && now - lastMediaPlayAt < MEDIA_PLAY_DEDUP_MS) break
         lastMediaPlaySig = sig
         lastMediaPlayAt = now
-        // B站 dash 纯音轨（网关已转封装成 ADTS）走「先下载成本地文件再播」：
-        // DCloud AudioPlayer 对这种 HTTP 流的加载路径会直接报 -99（unsupported），连请求
-        // 都不发到网关；而本地文件播放 100% 可靠（提示音 mp3 从未出过问题）。下载走
-        // uni.downloadFile（原生下载器，网关缓存热时秒回），失败降级回直播流 URL。
-        if (event.proxy && event.url.includes('.m4s')) {
+        // B站 dash 纯音轨：网关已转封装成 ADTS 并给短链 key（streamKey）。客户端用
+        // uni.downloadFile 下载短 URL（~45 字符）成本地文件再播放——DCloud AudioPlayer
+        // 对 HTTP 流会报 -99 且不发请求，本地文件播放 100% 可靠；而完整代理 URL 约 1000
+        // 字符会被 DCloud 原生下载器截断（实测 936 字节即断），所以必须用短链。
+        if (event.streamKey) {
+          // 整轨（评书单集 9MB+）下载 + 网关转封装要几秒：先把播放条亮出来显示「正在准备」，
+          // 别让界面在这段时间里空白，用户会以为「播放器没打开」。
+          preloadMusic(event.title)
+          const base = resolveGatewayHttpBase()
+          const shortUrl = `${base}/music/s/${event.streamKey}.aac`
+          uni.downloadFile({
+            url: shortUrl,
+            success: (r) => {
+              if (r.statusCode !== 200 || !r.tempFilePath) {
+                errorMessage.value =
+                  '[diag dl] status=' + String(r.statusCode) + ' url=' + shortUrl.slice(0, 70)
+                return
+              }
+              playMusic(
+                r.tempFilePath,
+                event.title,
+                event.loop != null ? { loop: event.loop } : undefined
+              )
+            },
+            fail: (e: any) => {
+              errorMessage.value = '[diag dl-fail] ' + String(e?.errMsg ?? e).slice(0, 100)
+            },
+          })
+        } else if (event.proxy && event.url.includes('.m4s')) {
           uni.downloadFile({
             url: playUrl,
             success: (r) => {
@@ -1189,6 +1211,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     musicError: musicState.musicError,
     musicErrorDetail: musicState.musicErrorDetail,
     musicVisible: musicState.visible,
+    musicPreparing: musicState.preparing,
     musicTitle: musicState.title,
     musicCover,
     musicCurrent: musicState.currentTime,

@@ -6,7 +6,7 @@ import { createDb } from './db/client'
 import { createDataService } from './service/dataService'
 import { createApiController } from './controller/apiController'
 import { createDocsController } from './controller/docsController'
-import { handleMusicStream } from './controller/musicStreamController'
+import { handleMusicStream, handleAdtsByKey, getMusicDiagnostics } from './controller/musicStreamController'
 import { createVoiceConnection } from './controller/voiceController'
 import { buildHealth } from './service/health'
 import type { VoiceConfig } from './voiceConfig'
@@ -52,6 +52,12 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       // 允许跨域，便于 H5（与网关不同端口）直接拉取展示；不做鉴权——仅暴露能力状态，不含密钥。
       // 客户端可经 x-voice-config 头带上当前选中的语音来源配置，使探测按所选来源（如 DashScope）
       // 展开，而非永远探测网关默认的（内置）。响应不含任何密钥。
+      // 运行期诊断（只读、本机）：NodeMobile 的 console 不进 logcat，统一从这里查转封装/短链错误。
+      // 必须排在 apiBase catch-all 之前，否则会被通用 api 路由抢走。
+      if (url.pathname === '/api/diag') {
+        writeJson(res, 200, { errors: getMusicDiagnostics() }, { 'access-control-allow-origin': '*' })
+        return
+      }
       if (url.pathname === '/api/health' || url.pathname === '/health') {
         let voice: VoiceConfig | undefined
         const rawVoice = req.headers['x-voice-config']
@@ -139,6 +145,13 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       // 路由带 .m4a 后缀，便于部分按扩展名判定格式的播放器识别为音频。
       if (url.pathname === '/music/stream' || url.pathname === '/music/stream.m4a') {
         await handleMusicStream(req, res, url.searchParams)
+        return
+      }
+      // dash 音轨短链（/music/s/<16hex>.aac）：media.play 只下发短链，客户端下载后本地播放。
+      // 完整代理 URL 约 1000 字符会被 DCloud 原生下载器截断（实测 936 字节即断），必须用短链。
+      if (url.pathname.startsWith('/music/s/')) {
+        const key = url.pathname.slice('/music/s/'.length).replace(/\.(aac|mp3)$/, '')
+        await handleAdtsByKey(req, res, key)
         return
       }
       // 提示音不再经网关下发：全部走客户端打包内本地文件（唯一一份），断网 / 网关异常都能播。

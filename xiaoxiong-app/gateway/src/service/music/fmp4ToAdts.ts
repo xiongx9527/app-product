@@ -30,23 +30,44 @@ interface PendingMoof {
   sizes: number[]
 }
 
-/** 从 moov box 里提取 AudioSpecificConfig（esds → 05 xx... ），得 ADTS 头参数。 */
+/** 从 moov box 里提取 AudioSpecificConfig（esds → DecoderSpecificInfo），得 ADTS 头参数。 */
 function parseAscFromMoov(moov: Buffer): AdtsParams | null {
   const i = moov.indexOf('esds')
   if (i < 0) return null
-  // DecoderSpecificInfo：tag 05（带 0x80 0x80 0x80 扩展长度）
-  const k = moov.indexOf(Buffer.from([0x05, 0x80, 0x80, 0x80]), i)
-  if (k < 0) return null
-  const len = moov[k + 4]
-  if (len < 2) return null
-  const asc = moov.subarray(k + 5, k + 5 + len)
-  const b0 = asc[0]
-  const b1 = asc[1] ?? 0
-  const aot = (b0 >> 3) & 0x1f
-  const sfidx = ((b0 & 0x07) << 1) | (b1 >> 7)
-  const ch = (b1 >> 3) & 0x0f
-  if (sfidx === 15 || ch === 0) return null
-  return { aot, sfidx, ch }
+  // esds box 头在 'esds' 前 4 字节（size），扫描限制在 box 内避免误命中其它 0x05。
+  const boxStart = i - 4
+  if (boxStart < 0) return null
+  const boxSize = moov.readUInt32BE(boxStart)
+  const end = Math.min(boxStart + boxSize, moov.length)
+  // DecoderSpecificInfo 的 tag=0x05，长度有两种写法（实测 B 站两种都有）：
+  //   ① 扩展长度 05 80 80 80 <len>
+  //   ② 单字节长度 05 <len>（len < 128，如 05 02 12 10）
+  // 只认 ① 会让 ② 的文件解析失败 → 整轨转封装输出 0 字节（「评书没声音」根因）。
+  for (let p = i + 4; p < end - 2; p += 1) {
+    if (moov[p] !== 0x05) continue
+    const n1 = moov[p + 1]
+    let len: number
+    let ascStart: number
+    if (n1 & 0x80) {
+      if (moov[p + 2] !== 0x80 || moov[p + 3] !== 0x80) continue
+      len = moov[p + 4]
+      ascStart = p + 5
+    } else {
+      len = n1
+      ascStart = p + 2
+    }
+    if (len < 2 || ascStart + len > end) continue
+    const asc = moov.subarray(ascStart, ascStart + len)
+    const b0 = asc[0]
+    const b1 = asc[1] ?? 0
+    const aot = (b0 >> 3) & 0x1f
+    const sfidx = ((b0 & 0x07) << 1) | (b1 >> 7)
+    const ch = (b1 >> 3) & 0x0f
+    // aot=0 是无效值（常见于误命中的 0x05 数据），必须排除
+    if (aot === 0 || sfidx === 15 || ch === 0) continue
+    return { aot, sfidx, ch }
+  }
+  return null
 }
 
 /** 从 moof box 提取 trun 的样本尺寸表与 data offset。 */

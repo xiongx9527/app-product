@@ -35,12 +35,12 @@ import { detectSubtitleCommand } from './subtitleControl'
 import { detectPlayModeCommand } from './playModeControl'
 import { detectTimeCommandKind } from './timeControl'
 import { detectAuspiciousQuery, type AuspiciousQuery } from './auspiciousControl'
-import { ensureAdtsFile } from '../controller/musicStreamController'
+import { ensureAdtsFile, adtsKeyFor } from '../controller/musicStreamController'
 import { detectWeatherCommand } from './weatherControl'
 import { detectProductQuery } from './productCatalog'
 import { createWeatherTool } from './tools/weatherTool'
 import { messages } from '../i18n'
-import { isNoise, resemblesSpoken } from '../asr/noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
@@ -482,18 +482,21 @@ export class VoiceSessionService {
     // 音量以默认值为起点：每次新播放下发 media.volume，供后续「调大/调小」相对增减。
     this.musicVolume = this.defaultVolume
     this.deps.send({ type: 'media.volume', volume: this.defaultVolume })
+    // dash 音轨：后台预热，不阻塞 media.play（转封装要拉满整轨 9MB+，等它会让播放器
+    // 迟迟不出现）；客户端请求短链时网关会等同一 key 的 in-flight 转封装。
+    const dashNext = needsProxy(track.channel, track.url) && track.url.includes('.m4s')
+    if (dashNext) void this.prewarmDashAudio(track)
     // 默认循环次数带入：仅当「自动循环播放」开启时换歌也默认循环，>1 才下发 loop。
     this.deps.send({
       type: 'media.play',
       url: track.url,
       title: track.title,
       channel: track.channel,
-      proxy: needsProxy(track.channel, track.url),
+      // dash 走短链本地播放，不再给长代理 URL（长 URL 会被 DCloud 下载器截断）
+      proxy: dashNext ? false : needsProxy(track.channel, track.url),
+      ...(dashNext ? { streamKey: adtsKeyFor(track.url) } : {}),
       ...(this.autoLoop && this.defaultLoop > 1 ? { loop: this.defaultLoop } : {}),
     })
-    // dash 纯音轨预热：客户端拿到 media.play 就会立刻请求 /music/stream，若缓存未热，
-    // 全量拉取+转封装的 2 秒延迟会让 DCloud AudioPlayer prepare 超时（无声）。下发前先转好。
-    void this.prewarmDashAudio(track)
     // 自动字幕：开关开启时，「换一首」同样是一次播放，同源尽力拉取字幕下发，与 playTrack 一致。
     void this.emitAutoSubtitle(track.title, this.lastTrack?.artist)
   }
@@ -529,22 +532,28 @@ export class VoiceSessionService {
     // 有效循环次数：语音「循环 N 遍」显式指定优先；否则仅当「自动循环播放」开启时用默认循环次数；>1 才下发 loop。
     const effectiveLoop =
       typeof loop === 'number' && loop > 1 ? loop : this.autoLoop ? this.defaultLoop : undefined
-    // dash 纯音轨预热与口播并行：用户听「正在为你播放…」的这两秒里把 ADTS 转好，
-    // 再下发 media.play —— 客户端 downloadFile 秒回、播放器立即打开（消除开场空窗）。
-    const prewarm = this.prewarmDashAudio(track)
+    // dash 纯音轨预热与口播并行，且**不阻塞 media.play**：整轨 9MB+ 的拉取要好几秒，
+    // 等它会让播放器迟迟不出现（用户感知「播放器打开慢」）。先下发 media.play 让播放器
+    // 立刻出现，客户端请求短链时网关等同一 key 的 in-flight 转封装。
+    // 注意口播不能 await：空闲直连路径下 speakReply 会自建「等播完回执」的等待，
+    // await 它会阻塞到 playback_done（播放器永远出不来）；链内路径则由 runTurn 统一等。
+    void this.prewarmDashAudio(track)
+    const speak = this.speakReply(confirm)
     // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示，不弹面板）。
     void this.emitAutoSubtitle(track.title, artist, reuseSubtitle)
-    await this.speakReply(confirm)
-    await prewarm
+    const dashTrack = needsProxy(track.channel, track.url) && track.url.includes('.m4s')
     this.deps.send({
       type: 'media.play',
       url: track.url,
       title: track.title,
       channel: track.channel,
-      proxy: needsProxy(track.channel, track.url),
+      // dash 走短链本地播放（长代理 URL 会被 DCloud 下载器截断，实测 936 字节即断）
+      proxy: dashTrack ? false : needsProxy(track.channel, track.url),
+      ...(dashTrack ? { streamKey: adtsKeyFor(track.url) } : {}),
       ...(effectiveLoop && effectiveLoop > 1 ? { loop: effectiveLoop } : {}),
       ...(track.cover ? { cover: track.cover } : {}),
     })
+    void speak
   }
 
   /**
@@ -1375,7 +1384,12 @@ export class VoiceSessionService {
           // 实时草稿随识别下发：噪声幻觉碎片（The/Yeah 等纯英文虚词）不刷草稿；
           // 播报期间助手自己话被麦收回的回声草稿也不刷（resemblesSpoken 比对当前口播），
           // 但用户的插话草稿要照常下发——用户要求插话识别能显示出来、与「正在思考/正在播放」并存。
-          if (partial && !isNoise(partial) && !(this.playbackPending && resemblesSpoken(partial, this.spoken))) {
+          if (
+            partial &&
+            !isNoise(partial) &&
+            !isForeignNoise(partial, this.lang) &&
+            !(this.playbackPending && resemblesSpoken(partial, this.spoken))
+          ) {
             this.deps.send({ type: 'asr.partial', text: partial })
           }
         })
@@ -1433,7 +1447,7 @@ export class VoiceSessionService {
     // isNoise 已覆盖 SenseVoice 对静音/音乐回声稳定冒出的英文虚词碎片（The/Yeah/oh…），
     // 这类碎片进 LLM 会胡乱追问「你说的The没听清」。按会话语言脚本过滤会误伤英文歌名
     // （Taylor Swift）和混排，故只在「极短纯拉丁虚词」层面拦，不按语言。
-    if (!text || isNoise(text)) return
+    if (!text || isNoise(text) || isForeignNoise(text, this.lang)) return
 
     // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。
     // 必须在下面的回声比对之前：用户说的「第二首」「稻香」正是刚口播过的词，
