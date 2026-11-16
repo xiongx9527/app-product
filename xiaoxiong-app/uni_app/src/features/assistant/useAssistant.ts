@@ -524,6 +524,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       }
       case 'media.play': {
+        // 临时诊断打点：确认 media.play 到达及代理分支（定位后删除）
+        errorMessage.value =
+          '[diag media.play] proxy=' + String(event.proxy) + ' m4s=' + String(event.url.includes('.m4s'))
         // proxy 标记由网关按频道判定（B 站等防盗链直链需走网关 /music/stream 代理补 Referer）；
         // 客户端不再写死任何频道名，只按此标记决定是否拼代理地址。
         const playUrl = event.proxy
@@ -538,11 +541,36 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         if (sig === lastMediaPlaySig && now - lastMediaPlayAt < MEDIA_PLAY_DEDUP_MS) break
         lastMediaPlaySig = sig
         lastMediaPlayAt = now
-        playMusic(
-          playUrl,
-          event.title,
-          event.loop != null ? { loop: event.loop } : undefined
-        )
+        // B站 dash 纯音轨（网关已转封装成 ADTS）走「先下载成本地文件再播」：
+        // DCloud AudioPlayer 对这种 HTTP 流的加载路径会直接报 -99（unsupported），连请求
+        // 都不发到网关；而本地文件播放 100% 可靠（提示音 mp3 从未出过问题）。下载走
+        // uni.downloadFile（原生下载器，网关缓存热时秒回），失败降级回直播流 URL。
+        if (event.proxy && event.url.includes('.m4s')) {
+          uni.downloadFile({
+            url: playUrl,
+            success: (r) => {
+              if (r.statusCode !== 200 || !r.tempFilePath) {
+                playMusic(playUrl, event.title, event.loop != null ? { loop: event.loop } : undefined)
+                return
+              }
+              playMusic(
+                r.tempFilePath,
+                event.title,
+                event.loop != null ? { loop: event.loop } : undefined
+              )
+            },
+            fail: () => {
+              // 下载失败（网关/网络问题）：降级回直播流 URL，行为与旧版一致
+              playMusic(playUrl, event.title, event.loop != null ? { loop: event.loop } : undefined)
+            },
+          })
+        } else {
+          playMusic(
+            playUrl,
+            event.title,
+            event.loop != null ? { loop: event.loop } : undefined
+          )
+        }
         // 封面与音频同源（歌曲宝详情页），每次新播放覆盖，无封面时清空避免显示上一首
         musicCover.value = event.cover ?? ''
         break
@@ -788,8 +816,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     try {
       await transport.connect('wake')
       void announceMicIfNeeded()
-    } catch {
-      // 建连失败交给自动重连；确认连不上由「重连耗尽」统一播报，此处静默
+    } catch (err: any) {
+      // 建连失败交给自动重连；确认连不上由「重连耗尽」统一播报，此处静默。
+      // 临时诊断打点：把真实 errMsg 显示到首页 error 区（定位「无法连接网关」根因后删除）
+      errorMessage.value = '[diag wake] ' + String(err?.errMsg ?? err?.message ?? err).slice(0, 120)
     }
   }
 
@@ -802,8 +832,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
     try {
       await transport.connect('dialog')
-    } catch {
+    } catch (err: any) {
       // 切到对话时建连失败：自动重连兜底，静默；连不上由「重连耗尽」统一播报
+      errorMessage.value = '[diag dialog] ' + String(err?.errMsg ?? err?.message ?? err).slice(0, 120)
     }
   }
 
@@ -896,6 +927,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let enabling = false
   async function enable(): Promise<void> {
     console.warn('[wake] enable() called')
+    // 临时诊断打点：enable 是否被调用/是否被防重入锁挡住（定位后删除）
+    errorMessage.value = '[diag] enable called, enabling=' + String(enabling)
     if (enabling) return // 防重入：connect 触发的连接恢复回调会试图自动重开
     enabling = true
     try {

@@ -236,7 +236,7 @@ export class WebSocketTransport implements AssistantTransport {
   /** 自动重连次数耗尽的订阅者 */
   private readonly exhaustedListeners = new Set<() => void>()
 
-  constructor(url?: string, lang: 'zh-CN' = 'zh-CN', maxReconnectAttempts = 5) {
+  constructor(url?: string, lang: 'zh-CN' = 'zh-CN', maxReconnectAttempts = 999) {
     this.url = url ?? ''
     this.lang = lang
     this.maxReconnectAttempts = maxReconnectAttempts
@@ -276,7 +276,20 @@ export class WebSocketTransport implements AssistantTransport {
     const ws = await createSocket(this.deviceWsUrl)
     this.ws = ws
     return new Promise<void>((resolve, reject) => {
+      // 连接超时兜底：DCloud connectSocket 在网关未就绪时可能既不 onopen 也不
+      // onerror/onclose（fail 回调被 promisify 吞掉），Promise 永挂会让调用方
+      // enable() 的 await 永不返回、finally 不执行、防重入锁 enabling 永久锁死，
+      // 之后所有点击/连接全部失效（autoConnect 首启撞网关冷启动必现）。
+      // 超时后主动 close 并置空，让自动重连可以继续建新连接。
+      const connectTimer = setTimeout(() => {
+        if (this.ws !== ws) return
+        this.ws = null
+        try { ws.close?.() } catch { /* 忽略 */ }
+        this.setConnected(false)
+        reject(new Error(t('error.gatewayConnectFailed', { url: this.activeUrl })))
+      }, 6_000)
       ws.onopen = () => {
+        clearTimeout(connectTimer)
         if (this.ws !== ws) return // 陈旧 socket 事件（重连后被顶掉的旧连接）忽略
         this.reconnectAttempts = 0
         this.reconnectExhausted = false
@@ -288,12 +301,14 @@ export class WebSocketTransport implements AssistantTransport {
         resolve()
       }
       ws.onerror = () => {
+        clearTimeout(connectTimer)
         if (this.ws !== ws) return
         // 不在此清 connecting：通常随后会触发 onclose，由 onclose 决定是否继续显示「连接中…」
         this.setConnected(false)
         reject(new Error(t('error.gatewayConnectFailed', { url: this.activeUrl })))
       }
       ws.onclose = () => {
+        clearTimeout(connectTimer)
         if (this.ws !== ws) return
         this.ws = null
         this.setConnected(false)
@@ -330,7 +345,7 @@ export class WebSocketTransport implements AssistantTransport {
       void this.connectInternal(this.pendingMode).catch(() => {
         // 连不上时 onclose 会继续安排下一次重试
       })
-    }, 1000)
+    }, Math.min(1000 * Math.max(1, this.reconnectAttempts), 3000))
   }
 
   private markExhausted(): void {

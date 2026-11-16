@@ -66,8 +66,11 @@ function copyDir(src, dest) {
   for (const name of readdirSync(src)) {
     const s = join(src, name)
     const d = join(dest, name)
-    if (statSync(s).isDirectory()) copyDir(s, d)
-    else copyFileSync(s, d)
+    if (statSync(s).isDirectory()) {
+      // 本机工具型目录不进包：如 static/audio/etts-venv（edge-tts 生成提示音的 Python venv，20MB）
+      if (/[-_]venv$/.test(name) || name === '__pycache__' || name === '.venv') continue
+      copyDir(s, d)
+    } else copyFileSync(s, d)
   }
 }
 

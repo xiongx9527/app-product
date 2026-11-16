@@ -20,6 +20,15 @@ npm run dev:app     # App，需要 HBuilderX / 自定义基座
 npm run dev:app-harmony
 ```
 
+真机联调（USB 联网：设备借用电脑网络，前提是 adb 在 PATH、设备已授权 USB 调试）：
+
+```bash
+cd xiaoxiong-app
+./scripts/usb-net.sh up       # 默认对所有 USB 在线设备生效；Windows 用 scripts\usb-net.bat
+./scripts/usb-net.sh status   # 逐台看设备代理 / adb reverse / 本机代理
+./scripts/usb-net.sh down     # 清除设备代理 + 反代，恢复原状
+```
+
 提交前至少跑 `test` + `type-check`。不要在没跑的情况下声称“已完成/已通过”。
 
 ## 目录与依赖方向
@@ -166,6 +175,7 @@ xiaoxiong-app/uni_app/src/
 ### 打包、真机调试与环境坑
 
 - **每次打包网关必须一起打**：网关是 App 同包内嵌组件，出 iOS / Android 包时网关 bundle 必须同步 `npm run build:bundle` 并打入，绝不留旧 / 缺网关；`package-*-offline.mjs` 已自动先构建再拷，不要改成"只拷不构建"。
+- **打包必须全量重编译（原则，已固化进 build.sh，iOS / Android 都覆盖）**：每次出包必须先清 `uni_app/dist/build/app` + `node_modules/.vite` 与 `gateway/dist` 再编译——uni/vite 有缓存，曾产出「时间戳新、内容旧」的前端产物（设备 grep 关键新代码全为 0 实锤），设备跑旧代码导致所有修复"看起来都没生效"。已在 build.sh 的 [1/3][2/3] 前加清理步骤，**不要删掉**；iOS 原生侧同样跟进：package-ios-offline.mjs 构建 framework 前清 `native/ios/app/.build`，build.sh iOS 分支出包后清壳工程 `build/` 并 `xcodebuild clean`（或 `-showBuildSettings` 找到的 DerivedData）。Android 装机后用 `run-as … grep -c <新代码字符串> …/www/app-service.js` 验证新代码真的进了设备；iOS 出包后可对 `.app` 产物里的 `www/app-service.js` 做同样 grep。注意 `src/static` 会被整目录拷进包：`static/audio/etts-venv`（edge-tts 提示音生成用的 Python venv，20MB）已由 build.sh 与 `package-*-offline.mjs` 的 copyDir 排除（`*-venv` / `.venv` / `__pycache__`），别把它挪进 src/static 之外后忘了同步排除规则，也不要往 static 放任何非资源文件。iOS 增量构建还有两个「删了却残留」的坑：①「文件夹引用」（Pandora/）增量拷贝不会从产物删除已移除的文件，只 `xcodebuild clean` 不够，必须连 DerivedData 一起删；②`reprovision.sh` 重打 IPA 的 `zip -qry` 是追加模式，必须先删旧 IPA（曾缝出 1431 个 venv 条目的混合档）——两处都已固化，不要改回去。
 - **Android 出包链**：`npm run build:app` → `node scripts/package-android-offline.mjs --appid __UNI__145C29C`（自动重建并放置网关 bundle）→ SDK 壳目录 `./gradlew :app:clean :app:assembleDebug` → `node scripts/install-android-offline.mjs` 干净安装（先卸载再装以强制刷新 www，别用裸 `adb install -r`）。改完前端必须 force-stop 再启动，否则可能跑旧包。
 - **干净安装必须补回运行时权限**：`adb uninstall` 重装会清掉麦克风等所有运行时权限，而 ADB 静默安装不弹授权框——结果就是「显示待唤醒但喊小熊小熊没反应 / 对话采不到音」。`install-android-offline.mjs` 已在安装后 `pm grant RECORD_AUDIO`（连同 Doze 白名单一起补）；改动安装流程时别漏掉这步，排查唤醒失效也先查 `dumpsys package <pkg> | grep RECORD_AUDIO` 的 granted 状态。
 - **唤醒架构是网关 ASR，不是本地 KWS**：前端采集 PCM 上行、网关 ASR 识别成文本后前端 `matchWakeWord` 匹配「小熊小熊」；所以唤醒前提是 `canWake() = 网关可用 + ASR reachable`，且麦克风权限已授予。`core/wake/wakeService.ts` 的原生 KWS provider 目前未接入主流程，别误以为唤醒靠它。
@@ -196,8 +206,16 @@ xiaoxiong-app/uni_app/src/
   - 9529 真实语音接口带前缀：ASR/TTS 是 `/voice/v1/audio/{transcriptions,speech}`，LLM 是 `/llm/v1/chat/completions`；网关 `resolveCapabilityConfig` 已把 baseUrl 收敛成 `${root}/voice` 和 `${root}/llm/v1`，探测/调用都别自己再拼错前缀。
   - 联调地址 / 模型名从配置读，不要写死；探测设备网关用 `adb forward`。
 - **设备访问本机服务连不通**：先排查 macOS 防火墙丢弃 LAN 入站（localhost 200 但 LAN IP 000），以及 WiFi AP 隔离（ping 不通但能上外网，用 adb reverse 或关 AP 隔离）。
+- **设备要上网就用 `scripts/usb-net.sh`（USB 联网 / reverse tethering），别靠热点或改 WiFi**：本机起 HTTP 代理（默认 `127.0.0.1:8899`，`--port` 可换）→ `adb reverse tcp:8899` → 写设备全局 `http_proxy`，设备上遵守系统代理的 App（浏览器 / WebView / OkHttp 等）经 USB 走电脑网络。`up` 默认对**所有 USB 在线设备**逐台建链（模拟器 / WiFi adb 不算），`--serial A,B` 只处理指定台；`down` 逐台清代理并停本机代理；`status` 看每台状态。日志 `xiaoxiong-app/logs/usb-net.log`，pid `logs/.usb-net.pid`。
+  - **只覆盖读系统代理的 App**：不读代理的原生 socket、以及设备内嵌网关（Node 直连）不走这里——网关访问本机 9529 仍靠 `adb reverse tcp:9529`，它自己发出的外网请求（B站/百度等）仍要设备自身有网；要让网关也走电脑网络得用 gnirehtet 这类 VPN 全量隧道方案。
+  - **与 9529 反代互不影响**（端口不同，`down` 只删自己那条 8899）；拔线 / 重启 adb 后 reverse 会掉，重插后重跑 `up`（幂等）。
+  - 自检：脚本会用设备 `curl -x http://127.0.0.1:8899` 打 `http(s)://www.baidu.com`；也可看日志里出现设备系统请求（如 `CONNECT metrics1.data.hicloud.com:6447`）证明全局代理真生效。联调结束跑 `down`，别把全局代理留在设备上。
+  - **（血泪坑，2026-11-16）系统代理残留会杀死 App 的全部原生网络，而 curl 测不出来**：只 `settings delete global http_proxy` 不够——部分 ROM 会把 `global_http_proxy_host` / `global_http_proxy_port` 残留在系统设置里（值仍指向已退出的 127.0.0.1:8899）。**App 的原生网络栈（OkHttp：`uni.request` / `uni.connectSocket`）会读系统代理** → 所有请求被导向死代理 → 表现「无法连接网关」「保存配置失败」「WS 永远连不上」，而 **curl / adb shell 不读系统代理，所以怎么 curl 网关都是 200，极易误判成网关坏了**。排查任何「App 连不上本机网关」问题，**第一步先查** `settings get global global_http_proxy_host`（以及 port/http_proxy），有残留就置 `null` 或重启设备；别先怀疑网关/代码。`usb-net.mjs` 的 `down` 已修为同时清 host/port/exclusion_list/pac 并回读校验，`up` 对称写 host/port，**不要改回只清 http_proxy**。
+- **iOS 原生工厂已工程化（framework + 自动集成，无手动 Xcode 步骤）**：对齐 Android 的「原生工厂 + SDK 壳」分工——`native/ios/app/XiaoxiongGateway.xcodeproj` 是我们的 framework 工程（`GatewayNode.swift` 跑网关 + `GatewayLauncher.swift` 暴露 `@objc startEmbeddedGateway`），**源码 `.swift` 收在 `.xcodeproj` 包内部**（约定：工程的一部分收进工程包，目录里不留零散文件），独立可编译验证（见 `native/ios/app/README.md`）；壳工程集成由 `package-ios-offline.mjs` 自动完成：构建 framework（注意 `-derivedDataPath` 必须空格分隔传两个参数，带 `=` 会被 xcodebuild 静默忽略）→ 拷到壳 `Frameworks/` → `scripts/ios-integrate.rb`（xcodeproj gem，幂等）注入 link + Embed(CodeSignOnCopy)、`FRAMEWORK_SEARCH_PATHS += $(PROJECT_DIR)/Frameworks`（缺了报 `XiaoxiongGateway-Swift.h not found`）、NodeMobile/gateway 资源兜底、清理旧式手动注入的 Swift 文件、patch `AppDelegate.m` 调 `[GatewayLauncher startEmbeddedGateway]`。**不要**再手动拖 Swift 文件进壳工程；`AppDelegate+Gateway.swift` 已删除（Swift extension 编译期必须看到宿主类，无法进 framework，入口一律走 GatewayLauncher）。
+- **iOS SDK 壳目录两平台统一为 `HBuilder-SDK`**：`native/{android,ios}/sdk/HBuilder-SDK/`（gitignore，不入库）；iOS 侧官方下载还带**壳旁边的 `SDK/` 引擎目录**（inc/Libs/Bundles）与 `uniapp.podspec`（与 sdk/README 同级，Podfile 的 `pod 'uniapp', :path => '..'` 指向它）——podspec 写死 `SDK/...` 相对路径、Pods 头文件是相对符号链接指到 `SDK/inc/...`，缺了或改名 954 个头悬空、编译直接失败，三者都要放进 `native/ios/sdk/`。**换 SDK 壳/迁移位置后必须重跑 `pod install`**（Pods 工程存绝对路径）：`cd native/ios/sdk/HBuilder-SDK && PATH="$HOME/.gem/ruby/2.6.0/bin:$PATH" pod install`（本机 pod 在用户级 gem、系统 Ruby 2.6，壳脚本已加 `filter_map` 兼容 shim）。打包脚本的目录遍历对悬空 symlink 容错（`safeStat`），不要改回裸 `statSync`。
+- **iOS 打包装机链**：`uni_app` 的 `npm run build:app` → `node scripts/package-ios-offline.mjs --sdk native/ios/sdk/HBuilder-SDK --appid __UNI__145C29C --appkey <build.local> --node-ios <build.local 的 NODE_IOS>` → `native/ios/reprovision.sh`（逐台 xcodebuild 注册 UDID + 刷新 7 天 profile + ios-deploy 装机）。设备不可见（USB 在线但 devicectl/ios-deploy 枚举不到）先查 iOS 16+ 开发者模式与「信任此电脑」。
 - **iOS 离线包**：`control.xml` 的 appid 别用示例值、Pandora 要进包、网关动态端口要与前端端口一致，否则白屏；Xcode 26.3 配 26.2 SDK 致 ibtool 报 Platform Not Installed，用 `UILaunchScreen` 绕过。
-- **iOS 重签脚本容错**：`reprovision.sh` 里设备离线静默忽略、"待信任开发者 / 待开开发者模式"都算正常，汇总三态后 `exit 0` 不报错；只看 `Installed package` 是假成功。
+- **iOS 重签脚本容错**：`reprovision.sh` 里设备离线静默忽略、"待信任开发者 / 待开开发者模式"都算正常，汇总三态后 `exit 0` 不报错；只看 `Installed package` 是假成功。bash 里 `$var` 后紧跟全角标点要用 `${var}` 花括号（曾致 set -u 误报 unbound variable）。
 - **悬浮层通用架构**：`core/adaptation/floatLayer` + 通用 `FloatLayer` 容器（slot + 统一 z-index），播放器只是第一个使用方，新悬浮内容复用它。
 - **协作提醒**：跨轮次可能丢失刚回答的内容，关键决定写入记忆或显式复述确认后再继续。
 

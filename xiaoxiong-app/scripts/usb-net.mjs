@@ -350,6 +350,14 @@ function runProxy(port) {
 
 function setDeviceProxy(cmd, port) {
   cmd.capture(['shell', `settings put global http_proxy 127.0.0.1:${port}`])
+  // 同步写 host/port：部分 ROM 的 HttpProxy 服务实际读这一组；与 clearDeviceProxy
+  // 的清理保持对称，避免只写一半导致 down 后残留（2026-11-16 实锤踩坑）。
+  try {
+    cmd.capture(['shell', `settings put global global_http_proxy_host 127.0.0.1`])
+    cmd.capture(['shell', `settings put global global_http_proxy_port ${port}`])
+  } catch {
+    // 个别 ROM 无该键，忽略；http_proxy 已足够
+  }
   const got = cmd.capture(['shell', 'settings get global http_proxy'])
   if (got !== `127.0.0.1:${port}`) {
     throw new Error(`设备代理写入失败（当前值: ${got || 'null'}）。部分定制 ROM 需手动在「设置 → WLAN → 代理」里填 127.0.0.1:${port}`)
@@ -362,6 +370,30 @@ function clearDeviceProxy(cmd) {
   } catch {
     // 老系统没有 delete 子命令时退回 :0（系统同样视为无代理）
     cmd.capture(['shell', 'settings put global http_proxy :0'])
+  }
+  // 必须同时清系统派生出来的 host/port：只 delete http_proxy 时，部分 ROM 会把
+  // global_http_proxy_host/port 残留在系统设置里（值仍指向已退出的本机代理）。
+  // App 的原生网络栈（OkHttp：uni.request / uni.connectSocket）会读系统代理 → 所有
+  // 请求被导向已死的 127.0.0.1:8899 → 「无法连接网关 / 保存失败」，而 curl 不读系统
+  // 代理所以完全测不出来（2026-11-16 实锤）。三个变量都必须置空。
+  for (const key of [
+    'global_http_proxy_host',
+    'global_http_proxy_port',
+    'global_http_proxy_exclusion_list',
+    'global_http_proxy_pac',
+  ]) {
+    try {
+      cmd.capture(['shell', `settings put global ${key} null`])
+    } catch {
+      // 个别 ROM 无该键，忽略
+    }
+  }
+  // 回读校验：主机名必须为空/ null，否则 App 网络仍会被死代理拖死
+  const host = cmd.capture(['shell', 'settings get global global_http_proxy_host']) || ''
+  if (host.trim() && host.trim() !== 'null') {
+    throw new Error(
+      `设备仍残留 global_http_proxy_host=${host.trim()}，App 网络会走死代理：请执行 \`adb shell settings put global global_http_proxy_host null\` 或重启设备后再试`,
+    )
   }
 }
 

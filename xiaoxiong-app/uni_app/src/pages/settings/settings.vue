@@ -87,6 +87,8 @@ const { themeStyle, dataTheme } = useThemeStyle()
 const saving = ref(false)
 /** 仅「未同步到网关」时置 true：行内红字如实报错。保存成功不显示文字（加载遮罩已足够）、不用 showToast。 */
 const saveFailed = ref(false)
+/** 临时诊断：保存失败的真实错误信息（App 请求层 errMsg），定位后删除 */
+const saveErrDetail = ref('')
 
 async function onSave(): Promise<void> {
   saving.value = true
@@ -116,8 +118,10 @@ async function onSave(): Promise<void> {
         header: { 'content-type': 'application/json' },
       })
       saveFailed.value = !(res.statusCode >= 200 && res.statusCode < 300)
-    } catch {
+    } catch (e: any) {
       saveFailed.value = true
+      const msg = e?.errMsg ?? e?.message ?? (typeof e === 'string' ? e : JSON.stringify(e))
+      saveErrDetail.value = ' [diag ' + String(msg).slice(0, 120) + ']'
     }
     // 本地落盘是同步的，加一个最短可见时长让加载遮罩有反馈，而不是一闪而过。
     await new Promise((r) => setTimeout(r, 400))
@@ -860,7 +864,7 @@ watch(
     <!-- 记忆设置 -->
     <button class="save" :disabled="saving" @tap="onSave">{{ t('settings.save') }}</button>
     <!-- 仅失败时行内红字报错：连不上网关要如实告知，不谎报成功；成功不显示文字 -->
-    <text v-if="saveFailed" class="save-status save-err">{{ t('settings.saveFailGateway') }}</text>
+    <text v-if="saveFailed" class="save-status save-err">{{ t('settings.saveFailGateway') }}{{ saveErrDetail }}</text>
 
     <!-- 保存中的加载遮罩 -->
     <view v-if="saving" class="save-mask">

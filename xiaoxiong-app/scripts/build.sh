@@ -94,13 +94,20 @@ elif [ "$PLATFORM" = "ios" ]; then
 fi
 
 # —— 1. 构建 uni-app 前端资源（H5 / APP 共用）——
-echo "==> [1/3] 前端资源 (npm run build:app)  [env=$ENV platform=$PLATFORM]"
+# 原则：每次出包必须全量重编译——uni/vite 有缓存，曾产出「时间戳新、内容旧」的产物
+# 导致设备上跑旧代码（2026-11-16 实锤）。构建前必须清产物目录与缓存，禁止增量。
+echo "==> [1/3] 前端资源 (清理 + npm run build:app)  [env=$ENV platform=$PLATFORM]"
 cd "$UNI_APP"
+rm -rf dist/build/app
+rm -rf node_modules/.vite
 npm run build:app
+# static/ 会被整目录拷进产物：剔除本机工具目录（如 static/audio/etts-venv，20MB Python venv）
+rm -rf dist/build/app/static/audio/etts-venv
 
 # —— 2. 构建内嵌网关 bundle（与前端、原生一起出包）——
-echo "==> [2/3] 网关 bundle (npm run build:bundle)"
+echo "==> [2/3] 网关 bundle (清理 + npm run build:bundle)"
 cd "$ROOT/gateway"
+rm -rf dist
 npm run build:bundle
 GATEWAY_BUNDLE="$ROOT/gateway/dist/gateway.bundle.mjs"
 if [ ! -f "$GATEWAY_BUNDLE" ]; then echo "网关 bundle 未生成: $GATEWAY_BUNDLE" >&2; exit 1; fi
@@ -147,7 +154,7 @@ if [ "$PLATFORM" = "android" ]; then
     echo "==> 完成：APK 目录 $APK_DIR 下未找到 app-debug.apk（请检查 gradle 产物名）"
   fi
 else
-  echo "==> [3/3] 接入 iOS 离线资源（Xcode 手动步骤见 $IOS_SDK_DIR/GATEWAY_INTEGRATION.md）"
+  echo "==> [3/3] 接入 iOS 离线资源（壳工程集成由 ios-integrate.rb 全自动）"
   cd "$ROOT"
   node "$SCRIPT_DIR/package-ios-offline.mjs" \
     --sdk "$IOS_SDK_DIR" \
@@ -155,5 +162,15 @@ else
     --gateway-bundle "$GATEWAY_BUNDLE" \
     "${BRAND_ARG[@]}" "${APPKEY_ARG[@]}" "${NODE_ARG[@]}"
 
-  echo "    在 Xcode 打开 $IOS_SDK_DIR 完成 A~D 手动步骤后 Archive 出 IPA。"
+  # 全量重编译原则（iOS 原生侧）：清壳工程旧构建产物与 Xcode 缓存，避免下次 xcodebuild
+  # 拿增量产物（时间戳新、内容旧）。注意「文件夹引用」（Pandora/）的增量拷贝不会从产物里
+  # 删除已移除的文件——只 clean 不够，必须连 DerivedData 一起删（曾致 .app 残留 72 个 venv 文件）。
+  # profile/签名由 reprovision.sh 以设备为 destination 处理。
+  echo "==> [3/3+] 清理 iOS 壳工程旧构建产物"
+  rm -rf "$IOS_SDK_DIR/build"
+  rm -rf "$HOME/Library/Developer/Xcode/DerivedData/HBuilder-Hello-"*
+  xcodebuild -workspace "$IOS_SDK_DIR/HBuilder-Hello.xcworkspace" -scheme HBuilder \
+    -configuration Debug clean >/dev/null 2>&1 || true
+
+  echo "    真机构建与装机：native/ios/reprovision.sh（或 Xcode 打开 $IOS_SDK_DIR Archive 出 IPA）。"
 fi

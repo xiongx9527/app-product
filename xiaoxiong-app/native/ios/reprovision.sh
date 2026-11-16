@@ -176,6 +176,9 @@ if [ -n "$LAST_GOOD_APP" ] && [ -d "$LAST_GOOD_APP" ]; then
   STAGE="$(mktemp -d)"
   mkdir -p "$STAGE/Payload"
   cp -R "$LAST_GOOD_APP" "$STAGE/Payload/"
+  # 必须先删旧 IPA：zip -qry 是追加模式，旧档里的陈旧条目（如被剔除的 venv）不会被移除，
+  # 会和新 Payload 缝合成一个混合档（实测 IPA 里残留 1431 个 venv 条目）。
+  rm -f "$IPA_OUT"
   (cd "$STAGE" && zip -qry "$IPA_OUT" Payload)
   rm -rf "$STAGE"
   echo "==> 已更新 IPA: $IPA_OUT"

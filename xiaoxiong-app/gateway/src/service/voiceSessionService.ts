@@ -35,7 +35,7 @@ import { detectSubtitleCommand } from './subtitleControl'
 import { detectPlayModeCommand } from './playModeControl'
 import { detectTimeCommandKind } from './timeControl'
 import { detectAuspiciousQuery, type AuspiciousQuery } from './auspiciousControl'
-import { ensureAdtsCached } from '../controller/musicStreamController'
+import { ensureAdtsFile } from '../controller/musicStreamController'
 import { detectWeatherCommand } from './weatherControl'
 import { detectProductQuery } from './productCatalog'
 import { createWeatherTool } from './tools/weatherTool'
@@ -493,7 +493,7 @@ export class VoiceSessionService {
     })
     // dash 纯音轨预热：客户端拿到 media.play 就会立刻请求 /music/stream，若缓存未热，
     // 全量拉取+转封装的 2 秒延迟会让 DCloud AudioPlayer prepare 超时（无声）。下发前先转好。
-    this.prewarmDashAudio(track)
+    void this.prewarmDashAudio(track)
     // 自动字幕：开关开启时，「换一首」同样是一次播放，同源尽力拉取字幕下发，与 playTrack 一致。
     void this.emitAutoSubtitle(track.title, this.lastTrack?.artist)
   }
@@ -529,6 +529,13 @@ export class VoiceSessionService {
     // 有效循环次数：语音「循环 N 遍」显式指定优先；否则仅当「自动循环播放」开启时用默认循环次数；>1 才下发 loop。
     const effectiveLoop =
       typeof loop === 'number' && loop > 1 ? loop : this.autoLoop ? this.defaultLoop : undefined
+    // dash 纯音轨预热与口播并行：用户听「正在为你播放…」的这两秒里把 ADTS 转好，
+    // 再下发 media.play —— 客户端 downloadFile 秒回、播放器立即打开（消除开场空窗）。
+    const prewarm = this.prewarmDashAudio(track)
+    // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示，不弹面板）。
+    void this.emitAutoSubtitle(track.title, artist, reuseSubtitle)
+    await this.speakReply(confirm)
+    await prewarm
     this.deps.send({
       type: 'media.play',
       url: track.url,
@@ -538,11 +545,6 @@ export class VoiceSessionService {
       ...(effectiveLoop && effectiveLoop > 1 ? { loop: effectiveLoop } : {}),
       ...(track.cover ? { cover: track.cover } : {}),
     })
-    // dash 纯音轨预热（同换一首）：必须在客户端发起 /music/stream 请求前把 ADTS 缓存准备好。
-    this.prewarmDashAudio(track)
-    // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示，不弹面板）。
-    void this.emitAutoSubtitle(track.title, artist, reuseSubtitle)
-    await this.speakReply(confirm)
   }
 
   /**
@@ -550,9 +552,9 @@ export class VoiceSessionService {
    * B站直链每次解析都变（签名/deadline），不预热则每次首播都要现场拉 11MB+转封装，
    * DCloud AudioPlayer prepare 超时就无声。失败静默：预热失败时客户端请求会现场转（慢但能用）。
    */
-  private prewarmDashAudio(track: { url: string; channel?: string }): void {
-    if (!needsProxy(track.channel, track.url) || !track.url.includes('.m4s')) return
-    void ensureAdtsCached(track.url).catch(() => undefined)
+  private prewarmDashAudio(track: { url: string; channel?: string }): Promise<void> {
+    if (!needsProxy(track.channel, track.url) || !track.url.includes('.m4s')) return Promise.resolve()
+    return ensureAdtsFile(track.url).then(() => undefined).catch(() => undefined)
   }
 
   /**

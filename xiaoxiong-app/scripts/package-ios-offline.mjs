@@ -81,8 +81,11 @@ function copyDir(src, dest) {
   for (const name of readdirSync(src)) {
     const s = join(src, name)
     const d = join(dest, name)
-    if (statSync(s).isDirectory()) copyDir(s, d)
-    else copyFileSync(s, d)
+    if (statSync(s).isDirectory()) {
+      // 本机工具型目录不进包：如 static/audio/etts-venv（edge-tts 生成提示音的 Python venv，20MB）
+      if (/[-_]venv$/.test(name) || name === '__pycache__' || name === '.venv') continue
+      copyDir(s, d)
+    } else copyFileSync(s, d)
   }
 }
 
@@ -416,8 +419,10 @@ if (!existsSync(factoryProj)) {
   process.exit(1)
 }
 
-// 7a) 构建产物落工厂自己的 .build（gitignore），避免污染全局 DerivedData 难以定位
+// 7a) 构建产物落工厂自己的 .build（gitignore），避免污染全局 DerivedData 难以定位。
+// 全量重编译原则：先清 .build 再编——xcodebuild 增量可能产出「时间戳新、内容旧」的 framework。
 const fwDerivedData = join(factoryDir, '.build')
+rmSync(fwDerivedData, { recursive: true, force: true })
 console.log('[step] 构建网关 framework (XiaoxiongGateway) ...')
 const fwBuild = spawnSync('xcodebuild', [
   '-project', factoryProj, '-scheme', 'XiaoxiongGateway',
