@@ -35,6 +35,9 @@ Thumbs.db
 # 日志与缓存
 *.log
 .dev-*.pid
+.usb-net.pid
+# 内嵌网关启动后写回的实际端口（运行时产物）
+.gateway_port
 # dev 脚本随机生成的 RSA 密钥对（前后端共用一套，禁止入库）
 .rsa-keys.json
 npm-debug.log*
