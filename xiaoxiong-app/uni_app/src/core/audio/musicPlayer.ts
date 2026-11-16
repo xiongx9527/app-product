@@ -19,6 +19,11 @@ const paused = ref(false)
 /** 当前曲目是否已自然播放完毕（非暂停、非出错）；用于让「暂停」按钮显出「重播」态 */
 const ended = ref(false)
 /**
+ * 曲目已确定但音频还在准备（下载/网关转封装）：播放条先亮出来显示「正在准备」，
+ * 避免整轨几 MB 的准备时间让用户以为「播放器没打开」。
+ */
+const preparing = ref(false)
+/**
  * 还需自动重播的次数（单曲循环）：playMusic 带 loop=N 时记为 N-1（首遍已开始），
  * 每次 onEnded 重播一次并递减，归零后进入 ended 态。0 表示不循环。
  */
@@ -85,6 +90,7 @@ function ensureContext(): UniApp.InnerAudioContext | null {
   instance.onError((err?: { errMsg?: string; errCode?: number | string }) => {
     playing.value = false
     paused.value = false
+    preparing.value = false
     musicError.value = true
     // 临时诊断打点（定位「B站 mp4 播不了」）：把错误码/描述并进提示文案，CDP 可读，定位后删除
     const detail = err?.errMsg || err?.errCode ? ` [diag ${err?.errCode ?? ''} ${err?.errMsg ?? ''}]` : ' [diag no-detail]'
@@ -117,6 +123,28 @@ function ensureContext(): UniApp.InnerAudioContext | null {
   return ctx
 }
 
+/**
+ * 先把播放条亮出来（标题已知、音频还在准备）：网关下发 media.play 后客户端还要下载整轨
+ * （评书单集 9MB+），这段空白期不该让界面「什么都没有」。真正开播由 playMusic 接手。
+ */
+export function preloadMusic(nextTitle: string): void {
+  if (!nextTitle) return
+  // 同一首已在播/已在准备时不打扰（重复下发 media.play 的幂等路径）
+  if (visible.value && title.value === nextTitle && (playing.value || preparing.value)) return
+  url.value = ''
+  title.value = nextTitle
+  currentTime.value = 0
+  duration.value = 0
+  live.value = false
+  paused.value = false
+  ended.value = false
+  musicError.value = false
+  musicErrorDetail.value = ''
+  playing.value = false
+  preparing.value = true
+  visible.value = true
+}
+
 /** 开始播放一段媒体流；会先停掉上一段，避免叠音。 */
 export function playMusic(
   nextUrl: string,
@@ -141,6 +169,7 @@ export function playMusic(
   paused.value = false
   ended.value = false
   musicError.value = false
+  preparing.value = false
   visible.value = true
   // loop 是「总共播放几遍」：首遍已经要播，所以「还要重播几次」= N-1；
   // 不合法（缺省/1/非正整数）一律当作不循环。
@@ -226,6 +255,7 @@ export function stopMusic(): void {
   duration.value = 0
   live.value = false
   musicError.value = false
+  preparing.value = false
   visible.value = false
 }
 
@@ -323,6 +353,7 @@ export const musicState = {
   musicErrorDetail,
   musicVolume,
   visible,
+  preparing,
   title,
   url,
   currentTime,

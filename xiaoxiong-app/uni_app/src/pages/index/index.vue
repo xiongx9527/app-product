@@ -53,6 +53,7 @@ const {
   musicError,
   musicErrorDetail,
   musicVisible,
+  musicPreparing,
   musicTitle,
   musicCover,
   musicCurrent,
@@ -463,7 +464,7 @@ function onOrbTap(): void {
              播放时喇叭暖光呼吸、唱片旋转、唱针‘放下’压片；暂停时喇叭收暗、停转、唱针‘拿起’ -->
         <view
           class="music-phono"
-          :class="{ 'music-phono--playing': !musicPaused && !musicEnded, 'music-phono--paused': musicPaused || musicEnded }"
+          :class="{ 'music-phono--playing': !musicPaused && !musicEnded && !musicPreparing, 'music-phono--paused': musicPaused || musicEnded || musicPreparing }"
         >
           <view class="phono__horn" />
           <view class="phono__tube" />
@@ -473,7 +474,7 @@ function onOrbTap(): void {
           <view class="phono__tonearm" />
         </view>
         <view class="music-info">
-          <text class="music-label" :class="{ paused: musicPaused, ended: musicEnded }">{{ musicEnded ? t('music.ended') : musicPaused ? t('music.pausedLabel') : t('music.nowPlaying') }}</text>
+          <text class="music-label" :class="{ paused: musicPaused, ended: musicEnded }">{{ musicPreparing ? t('music.preparing') : musicEnded ? t('music.ended') : musicPaused ? t('music.pausedLabel') : t('music.nowPlaying') }}</text>
           <text class="music-title">{{ musicTitle }}</text>
         </view>
         <view class="music-actions">

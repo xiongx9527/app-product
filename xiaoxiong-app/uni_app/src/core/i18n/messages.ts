@@ -274,6 +274,7 @@ const zhCN: Messages = {
 
   'music.nowPlaying': '正在播放',
   'music.pausedLabel': '已暂停',
+  'music.preparing': '正在准备',
   'music.ended': '播放完毕',
   'music.loopOn': '开启循环播放',
   'music.loopOff': '关闭循环播放',
@@ -576,6 +577,7 @@ const enUS: Messages = {
 
   'music.nowPlaying': 'Now playing',
   'music.pausedLabel': 'Paused',
+  'music.preparing': 'Preparing',
   'music.ended': 'Finished',
   'music.loopOn': 'Turn on loop',
   'music.loopOff': 'Turn off loop',
