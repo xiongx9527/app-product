@@ -129,6 +129,14 @@ public class WakeModule extends UniModule {
             Context ctx = safeContext();
             if (ctx == null) return;
             pcmUploader = PcmUploader.get(ctx);
+            // TTS 音频从这条原生连接下发：收到二进制帧直接写 AudioTrack，不经 JS——
+            // 播报期 JS 线程被 TTS 处理占满会让 weex 回调（含 socket 文本下行）全失效。
+            pcmUploader.setTtsFrameListener(new PcmUploader.TtsFrameListener() {
+                @Override
+                public void onTtsFrame(byte[] pcm) {
+                    playPcmBytes(pcm);
+                }
+            });
             pcmUploader.configure(deviceId);
             Log.i(TAG, "configureDirectUpload called");
         } catch (Throwable e) {
@@ -262,6 +270,21 @@ public class WakeModule extends UniModule {
         if (writtenFrames == 0) {
             Log.i(TAG, "playPcm first frame: b64len=" + b64.length() + " bytes=" + pcm.length + " b0=" + pcm[0]);
         }
+        writePcmFrame(pcm);
+    }
+
+    /** TTS 音频原生直连入口（PcmUploader 从 role=pcm 连接收到 TTS 二进制帧时调用），
+     *  不经 JS base64 解码——播报期 JS 线程被 TTS 处理占满会让 weex 回调全失效。 */
+    public void playPcmBytes(byte[] pcm) {
+        if (pcm == null || pcm.length == 0) return;
+        if (writtenFrames == 0) {
+            Log.i(TAG, "playPcmBytes first frame: bytes=" + pcm.length + " b0=" + pcm[0]);
+        }
+        writePcmFrame(pcm);
+    }
+
+    /** 把一帧 PCM 写进 AudioTrack（base64 路径与原生直连路径共用）。 */
+    private void writePcmFrame(byte[] pcm) {
         if (playTrack == null || !playRunning) startPlayback(playSampleRate);
         if (playTrack == null) return;
         int written = playTrack.write(pcm, 0, pcm.length);

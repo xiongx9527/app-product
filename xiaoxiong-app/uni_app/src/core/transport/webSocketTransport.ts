@@ -359,7 +359,7 @@ export class WebSocketTransport implements AssistantTransport {
   }
 
   /** 临时诊断：上报 onPcm 发送端状态到网关（定位后移除） */
-  sendDiag(payload: { state: string; speaking: boolean; cue: boolean; muted: boolean; frames: number; rms: number; connected: boolean }): void {
+  sendDiag(payload: { state: string; speaking: boolean; cue: boolean; muted: boolean; frames: number; rms: number; connected: boolean; trace?: string }): void {
     this.sendJson({ type: 'session.diag', ...payload })
   }
 

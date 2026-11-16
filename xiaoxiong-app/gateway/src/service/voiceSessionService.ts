@@ -405,6 +405,7 @@ export class VoiceSessionService {
         bargeDiag(
           `CLIENT state=${msg.state} speaking=${msg.speaking} cue=${msg.cue} `
           + `muted=${msg.muted} frames=${msg.frames} rms=${msg.rms} connected=${msg.connected} pb=${this.playbackPending}`
+          + (msg.trace ? ` trace=${msg.trace}` : '')
         )
         break
       case 'music.next':

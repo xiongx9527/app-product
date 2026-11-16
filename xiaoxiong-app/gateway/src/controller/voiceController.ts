@@ -35,11 +35,20 @@ function queryParam(req: IncomingMessage, key: string): string | null {
 }
 
 /**
- * 音频专用连接：原生直连上报 PCM。只把二进制帧喂给既有 session（按 deviceId 复用），
- * 不建 session、不 bindTransport、不注册心跳/清理，绝不影响 JS 主连接的事件收发。
+ * 原生 PCM 直连连接表：deviceId → WebSocket。
+ * 这条连接双向二进制：原生 send=采集 PCM（喂 handleBinary），网关 send=TTS 音频（原生直接写
+ * AudioTrack、不经 JS）。播报期 JS 线程被 TTS 处理占满会让 weex 回调全失效，故 TTS 音频也走
+ * 这条原生连接，让播报期 JS 空载、socket 文本回调恢复、插话文字能显示。
+ */
+const pcmConnections = new Map<string, WebSocket>()
+
+/**
+ * 音频专用连接：原生直连上报 PCM + 接收 TTS 音频。只把上行二进制帧喂给既有 session
+ * （按 deviceId 复用），不建 session、不 bindTransport，绝不影响 JS 主连接的事件收发。
  */
 function createPcmUploadConnection(ws: WebSocket, req: IncomingMessage): () => void {
   const deviceId = deviceIdFromRequest(req)
+  if (deviceId) pcmConnections.set(deviceId, ws)
   const onMessage = (data: RawData, isBinary: boolean): void => {
     if (!isBinary || !deviceId) return
     const session = getSession(deviceId)
@@ -50,10 +59,18 @@ function createPcmUploadConnection(ws: WebSocket, req: IncomingMessage): () => v
   ws.on('message', onMessage)
   const cleanup = (): void => {
     ws.off('message', onMessage)
+    if (deviceId && pcmConnections.get(deviceId) === ws) pcmConnections.delete(deviceId)
   }
   ws.on('close', cleanup)
   ws.on('error', cleanup)
   return cleanup
+}
+
+/** TTS 音频下发：有原生直连走它（原生直接写 AudioTrack，不经 JS）；否则回退 JS 主连接。 */
+function sendAudioTo(deviceId: string | null, jsWs: WebSocket, bytes: Uint8Array): void {
+  const pcm = deviceId ? pcmConnections.get(deviceId) : undefined
+  const target = pcm && pcm.readyState === WebSocket.OPEN ? pcm : jsWs
+  if (target.readyState === WebSocket.OPEN) target.send(Buffer.from(bytes))
 }
 
 /**
@@ -73,7 +90,9 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
     if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event))
   }
   const sendAudio = (bytes: Uint8Array): void => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from(bytes))
+    // 播报期 JS 线程被 TTS 处理占满→weex 回调全失效，故 TTS 音频优先走原生直连，不经 JS；
+    // 没有原生直连（H5/旧基座）才回退 JS 主连接。
+    sendAudioTo(deviceId, ws, bytes)
   }
   /** 当前会话绑定的 socket；旧连接滞后断开时据此判断是否需要清会话 */
   let boundWs: WebSocket | null = null

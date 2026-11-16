@@ -399,6 +399,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   })
 
   function handleServerEvent(event: ServerEvent): void {
+    // 临时诊断：客户端是否真的收到 asr.* 事件，回报到网关日志定位「播报期文字不显示」断点
+    if (event.type === 'asr.partial' || event.type === 'asr.queued' || event.type === 'asr.final' || event.type === 'asr.rejected') {
+      transport.sendDiag?.({
+        state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
+        frames: 0, rms: 0, connected: transport.isConnected(),
+        trace: `RECV ${event.type} text=${(event as { text?: string }).text ?? ''}`,
+      })
+    }
     switch (event.type) {
       case 'asr.partial':
         // 待唤醒阶段用流式识别结果实时匹配唤醒词，不等整句定稿——

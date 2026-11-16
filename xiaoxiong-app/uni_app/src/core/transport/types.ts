@@ -110,7 +110,7 @@ export interface AssistantTransport {
   onReconnectExhausted(listener: () => void): () => void
   sendAudioChunk(chunk: ArrayBuffer): void
   /** 临时诊断：上报 onPcm 发送端状态到网关（定位后移除；Mock 可不实现） */
-  sendDiag?(payload: { state: string; speaking: boolean; cue: boolean; muted: boolean; frames: number; rms: number; connected: boolean }): void
+  sendDiag?(payload: { state: string; speaking: boolean; cue: boolean; muted: boolean; frames: number; rms: number; connected: boolean; trace?: string }): void
   sendCancel(): void
   /** 播报/思考中重新喊「小熊小熊」：只跳过当前句、保留队列（区别于 sendCancel 的整轮重来）。
    *  dropText 为命中唤醒词的识别原文，让网关把这句（经 asr.queued 入过队）从队列移除，不当成指令处理。 */

@@ -31,12 +31,22 @@ public final class PcmUploader {
     private static final String PORT_FILE = ".gateway_port";
     private static volatile PcmUploader instance;
 
+    /** 下行 TTS 音频帧回调：网关从 role=pcm 连接下发，原生直接写 AudioTrack，不经 JS。 */
+    public interface TtsFrameListener {
+        void onTtsFrame(byte[] pcm);
+    }
+
     private final Context context;
     private final OkHttpClient client;
     private WebSocket ws;
     private String deviceId;
     private volatile boolean enabled = false;
     private volatile long lastConnectAttempt = 0;
+    private volatile TtsFrameListener ttsListener;
+
+    public void setTtsFrameListener(TtsFrameListener l) {
+        this.ttsListener = l;
+    }
 
     private PcmUploader(Context context) {
         this.context = context.getApplicationContext();
@@ -116,6 +126,18 @@ public final class PcmUploader {
                 @Override
                 public void onOpen(WebSocket webSocket, Response response) {
                     Log.i(TAG, "connected: " + url);
+                }
+                /** 网关下发的 TTS 音频二进制帧：直接写 AudioTrack，不经 JS（播报期 weex 回调会失效）。 */
+                @Override
+                public void onMessage(WebSocket webSocket, ByteString bytes) {
+                    TtsFrameListener l = ttsListener;
+                    if (l != null) {
+                        try {
+                            l.onTtsFrame(bytes.toByteArray());
+                        } catch (Throwable e) {
+                            Log.w(TAG, "tts frame failed: " + e.getMessage());
+                        }
+                    }
                 }
                 @Override
                 public void onClosed(WebSocket webSocket, int code, String reason) {
