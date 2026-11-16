@@ -176,6 +176,8 @@ export type ServerEvent =
   | { type: 'tts.end' }
   /** half=回声兜底中，播报期间不拾音，用户需点「打断」；full=正常全双工 */
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
+  /** barge-in duck：播报期检测到用户开口，压低 TTS 音量（true）让 ASR 听清；说完恢复（false） */
+  | { type: 'audio.duck'; duck: boolean }
   /** 让客户端播放一段音频流（如 SomaFM 网络电台）；客户端用独立播放器，不与 TTS 冲突。
    *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。
    *  proxy 标记该直链需经网关 /music/stream 代理：要么带防盗链（如 B 站，需 Referer），

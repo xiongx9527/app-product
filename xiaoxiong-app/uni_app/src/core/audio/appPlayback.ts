@@ -16,6 +16,8 @@ interface NativePlaybackModule {
    *  JSONObject 抛 `expect {, actual [`；只有把标量字符串直接作为方法参数才能可靠过桥。 */
   playPcm?(pcmB64: string): void
   stopPlayback?(): void
+  /** barge-in duck：标量 int 百分比（0–100），压低/恢复播报（float 过 weex 桥不可靠） */
+  setPlaybackVolume?(percent: number): void
   /** keepAlive 回调：每次播放队列清空且录音头追上写入进度时回传 true */
   onPlaybackIdle?(callback: (idle: boolean) => void): void
 }
@@ -125,6 +127,20 @@ export function onAppPlaybackIdle(fn: () => void): () => void {
   idleListeners.add(fn)
   return () => {
     idleListeners.delete(fn)
+  }
+}
+
+/**
+ * barge-in duck：播报期间用户开口时把音量压到接近 0（回声弱、ASR 识别准），说完恢复。
+ * 原生 setPlaybackVolume 收标量 float；旧基座无此方法时 no-op。
+ */
+export function setAppPlaybackVolume(volume: number): void {
+  const mod = loadModule()
+  try {
+    // weex 桥只可靠传标量 int，音量用 0–100 百分比（float 参数实测从未进原生方法）
+    mod?.setPlaybackVolume?.(Math.round(volume * 100))
+  } catch {
+    // 旧基座不支持 duck，忽略
   }
 }
 

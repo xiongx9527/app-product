@@ -31,6 +31,7 @@ import {
   appPlayPcm,
   onAppPlaybackIdle,
   stopAppPlayback,
+  setAppPlaybackVolume,
 } from '@/core/audio/appPlayback'
 import { isAppCaptureSupported, requestMicPermission, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
 import { t } from '@/core/i18n'
@@ -142,8 +143,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let cancelPlaybackIdle: (() => void) | null = null
   /** 播完回执兜底定时器：idle 回调链丢失时强制收尾，保证网关的队列持续推进 */
   let playbackDoneFallback: ReturnType<typeof setTimeout> | null = null
-  /** 插话已入队：此后不再显示识别草稿（说话尾音晚到的 partial 不回填），有排队角标就够了 */
-  let queuedHideLive = false
+  /**
+   * 插话已入队：隐藏识别草稿直到这个时刻（说话尾音晚到的 partial 不回填），有排队角标就够了。
+   * 用时间戳而非布尔标志：旧实现入队后把标志卡成 true，而播报期 asr.final 因 isSpeaking 提前 break、
+   * 永远走不到重置那行，导致之后每一句新插话的 partial 都被挡、说话当下看不到文字。
+   * 改成 2 秒窗口后，尾音被挡住，下一句新插话的 partial 能照常显示。
+   */
+  let queuedHideUntil = 0
+  const QUEUED_HIDE_MS = 2000
   /** 「正在思考」安抚提示计时器：思考超过 10s 播本地 mp3（稍等一下），每轮最多一次 */
   let thinkingCueTimer: ReturnType<typeof setTimeout> | null = null
   let thinkingCueFired = false
@@ -205,6 +212,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const WAKE_ECHO_MS = 2000
   /** 播报期 partial 命中唤醒词打断的节流：流式识别连续多帧命中只打一次，避免重复招呼/重复跳过。 */
   let lastPartialSkipAt = 0
+  /** barge-in duck 音量：正常播报 0.2（与原生 PLAYBACK_VOLUME 一致），用户开口压到 0.04。 */
+  const TTS_VOLUME_NORMAL = 0.2
+  const TTS_VOLUME_DUCK = 0.04
   const PARTIAL_SKIP_MS = 2500
   /**
    * 网关还有几句排队没轮到：期间「你说」必须锁在当前句，
@@ -404,9 +414,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
             skipCurrentAndGreet(event.text)
             break
           }
-          // 插话已入队（queuedHideLive）后不再显示草稿——说话尾音晚到的 partial 会把草稿
-          // 又填回来，用户明确要求「入队后有排队角标就够了」。
-          if (queuedHideLive) break
+          // 插话刚入队后的 2 秒内不显示草稿——说话尾音晚到的 partial 会把草稿又填回来，
+          // 用户要求「入队后有排队角标就够了」。窗口过后新插话的 partial 照常显示，
+          // 解决旧布尔标志永久卡死导致「every 句插话说话当下都看不到文字」。
+          if (Date.now() < queuedHideUntil) break
           liveText.value = event.text
           if (!assistantBusy && !queuePending.value && !isSpeaking.value && phase.value !== 'listening') {
             phase.value = 'listening'
@@ -426,7 +437,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 才由 asr.final 进入「我说」卡片正文。
         if (mode === 'dialog') {
           queuePending.value = Math.max(queuePending.value, event.position)
-          queuedHideLive = true
+          queuedHideUntil = Date.now() + QUEUED_HIDE_MS
           liveText.value = ''
         }
         break
@@ -470,7 +481,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 直接采信服务端的权威剩余数，避免拒收/超时等路径下本地计数漂移。
         queuePending.value = event.queueRemaining
         // 这句已出队进入处理：恢复草稿显示（下一句插话的实时识别又能看见了）
-        queuedHideLive = false
+        queuedHideUntil = 0
         transcript.value = event.text
         // 清掉监听草稿与队列溢出提示；这句轮到被处理，溢出横幅自然失效
         liveText.value = ''
@@ -522,6 +533,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         isSpeaking.value = true
         lastSpokeAt = Date.now()
         phase.value = 'speaking'
+        // 新句开始：恢复正常播报音量（兜底，防上句 duck 未恢复就开下一句）
+        setAppPlaybackVolume(TTS_VOLUME_NORMAL)
         // 播报期间压低正在播放的音乐，避免盖住助手说话
         duckMusic(true)
         break
@@ -670,11 +683,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'audio.duplex':
         halfDuplex.value = event.mode === 'half'
         break
+      case 'audio.duck':
+        // barge-in duck：你一开口网关就压低 TTS，让麦克风只收到人声、ASR 识别准；
+        // 说完恢复。仅 App 原生播放有 duck 能力，H5（WebAudio）无此接口自动 no-op。
+        setAppPlaybackVolume(event.duck ? TTS_VOLUME_DUCK : TTS_VOLUME_NORMAL)
+        break
       case 'error':
         errorMessage.value = event.message
         phase.value = 'idle'
         assistantBusy = false
-        queuedHideLive = false
+        queuedHideUntil = 0
         queuePending.value = 0
         liveText.value = ''
         queueFullMsg.value = ''
@@ -780,7 +798,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'endSession':
         cancelPendingIdle()
         disarmThinkingCue()
-        queuedHideLive = false
+        queuedHideUntil = 0
         stopTts()
         isSpeaking.value = false
         queuePending.value = 0
@@ -792,7 +810,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'cancelSession':
         cancelPendingIdle()
         disarmThinkingCue()
-        queuedHideLive = false
+        queuedHideUntil = 0
         stopTts()
         transport.sendCancel()
         isSpeaking.value = false
@@ -892,10 +910,49 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   async function ensureCapture(): Promise<void> {
     if (capturing) return
     // 播报期间继续保持上行：用户插话要能识别并排队，不能掐掉麦克风。
-    // 回声由浏览器 AEC + 网关 strict VAD / 文本比对 / 半双工兜底处理。
+    // 回声由 App 端 AEC + 网关文本比对（resemblesSpoken）处理。
     // 只有本地提示音（扬声器外放的固定短音）期间把上行帧清零。
+    // 关键：播报期（isSpeaking）即使 cueMuteUntil 因提示音去重被延长，也绝不清零——
+    // 真机诊断实锤：播报期采集端有声（rms 0.13）但网关收到全 0，正是这里误清零，
+    // 导致 VAD 收不到人声、没有 asr.partial，用户「说话当下看不到识别文字、难插话」。
+    // 提示音的回声交给下游文本层过滤，不再用「掐麦」这种会连真人一起掐掉的方式。
+    // 临时诊断：节流统计发送端状态，定位「采集端有声但网关收不到」断在哪一环
+    let diagFrames = 0
+    let diagMuted = 0
+    let diagAt = Date.now()
     const onPcm = (pcm: ArrayBuffer): void => {
-      transport.sendAudioChunk(isPromptCuePlaying() ? new ArrayBuffer(pcm.byteLength) : pcm)
+      const muted = isPromptCuePlaying() && !isSpeaking.value
+      diagFrames += 1
+      if (muted) diagMuted += 1
+      // 每 ~2s 写一次（逻辑层无 logcat，用 setStorageSync 落盘供 run-as 读）
+      const now = Date.now()
+      if (now - diagAt >= 2000) {
+        try {
+          let rmsSum = 0
+          const dv = new DataView(pcm)
+          const n = Math.floor(pcm.byteLength / 2)
+          for (let i = 0; i < n; i += 1) {
+            const s = dv.getInt16(i * 2, true) / 32768
+            rmsSum += s * s
+          }
+          const rms = n ? Math.sqrt(rmsSum / n) : 0
+          uni.setStorageSync('__pcm_send_diag', {
+            t: now,
+            frames: diagFrames,
+            muted: diagMuted,
+            speaking: isSpeaking.value,
+            cue: isPromptCuePlaying(),
+            connected: transport.isConnected(),
+            rms: Number(rms.toFixed(4)),
+          })
+        } catch {
+          // 诊断写失败不影响主流程
+        }
+        diagFrames = 0
+        diagMuted = 0
+        diagAt = now
+      }
+      transport.sendAudioChunk(muted ? new ArrayBuffer(pcm.byteLength) : pcm)
     }
 
     // H5 走 WebAudio；App 走 app-product-wake 原生插件的实时 PCM 接口；

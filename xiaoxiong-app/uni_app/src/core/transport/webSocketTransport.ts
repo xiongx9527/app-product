@@ -354,8 +354,34 @@ export class WebSocketTransport implements AssistantTransport {
     this.exhaustedListeners.forEach((listener) => listener())
   }
 
+  // 临时诊断：统计发送/丢弃帧数，定位「采集端有声但网关收不到」
+  private diagSent = 0
+  private diagDropped = 0
+  private diagAt = 0
+
   sendAudioChunk(chunk: ArrayBuffer): void {
-    if (this.ws && this.ws.readyState === WS_OPEN) this.ws.send(chunk)
+    if (this.ws && this.ws.readyState === WS_OPEN) {
+      this.ws.send(chunk)
+      this.diagSent += 1
+    } else {
+      this.diagDropped += 1
+    }
+    const now = Date.now()
+    if (now - this.diagAt >= 2000) {
+      try {
+        uni.setStorageSync('__ws_send_diag', {
+          t: now,
+          sent: this.diagSent,
+          dropped: this.diagDropped,
+          readyState: this.ws ? this.ws.readyState : -1,
+        })
+      } catch {
+        // 诊断写失败不影响主流程
+      }
+      this.diagSent = 0
+      this.diagDropped = 0
+      this.diagAt = now
+    }
   }
 
   startSession(mode: SessionMode): void {

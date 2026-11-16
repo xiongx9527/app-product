@@ -53,11 +53,16 @@ public class WakeModule extends UniModule {
     private static final int FRAME_MS = 32;
     /** 每多少帧打一次统计日志，避免刷屏。 */
     private static final int LOG_EVERY_FRAMES = 50;
-    /** TTS 播报音量（0–1）。播放音乐默认 0.5，播报对齐到同一水平：
-     *  满音量 1.0 外放的 TTS 回声会被 VOICE_COMMUNICATION 麦克风采回，AEC 双讲抑制时把
-     *  用户插话一起压掉，表现为「播报时插话很难」；真机对比「播放音乐插话很顺」正是音量差。
-     *  降到与音乐一致后回声弱、AEC 压力小、用户也敢开口，插话识别明显变顺。 */
-    private static final float PLAYBACK_VOLUME = 0.5f;
+    /** TTS 播报音量（0–1）。对标「播放音乐插话很顺」：音乐默认 0.5、TTS 播报时再被 duck
+     *  到 0.5×0.2=0.1，所以音乐外放回声一直很弱、人声信噪比高、插话识别准。
+     *  TTS 播报是对内容的主体验，不能压到 0.1 听不清，取 0.2 —— 比之前 0.5 再降 60%，
+     *  真机诊断证明 0.5 时 TTS 回声仍混进采集（说话 rms 仅 0.06、ASR 出英文乱码），
+     *  降到 0.2 让回声弱、AEC 双讲不再压人声，插话识别才准。 */
+    private static final float PLAYBACK_VOLUME = 0.2f;
+    /** duck 时压到的音量：几乎静音，让麦克风只收到用户人声、ASR 识别准。 */
+    private static final float DUCK_VOLUME = 0.04f;
+    /** 当前播报音量（0–1），可被 duck 动态改写；起播时按此值 setVolume。 */
+    private volatile float playbackVolume = PLAYBACK_VOLUME;
 
     public WakeModule() {
         Log.i(TAG, "WakeModule instantiated");
@@ -162,22 +167,41 @@ public class WakeModule extends UniModule {
                 playTrack = null;
                 return;
             }
-            // 播报音量对齐音乐默认音量（0.5），降低外放回声对采集/AEC 与插话识别的干扰。
-            playTrack.setVolume(PLAYBACK_VOLUME, PLAYBACK_VOLUME);
+            // 起播音量：若上一轮还停在 duck 状态，沿用 duck 值，避免新句开头一瞬间满音量炸耳。
+            playTrack.setVolume(playbackVolume);
             playTrack.play();
             synchronized (playLock) {
                 writtenFrames = 0;
                 idleNotified = true;
             }
             playRunning = true;
+            // 播报期关 AEC：真机实锤——TTS 一播放，AEC 双讲抑制把用户插话一起抵消成静音
+            // （非播报期说话 rms 0.1 正常，播报期说话 rms 0.0000）。关掉后回声由网关文本层
+            // resemblesSpoken 过滤，人声能被采进来识别。播完在 stopPlaybackInternal 恢复。
+            setAecEnabled(false);
             startIdlePolling();
             Log.i(TAG, "AudioTrack started: " + playSampleRate + "Hz/mono/16bit, buf=" + bufSize
-                    + ", volume=" + PLAYBACK_VOLUME);
+                    + ", volume=" + playbackVolume);
         } catch (Throwable e) {
             Log.e(TAG, "startPlayback failed: " + e.getMessage(), e);
             playRunning = false;
             playTrack = null;
         }
+    }
+
+    /** barge-in duck：用户一开口就把播报音量压到接近 0，让麦克风只收到人声、ASR 识别准。
+     *  标量 int 参数传 0–100 百分比：真机 weex 桥传 float 不可靠（从未进过这个方法），
+     *  int 与 startPlayback(int) 同理可靠过桥；内部再 /100f。 */
+    @UniJSMethod(uiThread = false)
+    public void setPlaybackVolume(int percent) {
+        playbackVolume = Math.max(0f, Math.min(1f, percent / 100f));
+        if (playTrack != null) {
+            try {
+                playTrack.setVolume(playbackVolume);
+            } catch (Throwable ignored) {
+            }
+        }
+        Log.i(TAG, "setPlaybackVolume: percent=" + percent + " volume=" + playbackVolume);
     }
 
     /** JS 直接传 base64 字符串（不包对象）。真机血泪（四层坑，逐层挖出来）：
@@ -319,11 +343,16 @@ public class WakeModule extends UniModule {
                         notify = true;
                     }
                 }
-                if (notify && playbackIdleCb != null) {
-                    try {
-                        playbackIdleCb.invokeAndKeepAlive(true);
-                    } catch (Throwable ignored) {
-                        // JS 已解绑，忽略
+                if (notify) {
+                    // 真正播空（扬声器不再外放 TTS）：恢复 AEC。若队列马上有下一句，
+                    // startPlayback 会再关掉；这里的短暂恢复无副作用。
+                    setAecEnabled(true);
+                    if (playbackIdleCb != null) {
+                        try {
+                            playbackIdleCb.invokeAndKeepAlive(true);
+                        } catch (Throwable ignored) {
+                            // JS 已解绑，忽略
+                        }
                     }
                 }
                 try {
@@ -358,6 +387,21 @@ public class WakeModule extends UniModule {
         synchronized (playLock) {
             writtenFrames = 0;
             idleNotified = true;
+        }
+        // 停止播放：恢复 AEC（停在 duck 关闭态时兜底；正常播空路径在 idle polling 里已恢复）
+        setAecEnabled(true);
+    }
+
+    /** 开/关采集端 AEC（播报期关、播完开）。aec 可能为 null（设备不支持/采集未启动），静默忽略。 */
+    private void setAecEnabled(boolean enabled) {
+        if (aec == null) return;
+        try {
+            boolean cur = aec.getEnabled();
+            if (cur != enabled) {
+                aec.setEnabled(enabled);
+                Log.i(TAG, "AEC setEnabled: " + enabled + " (playRunning=" + playRunning + ")");
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -451,6 +495,9 @@ public class WakeModule extends UniModule {
         int frameBytes = SAMPLE_RATE * CHANNELS * (BITS / 8) * FRAME_MS / 1000;
         final byte[] frame = new byte[frameBytes];
         int count = 0;
+        long diagAt = 0;
+        // 临时诊断：记录采集端（AEC 处理后）的原始帧能量，定位「播报期上行没声音」是采集端还是发送端
+        final long DIAG_EVERY_MS = 400;
         while (running && recorder != null && recorder.getState() == AudioRecord.STATE_INITIALIZED) {
             int read;
             try {
@@ -462,6 +509,17 @@ public class WakeModule extends UniModule {
             }
             if (read != frameBytes) continue; // 不足一帧（罕见），丢弃以保证分片时长恒定
             count++;
+            long nowMs = System.currentTimeMillis();
+            if (nowMs - diagAt >= DIAG_EVERY_MS) {
+                diagAt = nowMs;
+                double sum = 0;
+                for (int i = 0; i + 1 < read; i += 2) {
+                    int s = (short) (((frame[i + 1] & 0xff) << 8) | (frame[i] & 0xff));
+                    sum += (double) s * s;
+                }
+                double rms = Math.sqrt(sum / (read / 2)) / 32768.0;
+                Log.i(TAG, "PCM-DIAG rms=" + String.format("%.4f", rms) + " play=" + playRunning);
+            }
             if (count % LOG_EVERY_FRAMES == 0) {
                 Log.d(TAG, "pcm frames=" + count + " (" + (count * FRAME_MS) + "ms)");
             }

@@ -45,6 +45,21 @@ import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
 import { buildHealth } from './health'
+import { appendFileSync } from 'node:fs'
+
+// ===== 临时诊断：播报期插话识别链路（定位后移除）=====
+let bargeDiagAt = 0
+/** 累计收到的音频帧数（每 50 帧落一条），与 pb 状态/节流无关，确认网关是否真的在收帧 */
+let bargeFrames = 0
+let bargeLoudFrames = 0
+function bargeDiag(line: string): void {
+  try {
+    const home = process.env.GATEWAY_HOME ?? '.'
+    appendFileSync(`${home}/barge-diag.log`, `${new Date().toISOString()} ${line}\n`)
+  } catch {
+    // 诊断写失败不影响主流程
+  }
+}
 
 /** 播报期间最多排几句用户插话，超出直接拒收。 */
 const MAX_QUEUE = 3
@@ -263,6 +278,10 @@ export class VoiceSessionService {
   private readonly echo = new EchoGuard()
   /** 当前是否已通知客户端处于半双工，避免重复下发。 */
   private halfDuplex = false
+  /** barge-in duck：播报期检测真人开口时压低 TTS；避免重复下发，记住当前 duck 态。 */
+  private ducked = false
+  /** duck 后多久没再有人声就恢复音量（用户说完一句的尾音余量）。 */
+  private duckReleaseTimer: ReturnType<typeof setTimeout> | null = null
   /** 当前轮还没播完时识别到的用户插话，播完后依次交给大模型。 */
   private readonly queue: string[] = []
   /** 最近送进 TTS 的原文，用于把「收回来的自己的声音」判成回声丢弃。 */
@@ -1375,6 +1394,21 @@ export class VoiceSessionService {
 
   handleBinary(chunk: Uint8Array): void {
     if (!this.active) return
+    // 本帧 RMS（供 duck 触发与诊断共用）
+    let s = 0
+    const nn = Math.floor(chunk.byteLength / 2)
+    const dvv = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+    for (let i = 0; i < nn; i += 1) {
+      const v = dvv.getInt16(i * 2, true) / 32768
+      s += v * v
+    }
+    const frameRms = nn ? Math.sqrt(s / nn) : 0
+    // 累计收帧诊断（每 50 帧一条，不受节流/pb 影响）：确认帧是否真的到达网关
+    bargeFrames += 1
+    if (frameRms > 0.008) bargeLoudFrames += 1
+    if (bargeFrames % 50 === 0) {
+      bargeDiag(`TOTAL frames=${bargeFrames} loud=${bargeLoudFrames} pb=${this.playbackPending}`)
+    }
     // 帧一直会来，顺手把到期的回声抑制恢复掉
     if (this.halfDuplex && !this.echo.muted()) this.syncDuplex()
     // 播报期与思考/空闲期用同一套 VAD 门槛：早先给播报期加过 strict（门槛加倍），
@@ -1383,9 +1417,41 @@ export class VoiceSessionService {
     // 没有帧喂给 ASR 就没有 asr.partial，说话当下看不到识别文字，体感「播报时很难插话」。
     // 用户要求播报期识别与思考期一致，故不再传 strict。
     const vad = this.vad.push(chunk)
-    for (const frame of vad.frames) {
+    // barge-in duck：播报期能量超过阈值（真人开口，非 TTS 底噪）就压低 TTS。
+    // 不再依赖 vad.started——真人说话帧断续时 VAD 连续 2 帧门槛满足不了，started 几乎不触发。
+    this.updateDuck(vad.voiced, frameRms > 0.02)
+    // 临时诊断：播报期每 400ms 记一条能量/门槛/VAD 结论，定位「播报时插话识别不到」卡在哪
+    const diagNow = Date.now()
+    if (this.playbackPending && diagNow - bargeDiagAt >= 400) {
+      bargeDiagAt = diagNow
+      let sum = 0
+      const n = Math.floor(chunk.byteLength / 2)
+      const dview = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      for (let i = 0; i < n; i += 1) {
+        const s = dview.getInt16(i * 2, true) / 32768
+        sum += s * s
+      }
+      const rms = n ? Math.sqrt(sum / n) : 0
+      bargeDiag(
+        `FRAME pb=${this.playbackPending} rms=${rms.toFixed(4)} thr=${this.vad.threshold.toFixed(4)} `
+        + `noise=${this.vad.noiseFloor.toFixed(4)} voiced=${vad.voiced} speech=${vad.speech} `
+        + `frames=${vad.frames.length} half=${this.halfDuplex} echoMuted=${this.echo.muted()}`
+      )
+    }
+    // 播报期 duck 且能量超阈值时，即使 VAD 因帧断续没确认 inSpeech（frames 为空），
+    // 也把当前人声帧喂给 ASR——否则 ASR 只收到零碎帧+TTS 回声，识别成「滕王格式文字版」乱码。
+    const forceFeed = this.playbackPending && this.ducked && frameRms > 0.02 && vad.frames.length === 0
+    const framesToFeed = forceFeed ? [chunk] : vad.frames
+    for (const frame of framesToFeed) {
       void this.asr.push(frame)
         .then((partial) => {
+          // 临时诊断：记录每一条 ASR 返回的草稿原文与过滤决策
+          if (this.playbackPending && partial) {
+            const isN = isNoise(partial)
+            const isF = isForeignNoise(partial, this.lang)
+            const isEcho = this.playbackPending && resemblesSpoken(partial, this.spoken)
+            bargeDiag(`PARTIAL text="${partial}" noise=${isN} foreign=${isF} echo=${isEcho}`)
+          }
           // 实时草稿随识别下发：噪声幻觉碎片（The/Yeah 等纯英文虚词）不刷草稿；
           // 播报期间助手自己话被麦收回的回声草稿也不刷（resemblesSpoken 比对当前口播），
           // 但用户的插话草稿要照常下发——用户要求插话识别能显示出来、与「正在思考/正在播放」并存。
@@ -1401,7 +1467,8 @@ export class VoiceSessionService {
         .catch(() => undefined)
     }
     // 只有真正的人声帧才重置句末计时：静音帧持续到达也会让计时器自然到期
-    if (vad.voiced) this.armEndpoint()
+    // duck 期间强喂的人声帧也算（否则识别结果永不 finalize）
+    if (vad.voiced || forceFeed) this.armEndpoint()
   }
 
   /** 半双工状态只在切换时下发一次，避免每帧都刷事件。 */
@@ -1410,6 +1477,39 @@ export class VoiceSessionService {
     if (half === this.halfDuplex) return
     this.halfDuplex = half
     this.deps.send({ type: 'audio.duplex', mode: half ? 'half' : 'full' })
+  }
+
+  /**
+   * barge-in duck：播报期检测到真人声能量（rms>阈值）时压低 TTS，让麦克风只收到人声、
+   * ASR 识别准；用户说完后自动恢复。这是「播报插话识别成乱码」的治本——
+   * 真机诊断：播放音乐时插话顺（音乐 duck 到 0.1），TTS 播报满音量时回声把插话搅成乱码。
+   * 不用 vad.started：真人说话帧断续时 VAD 连续 2 帧门槛满足不了，started 几乎不触发。
+   * @param voiced 本帧 VAD 是否有人声（含尾音保留）
+   * @param energyHit 本帧能量是否超过「真人开口」阈值
+   */
+  private updateDuck(voiced: boolean, energyHit: boolean): void {
+    if (!this.playbackPending) {
+      // 不在播报期：若还 duck 着就恢复（兜底，正常由播放结束路径恢复）
+      if (this.ducked) this.setDuck(false)
+      return
+    }
+    // 真人开口（能量超阈值）：立刻 duck
+    if (energyHit && !this.ducked) this.setDuck(true)
+    // 还在说话（能量或 VAD 有人声）：续期释放定时器
+    if (this.ducked && (energyHit || voiced)) {
+      if (this.duckReleaseTimer) clearTimeout(this.duckReleaseTimer)
+      this.duckReleaseTimer = setTimeout(() => {
+        this.duckReleaseTimer = null
+        this.setDuck(false)
+      }, 1500)
+    }
+  }
+
+  private setDuck(duck: boolean): void {
+    if (duck === this.ducked) return
+    this.ducked = duck
+    bargeDiag(`DUCK duck=${duck}`)
+    this.deps.send({ type: 'audio.duck', duck })
   }
 
   private armEndpoint(): void {
@@ -1458,6 +1558,11 @@ export class VoiceSessionService {
     // isNoise 已覆盖 SenseVoice 对静音/音乐回声稳定冒出的英文虚词碎片（The/Yeah/oh…），
     // 这类碎片进 LLM 会胡乱追问「你说的The没听清」。按会话语言脚本过滤会误伤英文歌名
     // （Taylor Swift）和混排，故只在「极短纯拉丁虚词」层面拦，不按语言。
+    // 临时诊断：定稿文本 + 噪声过滤结果，确认 endpoint 有没有触发、文本有没有被丢
+    bargeDiag(
+      `FINAL text="${text}" pb=${this.playbackPending} noise=${isNoise(text)} `
+      + `foreign=${isForeignNoise(text, this.lang)} echo=${Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)}`
+    )
     if (!text || isNoise(text) || isForeignNoise(text, this.lang)) return
 
     // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。
@@ -1619,8 +1724,13 @@ export class VoiceSessionService {
         if (this.playbackTimer) clearTimeout(this.playbackTimer)
         this.playbackTimer = null
         this.playbackResolve = null
-        // 播完（或超时）后关闭回声门控窗口
+        // 播完（或超时）后关闭回声门控窗口，并恢复 duck 的播报音量（兜底）
         this.playbackPending = false
+        if (this.duckReleaseTimer) {
+          clearTimeout(this.duckReleaseTimer)
+          this.duckReleaseTimer = null
+        }
+        this.setDuck(false)
         resolve()
       }
       this.playbackResolve = done

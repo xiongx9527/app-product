@@ -46,6 +46,8 @@ export type ServerEvent =
   | { type: 'tts.stop' }
   | { type: 'tts.end' }
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
+  /** barge-in duck：播报期用户开口→压低 TTS（true）；说完→恢复（false） */
+  | { type: 'audio.duck'; duck: boolean }
   /** 让客户端播放一段音频流（电台/歌曲）：客户端用独立播放器，不与 TTS 冲突。
    *  loop 为「总共播放几遍」，缺省/1 表示不循环；客户端播完最后一遍进入「已播完」态。
    *  proxy 标记该直链带防盗链需经网关 /music/stream 代理；频道→代理判定在网关侧，客户端只认此标记。
