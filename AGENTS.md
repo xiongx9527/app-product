@@ -74,6 +74,7 @@ xiaoxiong-app/uni_app/src/
 - 前端：文案走 `core/i18n` 消息目录，按 `language` 取值；不引入 `vue-i18n`。
 - 后端：智能体系统提示、下发给客户端的 `error` 文案等都按 `session.start` 的 `lang` 本地化，文案进 `xiaoxiong-app/gateway/src/i18n.ts` 的目录，按 `lang` 取值。
 - 唤醒词、ASR、TTS 的默认语言跟随全局配置；厂商参数留空即继承。
+- **ASR 识别语言走通用参数 `voice.params.language`**（2026-11-17 按用户要求从独立 `asrLanguage` 顶层字段改为走 params）：前端 `activeVoiceConfig()` 把 `appConfig.language`（zh-CN/en-US）规范化成基础码（zh/en）写进 `params.language`（无论有没有选音色都下发 params）；网关 `sharedParams` 把它带进 `asr.params.language`，`asr/http.ts` 的 `form.append('language', String(this.params.language || 'zh'))` 据此下发。**注意**：`params` 是 ASR/LLM/TTS 共用通道，`language` 会同时流进 LLM（`agentService` 作 `presetGenParams`，且 `llmKey=JSON.stringify(resolved.llm)`，改语言会触发 agent 重建丢对话历史）与 TTS 参数——这是用户明确接受的取舍；若日后要隔离，只能在网关 `sharedParams` 之外单独给 LLM 剥掉 language，不要再恢复独立顶层字段。没带 language 时由网关 env `ASR_PARAMS` 或 `HttpVoiceAsr` 的 zh 兜底继续生效。服务端 9529 SenseVoice 另有模型加载级 `SENSEVOICE_LANGUAGE`（默认 zh）锁定。
 
 ### 配置
 
@@ -136,6 +137,9 @@ xiaoxiong-app/uni_app/src/
 - **"再"字表示全新请求**：语音指令含"再"（再放 / 再减…）时关掉跨轮上下文，不沿用上一轮的歌手 / 状态。
 - **少调 LLM**：高置信控制指令（音乐 / 音量 / 记忆 / 新闻等）直连绕开大模型，不进 LLM。
 - **新闻播报直连**：识别在 `service/control/newsControl.ts`（触发词 新闻 / 消息 / 头条 / 热点 / 快讯 / news / headlines，话题词从触发词前提取，含歌曲 / 影视等其它内容强特征则让回下游）；检测在 `voiceSessionService.handleDirectCommand` 中**排在音乐指令之前**（否则「播放新闻」被裸「播放」当点歌）。抓取走 `service/news`（`NewsSource` 抽象，默认百度新闻频道）+ `service/tools/newsTool`（6s 超时、按 URL 60s TTL、并发复用 Promise、失败不缓存），源地址只在网关侧、前端不出现也不接受传入。只口播「标题 + 来源」、不发卡片 / 不编号 / 不进 LLM；失败 / 0 条 / 正常三态分别走 `formatNews` 的诚实文案，绝不编造新闻。引导与兜底按 `lang` 本地化（网关 `i18n.ts` 的 `news.*`），标题保持原文。
+- **百科播报用百度百科自己的 TTS 音频，不自己文字转语音**（2026-11-17）：百科词条直连命中后，网关 `runBaikeCommand` 调**百度百科 getaudio 接口**拿 mp3 直链（`service/baike/baikeTts.ts`），`media.play` 下发让客户端边下边播（和音乐同一套 InnerAudioContext）。sign 算法 `md5(text+"9"+per+time+once+固定盐)` 逆向自百度 `lemma_*.js`、多组真机样本验证；接口是百度非公开、可能失效，**失败就静默不播（只发 `llm.done` 收尾），绝不用网关文字转语音兜底**（用户明令「播不了就算了」）。mp3 直链约一百多分钟有效，即用即取不缓存。音频直链真机已验证可播（CDP 注入 Audio 走完 loadstart→ended）。
+  - **文字不进助手框，进字幕面板且转成歌词格式**：百科摘要经 `splitSummaryToLines`（`baikeTts.ts`）按中文句末标点切行、短句并入前句、按字数/4.5字每秒分配每行 time → `media.subtitle`；前端 `activeSubtitleIndex`/`activeSubtitleSplit` 按播放进度逐句高亮「边读边转」，每次只显示短句（悬浮歌词 `disc-lyric` 塞得下），不要把几百字整段单行塞进固定宽度（右边看不到）。
+  - **封面用词条配图**：百度搜索页百科卡片的 `poster` 里 `gimg3.baidu.com/.../src=<编码的 bkimg URL>` 解码成稳定 `bkimg.cdn.bcebos.com` 直链（`baiduBaikeSource.ts` 的 `extractBaikeImage`），随 `media.play.cover` 下发（同源展示）。`media.play` 新增 `source?: 'music'|'tts'` 来源方式区分音乐 / 第三方 TTS。
 - **回复要诚实**：关闭字幕 / 暂停 / 停止等确认必须反映真实状态；没字幕、没在播放就别说"已显示 / 已暂停 / 已关闭"；保存配置连不上或写失败要如实报错，不谎报成功。
 - **详情卡片**：编号同行最前、列表显示字段、缺值占位、来源显示站点名、选号跨轮保留且量词通用、关详情回列表、无朋友圈入口、各 kind 共用同一协议。
 - **展示信息克制**：面板别默认加语义重复的状态列。
@@ -174,6 +178,14 @@ xiaoxiong-app/uni_app/src/
 - 对外当前只有 HTTP 语音接口；对外 WS 接口待测试页完善后再加。
 - DeepSeek 官方语音：ASR `/v1/tools/asr`、TTS `/v1/tools/tts`，音色 stella / tide，调用协议 `http`，密钥走 `STT_DEEPSEEK_API_KEY` / `TTS_DEEPSEEK_API_KEY`。
 - **本地真实服务联调的网关实现坑**（地址 / 模型名一律从配置读，不写死）：语音服务接口可能在**根路径**（`/v1/audio/transcriptions`、`/v1/audio/speech`）而非某个前缀，接错路径会 404；ASR 服务常要求 **RIFF/WAV**，纯 PCM 上报 `does not start with RIFF id`——`asr/http.ts` 要把上行 16k PCM 补 44 字节 WAV 头再 multipart 提交；TTS 返回的 24k/16bit/单声道 WAV 直接剥头下发 PCM、无需重采样。上游 LLM 曾因余额耗尽返回 402，联调 LLM 可改走本机 Ollama 绕开付费代理。排查「对不了话」先分清是地址、接口路径、WAV 头还是上游余额问题，别急着改前端。
+- **SenseVoice 识别语言必须显式锁 zh，不能走 auto**（2026-11-17）：本机 9529（`model-proxy/voice/openai_voice_server.py`）用 sherpa-onnx SenseVoice-small，`from_sense_voice(language=...)` 与 stream `set_option("language", ...)` 都支持 auto/zh/en/ja/ko/yue。**auto 检测在短句/带噪时把中文摇成拼音式碎片**（真机「李存勖」→「Li chnx.」「Byaiike Li Sian.」、高频冒 The/Yeah）。两级锁定：服务端 `sensevoice_language()`（读 `SENSEVOICE_LANGUAGE`，默认 zh）在模型加载和 stream 都传；网关 `asr/http.ts` 未配 language 时默认补 `zh`。SenseVoice **没有热词支持**（hotwords 只属 FunASR-nano/Paraformer），**同音字（勖→旭、事迹→四纪）是模型词表/声学上限，锁 language 也救不回**——要根治只能换更强引擎或加领域热词引擎，别在 language/音量/AEC 上空耗。验证：verbose_json 的 `language` 返回 `<|zh|>` 即锁定生效。9549/9529 服务是本机 Mac 进程，改完要重启且用能常驻的方式（本环境普通后台启动会被 shell 回收），重启后确认 adb reverse tcp:9529 隧道与设备网关 health。
+- **启动 9529 语音服务必须用 venv**（2026-11-17）：`model-proxy/voice/openai_voice_server.py` 依赖 `websockets` / `fastapi` / `uvicorn`，**系统 python 没装这些，直接 `python openai_voice_server.py` 会失败**。启动固定用项目 venv：
+  ```bash
+  cd model-proxy/voice
+  ~/.app-product/voice/venv/bin/python openai_voice_server.py
+  ```
+  启动前先确认 venv 依赖齐全（`~/.app-product/voice/venv/bin/python -c "import websockets, fastapi, uvicorn"`）。服务是本机 Mac 进程，要**常驻**（普通 `&` 后台启动会被 shell 回收，用能保持进程的方式如终端常驻 / 任务管理器）。起来后本机 `curl http://127.0.0.1:9529/` 应返回 `{"service":"app-product-local-ai",...}`，真机再确认 `adb reverse tcp:9529 tcp:9529` 隧道 + 设备侧 `adb shell 'curl http://127.0.0.1:9529/'` 拿到 200。卡死（CPU 空转、ASR 返回幻觉碎片但 health 仍 200）时 `kill -9` 掉旧进程再用 venv 重启。
+- **SenseVoice 句尾重复词清洗**（2026-11-17）：真机「今天天几怎么样？」被 SenseVoice 输出成「今天天气怎么样？天气。」（主体收在问号处、尾部又多吐一次「天气」）——**项目没有「纠正词/热词/词表替换」功能，网关和前端都原样透传 ASR 文本**，这是模型自己的尾部重复，别去找不存在的替换逻辑。清洗放在 `asr/noiseFilter.ts` 的 `stripTrailingEcho()`：摘掉收尾标点后，若「最后一个句末标点之后的核心（≥2 字）」已在主体出现过，就删到该标点为止。在 `voiceSessionService.ts` 的 partial 下发与 `finalizeUtterance` 定稿（噪声过滤之前）两处调用，保证「我说」框与 LLM 看到同一份干净文本；诊断 FINAL 行附 `raw=` 记原文。尾巴是全新内容（「去北京？上海也行」）、单字尾巴、无句末标点都保留，避免误伤。
 
 ### 打包、真机调试与环境坑
 

@@ -55,6 +55,9 @@ export type ServerEvent =
    *  proxy 标记该直链带防盗链需经网关 /music/stream 代理；频道→代理判定在网关侧，客户端只认此标记。
    *  cover 为与音频同源的封面图（如歌曲宝详情页），供播放器展示。 */
   | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean; cover?: string
+      /** 音频来源方式：music=音乐/电台（默认），tts=第三方语音合成接口（如百科播报）。
+       *  播放模式相同，客户端据此识别音频类型。 */
+      source?: 'music' | 'tts'
       /** 音频短链相对路径：有值时下载 <httpBase>/<audioPath> 后本地播放
        *  （如 music/s/<key>.aac，音乐/评书/新闻视频音轨均走此短链），客户端不区分来源。 */
       audioPath?: string }

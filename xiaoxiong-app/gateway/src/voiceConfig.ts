@@ -103,9 +103,10 @@ export function resolveCapabilityConfig(
   const common = voiceParams ? sharedParams(voiceParams) : undefined
   // ASR 模型来自独立顶层字段 asrModel，注入 asr.params.model。common 通道本就被剥掉了 model
   // （那是 TTS 音色所属模型），这里显式覆盖即可；留空则 ASR 继续沿用来源默认模型，行为不变。
-  const asrParams: VendorParams = v.asrModel
-    ? { ...(common ?? config.asr.params), model: v.asrModel }
-    : (common ?? config.asr.params)
+  // ASR 识别语言来自通用参数 params.language（通用设置的界面语言基础码 zh/en）：
+  // sharedParams 已把它带进 common，故 asrParams 天然包含 language，http.ts 从 params.language 读取。
+  // 没带 language 时由网关 env ASR_PARAMS 或 HttpVoiceAsr 的 zh 兜底继续生效。
+  const asrParams: VendorParams = { ...(v.asrModel ? { ...(common ?? config.asr.params), model: v.asrModel } : (common ?? config.asr.params)) }
   // TTS 模型：显式 ttsModel 优先于音色所属模型（voiceParams.model）；留空则完全沿用旧行为
   // （音色所属模型 / 网关 env 默认）。两个模型各自独立，不共用通道、互不串味。
   const ttsParams: VendorParams = v.ttsModel

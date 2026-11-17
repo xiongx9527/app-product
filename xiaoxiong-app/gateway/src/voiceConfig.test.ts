@@ -136,6 +136,45 @@ describe('resolveCapabilityConfig：asrModel / ttsModel 独立注入对应能力
   })
 })
 
+describe('resolveCapabilityConfig：ASR 识别语言走通用 params.language', () => {
+  it('params.language 流进 asr.params.language（http.ts 据此下发 language）', () => {
+    const voice = normalizeVoiceConfig({
+      provider: 'builtin',
+      params: { language: 'zh' },
+    })
+    const r = resolveCapabilityConfig(voice, CONFIG)
+    expect(r.asr.params?.language).toBe('zh')
+  })
+
+  it('params.language 与音色 voice/model 共存时，只认 language 给 ASR，剥掉 TTS 专用字段', () => {
+    const voice = normalizeVoiceConfig({
+      provider: 'builtin',
+      params: { voice: 'zh-CN-XiaoxiaoNeural', model: 'edge-tts', language: 'en' },
+    })
+    const r = resolveCapabilityConfig(voice, CONFIG)
+    expect(r.asr.params?.language).toBe('en')
+    expect(r.asr.params?.voice).toBeUndefined()
+    expect(r.asr.params?.model).toBeUndefined()
+    expect(r.tts.params?.voice).toBe('zh-CN-XiaoxiaoNeural')
+  })
+
+  it('没带 language：沿用网关 env 默认', () => {
+    const config = {
+      ...CONFIG,
+      asr: { provider: 'builtin', endpointMs: 700, params: { language: 'ja' } },
+    } as unknown as GatewayConfig
+    const voice = normalizeVoiceConfig({ provider: 'builtin' })
+    const r = resolveCapabilityConfig(voice, config)
+    expect(r.asr.params?.language).toBe('ja')
+  })
+
+  it('dashscope 源同样从 params.language 读到 ASR 语言', () => {
+    const voice = normalizeVoiceConfig({ provider: 'dashscope', url: '', apiKey: 'k', params: { language: 'en' } })
+    const r = resolveCapabilityConfig(voice, CONFIG)
+    expect(r.asr.params?.language).toBe('en')
+  })
+})
+
 describe('DashScopeWsAsr：误入的 TTS 模型不得让识别挂掉', () => {
   it('cosyvoice-v3-flash 被忽略，回退 paraformer-realtime-v2，且 voice 不进 parameters', () => {
     const asr = new DashScopeWsAsr(

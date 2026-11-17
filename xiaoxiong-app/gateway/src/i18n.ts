@@ -115,6 +115,8 @@ export interface Messages {
   news: {
     /** 播放器标题（media.play.title）；keyword 为话题词时带上话题 */
     title: (keyword?: string) => string
+    /** 单条新闻开播时助手框的简短确认（无字幕，仅助手框显示） */
+    playing: (title: string) => string
     /** 抓到 N 条新闻的引导；keyword 为话题词（带话题搜索），无话题词即泛播当日头条 */
     intro: (count: number, keyword?: string) => string
     /** 没查到新闻（抓到 0 条）；keyword 为话题词时说明是「与该话题相关」 */
@@ -130,10 +132,12 @@ export interface Messages {
     /** 本批新闻播完后再说「下一条」：如实告知，引导重新抓一批 */
     noMore: () => string
   }
-  /** 百科查询：抓真实百科词条摘要显示在助手框并播报。无话题时提示用户说查谁。 */
+  /** 百科查询：抓真实百科词条摘要播报（音频来自百度百科）。无话题时提示用户说查谁。 */
   baike: {
     /** 纯「百科」无话题时的提示 */
     prompt: () => string
+    /** 播报开始时在助手框显示的简短确认（同音乐 playing 风格，不显示全文） */
+    playing: (title: string) => string
   }
   /** 数据来源展示名（按 lang 本地化）：值由数据源给 sourceKey，网关查表，客户端不认识 key。 */
   sources: Record<string, string>
@@ -288,6 +292,7 @@ const zhCN: Messages = {
   },
   news: {
     title: (keyword) => (keyword ? `${keyword}新闻播报` : '今日新闻播报'),
+    playing: (title) => `正在为你播报：${title}。`,
     intro: (count, keyword) =>
       keyword
         ? `查到 ${count} 条与「${keyword}」相关的新闻：`
@@ -303,6 +308,7 @@ const zhCN: Messages = {
   },
   baike: {
     prompt: () => '想查谁的百科？比如说「百科李存勖」。',
+    playing: (title) => `正在为你播报：${title}。`,
   },
   sources: { smzdm: '什么值得买' },
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
@@ -445,6 +451,7 @@ const en: Messages = {
   },
   news: {
     title: (keyword) => (keyword ? `${keyword} news briefing` : 'News briefing'),
+    playing: (title) => `Now playing the news: ${title}.`,
     intro: (count, keyword) =>
       keyword
         ? `Found ${count} news items about "${keyword}": `
@@ -460,6 +467,7 @@ const en: Messages = {
   },
   baike: {
     prompt: () => 'Whose encyclopedia entry? For example, "wiki Einstein".',
+    playing: (title) => `Now reading the encyclopedia entry for: ${title}.`,
   },
   sources: { smzdm: 'SMZDM' },
   clock: {

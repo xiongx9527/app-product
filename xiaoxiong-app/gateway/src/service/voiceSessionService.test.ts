@@ -119,6 +119,8 @@ function createHarness(
     baikeQuery?: (query: string) => Promise<{ entry: BaikeEntry | null; text: string }>
     /** 记录百科查询收到的关键词 */
     baikeQuerySpy?: (query: string) => void
+    /** 注入百科音频直链桩，避免百科用例真的调百度 getaudio。缺省给固定假 URL。 */
+    baikeAudioUrl?: (text: string) => Promise<string>
     /** 注入详情页补充信息桩；缺省返回 null（不联网），需要验证合并时再注入 */
     dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
     /** 智能体口播文本（经 ChannelSplitter 下发）；默认「好的，我来说一句。」。可注入泄漏标记验证兜底 */
@@ -254,6 +256,8 @@ function createHarness(
           return opts.baikeQuery!(query)
         }
       : undefined,
+    // 百科音频直链桩：缺省给固定假 URL，避免测试真的调百度 getaudio 联网。
+    baikeAudioUrl: opts.baikeAudioUrl ?? (async () => 'https://tts.baidu.com/test.mp3'),
     // 新闻视频源桩：search 返回注入候选，resolveBvid 返回注入音轨（缺省 null→走兜底口播）
     newsVideoSource: {
       name: 'test-news-video',
@@ -3141,22 +3145,65 @@ describe('百科查询直连（绕开 LLM，助手框显示 + 播报）', () => 
       .join('')
   }
 
-  it('「百科李存勖」：抓词条摘要口播，并把关键词传给查询', async () => {
+  it('「百科李存勖」：走百度音频 media.play，助手框只显示播报确认、全文进字幕', async () => {
     let queried = ''
+    let audioText = ''
     const h = createHarness({
       finalizeText: '百科李存勖',
       baikeQuerySpy: (q) => { queried = q },
       baikeQuery: async (q) => ({
-        entry: { title: '李存勖', summary: '五代后唐开国皇帝，军事才能出众。' },
+        entry: {
+          title: '李存勖',
+          summary: '五代后唐开国皇帝，军事才能出众。',
+          image: 'https://bkimg.cdn.bcebos.com/smart/xxx',
+        },
         text: `李存勖：五代后唐开国皇帝，军事才能出众。（查：${q}）`,
       }),
+      baikeAudioUrl: async (t) => { audioText = t; return 'https://tts.baidu.com/audio.mp3' },
     })
     await startDialog(h.service)
     await speakUtterance(h)
     await sleep(30)
 
     expect(queried).toBe('李存勖')
-    expect(texts(h)).toContain('五代后唐开国皇帝')
+    expect(audioText).toContain('五代后唐开国皇帝')
+    // 助手框只显示简短播报确认，不显示百科全文（全文进字幕面板逐句展示）
+    expect(texts(h)).toContain('正在为你播报')
+    expect(texts(h)).not.toContain('五代后唐开国皇帝')
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ url: string; title: string; cover?: string; source?: string }>
+    expect(plays.length).toBe(1)
+    expect(plays[0].url).toBe('https://tts.baidu.com/audio.mp3')
+    expect(plays[0].title).toBe('李存勖')
+    expect(plays[0].source).toBe('tts')
+    expect(plays[0].cover).toBe('https://bkimg.cdn.bcebos.com/smart/xxx')
+    // 字幕：标题=词条名，内容=摘要切成歌词格式（多行、带 time，逐句高亮）
+    const subs = h.events.filter((e) => e.type === 'media.subtitle') as Array<{ title: string; lines: Array<{ time: number; text: string }> }>
+    expect(subs.length).toBe(1)
+    expect(subs[0].title).toBe('李存勖')
+    expect(subs[0].lines.length).toBeGreaterThan(0)
+    expect(subs[0].lines.every((l) => typeof l.time === 'number' && l.text.length > 0)).toBe(true)
+    expect(subs[0].lines.map((l) => l.text).join('')).toContain('五代后唐开国皇帝')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('百科音频接口失败：不播、不用网关文字转语音兜底（播不了就算了）', async () => {
+    const h = createHarness({
+      finalizeText: '百科李存勖',
+      baikeQuery: async () => ({
+        entry: { title: '李存勖', summary: '五代后唐开国皇帝。' },
+        text: '李存勖：五代后唐开国皇帝。',
+      }),
+      baikeAudioUrl: async () => { throw new Error('getaudio failed') },
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    // 音频失败：不播音频、不口播文字，只发 llm.done 收尾
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    expect(h.events.some((e) => e.type === 'media.subtitle')).toBe(false)
+    expect(texts(h)).not.toContain('五代后唐开国皇帝')
+    expect(h.events.some((e) => e.type === 'llm.done')).toBe(true)
     expect(h.agentCalls()).toBe(0)
   })
 

@@ -154,6 +154,39 @@ function normalize(text: string): string {
   return text.replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase()
 }
 
+/**
+ * 去掉 SenseVoice 在句尾多吐出来的重复片段。
+ *
+ * 实机证据（2026-11-17）：用户说「今天天几怎么样？」，滚动重识别的第二段与定稿都变成
+ * 「今天天气怎么样？天气。」——主体已经完整收在问号处，问号后面又多跟了一次「天气」。
+ * 这不是「纠正词替换」追加的（本项目没有词表替换逻辑），SenseVoice 直接吐出的文本就这样。
+ * 若原样下发，「我说」卡片和 LLM 都会看到结尾挂着一个多余的词。
+ *
+ * 判据（尽量保守，只删确定是重复尾巴的）：
+ *  - 找到一个句末标点（。？！?!），其后仍有非空内容才算「尾巴」；无尾巴直接返回原文。
+ *  - 尾巴去掉空白/标点后的核心 ≥2 字（单字不删，避免误伤「走吧？走」这类正常强调）。
+ *  - 尾巴核心已在标点之前的主体里出现过（coreText 比对）→ 认定重复，删到标点为止。
+ *  - 中英混排、无句末标点、尾巴是全新内容（不是重复）都保持原文。
+ */
+export function stripTrailingEcho(text: string): string {
+  if (!text) return text
+  // SenseVoice 习惯给整句补一个收尾句号（「…天气。」）。先把这个收尾标点摘掉再分析，
+  // 否则「最后一个标点」会落到收尾句号上、尾巴变空，永远删不掉重复词。
+  const trimmed = text.trim().replace(/[。．.！!？?，,、\s]+$/u, '')
+  // 切点 = 剩下文本里最后一个句末标点；它之后到末尾就是「尾巴」（重复词）
+  const matches = [...trimmed.matchAll(/[。？！?!]/g)]
+  if (matches.length === 0) return text
+  const cut = (matches[matches.length - 1].index ?? 0) + 1
+  const body = trimmed.slice(0, cut)
+  const tailCore = coreText(trimmed.slice(cut))
+  if (tailCore.length < 2) return text // 单字/空尾巴不删（避免误伤「走吧？走」）
+  const bodyCore = coreText(body)
+  if (!bodyCore || bodyCore.length < tailCore.length) return text
+  // 尾巴核心在主体里出现过才是「重复」，否则是正常补充（如「去北京？上海也行」）
+  if (!bodyCore.includes(tailCore)) return text
+  return body
+}
+
 /** 二元组重合率，容忍 ASR 把个别字听错。 */
 function bigramOverlap(a: string, b: string): number {
   const grams = (s: string): Set<string> => {

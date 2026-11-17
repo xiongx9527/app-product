@@ -79,7 +79,9 @@ export function activeVoiceConfig(): {
   asrModel: string
   ttsModel: string
   voice: string
-  params?: { voice: string; model?: string }
+  /** 厂商级通用参数：language 来自通用设置的界面语言（zh-CN→zh / en-US→en），
+   *  走 params 下发，网关 asr/http.ts 从 params.language 读取（默认 zh）。 */
+  params?: { voice?: string; model?: string; language?: string }
 } {
   const v = appConfig.voice
   const active = v.provider === 'dashscope' ? v.dashscope : v.builtin
@@ -102,7 +104,12 @@ export function activeVoiceConfig(): {
     asrModel: active.asrModel ?? '',
     ttsModel: active.ttsModel ?? '',
     voice,
-    params: voice ? { voice, model: voiceModel } : undefined,
+    // 语言走通用参数 params.language 下发：网关 asr/http.ts 从 params.language 读取。
+    // 没有音色时也下发 params（只带 language），保证 ASR 始终拿到通用设置里的语言。
+    params: {
+      ...(voice ? { voice, model: voiceModel } : {}),
+      language: appConfig.language.toLowerCase().split(/[-_]/)[0] || 'zh',
+    },
   }
 }
 

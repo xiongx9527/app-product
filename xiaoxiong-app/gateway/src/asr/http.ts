@@ -90,9 +90,11 @@ export class HttpVoiceAsr implements AsrProvider {
       // 内置 ASR 模型固定为 sensevoice-small（9529 内置引擎唯一接受的模型名）；
       // params.model 可由客户端 session.start.voice.asrModel 覆盖，缺省走这里兜底。
       form.append('model', String(this.params.model ?? 'sensevoice-small'))
-      if (this.params.language !== undefined) {
-        form.append('language', String(this.params.language))
-      }
+      // 语言必须显式下发。SenseVoice 的 language 留空会走自动检测，短句/带噪时会在
+      // 中文与拉丁之间摇摆，把中文说成拼音式碎片（实测「李存勖」→「Li chnx.」、
+      // 「百科」→「Byaiike」，安静环境也一样），并高频冒 The/Yeah 幻觉。
+      // 中文助手默认锁 zh；用户在设置里显式配了 language 则完全尊重其取值。
+      form.append('language', String(this.params.language || 'zh'))
       const url = `${this.baseUrl}/v1/audio/transcriptions`
       const res = await fetch(url, {
         method: 'POST',

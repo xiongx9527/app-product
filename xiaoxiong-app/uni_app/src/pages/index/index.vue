@@ -138,11 +138,12 @@ function lyricCharWidth(s: string): number {
 const subtitleActiveFontSize = computed(() => appConfig.playback.subtitleFontSize ?? DEFAULT_SUBTITLE_FONT_SIZE)
 const subtitleActiveColor = computed(() => appConfig.playback.subtitleColor ?? DEFAULT_SUBTITLE_COLOR)
 
-/** 单行显示整句：以用户设置字号为上限，超长句按比例缩到不换行（最低 13），不撑宽容器 */
+/** 悬浮歌词字号：以用户设置字号为上限，按容器宽度(200px)估算，超长句微缩（最低 12）。
+ *  容器支持自动换行，故这里只做「尽量一行放下」的优化，放不下就折行，不再强制 nowrap 溢出。 */
 const lyricFontSize = computed(() => {
   const base = subtitleActiveFontSize.value
   const w = Math.max(1, lyricCharWidth(currentSubtitleText.value))
-  return Math.round(Math.max(13, Math.min(base, 280 / w)))
+  return Math.round(Math.max(12, Math.min(base, 190 / w)))
 })
 
 // 右上角状态栏已移除：连接/能力健康/权限状态不再常驻展示（见用户要求）。
@@ -1562,7 +1563,8 @@ function onOrbTap(): void {
   height: 13px;
 }
 
-/* 当前正在唱的那句：单行显示整句，不换行/不省略/不滚动；字号按句长微缩（由 :style 注入） */
+/* 当前正在唱的那句：固定宽度内自动换行，长句不再溢出屏幕（用户要求「自动换行」）。
+   字号按句长微缩（由 :style 注入），放不下就折行；word-break 让中文/长串任意处可断。 */
 .disc-lyric {
   width: 200px;
   margin-top: 12px;
@@ -1571,13 +1573,15 @@ function onOrbTap(): void {
   color: #f3e6c8;
   text-align: center;
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
-  white-space: nowrap;
-  overflow: visible;
+  white-space: normal;
+  overflow: hidden;
+  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 /* 卡拉OK未唱到的部分：暗一档，与已唱高亮形成逐字递进 */
 .disc-lyric--rest {
-  white-space: nowrap;
+  white-space: normal;
   color: rgba(243, 230, 200, 0.4);
 }
 

@@ -317,6 +317,28 @@ if (/<key>UIBackgroundModes<\/key>/.test(plist)) {
     `\t<key>UIBackgroundModes</key>\n\t<array>\n\t\t<string>audio</string>\n\t</array>\n</dict>\n</plist>`)
   console.log('[ok] Info.plist 已新增 UIBackgroundModes:audio')
 }
+// 麦克风 / 定位权限描述：参照 Android 原生壳 manifest 显式声明 RECORD_AUDIO + 定位权限，
+// iOS 也必须在主目标 Info.plist 里写明用途，否则系统弹窗无说明、授权可能被直接拒。
+// 离线打包用的是 SDK 壳的 Info.plist（DCloud 不会把 uni manifest.json 的 privacyDescription 合并进来），
+// 且壳里 NSMicrophone 描述不是我们要的文案、NSLocationWhenInUseUsageDescription 是空串，
+// 还有一条畸形的 "NSLocationWhenInUseUsageDescription - 2"（系统不认）。这里统一覆盖/清理。
+const PRIVACY_DESCRIPTIONS = {
+  NSMicrophoneUsageDescription: '需要使用麦克风持续监听唤醒词并进行语音对话',
+  NSLocationWhenInUseUsageDescription: '需要获取位置以提供本地天气、附近信息与本地化服务',
+}
+// 清掉壳里那条带后缀的畸形 key（连同它的 <string> 值），避免留在 plist 里混淆。
+plist = plist.replace(/<key>NSLocationWhenInUseUsageDescription\s*-\s*2<\/key>\s*<string>[\s\S]*?<\/string>\s*/g, '')
+for (const [key, desc] of Object.entries(PRIVACY_DESCRIPTIONS)) {
+  const keyRe = new RegExp(`(<key>${key}</key>\\s*)<string>[\\s\\S]*?<\\/string>`)
+  if (keyRe.test(plist)) {
+    plist = plist.replace(keyRe, `$1<string>${desc}</string>`)
+  } else {
+    plist = plist.replace(/<\/dict>\s*<\/plist>/,
+      `\t<key>${key}</key>\n\t<string>${desc}</string>\n</dict>\n</plist>`)
+  }
+}
+console.log('[ok] Info.plist 已注入麦克风 / 定位权限描述')
+
 // 可选：本机 Xcode 缺配套 iOS 平台登记、ibtool 编 storyboard 报 "iOS x.x Platform Not Installed" 时启用。
 // 启动图改用 iOS14+ 纯配置 UILaunchScreen（不再引用 storyboard），让完整工程无需装平台即可 BUILD SUCCEEDED。
 if (args.noLaunchStoryboard) {

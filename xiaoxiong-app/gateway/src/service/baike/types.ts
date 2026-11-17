@@ -19,6 +19,9 @@ export interface BaikeEntry {
   summary: string
   /** 词条原始链接（可选，来自搜索卡片） */
   url?: string
+  /** 词条配图（可选，来自百科卡片的 poster，解码成稳定的 bkimg.cdn.bcebos.com 直链），
+   *  用于播放器封面展示，与音频同源。 */
+  image?: string
 }
 
 /**

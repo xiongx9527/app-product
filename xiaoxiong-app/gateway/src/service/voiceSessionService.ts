@@ -44,8 +44,9 @@ import { createNewsVideoSource, cleanNewsTitle, type NewsVideoCandidate, type Ne
 import { createWeatherTool } from './tools/weatherTool'
 import { createBaikeTool } from './tools/baikeTool'
 import type { BaikeEntry } from './baike'
+import { fetchBaikeAudioUrl, splitSummaryToLines } from './baike/baikeTts'
 import { messages } from '../i18n'
-import { isNoise, isForeignNoise, resemblesSpoken } from '../asr/noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
@@ -128,6 +129,8 @@ export interface VoiceSessionDeps {
   newsVideoSource?: NewsVideoSourceLike
   /** 百科查询：测试可注入桩避免联网。缺省用 createBaikeTool.snapshotWithText（多源可换）。 */
   baikeQuery?: (query: string) => Promise<{ entry: BaikeEntry | null; text: string }>
+  /** 百科播报音频直链：调百度百科 getaudio 拿 mp3 URL。测试可注入桩避免联网。 */
+  baikeAudioUrl?: (text: string) => Promise<string>
   /** 单轮 LLM 超时（毫秒）：超时主动舍弃本轮、断开下行播放、立即播友好兜底。测试注入更小值。 */
   llmTimeoutMs?: number
   /** TTS 帧间看门狗（毫秒）：上游挂起不产帧时断开本句，对话链绝不卡死。测试注入更小值。 */
@@ -1138,7 +1141,8 @@ export class VoiceSessionService {
   /**
    * 百科查询直连（绕开 LLM）：抓真实百科词条摘要 → 助手框显示 + TTS 播报。
    * keyword 为空（纯「百科」）时提示用户说查谁；有词时用注入的 query 或默认工具。
-   * 与新闻不同：百科摘要是文本，走 speakReply（助手框 + 播报），无音频抽轨。
+   * 与新闻一样走 media.play 播真实音频（百度百科自己的 TTS 直链），文字不进助手框；
+   * 只有查询失败/音频接口失败降级为网关文字口播时才显示文字。
    */
   private async runBaikeCommand(keyword: string | null): Promise<void> {
     if (!keyword) {
@@ -1148,11 +1152,49 @@ export class VoiceSessionService {
     const query =
       this.deps.baikeQuery ??
       (async () => createBaikeTool(this.lang).snapshotWithText(keyword))
+    let text: string
+    let title: string
+    let summary: string
+    let image: string | undefined
     try {
-      const { text } = await query(keyword)
-      await this.speakReply(text)
+      const r = await query(keyword)
+      if (!r.entry) {
+        // 没查到词条：只有兜底文案、没有可播报的百科内容，照常文字口播
+        await this.speakReply(r.text)
+        return
+      }
+      text = r.text
+      title = r.entry.title || keyword
+      summary = r.entry.summary || ''
+      image = r.entry.image
     } catch {
       await this.speakReply(messages(this.lang).llmUnavailable())
+      return
+    }
+    // 百科音频必须用百度百科自己的语音（用户明确要求不要网关文字转语音）：
+    // 调 getaudio 拿 mp3 直链，media.play 下发让客户端边下边播。URL 只用一次、随即下发，
+    // 不做长期缓存（百度音频直链约一百多分钟有效）。
+    try {
+      const audioUrl = this.deps.baikeAudioUrl
+        ? await this.deps.baikeAudioUrl(text)
+        : await fetchBaikeAudioUrl(text)
+      // 助手框显示简短确认（同音乐 playing 风格），百科全文不进助手框、只在字幕面板逐句展示。
+      this.deps.send({ type: 'llm.delta', text: messages(this.lang).baike.playing(title) })
+      this.deps.send({ type: 'llm.done' })
+      // 字幕转成歌词格式：摘要按句切行、带 time，播放器逐句高亮「边读边转」，单行短塞得进悬浮歌词。
+      this.deps.send({ type: 'media.subtitle', title, lines: splitSummaryToLines(summary) })
+      // 封面用百科卡片的词条配图（同源），无图则不覆盖（客户端会按 cover 缺省清空）。
+      this.deps.send({
+        type: 'media.play',
+        url: audioUrl,
+        title,
+        source: 'tts',
+        ...(image ? { cover: image } : {}),
+      })
+    } catch {
+      // getaudio 是百度非公开接口，失败就不播——不用网关文字转语音兜底（用户明确不要自己合成）。
+      // 只补 llm.done 收尾思考态，避免卡在「思考中」；字幕/封面都没下发，界面保持原样。
+      this.deps.send({ type: 'llm.done' })
     }
   }
 
@@ -1211,8 +1253,9 @@ export class VoiceSessionService {
     }
     // 后台预热转封装（纯 JS fmp4→ADTS，无 ffmpeg），不阻塞 media.play；客户端取短链时等同一 key 完成。
     void ensureAdtsFile(video.url).catch(() => undefined)
-    // media.play 由独立播放器播放，不推进 phase；先补文本 + llm.done 收尾思考态，避免卡在「思考中」。
-    this.deps.send({ type: 'llm.delta', text: title })
+    // media.play 由独立播放器播放，不推进 phase；助手框显示简短确认（同音乐/百科风格），
+    // 新闻无字幕，只补 llm.done 收尾思考态，避免卡在「思考中」。
+    this.deps.send({ type: 'llm.delta', text: messages(this.lang).news.playing(title) })
     this.deps.send({ type: 'llm.done' })
     this.deps.send({
       type: 'media.play',
@@ -1643,7 +1686,9 @@ export class VoiceSessionService {
             !isForeignNoise(partial, this.lang) &&
             !(this.playbackPending && resemblesSpoken(partial, this.spoken))
           ) {
-            this.deps.send({ type: 'asr.partial', text: partial })
+            // 与定稿一致地去掉尾部重复词（「…怎么样？天气。」→「…怎么样？」），
+            // 否则滚动草稿阶段就先闪一下多余的重复词，定稿又跳一下。
+            this.deps.send({ type: 'asr.partial', text: stripTrailingEcho(partial) })
           }
         })
         .catch(() => undefined)
@@ -1740,9 +1785,14 @@ export class VoiceSessionService {
     // isNoise 已覆盖 SenseVoice 对静音/音乐回声稳定冒出的英文虚词碎片（The/Yeah/oh…），
     // 这类碎片进 LLM 会胡乱追问「你说的The没听清」。按会话语言脚本过滤会误伤英文歌名
     // （Taylor Swift）和混排，故只在「极短纯拉丁虚词」层面拦，不按语言。
+    // 去掉 SenseVoice 在句尾多吐的重复词（实机「今天天气怎么样？天气。」→「今天天气怎么样？」）：
+    // 必须在所有下游分支（回声比对/队列/直连/LLM/asr.final）之前清洗，保证「我说」框与模型
+    // 看到的是同一份干净文本。诊断同时记录 raw 原文，便于追溯 ASR 的原始输出。
+    const rawText = text
+    text = stripTrailingEcho(text)
     // 临时诊断：定稿文本 + 噪声过滤结果，确认 endpoint 有没有触发、文本有没有被丢
     bargeDiag(
-      `FINAL text="${text}" pb=${this.playbackPending} noise=${isNoise(text)} `
+      `FINAL text="${text}"${text !== rawText ? ` raw="${rawText}"` : ''} pb=${this.playbackPending} noise=${isNoise(text)} `
       + `foreign=${isForeignNoise(text, this.lang)} echo=${Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)}`
     )
     if (!text || isNoise(text) || isForeignNoise(text, this.lang)) return

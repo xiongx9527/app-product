@@ -13,6 +13,34 @@ function entityHtml(title: string, desc: string): string {
 function conceptHtml(title: string, abstract: string): string {
   return `..."abstract":{"abstract":"${abstract}","firstCardAbstract":""},"source":{"title":"百度百科"},"character":{"show":false,"title":"${title}","desc":"概念"},...`
 }
+/**
+ * 新版头图知识卡（刘备/李白这类人物词条走这种）：没有 source/description/abstract 摘要字段，
+ * 摘要只在 summaryData、标题在 headProps.title.text，卡片边界是 baikeText。
+ * headProps.abstract 是一句短标签（如「三国时期蜀汉开国皇帝」），不能当摘要用。
+ */
+function peakCardHtml(title: string, summary: string): string {
+  return `..."headProps":{"title":{"text":"${title}","size":"lg"},"abstract":"三国时期蜀汉开国皇帝"},`
+    + `"cardData":{"name":"${title}","tags":["字 玄德"]},"summaryData":"${summary}",`
+    + `"catalogData":{"show":true,"list":[{"url":"http://baike.baidu.com/item/${title}/1","text":"人物生平"}]},`
+    + `"baikeText":"百度百科","sourceObj":{"items":[{"text":"百度百科"}]},...`
+}
+
+describe('parseBaikeHtml 配图', () => {
+  it('从 poster 的 src 参数解码出稳定的 bkimg 直链作封面', () => {
+    // 真实搜索页里 poster 的 src 参数是单层 URL 编码的 bkimg 直链（逗号/斜杠都被编码）
+    const inner = 'https://bkimg.cdn.bcebos.com/smart/abc123-bkimg-process,v_1,rw_1?x-bce-process=image/resize'
+    const poster = `https://gimg3.baidu.com/topone/src=${encodeURIComponent(inner)}&refer=http%3A%2F%2Fwww.baidu.com`
+    const html = `..."description":"五代后唐开国皇帝，军事才能出众，在位期间励精图治。","tools":{"title":"李存勖"},`
+      + `"poster":"${poster}","source":"百度百科",...`
+    const entry = parseBaikeHtml(html)
+    expect(entry?.image).toBe(inner)
+  })
+
+  it('没有 poster 时 image 为空', () => {
+    const entry = parseBaikeHtml(entityHtml('李存勖', '五代后唐开国皇帝，军事才能出众，在位期间励精图治。'))
+    expect(entry?.image).toBeUndefined()
+  })
+})
 
 describe('cleanBaikeText', () => {
   it('去 <em> 高亮标签、解实体、压空白、去百度百科后缀', () => {
@@ -42,6 +70,29 @@ describe('parseBaikeHtml', () => {
 
   it('摘要太短（导航/空字段）视为无结果', () => {
     expect(parseBaikeHtml(entityHtml('X', '百度百科'))).toBeNull()
+  })
+
+  it('新版头图卡：提取 headProps.title + summaryData（刘备这类人物词条）', () => {
+    const entry = parseBaikeHtml(
+      peakCardHtml(
+        '刘备',
+        '<em>刘备</em>（161—223年6月10日），字玄德，幽州涿郡涿县人，三国时期蜀汉开国皇帝。',
+      ),
+    )
+    expect(entry?.title).toBe('刘备')
+    expect(entry?.summary).toContain('字玄德')
+    expect(entry?.summary).toContain('蜀汉开国皇帝')
+    // 不能把 headProps.abstract 那句短标签当摘要
+    expect(entry?.summary).not.toBe('三国时期蜀汉开国皇帝')
+    expect(entry?.url).toContain('baike.baidu.com/item/')
+  })
+
+  it('头图卡与旧卡同页时都能解析，不串卡', () => {
+    const html = peakCardHtml('刘备', '刘备是三国时期蜀汉开国皇帝，字玄德，以仁义著称，三顾茅庐请诸葛亮出山。')
+      + entityHtml('关羽', '关羽是东汉末年名将，字云长，与刘备张飞结为兄弟，威震华夏。')
+    const entry = parseBaikeHtml(html)
+    expect(entry?.title).toBe('刘备')
+    expect(entry?.summary).toContain('三顾茅庐')
   })
 
   it('没有百科卡片锚点返回 null', () => {

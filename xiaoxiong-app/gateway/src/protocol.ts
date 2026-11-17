@@ -191,6 +191,9 @@ export type ServerEvent =
    *  （源特有知识），客户端只认此标记，不再写死频道名 / host。
    *  cover 为与音频同源的封面图（如歌曲宝详情页 mp3_cover），供客户端播放器展示。 */
   | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean; cover?: string
+      /** 音频来源方式：music=音乐/电台（默认），tts=第三方语音合成接口（如百科播报）。
+       *  两者播放模式相同（都走 InnerAudioContext），但来源不同，客户端据此区分对待。 */
+      source?: 'music' | 'tts'
       /** 音频短链相对路径：有值时客户端下载 <httpBase>/<audioPath> 后本地播放（如 music/s/<key>.aac）。
        *  下载后本地播是已验证可靠的链路：dash 直链 URL 过长会被截断。
        *  路径由网关持有（源特有知识），客户端只管拼 httpBase，不区分音乐/新闻。 */

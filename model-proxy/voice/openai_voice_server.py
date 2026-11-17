@@ -48,6 +48,8 @@
         VOICE_HOST         监听地址，默认 0.0.0.0
         VOICE_PORT         监听端口，默认 9529
         SENSEVOICE_DIR     SenseVoice 模型目录，默认 $VOICE_HOME/models/sensevoice
+        SENSEVOICE_LANGUAGE SenseVoice 识别语言（auto/zh/en/ja/ko/yue），默认 zh；
+                           留空或 auto 走自动检测，短句/带噪时会把中文摇成拼音碎片
         TTS_VOICE          默认音色，默认 zh-CN-XiaoxiaoNeural
         TTS_TIMEOUT        edge-tts 单个音频块的超时秒数，默认 20
         TTS_TOTAL_TIMEOUT  edge-tts 整体超时秒数（含 3 次重试），默认 30
@@ -247,6 +249,14 @@ def _expand_path(value: str) -> str:
 def sensevoice_dir() -> str:
     default = os.path.join(VOICE_HOME, "models", "sensevoice")
     return _expand_path(config_value("SENSEVOICE_DIR", default))
+
+
+def sensevoice_language() -> str:
+    """SenseVoice 识别语言。默认锁 zh：auto 自动检测在短句/带噪时会把中文说成
+    「李存勖」→「Li chnx.」这类拼音碎片，并高频冒 The/Yeah 幻觉；这是中文助手，
+    固定中文解码最稳。显式配 auto（或空串）时才交回引擎自动检测。"""
+    lang = (config_value("SENSEVOICE_LANGUAGE", "zh") or "").strip().lower()
+    return lang or "zh"
 
 
 def tts_voice() -> str:
@@ -854,6 +864,8 @@ def get_sensevoice():
             model=os.path.join(sensevoice_dir(), "model.int8.onnx"),
             tokens=os.path.join(sensevoice_dir(), "tokens.txt"),
             num_threads=max(2, min(8, os.cpu_count() or 4)),
+            # 锁死中文解码（默认 zh），避免 auto 检测把短句中文摇成拼音/英文碎片。
+            language=sensevoice_language(),
             use_itn=True,
             debug=False,
         )
@@ -907,6 +919,12 @@ def transcribe_sensevoice(payload: bytes, language: str):
         return "", 0.0, language or "zh"
     rec = get_sensevoice()
     stream = rec.create_stream()
+    # 双保险：模型加载时已锁 language，这里再按流设一次（部分 sherpa-onnx 版本
+    # 只在 stream 级消费该选项）；不支持的旧版本忽略即可，不影响识别。
+    try:
+        stream.set_option("language", language or sensevoice_language())
+    except Exception:
+        pass
     stream.accept_waveform(SAMPLE_RATE, x)
     rec.decode_stream(stream)
     text = (stream.result.text or "").strip()

@@ -132,6 +132,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const queueFullMsg = ref('')
   /** 当前播放曲目的封面图（与音频同源，网关 media.play.cover 下发），无封面为空串 */
   const musicCover = ref('')
+  /** 当前媒体音频的来源方式：music=音乐/电台，tts=第三方语音合成（如百科播报）。
+   *  网关 media.play.source 下发，缺省 music；播放模式与音乐相同，仅供界面/逻辑识别类型。 */
+  const mediaSource = ref<'music' | 'tts'>('music')
   /** 字幕面板：网关下发 media.subtitle 后展示（lines 带每行起始时间，用于跟随播放高亮） */
   const subtitle = ref<{ title: string; artist?: string; lines: { time: number; text: string }[] } | null>(null)
   /**
@@ -697,6 +700,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         }
         // 封面与音频同源（歌曲宝详情页），每次新播放覆盖，无封面时清空避免显示上一首
         musicCover.value = event.cover ?? ''
+        // 记录音频来源方式（音乐 / 第三方 TTS）：播放模式相同，供界面与后续逻辑区分类型
+        mediaSource.value = event.source ?? 'music'
         break
       }
       case 'media.pause':
@@ -1397,6 +1402,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     musicPreparing: musicState.preparing,
     musicTitle: musicState.title,
     musicCover,
+    mediaSource,
     musicCurrent: musicState.currentTime,
     musicDuration: musicState.duration,
     musicLive: musicState.live,

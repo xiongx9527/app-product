@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isNoise, isForeignNoise, resemblesSpoken, pcmRms } from './noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken, pcmRms, stripTrailingEcho } from './noiseFilter'
 
 describe('ASR 杂音过滤', () => {
   it('纯符号、空白、幻觉短词判为噪声', () => {
@@ -77,5 +77,32 @@ describe('isForeignNoise（中文会话下的纯外文短句幻觉）', () => {
   })
   it('英文会话不启用该过滤', () => {
     expect(isForeignNoise('hello baby', 'en-US')).toBe(false)
+  })
+})
+
+describe('stripTrailingEcho（去掉 SenseVoice 句尾多吐的重复词）', () => {
+  it('真机案例：今天天气怎么样？天气。→ 今天天气怎么样？', () => {
+    expect(stripTrailingEcho('今天天气怎么样？天气。')).toBe('今天天气怎么样？')
+    expect(stripTrailingEcho('今天天气怎么样？天气')).toBe('今天天气怎么样？')
+  })
+
+  it('其它标点 / 重复片段也去掉', () => {
+    expect(stripTrailingEcho('今天几号？几号。')).toBe('今天几号？')
+    expect(stripTrailingEcho('播放音乐吧！音乐吧。')).toBe('播放音乐吧！')
+  })
+
+  it('尾部是全新内容（不是重复）时保留', () => {
+    expect(stripTrailingEcho('去北京？上海也行。')).toBe('去北京？上海也行。')
+    expect(stripTrailingEcho('先吃饭。然后散步。')).toBe('先吃饭。然后散步。')
+  })
+
+  it('无句末标点 / 单字尾巴不处理（避免误伤正常强调）', () => {
+    expect(stripTrailingEcho('今天天气怎么样')).toBe('今天天气怎么样')
+    expect(stripTrailingEcho('走吧？走')).toBe('走吧？走')
+    expect(stripTrailingEcho('好。好')).toBe('好。好')
+  })
+
+  it('空串原样返回', () => {
+    expect(stripTrailingEcho('')).toBe('')
   })
 })
