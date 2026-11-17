@@ -170,6 +170,48 @@ function nextPreference(text: string): string | undefined {
   return genreToKeyword(kw)
 }
 
+/**
+ * 临时可行性基准（AEC spike，定位后移除）：纯 JS NLMS 自适应滤波，无外部依赖。
+ * 测设备 NodeMobile 处理 1 秒 16k 音频（512 阶滤波）的耗时，判定网关侧软件 AEC 算力是否可行。
+ * 实时要求 < 1000ms；留一半余量则 < 500ms 为佳。
+ */
+export function aecBenchmark(): string {
+  const SR = 16000
+  const N = SR // 1 秒
+  const M = 512 // 滤波器阶数（32ms @16k，覆盖典型回声尾）
+  const mu = 0.05 // 步长
+  // 模拟远端(TTS)信号 x、近端回声 d = x 卷积房间脉冲 + 少量"人声"
+  const x = new Float32Array(N)
+  const d = new Float32Array(N)
+  for (let i = 0; i < N; i += 1) x[i] = (Math.sin(i * 0.07) + Math.sin(i * 0.013) * 0.5) * 0.3
+  const h = new Float32Array(M)
+  for (let i = 0; i < M; i += 1) h[i] = Math.exp(-i / 80) * Math.sin(i * 0.2) * 0.02
+  for (let i = 0; i < N; i += 1) {
+    let e = 0
+    for (let j = 0; j < M && i - j >= 0; j += 1) e += h[j] * x[i - j]
+    d[i] = e + (i % 4000 < 500 ? Math.sin(i * 0.5) * 0.05 : 0) // 模拟间歇人声
+  }
+  // NLMS
+  const w = new Float32Array(M)
+  const y = new Float32Array(N)
+  const t0 = Date.now()
+  for (let i = 0; i < N; i += 1) {
+    let dot = 0
+    for (let j = 0; j < M && i - j >= 0; j += 1) dot += w[j] * x[i - j]
+    y[i] = dot
+    const err = d[i] - dot
+    let pw = 1e-6
+    for (let j = 0; j < M && i - j >= 0; j += 1) pw += x[i - j] * x[i - j]
+    const step = mu / pw
+    for (let j = 0; j < M && i - j >= 0; j += 1) w[j] += step * err * x[i - j]
+  }
+  const ms = Date.now() - t0
+  // 收敛效果：最后 100 样本的残余误差 rms vs 原始近端 rms
+  let se = 0, sd = 0
+  for (let i = N - 100; i < N; i += 1) { se += (d[i] - y[i]) ** 2; sd += d[i] * d[i] }
+  return `ms=${ms} for 1s@16k M=${M} residualRms=${Math.sqrt(se / 100).toFixed(4)} origRms=${Math.sqrt(sd / 100).toFixed(4)} realtime=${ms < 1000}`
+}
+
 export class VoiceSessionService {
   private active = false
   private cancelled = false
