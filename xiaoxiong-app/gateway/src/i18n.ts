@@ -111,6 +111,15 @@ export interface Messages {
       source: () => string
     }
   }
+  /** 新闻播报直连口播：走百度新闻频道抓 headlines，纯 TTS 播报标题+来源，不进大模型 */
+  news: {
+    /** 抓到 N 条新闻的引导；keyword 为话题词（带话题搜索），无话题词即泛播当日头条 */
+    intro: (count: number, keyword?: string) => string
+    /** 没查到新闻（抓到 0 条）；keyword 为话题词时说明是「与该话题相关」 */
+    none: (keyword?: string) => string
+    /** 抓取失败/网络不可达时的诚实兜底，不编造新闻 */
+    unavailable: () => string
+  }
   /** 数据来源展示名（按 lang 本地化）：值由数据源给 sourceKey，网关查表，客户端不认识 key。 */
   sources: Record<string, string>
   /** 大模型整句都不可念（泄漏控制符 / 空回复 / 只剩符号）时的兜底口播：不念垃圾，给一句让人能重说的 */
@@ -262,6 +271,15 @@ const zhCN: Messages = {
       source: () => '来源',
     },
   },
+  news: {
+    intro: (count, keyword) =>
+      keyword
+        ? `查到 ${count} 条与「${keyword}」相关的新闻：`
+        : `为你播报今天的 ${count} 条新闻：`,
+    none: (keyword) =>
+      keyword ? `暂时没查到与「${keyword}」相关的新闻。` : '暂时没查到新闻。',
+    unavailable: () => '现在查不了新闻，稍后再试。',
+  },
   sources: { smzdm: '什么值得买' },
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
   memory: {
@@ -400,6 +418,15 @@ const en: Messages = {
       time: () => 'Posted',
       source: () => 'Source',
     },
+  },
+  news: {
+    intro: (count, keyword) =>
+      keyword
+        ? `Found ${count} news items about "${keyword}": `
+        : `Here are today's ${count} news headlines: `,
+    none: (keyword) =>
+      keyword ? `No news found about "${keyword}".` : 'No news found right now.',
+    unavailable: () => "Can't fetch news right now. Please try again later.",
   },
   sources: { smzdm: 'SMZDM' },
   clock: {

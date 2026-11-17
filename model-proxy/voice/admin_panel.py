@@ -2574,7 +2574,7 @@ async function renderDashboard(){
     const voice=voiceSel.value;
     try{
       if(proto==='ws'){
-        const blob=await ttsViaWs(document.getElementById('ttsText').value, voice, model);
+        const blob=await ttsViaWs(document.getElementById('ttsText').value, voice, model, document.getElementById('ttsProvider').value);
         audio.src=URL.createObjectURL(blob);
         msg.textContent=t('common.done')+t('common.wsMode')+'（'+(blob.size/1024).toFixed(1)+' KB）'; msg.className='hint';
       } else {
@@ -2762,13 +2762,13 @@ async function renderDashboard(){
     return u;
   }
   // ASR（ws）：run-task(asr) → 收到 task-started 后发二进制 WAV + finish-task → result-generated 文本。
-  function asrViaWs(wavBuf, model){
+  function asrViaWs(wavBuf, model, provider){
     return new Promise((resolve,reject)=>{
       const ws=new WebSocket(voiceWsUrl());
       let taskId=null, done=false;
       const fail=(m)=>{ if(!done){ done=true; try{ws.close();}catch{} reject(new Error(m)); } };
       ws.onerror=()=>fail(t('common.wsError'));
-      ws.onopen=()=>{ ws.send(JSON.stringify({header:{action:'run-task',task_id:'asr-'+Date.now()},payload:{task:'asr',model:model||''}})); };
+      ws.onopen=()=>{ ws.send(JSON.stringify({header:{action:'run-task',task_id:'asr-'+Date.now()},payload:{task:'asr',model:model||'',provider:provider||''}})); };
       ws.onmessage=(ev)=>{
         if(typeof ev.data!=='string') return;
         let d; try{ d=JSON.parse(ev.data); }catch{ return; }
@@ -2785,13 +2785,13 @@ async function renderDashboard(){
     });
   }
   // TTS（ws）：run-task(tts) → continue-task(文本) + finish-task → 二进制音频 + task-finished。
-  function ttsViaWs(text, voice, model){
+  function ttsViaWs(text, voice, model, provider){
     return new Promise((resolve,reject)=>{
       const ws=new WebSocket(voiceWsUrl());
       let taskId=null, done=false, chunks=[];
       const fail=(m)=>{ if(!done){ done=true; try{ws.close();}catch{} reject(new Error(m)); } };
       ws.onerror=()=>fail(t('common.wsError'));
-      ws.onopen=()=>{ ws.send(JSON.stringify({header:{action:'run-task',task_id:'tts-'+Date.now()},payload:{task:'tts',model:model||'',parameters:{voice:voice||''}}})); };
+      ws.onopen=()=>{ ws.send(JSON.stringify({header:{action:'run-task',task_id:'tts-'+Date.now()},payload:{task:'tts',model:model||'',provider:provider||'',parameters:{voice:voice||''}}})); };
       ws.onmessage=(ev)=>{
         if(typeof ev.data==='string'){
           let d; try{ d=JSON.parse(ev.data); }catch{ return; }
@@ -2826,7 +2826,7 @@ async function renderDashboard(){
         // 内置 SenseVoice 只认 WAV；录制的可能不是，统一转 WAV 再发。
         const wav = (blob.type && blob.type.indexOf('wav')>=0) ? blob : await toWav(blob);
         const wavBuf = await wav.arrayBuffer();
-        const text = await asrViaWs(wavBuf, model);
+        const text = await asrViaWs(wavBuf, model, document.getElementById('asrProvider').value);
         out.textContent=text||t('common.emptyParen');
         msg.textContent=t('common.done')+t('common.wsMode'); msg.className='hint';
       } else {

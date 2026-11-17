@@ -1,5 +1,5 @@
-import type { Deal } from './deals'
-import type { MemoryEntry } from './dataService'
+import type { Deal } from '../deals'
+import type { MemoryEntry } from '../dataService'
 
 /**
  * 「推荐几件打折的」这类泛查询原本只取列表前几条，跟用户是谁无关。

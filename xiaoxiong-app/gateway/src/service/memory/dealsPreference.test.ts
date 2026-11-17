@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { pickDeals, preferenceKeywords } from './dealsPreference'
-import type { Deal } from './deals'
-import type { MemoryEntry } from './dataService'
+import type { Deal } from '../deals'
+import type { MemoryEntry } from '../dataService'
 
 const mem = (key: string, value: string): MemoryEntry => ({ key, value, createdAt: 0, updatedAt: 0 })
 

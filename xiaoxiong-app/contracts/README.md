@@ -384,7 +384,7 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 
 | 方向 | 事件 | 关键字段 |
 |---|---|---|
-| C→S | `run-task` | `payload.task` = `asr` / `tts`；`payload.model`（上游模型，如 `paraformer-realtime-v2` / `cosyvoice-v3-flash`，可空沿用配置）；`payload.parameters.voice`（TTS 音色，如 `longyumi_v3`） |
+| C→S | `run-task` | `payload.task` = `asr` / `tts`；`payload.model`（上游模型，如 `paraformer-realtime-v2` / `cosyvoice-v3-flash`，可空沿用配置）；`payload.provider`（本轮提供商覆盖，如 `builtin` / `dashscope`，可空沿用全局配置）；`payload.parameters.voice`（TTS 音色，如 `longyumi_v3`） |
 | S→C | `task-started` | `streaming: "duplex"` |
 | C→S | 二进制音频帧（ASR）/ `continue-task`（`payload.input.text`，TTS） | — |
 | C→S | `finish-task` | 结束本次输入 |
@@ -397,6 +397,7 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 - **TTS 流程**：`run-task` →（收 `task-started`）→ 发 `continue-task`(文本) + `finish-task` → 收二进制音频帧 + `task-finished`。
 - **错误处理**：`task-failed` **不关闭连接**，可继续发下一个 `run-task` 复用连接。常见原因：`task` 非法（非 `asr`/`tts`）、内置 ASR 收到非 WAV、或「模型与提供商对不上」（内置模式下传了上游 ws 模型，提示去配置上游提供商）。
 - **协议判定**：`protocol`（ws / http）由 `model` 名字推断（`_model_uses_ws`：含 `cosyvoice` / `realtime` / `streaming` / `gummy` 即 ws），与上游线协议一致。
+- **提供商覆盖**：`run-task.payload.provider` 只对本次任务生效，等价于 HTTP 接口的 `provider` 字段；留空才读全局 `STT_PROVIDER` / `TTS_PROVIDER`。管理面板测试页的 WS 分支必须下发用户选中的提供商，否则选了 DashScope 仍会按内置模式校验模型。
 
 > HTTP 形态统一为 **OpenAI 音频 API 标准形状**（`/voice/v1/audio/transcriptions`、`/speech`、`/translations`），不再单独提供 DashScope 形状的 HTTP 端点（原 `/api/v1/services/aigc/...` 与 `/compatible-mode/v1/chat/completions` 已移除，收敛到一套路径）。需要实时流式再走下面的 WS。
 

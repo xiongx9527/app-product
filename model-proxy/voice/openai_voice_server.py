@@ -2251,9 +2251,19 @@ async def _ws_receive(
         return None
 
 
+def _ws_task_provider(payload: dict, config_name: str) -> str:
+    """run-task 的 provider 覆盖本轮路由；缺省才用全局配置。
+
+    HTTP 的 /voice/v1/* 早已支持请求级 provider；WS 必须保持一致，否则测试页
+    选了上游提供商、后端却仍按全局 builtin 校验，误报「模型与提供商对不上」。
+    """
+    override = str(payload.get("provider") or "").strip().lower()
+    return override or (config_value(config_name, "builtin") or "builtin").strip().lower()
+
+
 async def _ws_handle_asr(websocket: WebSocket, task_id: str, model: str, payload: dict) -> bool:
     """ASR 子流程：收二进制音频 + finish-task，识别后回 result-generated + task-finished。"""
-    stt_provider = (config_value("STT_PROVIDER", "builtin") or "builtin").strip().lower()
+    stt_provider = _ws_task_provider(payload, "STT_PROVIDER")
     upstream_model = ""
     proto = "http"
     if stt_provider == "deepseek":
@@ -2326,7 +2336,7 @@ async def _ws_handle_asr(websocket: WebSocket, task_id: str, model: str, payload
 
 async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload: dict) -> bool:
     """TTS 子流程：收 continue-task(文本) + finish-task，合成后回二进制音频 + task-finished。"""
-    tts_provider = (config_value("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
+    tts_provider = _ws_task_provider(payload, "TTS_PROVIDER")
     upstream_model = ""
     if tts_provider == "deepseek":
         upstream_model = (model or "").strip() or _deepseek_default_model("tts")

@@ -13,7 +13,7 @@ import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest, detectCont
 import { formatMemories, formatDeals, type MemoryStore, type RequestLocation } from './tools'
 import { createDealsTool, enrichDeal, type DealsSnapshot } from './tools/dealsTool'
 import { createSmzdmSource, toDetailItems, type Deal, type DealDetail } from './deals'
-import { detectDealsCommand } from './dealsControl'
+import { detectDealsCommand } from './control/dealsControl'
 import {
   searchCandidates,
   needsCandidateList,
@@ -27,17 +27,20 @@ import {
   type MusicCandidate,
   type CandidateFetcher,
 } from './music/musicCandidates'
-import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './musicControl'
-import { detectVolumeCommand } from './volumeControl'
-import { detectMemoryCommand } from './memoryControl'
-import { pickDeals, preferenceKeywords } from './dealsPreference'
-import { detectSubtitleCommand } from './subtitleControl'
-import { detectPlayModeCommand } from './playModeControl'
-import { detectTimeCommandKind } from './timeControl'
-import { detectAuspiciousQuery, type AuspiciousQuery } from './auspiciousControl'
+import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './control/musicControl'
+import { detectVolumeCommand } from './control/volumeControl'
+import { detectMemoryCommand } from './control/memoryControl'
+import { pickDeals, preferenceKeywords } from './memory'
+import { detectSubtitleCommand } from './control/subtitleControl'
+import { detectPlayModeCommand } from './control/playModeControl'
+import { detectTimeCommandKind } from './control/timeControl'
+import { detectAuspiciousQuery, type AuspiciousQuery } from './control/auspiciousControl'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
-import { detectWeatherCommand } from './weatherControl'
-import { detectProductQuery } from './productCatalog'
+import { detectWeatherCommand } from './control/weatherControl'
+import { detectProductQuery } from './control/productCatalog'
+import { detectNewsCommand } from './control/newsControl'
+import { createBaiduNewsSource, formatNews } from './news'
+import { createNewsTool } from './tools/newsTool'
 import { createWeatherTool } from './tools/weatherTool'
 import { messages } from '../i18n'
 import { isNoise, isForeignNoise, resemblesSpoken } from '../asr/noiseFilter'
@@ -119,6 +122,8 @@ export interface VoiceSessionDeps {
   dealsQuery?: (keyword?: string | null) => Promise<DealsSnapshot>
   /** 天气查询：测试可注入桩避免联网。缺省用 createWeatherTool.call（懒加载位置 + 自带超时）。 */
   weatherQuery?: () => Promise<string>
+  /** 新闻查询：测试可注入桩避免联网。缺省用 createNewsTool + 百度新闻源（可换源）。 */
+  newsQuery?: (keyword?: string | null) => Promise<string>
   /** 单轮 LLM 超时（毫秒）：超时主动舍弃本轮、断开下行播放、立即播友好兜底。测试注入更小值。 */
   llmTimeoutMs?: number
   /** TTS 帧间看门狗（毫秒）：上游挂起不产帧时断开本句，对话链绝不卡死。测试注入更小值。 */
@@ -927,6 +932,13 @@ export class VoiceSessionService {
       await this.runPlayModeCommand(playModeCmd)
       return true
     }
+    // 新闻播报含「播放新闻」，musicControl 的 play 正则含裸「播放/放」会当点歌，
+    // 故新闻检测必须排在音乐指令之前（同类于上面的 playMode）。
+    const news = detectNewsCommand(text)
+    if (news) {
+      await this.runNewsCommand(news.keyword)
+      return true
+    }
     const action = detectMusicCommand(text)
     const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
       action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
@@ -1076,6 +1088,26 @@ export class VoiceSessionService {
       await this.speakReply(await query())
     } catch {
       await this.speakReply(messages(this.lang).llmUnavailable())
+    }
+  }
+
+  /**
+   * 新闻播报直连（绕开 LLM）：走百度新闻频道抓 headlines 口播，不发卡片、不编号。
+   * 数据源经 NewsSource 抽象注入，缺省用百度源，未来换源不动本方法。
+   * newsQuery 可由测试注入桩避免联网；抓取失败由 formatNews 出诚实兜底，catch 只兜意外错误。
+   */
+  private async runNewsCommand(keyword: string | null): Promise<void> {
+    const query: (kw?: string | null) => Promise<string> =
+      this.deps.newsQuery ??
+      (async (kw?: string | null): Promise<string> => {
+        const tool = createNewsTool({ source: createBaiduNewsSource() })
+        const result = await tool.query(kw ?? null)
+        return formatNews(this.lang, result, kw ?? null, tool.limit)
+      })
+    try {
+      await this.speakReply(await query(keyword))
+    } catch {
+      await this.speakReply(messages(this.lang).news.unavailable())
     }
   }
 

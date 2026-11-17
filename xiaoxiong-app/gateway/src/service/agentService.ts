@@ -11,7 +11,7 @@ import type { LlmConfig } from '../config'
 import { createToolkit, registerMcpServers, type LocationProvider, type MediaEmitter, type MemoryStore, type McpClientHandle, type RequestLocation } from './tools'
 import type { MusicSource } from './music/types'
 import { ChannelSplitter } from './channelSplitter'
-import { createMemoryExtractor, type ExtractedMemory, type MemoryExtractor } from './memoryExtraction'
+import { createMemoryExtractor, type ExtractedMemory, type MemoryExtractor } from './memory'
 import type { MemoryEntry } from './dataService'
 
 /** 对话智能体服务：按语言本地化系统提示，流式回传文本增量。 */

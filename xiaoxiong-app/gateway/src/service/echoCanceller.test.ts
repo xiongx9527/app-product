@@ -10,14 +10,6 @@ function toPcm(samples: Float32Array): Uint8Array {
   }
   return out
 }
-function rms(pcm: Uint8Array): number {
-  const dv = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength)
-  let s = 0
-  const n = pcm.byteLength / 2
-  for (let i = 0; i < n; i += 1) { const v = dv.getInt16(i * 2, true) / 32768; s += v * v }
-  return Math.sqrt(s / n)
-}
-
 describe('EchoCanceller', () => {
   it('实时时序下消掉 TTS 回声、保留真人声', () => {
     const ec = new EchoCanceller()

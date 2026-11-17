@@ -22,8 +22,6 @@ export class EchoCanceller {
   // 24k→16k 重采样相位累加（简单的线性抽取，语音足够）
   private rsPhase = 0
   private readonly xFrame = new Float32Array(this.M) // 当前帧对应的参考窗口（倒序，供卷积）
-  // 双讲检测：近端能量突然远大于残余时冻结系数，避免把人声当回声"学"进去
-  private frozen = false
 
   /** 推入一帧 TTS 参考（24k / 16bit mono PCM），内部重采样到 16k 存入环形缓冲。 */
   pushReference(pcm24k: Uint8Array): void {
@@ -83,6 +81,5 @@ export class EchoCanceller {
     this.refBuf.fill(0)
     this.refWrite = 0
     this.rsPhase = 0
-    this.frozen = false
   }
 }

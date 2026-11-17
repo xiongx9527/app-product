@@ -1,10 +1,10 @@
 import { z } from 'zod'
 import { UserMsg } from '@agentscope-ai/agentscope/message'
 import { Toolkit as ToolkitImpl } from '@agentscope-ai/agentscope/tool'
-import type { Lang } from '../protocol'
-import type { LlmConfig } from '../config'
-import type { MemoryEntry } from './dataService'
-import { messages } from '../i18n'
+import type { Lang } from '../../protocol'
+import type { LlmConfig } from '../../config'
+import type { MemoryEntry } from '../dataService'
+import { messages } from '../../i18n'
 
 /** 一条被抽取/合并出的记忆：话题标签 + 精炼内容。 */
 export interface ExtractedMemory {

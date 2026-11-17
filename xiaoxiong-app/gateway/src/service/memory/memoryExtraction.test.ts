@@ -6,8 +6,8 @@ import {
   parseExtractorInput,
   type ExtractedMemory,
 } from './memoryExtraction'
-import type { MemoryEntry } from './dataService'
-import type { LlmConfig } from '../config'
+import type { MemoryEntry } from '../dataService'
+import type { LlmConfig } from '../../config'
 
 describe('memoryExtraction 纯函数', () => {
   it('formatExisting 空列表返回空串', () => {
