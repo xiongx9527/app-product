@@ -130,6 +130,11 @@ export interface Messages {
     /** 本批新闻播完后再说「下一条」：如实告知，引导重新抓一批 */
     noMore: () => string
   }
+  /** 百科查询：抓真实百科词条摘要显示在助手框并播报。无话题时提示用户说查谁。 */
+  baike: {
+    /** 纯「百科」无话题时的提示 */
+    prompt: () => string
+  }
   /** 数据来源展示名（按 lang 本地化）：值由数据源给 sourceKey，网关查表，客户端不认识 key。 */
   sources: Record<string, string>
   /** 大模型整句都不可念（泄漏控制符 / 空回复 / 只剩符号）时的兜底口播：不念垃圾，给一句让人能重说的 */
@@ -296,6 +301,9 @@ const zhCN: Messages = {
     chooseAgain: () => '没听清选哪条，请说第几条。',
     noMore: () => '这几条新闻都播完啦，说「播放新闻」再给你找几条。',
   },
+  baike: {
+    prompt: () => '想查谁的百科？比如说「百科李存勖」。',
+  },
   sources: { smzdm: '什么值得买' },
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
   memory: {
@@ -449,6 +457,9 @@ const en: Messages = {
     chooseHint: () => 'Which one would you like to play?',
     chooseAgain: () => "Didn't catch that. Which number?",
     noMore: () => "That's all the news for now. Say 'play news' to get more.",
+  },
+  baike: {
+    prompt: () => 'Whose encyclopedia entry? For example, "wiki Einstein".',
   },
   sources: { smzdm: 'SMZDM' },
   clock: {

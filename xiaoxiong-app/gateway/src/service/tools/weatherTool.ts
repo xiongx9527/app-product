@@ -1,7 +1,12 @@
 import { z } from 'zod'
 import type { Lang, LocationInfo } from '../../protocol'
 import type { LocationProvider, RequestLocation } from './currentLocationTool'
-import { createDefaultWeatherSource, type WeatherFetcher, type WeatherSource } from '../weather'
+import {
+  createDefaultWeatherSource,
+  type WeatherFetcher,
+  type WeatherSource,
+  type WeatherPayload,
+} from '../weather'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const WEATHER_TOOL_NAME = 'get_weather'
@@ -99,9 +104,6 @@ export function formatWeather(
   }
   return lines.join('')
 }
-
-/** 默认用全局 fetch；测试可注入桩，避免真实联网。 */
-export type Fetcher = (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
 
 /**
  * 创建「获取当前位置天气」工具；无需入参，经纬度来自客户端上报的位置。

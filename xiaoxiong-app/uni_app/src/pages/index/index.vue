@@ -42,6 +42,7 @@ const {
   wake,
   enable,
   interrupt,
+  interruptSpeech,
   musicPlaying,
   musicPaused,
   musicEnded,
@@ -393,7 +394,25 @@ onUnmounted(() => {
   }
 })
 
+// 语音球防重复快速点击：双击/误触连击会让 enable(重复建连)、wake(重复唤醒)、
+// interrupt(重复打断) 被触发多次。这里做节流——两次有效点击至少间隔 ORB_TAP_GUARD_MS，
+// 间隔内的点击直接丢弃。用时间戳而非定时器加锁：不阻塞正常节奏，也不会把后续点击永久吞掉。
+// elapsed < 0（系统时间被回拨）时不拦截，避免误锁死点击。
+const ORB_TAP_GUARD_MS = 400
+let lastOrbTapAt = 0
+
 function onOrbTap(): void {
+  const now = Date.now()
+  const elapsed = now - lastOrbTapAt
+  if (elapsed >= 0 && elapsed < ORB_TAP_GUARD_MS) return
+  lastOrbTapAt = now
+  // 正在 TTS 播报时点球 == 说「小熊小熊」：只打断当前这句文字播报，媒体播放器照常继续放。
+  // 必须放在 state 分支最前面——播报（尤其百科/天气/新闻确认句等空闲直连口播）时 state 可能
+  // 已是 standby，若落到 wake() 分支就只是重新唤醒、停不掉正在播的文字，正是用户反馈的现象。
+  if (isSpeaking.value) {
+    interruptSpeech()
+    return
+  }
   // 未开启时点圆球先开启；已在待唤醒时点圆球手动开始一轮（等同说「小熊小熊」）；
   // 对话进行中点圆球即打断（替代原底部「打断」按钮）
   if (state.value === 'idle') enable()

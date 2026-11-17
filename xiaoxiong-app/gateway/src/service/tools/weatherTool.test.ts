@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { createWeatherTool, formatWeather, WEATHER_TOOL_NAME, type WeatherPayload } from './weatherTool'
 import { createToolkit } from './index'
+import type { WeatherSource } from '../weather'
 
 const SAMPLE: WeatherPayload = {
   current: {
@@ -17,6 +18,14 @@ const SAMPLE: WeatherPayload = {
     temperature_2m_min: [14, 12, 13],
     precipitation_probability_max: [10, 80, 40],
   },
+}
+
+/** 测试用天气源桩：直接吐统一结构，不联网。可记录 fetch 调用验证注入生效。 */
+function stubSource(payload: WeatherPayload | null = SAMPLE): WeatherSource & { fetch: ReturnType<typeof vi.fn> } {
+  return {
+    name: 'stub',
+    fetch: vi.fn(async () => payload),
+  }
 }
 
 describe('weatherTool', () => {
@@ -43,14 +52,33 @@ describe('weatherTool', () => {
     expect(await t.call?.()).toContain('未获取')
   })
 
-  it('call 用注入的 fetcher 取数并格式化', async () => {
-    const fetcher = async () => ({
-      ok: true,
-      json: async () => SAMPLE as unknown as Record<string, unknown>,
-    })
-    const t = createWeatherTool('zh-CN', () => ({ latitude: 31.23, longitude: 121.47 }), fetcher)
+  it('call 用注入的数据源取数并格式化', async () => {
+    const source = stubSource()
+    const t = createWeatherTool('zh-CN', () => ({ latitude: 31.23, longitude: 121.47 }), source)
     const out = await t.call?.()
     expect(out).toContain('21°')
+    expect(source.fetch).toHaveBeenCalledWith(31.23, 121.47, expect.any(Function))
+  })
+
+  it('可换源：注入不同 WeatherSource 即走不同数据源，工具逻辑不变', async () => {
+    const source = stubSource({ current: { temperature_2m: 5, weather_code: 71 } })
+    const t = createWeatherTool('zh-CN', () => ({ latitude: 1, longitude: 2 }), source)
+    expect(await t.call?.()).toContain('5°')
+    expect(source.name).toBe('stub')
+  })
+
+  it('数据源返回空时给出「天气服务返回异常」而非抛错', async () => {
+    const t = createWeatherTool('zh-CN', () => ({ latitude: 1, longitude: 2 }), stubSource(null))
+    expect(await t.call?.()).toContain('异常')
+  })
+
+  it('数据源抛错时给出「无法连接天气服务」兜底', async () => {
+    const source: WeatherSource = {
+      name: 'boom',
+      fetch: async () => { throw new Error('network down') },
+    }
+    const t = createWeatherTool('zh-CN', () => ({ latitude: 1, longitude: 2 }), source)
+    expect(await t.call?.()).toContain('无法连接天气服务')
   })
 
   it('createToolkit 登记了天气工具', () => {
@@ -65,11 +93,7 @@ describe('weatherTool', () => {
       loc = { latitude: 31.23, longitude: 121.47, address: '上海市' }
       return loc
     }
-    const fetcher = async () => ({
-      ok: true,
-      json: async () => SAMPLE as unknown as Record<string, unknown>,
-    })
-    const t = createWeatherTool('zh-CN', provider, fetcher, requestLocation)
+    const t = createWeatherTool('zh-CN', provider, stubSource(), requestLocation)
     const out = await t.call?.()
     expect(out).toContain('上海')
     expect(out).toContain('21°')
@@ -78,7 +102,7 @@ describe('weatherTool', () => {
   it('懒加载：requestLocation 仍拿不到位置时给出提示而非联网', async () => {
     const provider = () => null
     const requestLocation = async () => null
-    const t = createWeatherTool('zh-CN', provider, async () => ({ ok: true, json: async () => ({}) }), requestLocation)
+    const t = createWeatherTool('zh-CN', provider, stubSource(), requestLocation)
     expect(await t.call?.()).toContain('未获取')
   })
 })

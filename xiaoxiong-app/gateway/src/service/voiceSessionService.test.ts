@@ -12,6 +12,7 @@ import type { HealthReport } from './health'
 import type { MusicSource } from './music/types'
 import type { DealsSnapshot } from './tools/dealsTool'
 import type { Deal, DealDetail } from './deals'
+import type { BaikeEntry } from './baike'
 
 /** 100ms 的方波人声帧（16k/16bit/mono），能量远高于自适应门限。 */
 function loudFrame(samples = 1600): Uint8Array {
@@ -114,6 +115,10 @@ function createHarness(
     newsKeywordSpy?: (keyword: string | null) => void
     /** 注入抽音轨结果（m4s 直链）；缺省返回 null（抽不到→回退实时口播兜底） */
     newsAudioUrl?: string | null
+    /** 注入百科查询桩（词条结构 + 口播文本），避免百科用例真的联网抓百度 */
+    baikeQuery?: (query: string) => Promise<{ entry: BaikeEntry | null; text: string }>
+    /** 记录百科查询收到的关键词 */
+    baikeQuerySpy?: (query: string) => void
     /** 注入详情页补充信息桩；缺省返回 null（不联网），需要验证合并时再注入 */
     dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
     /** 智能体口播文本（经 ChannelSplitter 下发）；默认「好的，我来说一句。」。可注入泄漏标记验证兜底 */
@@ -242,6 +247,13 @@ function createHarness(
     musicSourceFactory: opts.musicSourceFactory,
     candidateFetcher: opts.candidateFetcher,
     dealsQuery: opts.dealsQuery,
+    // 百科查询桩：透传注入的 query（含关键词记录），缺省走默认工具
+    baikeQuery: opts.baikeQuery
+      ? async (query: string) => {
+          opts.baikeQuerySpy?.(query)
+          return opts.baikeQuery!(query)
+        }
+      : undefined,
     // 新闻视频源桩：search 返回注入候选，resolveBvid 返回注入音轨（缺省 null→走兜底口播）
     newsVideoSource: {
       name: 'test-news-video',
@@ -3118,5 +3130,64 @@ describe('语音会话：音频下发计数（回归：不重复播放）', () =
     h.finishReply()
     await sleep(40)
     expect(h.agentCalls()).toBe(1)
+  })
+})
+
+describe('百科查询直连（绕开 LLM，助手框显示 + 播报）', () => {
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('「百科李存勖」：抓词条摘要口播，并把关键词传给查询', async () => {
+    let queried = ''
+    const h = createHarness({
+      finalizeText: '百科李存勖',
+      baikeQuerySpy: (q) => { queried = q },
+      baikeQuery: async (q) => ({
+        entry: { title: '李存勖', summary: '五代后唐开国皇帝，军事才能出众。' },
+        text: `李存勖：五代后唐开国皇帝，军事才能出众。（查：${q}）`,
+      }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(queried).toBe('李存勖')
+    expect(texts(h)).toContain('五代后唐开国皇帝')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('「讲讲XX的事迹」：也能命中百科直连', async () => {
+    let queried = ''
+    const h = createHarness({
+      finalizeText: '讲讲李存勖的事迹',
+      baikeQuerySpy: (q) => { queried = q },
+      baikeQuery: async () => ({ entry: null, text: '李存勖：一生征战，后唐开国。' }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(queried).toBe('李存勖')
+    expect(texts(h)).toContain('后唐开国')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('纯「百科」无话题：提示用户说查谁，不联网查询', async () => {
+    let called = false
+    const h = createHarness({
+      finalizeText: '百科',
+      baikeQuery: async () => { called = true; return { entry: null, text: '' } },
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(called).toBe(false)
+    expect(texts(h)).toContain('想查谁的百科')
+    expect(h.agentCalls()).toBe(0)
   })
 })

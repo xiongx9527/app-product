@@ -10,6 +10,9 @@ import {
   type RequestLocation,
 } from './currentLocationTool'
 import { createWeatherTool } from './weatherTool'
+import type { WeatherSource } from '../weather'
+import { createBaikeTool } from './baikeTool'
+import type { BaikeSource } from '../baike'
 import {
   createMusicTool,
   createStopMusicTool,
@@ -63,6 +66,20 @@ export {
 export { createMusicSearchTool, MUSIC_SEARCH_TOOL_NAME } from './musicSearchTool'
 export { createSubtitleTool, SUBTITLE_TOOL_NAME } from './subtitleTool'
 export { createDealsTool, DEALS_TOOL_NAME } from './dealsTool'
+export {
+  createDefaultWeatherSource,
+  createWttrSource,
+  createOpenMeteoSource,
+  type WeatherSource,
+} from '../weather'
+export {
+  createDefaultBaikeSource,
+  createBaikeSource,
+  listBaikeSources,
+  type BaikeSource,
+  type BaikeEntry,
+} from '../baike'
+export { createBaikeTool, BAIKE_TOOL_NAME } from './baikeTool'
 export { createSmzdmSource, parseDeals, formatDeals, filterDeals, type Deal, type DealsSource, type DealsFetcher, type DealsOptions } from '../deals'
 export {
   createRememberTool,
@@ -97,7 +114,11 @@ export function createToolkit(
   dealsCount?: number,
   dealsSource: DealsSource = createSmzdmSource(),
   /** 自动记忆（自动抽取）开关：来自客户端 session.start.memory.auto，缺省关。开启时助手才会主动调用 remember 沉淀长期记忆。 */
-  autoMemory: boolean = false
+  autoMemory: boolean = false,
+  /** 天气数据源：换源只改这里/默认工厂一处；缺省用 createDefaultWeatherSource（wttr.in，无 api-key）。 */
+  weatherSource?: WeatherSource,
+  /** 百科数据源：换源只改这里/注册表一处；缺省用 createDefaultBaikeSource（百度搜索卡片）。 */
+  baikeSource?: BaikeSource
 ): Toolkit {
   // 网关既有工具（时间/位置/天气）都用空 inputSchema + 0 参 call，与 AgentScope 的 Toolkit 类型一致；
   // 音乐类工具需要入参（genre/minutes 等），zod 泛型在此边界不兼容，故整体按 Tool[] 断言。
@@ -105,8 +126,9 @@ export function createToolkit(
   const baseTools = [
     createCurrentTimeTool(lang, timeZone),
     createCurrentLocationTool(lang, locationProvider, requestLocation),
-    createWeatherTool(lang, locationProvider, undefined, requestLocation),
+    createWeatherTool(lang, locationProvider, weatherSource, requestLocation),
     createDealsTool(lang, { source: dealsSource, defaultLimit: dealsCount }),
+    createBaikeTool(lang, baikeSource ? { source: baikeSource } : {}),
   ]
   // 媒体指令需要 emit 把指令下发给客户端，且需要 musicSource 决定播什么；
   // 两者都齐才注册音乐工具，否则（离线测试 / 客户端未配置音乐源）不注册，避免空转。

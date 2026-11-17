@@ -1132,6 +1132,33 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     dispatch({ type: 'CANCEL' })
   }
 
+  /**
+   * 打断「当前这一句」TTS 播报——点语音球 与 说「小熊小熊」统一的打断语义。
+   *
+   * 与 interrupt()（CANCEL 整轮）的本质区别：
+   *  1) 只作废当前句、保留网关队列里排队的句子，不重启会话；
+   *  2) **不碰媒体播放器**：音乐/新闻音轨走 media.play → InnerAudioContext，
+   *     与 TTS 是两套独立音频，这里停 TTS 不影响它继续放（用户明确要求「别停音乐」）。
+   *
+   * 客户端处理与收到网关 `tts.stop` 时完全一致（本地立即停声，不等网关往返）：
+   * 先停 TTS、复位播报态，再发 session.skip_current 让网关同步停下发并移除队首唤醒词。
+   * 网关随后回的 tts.stop 会再走一遍同样逻辑，全部幂等。
+   *
+   * 覆盖 standby 空闲直连播报（百科/天气/新闻确认句等不经会话的口播）——
+   * 这正是原来点球停不掉的根因：那些场景 state=standby，onOrbTap 走的是 wake()。
+   */
+  function interruptSpeech(dropText?: string): void {
+    cancelPendingIdle()
+    disarmThinkingCue()
+    stopTts()
+    duckMusic(false)
+    isSpeaking.value = false
+    setPhaseDone('interruptSpeech')
+    markAnswerDone()
+    lastSpokeAt = Date.now()
+    transport.sendSkipCurrent(dropText)
+  }
+
   /** 点中间圆球手动开始一轮：等同说「小熊小熊」唤醒，仅待唤醒(standby)态有效。
    * 原则：网关正常才允许唤醒——没连上网关就不放行 WAKE（连不上则 ASR/TTS 都不工作，
    * 「唤醒了但说不了话」是不诚实的状态），此时诚实提示并顺手触发重连。 */
@@ -1178,9 +1205,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   }
 
   /** 播报/思考中重新叫「小熊小熊」：招呼一声，只跳过当前句，队列里的句子继续播。
-   *  不 dispatch REWAKE——那会 cancel+start 清掉队列；改发 session.skip_current 让网关
-   *  仅作废当前句、保留队列。局部界面状态（isSpeaking/queuePending等）由随后下发的
-   *  tts.stop 与下一句的 asr.final/tts.start 自然刷新，此处只负责招呼与通知网关。
+   *  不 dispatch REWAKE——那会 cancel+start 清掉队列；改走 interruptSpeech，只作废当前句、
+   *  保留队列，且**不碰媒体播放器**（音乐/新闻音轨继续放）。招呼与「我说」框照旧。
    *  dropText 带上这句唤醒词原文，网关据此把它从队列删掉（它是打断信号、不是指令）。 */
   function skipCurrentAndGreet(dropText?: string): void {
     // 临时诊断：确认「小熊小熊」命中后有没有走到打断、canWake 是否为真
@@ -1198,7 +1224,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     reply.value = '我在'
     replyDone.value = true
     playPromptCue('greeting')
-    transport.sendSkipCurrent(dropText)
+    interruptSpeech(dropText)
   }
 
   /** 重新打开字幕面板：仅翻 visible 标记，数据仍在（手动关闭后照样能打开） */
@@ -1356,6 +1382,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     enable,
     disable,
     interrupt,
+    interruptSpeech,
     // 音乐播放 / 歌词
     musicPlaying: musicState.playing,
     musicPaused: musicState.paused,

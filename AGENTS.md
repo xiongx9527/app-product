@@ -140,6 +140,8 @@ xiaoxiong-app/uni_app/src/
 - **详情卡片**：编号同行最前、列表显示字段、缺值占位、来源显示站点名、选号跨轮保留且量词通用、关详情回列表、无朋友圈入口、各 kind 共用同一协议。
 - **展示信息克制**：面板别默认加语义重复的状态列。
 - **思考/播报期间插话排队、只有「小熊小熊」打断**：思考与播报期间用户说的话都排进队列（最多 3 句），当前句播完后按序处理；网关不认识唤醒词，把识别原文随 `asr.queued` / `asr.rejected` 透传回客户端，由客户端 `matchWakeWord` 匹配。命中「小熊小熊」= 用户嫌当前这句长想打断：播一声本地「我在」招呼，回 `session.skip_current`（带 `dropText` 让网关把这句唤醒词从队列删掉），**只跳过当前句、不清空队列**，队列里的句子继续播。这与 `session.cancel`（`REWAKE` 用的整轮重来、清队列）严格区分：旧实现重新喊唤醒词走 `REWAKE = session.cancel + session.start` 会把排队全清掉，正是「重新说小熊小熊排队也被干掉」的根因。客户端唤醒词分支**不累加** `queuePending`，否则删句后徽标会卡住（靠 `asr.final(queueRemaining)` 权威同步）。
+- **点语音球 ≡ 说「小熊小熊」，只打断 TTS、不停媒体播放器**：两者语义完全等价——播报中（`isSpeaking`）点球与唤醒词走同一个 `interruptSpeech(dropText?)`：本地立即 `stopTts()` + 复位播报态 + `transport.sendSkipCurrent(dropText)`，**绝不调用 `stopMusic`**，音乐 / 新闻音轨（`media.play` → `InnerAudioContext`）照常继续放。踩坑：`onOrbTap` 原判断只在 `state=listening/confirming` 才 `interrupt()`（整轮 CANCEL），而文字播报常发生在 standby 空闲直连场景（百科 / 天气 / 时间 / 新闻确认句），此时点球落到 `wake()` 只是重新唤醒、停不掉正在播的文字——所以 `isSpeaking` 判断必须放在 `onOrbTap` 的 state 分支**最前面**。媒体播放器停止只由 `media.stop` / `stopMusic` 负责，两条打断路径都不碰。
+- **语音球防重复快速点击**：`onOrbTap` 入口做时间戳节流（`ORB_TAP_GUARD_MS = 400` + `lastOrbTapAt`），间隔内连点直接丢弃，避免双击 / 误触重复触发 `enable`（重复建连）/ `wake`（重复唤醒）/ `interrupt`（重复打断）。用时间戳而非定时器加锁，不阻塞正常节奏、也不把后续点击吞掉；系统时间回拨（`elapsed < 0`）时不拦截，避免误锁死。
 - **队列满提示在「我说」右上角**：超过最大队列的拒收话术显示在「我说」卡片右上角，与排队数量徽标同位置同款式，不用页面顶部横幅、不进正文、不用浮层。
 
 ### 权限与位置

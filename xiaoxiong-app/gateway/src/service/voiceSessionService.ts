@@ -39,8 +39,11 @@ import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/music
 import { detectWeatherCommand } from './control/weatherControl'
 import { detectProductQuery } from './control/productCatalog'
 import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
+import { detectBaikeCommand } from './control/baikeControl'
 import { createNewsVideoSource, cleanNewsTitle, type NewsVideoCandidate, type NewsVideoSourceLike } from './news'
 import { createWeatherTool } from './tools/weatherTool'
+import { createBaikeTool } from './tools/baikeTool'
+import type { BaikeEntry } from './baike'
 import { messages } from '../i18n'
 import { isNoise, isForeignNoise, resemblesSpoken } from '../asr/noiseFilter'
 import { sanitizeForSpeech } from '../tts/sanitize'
@@ -123,6 +126,8 @@ export interface VoiceSessionDeps {
   weatherQuery?: () => Promise<string>
   /** 新闻视频音源：抓真实新闻视频并抽音轨。缺省用 B 站源；测试可注入桩避免联网。 */
   newsVideoSource?: NewsVideoSourceLike
+  /** 百科查询：测试可注入桩避免联网。缺省用 createBaikeTool.snapshotWithText（多源可换）。 */
+  baikeQuery?: (query: string) => Promise<{ entry: BaikeEntry | null; text: string }>
   /** 单轮 LLM 超时（毫秒）：超时主动舍弃本轮、断开下行播放、立即播友好兜底。测试注入更小值。 */
   llmTimeoutMs?: number
   /** TTS 帧间看门狗（毫秒）：上游挂起不产帧时断开本句，对话链绝不卡死。测试注入更小值。 */
@@ -971,6 +976,13 @@ export class VoiceSessionService {
       await this.runNewsCommand(news.keyword)
       return true
     }
+    // 百科查询：「百科XX / XX的事迹 / 介绍下XX / XX人物生平」等，抓真实词条摘要显示+播报。
+    // 放在好价（detectProductQuery）之前——「查百科」含「查」会被好价误中。
+    const baike = detectBaikeCommand(text)
+    if (baike) {
+      await this.runBaikeCommand(baike.keyword)
+      return true
+    }
     const action = detectMusicCommand(text)
     const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
       action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
@@ -1118,6 +1130,27 @@ export class VoiceSessionService {
       })
     try {
       await this.speakReply(await query())
+    } catch {
+      await this.speakReply(messages(this.lang).llmUnavailable())
+    }
+  }
+
+  /**
+   * 百科查询直连（绕开 LLM）：抓真实百科词条摘要 → 助手框显示 + TTS 播报。
+   * keyword 为空（纯「百科」）时提示用户说查谁；有词时用注入的 query 或默认工具。
+   * 与新闻不同：百科摘要是文本，走 speakReply（助手框 + 播报），无音频抽轨。
+   */
+  private async runBaikeCommand(keyword: string | null): Promise<void> {
+    if (!keyword) {
+      await this.speakReply(messages(this.lang).baike.prompt())
+      return
+    }
+    const query =
+      this.deps.baikeQuery ??
+      (async () => createBaikeTool(this.lang).snapshotWithText(keyword))
+    try {
+      const { text } = await query(keyword)
+      await this.speakReply(text)
     } catch {
       await this.speakReply(messages(this.lang).llmUnavailable())
     }
