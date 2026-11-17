@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { Lang, LocationInfo } from '../../protocol'
 import type { LocationProvider, RequestLocation } from './currentLocationTool'
+import { createDefaultWeatherSource, type WeatherFetcher, type WeatherSource } from '../weather'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const WEATHER_TOOL_NAME = 'get_weather'
@@ -37,23 +38,13 @@ function codeText(code: number | undefined, lang: Lang | string): string {
   return hit.zh
 }
 
-/** Open-Meteo 返回的当前+逐日数据结构（按需取字段，其余忽略）。 */
-export interface WeatherPayload {
-  current?: {
-    temperature_2m?: number
-    apparent_temperature?: number
-    relative_humidity_2m?: number
-    weather_code?: number
-    wind_speed_10m?: number
-  }
-  daily?: {
-    time?: string[]
-    weather_code?: number[]
-    temperature_2m_max?: number[]
-    temperature_2m_min?: number[]
-    precipitation_probability_max?: number[]
-  }
-}
+/**
+ * 统一天气结构 + 底层 fetcher 类型现在定义在 service/weather 域（可换源）。
+ * 这里 re-export 保持旧调用方/测试的 import 路径不变。
+ */
+export type { WeatherPayload } from '../weather'
+/** 兼容旧名 Fetcher（= WeatherFetcher）。 */
+export type Fetcher = WeatherFetcher
 
 /** 把 Open-Meteo 返回格式化成可读天气文案（纯函数，便于测试）。 */
 export function formatWeather(
@@ -114,13 +105,16 @@ export type Fetcher = (url: string) => Promise<{ ok: boolean; json: () => Promis
 
 /**
  * 创建「获取当前位置天气」工具；无需入参，经纬度来自客户端上报的位置。
+ * 天气来源通过 WeatherSource 注入（默认 wttr.in），换源只改注入、不动工具逻辑；
+ * 底层 fetcher 也注入给 source，便于测试不联网。
  * 返回 AgentScope 的 Tool 描述（name / description / inputSchema / call）。
  */
 export function createWeatherTool(
   lang: Lang | string,
   locationProvider: LocationProvider,
-  fetcher: Fetcher = globalThis.fetch as unknown as Fetcher,
-  requestLocation?: RequestLocation
+  source: WeatherSource = createDefaultWeatherSource(),
+  requestLocation?: RequestLocation,
+  fetcher: WeatherFetcher = globalThis.fetch as unknown as WeatherFetcher
 ) {
   const prefix = (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0]
   const descriptions: Record<string, string> = {
@@ -142,19 +136,15 @@ export function createWeatherTool(
           ? 'Current location is unavailable, so I cannot fetch the weather.'
           : '当前位置未获取到，无法查询天气。'
       }
-      const url =
-        `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}` +
-        `&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m` +
-        `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
-        `&timezone=auto&forecast_days=3&wind_speed_unit=ms`
       try {
-        const res = await fetcher(url)
-        if (!res.ok) {
+        // 取数委托给注入的数据源（默认 wttr.in，无 api-key、国内可达）；
+        // source 返回统一的 WeatherPayload，格式化层不用关心数据来自哪家。
+        const data = await source.fetch(loc.latitude, loc.longitude, fetcher)
+        if (!data || typeof data.current?.temperature_2m !== 'number') {
           return prefix === 'en'
             ? 'Weather service returned an error.'
             : '天气服务返回异常。'
         }
-        const data = (await res.json()) as WeatherPayload
         return formatWeather(lang, loc, data)
       } catch {
         return prefix === 'en'

@@ -556,25 +556,52 @@ export class WebSocketTransport implements AssistantTransport {
     })
   }
 
-  /** 确保定位已授权：已授权或平台不支持显式授权时 resolve；用户拒绝 reject。 */
+  /**
+   * 确保定位已授权：已授权或平台不支持显式授权时 resolve；用户拒绝也放行（定位是增强项）。
+   * 两个关键坑：
+   *  1) scope 必须是 uni-app 标准的 'scope.userLocation'（'scope.location' 是无效值，authorize 必 fail）；
+   *  2) uni.authorize 在部分机型既不回调 success 也不回调 fail → Promise 永久挂起 → 永远不取定位。
+   *     加超时兜底：无论回调来不来，到点就放行去调 getLocation（权限已由装机 pm grant 授予）。
+   */
   private ensureLocationAuthorized(): Promise<void> {
     return new Promise((resolve) => {
       if (typeof uni === 'undefined' || typeof uni.authorize !== 'function') {
         resolve()
         return
       }
-      uni.authorize({
-        scope: 'scope.location',
-        success: () => resolve(),
-        fail: () => resolve(),
-      })
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        resolve()
+      }
+      const timer = setTimeout(finish, 1500)
+      try {
+        uni.authorize({
+          scope: 'scope.userLocation',
+          success: finish,
+          fail: finish,
+        })
+      } catch {
+        finish()
+      }
     })
   }
 
+  /**
+   * 取系统定位：必须用 wgs84，不能用 gcj02，也不能开 geocode。
+   *  - 本项目离线打包未配高德地图 api-key（原则：不使用 api-key）。DCloud 的 gcj02
+   *    坐标转换依赖高德 SDK，实测真机报 code 18「not support gcj02」→ getLocation 必 fail，
+   *    于是永不上报 session.location，天气只能回「当前位置未获取到」。
+   *  - wgs84 走系统 GPS/网络定位，不依赖任何 key，真机实测可拿到经纬度（28.67/116.01）。
+   *  - 下游天气用 open-meteo，它本身接受的就是 WGS84 经纬度，wgs84 反而坐标更准。
+   *  - geocode（逆地理编码拿 address）同样依赖高德 key，关掉；address 是可选字段，
+   *    网关天气工具在有经纬度时照常工作，只是地址文案回退为「纬度/经度」。
+   */
   private doGetLocation(resolve: (value: LocationSnapshot | null) => void): void {
     uni.getLocation({
-      type: 'gcj02',
-      geocode: true,
+      type: 'wgs84',
       success: (res) =>
         resolve({
           latitude: res.latitude,

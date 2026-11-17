@@ -346,6 +346,24 @@ if (existsSync(androidManifestPath)) {
     console.log('[info] AndroidManifest 已含 RECORD_AUDIO，跳过')
   }
 
+  // 7b-2) AndroidManifest 声明定位权限（uni.getLocation 必需：天气/位置类工具懒加载定位）。
+  //       uni manifest.json 虽声明了定位权限，但离线 APK 以本原生壳 manifest 为准，
+  //       DCloud 不会合并 uni manifest 的权限；缺这两条 → getLocation 静默失败 → 网关拿不到
+  //       session.location → 天气查询无数据。与 RECORD_AUDIO 同样做幂等注入，防止 manifest 重建后再次丢失。
+  for (const perm of ['ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION']) {
+    const full = `android.permission.${perm}`
+    if (!mf.includes(full)) {
+      mf = mf.replace(
+        /(\s*)<application/,
+        `$1<uses-permission android:name="${full}" />\n$1<application`,
+      )
+      writeFileSync(androidManifestPath, mf)
+      console.log(`[ok] AndroidManifest 已声明 ${perm} 权限`)
+    } else {
+      console.log(`[info] AndroidManifest 已含 ${perm}，跳过`)
+    }
+  }
+
   // 7c) 注入自定义 Application 类（主进程拉起网关）与 :gateway 独立进程 Service。
   //     让 SDK 的 AndroidManifest 完全由本脚本从仓库装配，不再手工编辑（对应「包括 sdk」的要求）。
   if (!/android:name="com\.xiaoxiong\.assistant\.App"/.test(mf)) {

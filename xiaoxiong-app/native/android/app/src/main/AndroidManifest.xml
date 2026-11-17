@@ -10,6 +10,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 定位权限：uni.getLocation（天气/位置类工具的懒加载定位）必需。
+         uni manifest.json 虽声明了定位权限，但离线 APK 实际以本原生壳 manifest 为准，
+         DCloud 不会把 uni manifest 的权限合并进来，缺这两条会导致 getLocation 静默失败、天气取不到位置。 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:name="com.xiaoxiong.assistant.App"

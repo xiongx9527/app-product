@@ -103,6 +103,16 @@ const mic = spawnSync('adb', ['shell', 'pm', 'grant', args.pkg, 'android.permiss
 if (mic.status === 0) console.log('[ok] RECORD_AUDIO 已授予')
 else console.warn(`[warn] RECORD_AUDIO 授予失败（${(mic.stderr ?? '').toString().trim()}），请在系统设置里手动允许麦克风`)
 
+// 3c) 定位权限：天气/位置类工具走懒加载定位（uni.getLocation），重装后被清空且 adb 安装不弹授权框。
+//     APK 原生 manifest 已声明 FINE/COARSE 两级定位权限，这里用 pm grant 预授权，
+//     免得首次问天气时还要手动去系统设置里允许（尤其荣耀机型静默拒绝）。
+for (const perm of ['ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION']) {
+  const full = `android.permission.${perm}`
+  const r = spawnSync('adb', ['shell', 'pm', 'grant', args.pkg, full])
+  if (r.status === 0) console.log(`[ok] ${perm} 已授予`)
+  else console.warn(`[warn] ${perm} 授予失败（${(r.stderr ?? '').toString().trim()}），首次问天气可能需要手动允许定位`)
+}
+
 // 4) 冷启动（确保 :gateway 进程重新拉起，而非沿用旧进程）
 if (args.launch) {
   console.log('[step] 强制停止并冷启动 App...')
