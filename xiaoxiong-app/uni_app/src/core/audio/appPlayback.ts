@@ -75,6 +75,15 @@ export function isAppPlaybackSupported(): boolean {
 /** 播空回调只绑一次；原生回调 keepAlive，靠这里的监听集合转发给当前等待者。 */
 let idleBound = false
 const idleListeners = new Set<() => void>()
+
+/**
+ * TTS 走 role=pcm 原生直连后音频不经 JS 的 appPlayPcm，playbackInFlight 不会置 true，
+ * 导致 tts.end 时 onAppPlaybackIdle 立即兑现（铁证：SETTLED sinceTtsEnd=3ms）→ 提前显示
+ * 「本轮完成」并提前通知网关停播。收到 tts.start 时由此显式置位，原生播空 emitIdle 再清零。
+ */
+export function markPlaybackInFlight(): void {
+  playbackInFlight = true
+}
 /**
  * 是否有在途 PCM 等待播完。第一帧 playPcm 置 true，原生 idle 回调或 stopPlayback 置 false。
  * tts.end 注册 idle 时若已播完（PCM 短、原生 idle 先到），必须立即兑现回调，

@@ -392,6 +392,7 @@ export class VoiceSessionService {
         this.cancel()
         break
       case 'session.skip_current':
+        bargeDiag(`SKIP-CURRENT recv drop=${msg.dropText ?? ''} pb=${this.playbackPending} proc=${this.processing} queue=${this.queue.length}`)
         this.skipCurrent(msg.dropText)
         break
       case 'session.end':
@@ -399,6 +400,9 @@ export class VoiceSessionService {
         break
       case 'session.playback_done':
         this.resolvePlayback()
+        // 原生直连播空回执：下发 tts.idle 让客户端据此收尾（替代播报期不可靠的 weex idle 回调，
+        // 铁证：客户端只能靠 12s 兜底）。onPlaybackSettled 幂等，重复触发无害。
+        this.deps.send({ type: 'tts.idle' })
         break
       case 'session.diag':
         // 临时诊断：客户端 onPcm 真实状态落盘（定位后移除）
@@ -1721,6 +1725,17 @@ export class VoiceSessionService {
       }
     } finally {
       this.processing = false
+      // 队列卡死兜底（真机铁证：skip/break/await playback 提前退出后，队列还剩句子却无人消费，
+      // 界面停在「已完成」但队列有内容不动）：会话仍 active、未被取消、且队列非空时，
+      // 主动 kick 一轮消费队首。用 setTimeout(0) 异步调度，避免在本轮 finally 内重入。
+      if (this.active && !this.cancelled && this.queue.length > 0) {
+        setTimeout(() => {
+          if (this.active && !this.cancelled && !this.processing && this.queue.length > 0) {
+            const next = this.queue.shift()
+            if (next) void this.runTurn(next)
+          }
+        }, 0)
+      }
     }
   }
 

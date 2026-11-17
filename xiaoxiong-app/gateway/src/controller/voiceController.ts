@@ -50,9 +50,15 @@ function createPcmUploadConnection(ws: WebSocket, req: IncomingMessage): () => v
   const deviceId = deviceIdFromRequest(req)
   if (deviceId) pcmConnections.set(deviceId, ws)
   const onMessage = (data: RawData, isBinary: boolean): void => {
-    if (!isBinary || !deviceId) return
+    if (!deviceId) return
     const session = getSession(deviceId)
     if (!session) return // 主连接还没建 session，丢弃这几帧
+    if (!isBinary) {
+      // 原生直连上行的文本控制帧（TTS 播完回执 session.playback_done）：走 handleText，
+      // 不经 weex 下行回调（播报期不可靠，铁证：客户端只能靠 12s 兜底）。
+      try { session.handleText(data.toString()) } catch { /* 忽略非法文本帧 */ }
+      return
+    }
     const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
     session.handleBinary(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
   }

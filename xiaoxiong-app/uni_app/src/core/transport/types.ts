@@ -45,6 +45,8 @@ export type ServerEvent =
   | { type: 'tts.start'; format: string; sampleRate: number }
   | { type: 'tts.stop' }
   | { type: 'tts.end' }
+  /** 原生直连播空回执（经网关下发），客户端据此收尾，替代播报期不可靠的 weex idle 回调 */
+  | { type: 'tts.idle' }
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
   /** barge-in duck：播报期用户开口→压低 TTS（true）；说完→恢复（false） */
   | { type: 'audio.duck'; duck: boolean }

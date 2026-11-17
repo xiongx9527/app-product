@@ -88,6 +88,10 @@ public class WakeModule extends UniModule {
     private Thread idlePollThread;
     /** 播空事件是否已通知前端：每次写入新 PCM 重置，播空后只通知一次。 */
     private volatile boolean idleNotified = true;
+    /** 最后一帧写入时刻：head 追上 written 后还要静默确认，避免流式 TTS 帧间隙假播空
+     *  （铁证：长播报 59 秒，idle 却在第 12 秒误触发 → 提前显示本轮完成并停播）。 */
+    private volatile long lastFrameWriteMs = 0;
+    private static final long IDLE_CONFIRM_MS = 600;
     private final Object playLock = new Object();
 
     // ---- 原生本地 barge-in duck ----
@@ -185,6 +189,7 @@ public class WakeModule extends UniModule {
     @UniJSMethod(uiThread = false)
     public void startPlayback(int sampleRate) {
         Log.i(TAG, "startPlayback called, sampleRate=" + sampleRate);
+        synchronized (playLock) {
         stopPlaybackInternal();
         playSampleRate = sampleRate > 0 ? sampleRate : 24000;
         try {
@@ -209,10 +214,9 @@ public class WakeModule extends UniModule {
             localDucked = false;
             applyPlaybackVolume();
             playTrack.play();
-            synchronized (playLock) {
-                writtenFrames = 0;
-                idleNotified = true;
-            }
+            writtenFrames = 0;
+            idleNotified = true;
+            lastFrameWriteMs = System.currentTimeMillis();
             playRunning = true;
             // 播报期关 AEC：真机实锤——TTS 一播放，AEC 双讲抑制把用户插话一起抵消成静音
             // （非播报期说话 rms 0.1 正常，播报期说话 rms 0.0000）。关掉后回声由网关文本层
@@ -226,6 +230,7 @@ public class WakeModule extends UniModule {
             playRunning = false;
             playTrack = null;
         }
+        }
     }
 
     /** barge-in duck：用户一开口就把播报音量压到接近 0，让麦克风只收到人声、ASR 识别准。
@@ -238,13 +243,16 @@ public class WakeModule extends UniModule {
         Log.i(TAG, "setPlaybackVolume: percent=" + percent + " volume=" + playbackVolume + " localDucked=" + localDucked);
     }
 
-    /** 把当前音量应用到 AudioTrack：原生本地 duck 优先于 JS 设的 playbackVolume。 */
+    /** 把当前音量应用到 AudioTrack：原生本地 duck 优先于 JS 设的 playbackVolume。
+     *  setVolume 与 write/stop/release 同一把锁（AudioTrack 非线程安全）。 */
     private void applyPlaybackVolume() {
-        if (playTrack == null) return;
-        float v = localDucked ? DUCK_VOLUME : playbackVolume;
-        try {
-            playTrack.setVolume(v);
-        } catch (Throwable ignored) {
+        synchronized (playLock) {
+            if (playTrack == null) return;
+            float v = localDucked ? DUCK_VOLUME : playbackVolume;
+            try {
+                playTrack.setVolume(v);
+            } catch (Throwable ignored) {
+            }
         }
     }
 
@@ -283,15 +291,18 @@ public class WakeModule extends UniModule {
         writePcmFrame(pcm);
     }
 
-    /** 把一帧 PCM 写进 AudioTrack（base64 路径与原生直连路径共用）。 */
+    /** 把一帧 PCM 写进 AudioTrack（base64 路径与原生直连路径共用）。
+     *  AudioTrack 非线程安全：playPcmBytes 走 OkHttp 线程、idle/stop 走其它线程，
+     *  create/play/write/stop/release/setVolume/getPosition 必须同一把锁，否则 native abort(signal 6)。 */
     private void writePcmFrame(byte[] pcm) {
-        if (playTrack == null || !playRunning) startPlayback(playSampleRate);
-        if (playTrack == null) return;
-        int written = playTrack.write(pcm, 0, pcm.length);
-        if (written > 0) {
-            synchronized (playLock) {
+        synchronized (playLock) {
+            if (playTrack == null || !playRunning) startPlayback(playSampleRate);
+            if (playTrack == null) return;
+            int written = playTrack.write(pcm, 0, pcm.length);
+            if (written > 0) {
                 writtenFrames += written / 2;
                 idleNotified = false;
+                lastFrameWriteMs = System.currentTimeMillis();
             }
         }
     }
@@ -393,11 +404,16 @@ public class WakeModule extends UniModule {
         if (idlePollThread != null) return;
         idlePollThread = new Thread(() -> {
             Log.i(TAG, "idle polling started");
-            while (playRunning && playTrack != null) {
-                long head = playTrack.getPlaybackHeadPosition() & 0xffffffffL;
+            while (true) {
+                // getPlaybackHeadPosition 必须与 write/stop/release 同一把锁（AudioTrack 非线程安全）
                 boolean notify = false;
                 synchronized (playLock) {
-                    if (!idleNotified && writtenFrames > 0 && head >= writtenFrames) {
+                    if (!playRunning || playTrack == null) break;
+                    long head = playTrack.getPlaybackHeadPosition() & 0xffffffffL;
+                    // head 追上 written 且距最后一帧已静默 IDLE_CONFIRM_MS，才算真播空。
+                    // 否则流式 TTS 帧间隙 head 会短暂追上 written，误判播空→提前回执→提前显示完成并停播。
+                    if (!idleNotified && writtenFrames > 0 && head >= writtenFrames
+                            && (System.currentTimeMillis() - lastFrameWriteMs) >= IDLE_CONFIRM_MS) {
                         idleNotified = true;
                         notify = true;
                     }
@@ -406,6 +422,11 @@ public class WakeModule extends UniModule {
                     // 真正播空（扬声器不再外放 TTS）：恢复 AEC。若队列马上有下一句，
                     // startPlayback 会再关掉；这里的短暂恢复无副作用。
                     setAecEnabled(true);
+                    // 播完回执优先走原生直连（不经 weex）：铁证 playbackIdleCb 走 weex 在播报期
+                    // 丢失，客户端只能靠 12s 兜底。这条经 role=pcm 可靠到网关。
+                    if (pcmUploader != null) {
+                        pcmUploader.sendText("{\"type\":\"session.playback_done\"}");
+                    }
                     if (playbackIdleCb != null) {
                         try {
                             playbackIdleCb.invokeAndKeepAlive(true);
@@ -436,17 +457,18 @@ public class WakeModule extends UniModule {
             }
             idlePollThread = null;
         }
-        if (playTrack != null) {
-            try {
-                playTrack.stop();
-                playTrack.release();
-            } catch (Throwable ignored) {
-            }
-            playTrack = null;
-        }
         synchronized (playLock) {
+            if (playTrack != null) {
+                try {
+                    playTrack.stop();
+                    playTrack.release();
+                } catch (Throwable ignored) {
+                }
+                playTrack = null;
+            }
             writtenFrames = 0;
             idleNotified = true;
+            lastFrameWriteMs = 0;
         }
         // 停止播放：恢复 AEC（停在 duck 关闭态时兜底；正常播空路径在 idle polling 里已恢复）
         setAecEnabled(true);

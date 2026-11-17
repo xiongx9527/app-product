@@ -52,7 +52,9 @@ public final class PcmUploader {
         this.context = context.getApplicationContext();
         this.client = new OkHttpClient.Builder()
                 .connectTimeout(2, TimeUnit.SECONDS)
-                .pingInterval(10, TimeUnit.SECONDS)
+                // 不设 pingInterval：这是同设备 127.0.0.1 连接，不需要心跳保活。
+                // 铁证：10s ping 未收到 pong 会导致 role=pcm 连接每 10 秒断线重连一次，
+                // 重连期间 TTS 音频帧发不到原生→AudioTrack 空转判播空→提前回执→提前显示完成并停播。
                 .build();
     }
 
@@ -99,6 +101,17 @@ public final class PcmUploader {
         } catch (Throwable e) {
             Log.w(TAG, "upload send failed: " + e.getMessage());
             ws = null;
+        }
+    }
+
+    /** 通过原生直连发文本控制帧（TTS 播完回执），不经 weex 回调。 */
+    public void sendText(String text) {
+        WebSocket cur = ws;
+        if (cur == null) return;
+        try {
+            cur.send(text);
+        } catch (Throwable e) {
+            Log.w(TAG, "sendText failed: " + e.getMessage());
         }
     }
 

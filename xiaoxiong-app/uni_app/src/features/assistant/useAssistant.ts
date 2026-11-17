@@ -32,6 +32,7 @@ import {
   onAppPlaybackIdle,
   stopAppPlayback,
   setAppPlaybackVolume,
+  markPlaybackInFlight,
 } from '@/core/audio/appPlayback'
 import { isAppCaptureSupported, requestMicPermission, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
 import { t } from '@/core/i18n'
@@ -95,7 +96,32 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const thinkingDone = ref(false)
   const replyDone = ref(false)
   const phase = ref<Phase>('idle')
+  // 临时诊断：记录「本轮完成」是被哪一处设的，定位提前显示
+  function setPhaseDone(source: string): void {
+    transport.sendDiag?.({
+      state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
+      frames: 0, rms: 0, connected: transport.isConnected(),
+      trace: `PHASE-DONE by=${source} speaking=${isSpeaking.value}`,
+    })
+    phase.value = 'done'
+  }
   const isSpeaking = ref(false)
+  /**
+   * 「正在听」独立显示标志：收到真人 asr.partial（网关已过滤噪声/回声）就置位，
+   * 静音 HEARING_HOLD_MS 后复位。播报/思考的 phase 与 isSpeaking 不动——
+   * 界面用它在播报/思考之上叠加显示「正在听」，说完自动恢复原状态。
+   */
+  const hearingUser = ref(false)
+  const HEARING_HOLD_MS = 1500
+  let hearingTimer: ReturnType<typeof setTimeout> | null = null
+  function markHearingUser(): void {
+    hearingUser.value = true
+    if (hearingTimer) clearTimeout(hearingTimer)
+    hearingTimer = setTimeout(() => {
+      hearingTimer = null
+      hearingUser.value = false
+    }, HEARING_HOLD_MS)
+  }
   // 网关判定回声兜底中：播报期间不拾音，只能点「打断」
   const halfDuplex = ref(false)
   const errorMessage = ref('')
@@ -143,6 +169,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let cancelPlaybackIdle: (() => void) | null = null
   /** 播完回执兜底定时器：idle 回调链丢失时强制收尾，保证网关的队列持续推进 */
   let playbackDoneFallback: ReturnType<typeof setTimeout> | null = null
+  /** 临时诊断：最近一次 tts.end 到达时刻 */
+  let ttsEndAt = 0
   /**
    * 插话已入队：说话尾音晚到的 partial 不回填草稿，有排队角标就够了。
    * 早期用「入队后 2 秒内无条件挡所有 partial」，但会误伤紧接的新插话：上一句刚入队设下窗口，
@@ -154,6 +182,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 最近一次入队的原文，用来区分「尾音回填」与「下一句新插话」 */
   let queuedText = ''
   const QUEUED_HIDE_MS = 2000
+  /**
+   * 入队后延迟清空识别文字：铁证播报期 partial 与 queued 只隔 7ms，立即清空会让用户
+   * 根本看不到识别出的文字。入队后保留约 1 秒让用户看清，再清掉交给排队角标。
+   */
+  let queuedClearTimer: ReturnType<typeof setTimeout> | null = null
+  function cancelQueuedClear(): void {
+    if (queuedClearTimer) { clearTimeout(queuedClearTimer); queuedClearTimer = null }
+  }
   /** 尾音 partial 与入队原文视为同一句：去掉标点后相等，或互为前缀（部分识别先短后长） */
   function isTailOfQueued(partial: string): boolean {
     if (!queuedText) return false
@@ -191,7 +227,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * TTS 播完（或兜底超时）后的统一收尾：复位播报状态、记回声窗口、发播完回执。
    * idle 回调与 12s 兜底共用；重复触发无害（复位幂等，网关回执侧 resolve 幂等）。
    */
-  function onPlaybackSettled(): void {
+  function onPlaybackSettled(notifyGateway = true): void {
+    // 临时诊断： settled 距 tts.end 多久 —— 若仅几百 ms 说明 onAppPlaybackIdle 立即兑现（playbackInFlight=false）
+    transport.sendDiag?.({
+      state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
+      frames: 0, rms: 0, connected: transport.isConnected(),
+      trace: `SETTLED sinceTtsEnd=${ttsEndAt ? Date.now() - ttsEndAt : -1}ms`,
+    })
     if (playbackDoneFallback) {
       clearTimeout(playbackDoneFallback)
       playbackDoneFallback = null
@@ -202,10 +244,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 真正播完这一刻记为「最近一次说话」，覆盖其后的回声窗口：
     // 助手话里若带「小熊小熊」，被麦收回后 2s 内的唤醒词识别当回声忽略。
     lastSpokeAt = Date.now()
-    phase.value = 'done'
+    setPhaseDone('onPlaybackSettled')
     markAnswerDone()
-    // 播完回执：网关等它才消费排队的下一句，保证上一句完整播完
-    transport.notifyPlaybackDone()
+    // 播完回执：网关等它才消费排队的下一句，保证上一句完整播完。
+    // tts.idle 触发时不要再回报——tts.idle 本就是网关下发的播完确认，再回报会形成
+    // 「客户端 idle→网关 playback_done→tts.idle→客户端 idle」循环（真机铁证：15 条/300ms）。
+    if (notifyGateway) transport.notifyPlaybackDone()
   }
   /**
    * 抗重复下发：同一首歌（url+title）在 2s 内被重复下发（重连/重武装竞态、或任何未知的双发）
@@ -244,7 +288,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     else playPcm(chunk, 24000)
   }
   function waitPlaybackIdle(fn: () => void): () => void {
-    return isAppPlaybackSupported() ? onAppPlaybackIdle(fn) : onPlaybackIdle(fn)
+    // App 端 TTS 走 role=pcm 原生直连：原生 weex onPlaybackIdle 回调在播报期不可靠（铁证：
+    // 播报未结束就误触发 emitIdle → 假播完 → 提前显示本轮完成并停播）。播完只认网关从直连
+    // 下发的 tts.idle（真播空才发），故 App 端不注册 weex idle；H5 端仍用 onPlaybackIdle。
+    if (isAppPlaybackSupported()) return () => {}
+    return onPlaybackIdle(fn)
   }
   function stopTts(): void {
     // 两端都调：H5 端原生门面是 no-op，App 端 WebAudio 门面是 no-op，互不干扰。
@@ -399,12 +447,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   })
 
   function handleServerEvent(event: ServerEvent): void {
-    // 临时诊断：客户端是否真的收到 asr.* 事件，回报到网关日志定位「播报期文字不显示」断点
-    if (event.type === 'asr.partial' || event.type === 'asr.queued' || event.type === 'asr.final' || event.type === 'asr.rejected') {
+    // 临时诊断：客户端是否真的收到 asr.*/tts.* 事件，回报网关日志定位「提前显示本轮完成」断点
+    if (event.type === 'asr.partial' || event.type === 'asr.queued' || event.type === 'asr.final'
+        || event.type === 'asr.rejected' || event.type === 'tts.start' || event.type === 'tts.end' || event.type === 'tts.stop' || event.type === 'tts.idle') {
       transport.sendDiag?.({
         state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
         frames: 0, rms: 0, connected: transport.isConnected(),
-        trace: `RECV ${event.type} text=${(event as { text?: string }).text ?? ''}`,
+        trace: `RECV ${event.type}${event.type.startsWith('tts') ? '' : ' text=' + ((event as { text?: string }).text ?? '')}`,
       })
     }
     switch (event.type) {
@@ -440,6 +489,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           // 只看时间窗口会把下一句说话当下的 partial 一起挡掉（真机复现），故改成按文本判断：
           // 只有与刚入队原文一致/互为前缀的尾音才挡，新句文本不同立即显示。
           if (Date.now() < queuedHideUntil && isTailOfQueued(event.text)) break
+          // 真正的新文字（非尾音）：取消上一句入队的延迟清空，避免刚显示的文字被误清
+          cancelQueuedClear()
           liveText.value = event.text
           if (!assistantBusy && !queuePending.value && !isSpeaking.value && phase.value !== 'listening') {
             phase.value = 'listening'
@@ -454,15 +505,17 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           skipCurrentAndGreet(event.text)
           break
         }
-        // 与「正在思考」阶段一致：定稿原文要显示出来。播报期高频 asr.partial 经 weex 下行
-        // 可能被 TTS 冲击丢失，导致说话当下看不到文字；定稿事件 asr.queued 低频、可靠到达，
-        // 这里把它的 text 显示出来兜底，让用户一定能看到这句插话识别成了什么。
-        // 排队数量仍由右上角角标表达；这句播完轮到它时再由 asr.final 进「我说」正文。
+        // 插话已入队：文字保留约 1 秒让用户看清（partial 与 queued 常只隔几 ms，
+        // 立即清就看不到），之后清掉交给右上角排队角标；这句播完轮到它时再由 asr.final 进正文。
         if (mode === 'dialog') {
           queuePending.value = Math.max(queuePending.value, event.position)
           queuedHideUntil = Date.now() + QUEUED_HIDE_MS
           queuedText = event.text
-          liveText.value = event.text
+          cancelQueuedClear()
+          queuedClearTimer = setTimeout(() => {
+            queuedClearTimer = null
+            liveText.value = ''
+          }, 1000)
         }
         break
       case 'asr.rejected':
@@ -479,6 +532,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         if (mode === 'dialog') {
           queueFullMsg.value = event.message
           playPromptCue('queueFull')
+          // 队列满被拒收：这句没入队，识别文字也不该留在草稿区（已有 mp3 提示音反馈）。
+          // 停掉可能存在的入队延迟清 timer，立即清掉文字。
+          cancelQueuedClear()
+          liveText.value = ''
         }
         break
       case 'asr.final':
@@ -507,6 +564,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 这句已出队进入处理：恢复草稿显示（下一句插话的实时识别又能看见了）
         queuedHideUntil = 0
         queuedText = ''
+        cancelQueuedClear()
         transcript.value = event.text
         // 清掉监听草稿与队列溢出提示；这句轮到被处理，溢出横幅自然失效
         liveText.value = ''
@@ -542,7 +600,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'llm.done':
         thinkingDone.value = true
         replyDone.value = true
-        if (!isSpeaking.value) phase.value = 'done'
+        if (!isSpeaking.value) setPhaseDone('llm.done')
         // 没有 TTS 的回答到这里就结束了，从现在起重新算静默
         if (!answerHasTts) markAnswerDone()
         break
@@ -555,6 +613,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 不再 resetPlayback()：网关已等上一句播完才下发这一句，
         // 清空队列会把「上一句」的尾音掐掉，正是用户听到的中断。
         answerHasTts = true
+        // 铁证：TTS 原生直连后 playbackInFlight 永不置 true，tts.end 时 onAppPlaybackIdle
+        // 立即兑现（SETTLED sinceTtsEnd=3ms）→ 提前完成并停播。收到 tts.start 显式置位，
+        // 等原生播空 emitIdle 才收尾。
+        if (isAppPlaybackSupported()) markPlaybackInFlight()
         isSpeaking.value = true
         lastSpokeAt = Date.now()
         phase.value = 'speaking'
@@ -569,20 +631,30 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         stopTts()
         duckMusic(false)
         isSpeaking.value = false
-        phase.value = 'done'
+        setPhaseDone('tts.stop')
         markAnswerDone()
         break
       case 'tts.end': {
         // 网关下发完 ≠ 客户端播完：播完前保持静音上行、挂起 T1，
         // 否则尾音被收回当成用户说话，或还没播完就触发「还在吗」。
+        ttsEndAt = Date.now()
         cancelPendingIdle()
         // 播完回执兜底：App 端 AudioTrack idle 回调链若丢失（历史坑），这里永不触发，
         // 网关就每句白等 30s 超时——表现正是「队列有数据却不处理」。超时后强制走
         // 与 idle 相同的收尾（复位 + notifyPlaybackDone），保证队列持续推进。
-        playbackDoneFallback = setTimeout(onPlaybackSettled, 12_000)
+        // 兜底只做最后保险（怕 tts.idle 万一丢），绝不能抢在真播空前面：
+        // 铁证超长播报 120 秒时，90s 兜底仍会提前触发 → 提前显示「本轮完成」+ 停播。
+        // 正常播完由 tts.idle（原生直连播空回执）收尾，它到达会 clear 掉这个兜底。
+        // 300s 足够覆盖任何合理播报长度。
+        playbackDoneFallback = setTimeout(onPlaybackSettled, 300_000)
         cancelPlaybackIdle = waitPlaybackIdle(onPlaybackSettled)
         break
       }
+      case 'tts.idle':
+        // 原生直连播空的权威回执（经网关下发）：真正播完的时刻，做本地收尾但不再回报网关
+        // （tts.idle 本就是网关发的确认，再回报会形成循环）。
+        if (isSpeaking.value) onPlaybackSettled(false)
+        break
       case 'media.play': {
         // proxy 标记由网关按频道判定（B 站等防盗链直链需走网关 /music/stream 代理补 Referer）；
         // 客户端不再写死任何频道名，只按此标记决定是否拼代理地址。
@@ -719,6 +791,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         assistantBusy = false
         queuedHideUntil = 0
         queuedText = ''
+        cancelQueuedClear()
         queuePending.value = 0
         liveText.value = ''
         queueFullMsg.value = ''
@@ -826,6 +899,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         disarmThinkingCue()
         queuedHideUntil = 0
         queuedText = ''
+        cancelQueuedClear()
         stopTts()
         isSpeaking.value = false
         queuePending.value = 0
@@ -839,13 +913,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         disarmThinkingCue()
         queuedHideUntil = 0
         queuedText = ''
+        cancelQueuedClear()
         stopTts()
         transport.sendCancel()
         isSpeaking.value = false
         queuePending.value = 0
         liveText.value = ''
         queueFullMsg.value = ''
-        phase.value = 'done'
+        setPhaseDone('endSession')
         assistantTextStarted = false
         break
       case 'playGreeting': {
@@ -1121,6 +1196,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 网关不可用时 dispatch 已拦截 REWAKE，此处不得再单独把阶段设成 listening 造成假象。 */
   function reWake(): void {
     if (!canWake()) return
+    // 识别到的「小熊小熊」也进「我说」框（用户明确要求唤醒词可见）
+    transcript.value = DEFAULT_WAKE_WORDS[0]
+    liveText.value = ''
     dispatch({ type: 'REWAKE' })
     phase.value = 'listening'
   }
@@ -1131,7 +1209,17 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    *  tts.stop 与下一句的 asr.final/tts.start 自然刷新，此处只负责招呼与通知网关。
    *  dropText 带上这句唤醒词原文，网关据此把它从队列删掉（它是打断信号、不是指令）。 */
   function skipCurrentAndGreet(dropText?: string): void {
+    // 临时诊断：确认「小熊小熊」命中后有没有走到打断、canWake 是否为真
+    transport.sendDiag?.({
+      state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
+      frames: 0, rms: 0, connected: transport.isConnected(),
+      trace: `SKIP-CURRENT called drop=${dropText ?? ''} canWake=${canWake()} pb=${isSpeaking.value}`,
+    })
     if (!canWake()) return
+    // 识别到的「小熊小熊」也要进「我说」框：用它原文（无参数时用默认唤醒词）。
+    // 用户明确要求唤醒词和普通插话一样在「我说」框可见。
+    transcript.value = dropText || DEFAULT_WAKE_WORDS[0]
+    liveText.value = ''
     // 招呼落到界面并播本地提示音，与 playGreeting 一致
     reply.value = '我在'
     replyDone.value = true

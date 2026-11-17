@@ -176,6 +176,9 @@ export type ServerEvent =
   | { type: 'tts.start'; format: string; sampleRate: number }
   | { type: 'tts.stop' }
   | { type: 'tts.end' }
+  /** 原生 PCM 直连播空的权威回执（经 role=pcm 到网关再下发），客户端据此收尾。
+   *  播报期 weex 的 onPlaybackIdle 回调不可靠（铁证：只能靠 12s 兜底），用它替代。 */
+  | { type: 'tts.idle' }
   /** half=回声兜底中，播报期间不拾音，用户需点「打断」；full=正常全双工 */
   | { type: 'audio.duplex'; mode: 'half' | 'full' }
   /** barge-in duck：播报期检测到用户开口，压低 TTS 音量（true）让 ASR 听清；说完恢复（false） */
