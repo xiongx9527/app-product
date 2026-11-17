@@ -1632,12 +1632,25 @@ async def tts_upstream_test(model_override: str | None = None, provider: str = "
         return {"ok": False, "message": str(exc)[:200]}
 
 
+def _dashscope_voice_ids(model: str) -> list[str]:
+    """给定模型可用的 DashScope 音色；DB 未播种时返回空列表，由调用方兜底。"""
+    voices = voice_db.list_voices("dashscope", (model or "").strip() or None)
+    if not voices:
+        voices = voice_db.list_voices("dashscope", None)
+    return [v["id"] for v in voices]
+
+
 def _dashscope_default_voice(model: str) -> str:
     """按模型族给一个官方默认音色（音色必须属于所选模型，否则云端 418）。
 
-    音色与模型绑定（官方音色列表 model-studio/cosyvoice-voice-list）：
-    cosyvoice-v3 系用 *_v3/longanyang 等 v3 音色；v2 用 *_v2；v1 用无后缀。
+    优先取本地音色库里该模型的 default；DB 尚未播种时才按模型族回退硬编码值。
     """
+    voices = voice_db.list_voices("dashscope", (model or "").strip() or None)
+    for v in voices:
+        if v.get("is_default"):
+            return v["id"]
+    if voices:
+        return voices[0]["id"]
     m = (model or "").lower()
     if m.startswith("cosyvoice-v3"):
         return "longanyang"          # v3 标杆音色（龙安洋，v3 系通用）
@@ -1710,18 +1723,44 @@ async def _tts_synthesize(
     避免两套重复逻辑。
     """
     if tts_provider == "deepseek":
-        # DeepSeek 只有 stella / tide 两个音色，且没有语速参数（speed 忽略）
-        raw = await deepseek_tts_bytes(
-            text, _deepseek_voice(voice, upstream_model), _deepseek_key("TTS")
-        )
+        # 音色与提供商绑定：跨提供商（尤其 edge-tts）或不属于 DeepSeek 目录的音色必须报错，
+        # 不能静默换成默认音色——那会让调用方以为用的是自己选的音色（与 DashScope 同口径）。
+        ds_voice = (voice or "").strip()
+        if ds_voice:
+            if is_edge_voice(ds_voice):
+                raise ValueError(
+                    f"音色 {ds_voice} 属于内置 edge-tts，不能用于 DeepSeek；"
+                    "请在测试页重新选择提供商或音色"
+                )
+            known = {x["id"] for x in voice_db.list_voices("deepseek")}
+            if known and ds_voice not in known:
+                raise ValueError(
+                    f"音色 {ds_voice} 不属于 DeepSeek；可选音色：{'、'.join(sorted(known))}"
+                )
+        else:
+            ds_voice = _deepseek_voice("", upstream_model)
+        # DeepSeek 没有语速参数（speed 忽略）
+        raw = await deepseek_tts_bytes(text, ds_voice, _deepseek_key("TTS"))
         if fmt == "wav":
             return raw, "audio/wav"
         return await asyncio.to_thread(transcode_mp3, raw, fmt)
     if tts_provider == "dashscope":
-        # DashScope 音色体系与 edge-tts 不通用：传来的 edge 目录音色视为「未指定」，
-        # 按模型族回退官方默认音色（否则云端 418 Invalid voice）。
+        # 音色与模型绑定：跨提供商（尤其 edge-tts）或跨模型族的音色必须报错，
+        # 不能静默换成默认音色——那会让调用方以为用的是自己选的音色。
         ds_voice = (voice or "").strip()
-        if not ds_voice or is_edge_voice(ds_voice):
+        if ds_voice:
+            if is_edge_voice(ds_voice):
+                raise ValueError(
+                    f"音色 {ds_voice} 属于内置 edge-tts，不能用于 DashScope；"
+                    "请在测试页重新选择提供商或音色"
+                )
+            valid_voices = _dashscope_voice_ids(upstream_model)
+            if valid_voices and ds_voice not in valid_voices:
+                raise ValueError(
+                    f"音色 {ds_voice} 不属于模型 {upstream_model or '默认模型'}；"
+                    f"可选音色：{'、'.join(valid_voices[:8])}"
+                )
+        else:
             ds_voice = _dashscope_default_voice(upstream_model)
         key = (config_value("TTS_UPSTREAM_API_KEY") or "").strip()
         base = (config_value("TTS_UPSTREAM_BASE_URL") or "").strip() or "https://dashscope.aliyuncs.com"
@@ -1817,13 +1856,16 @@ async def speech(body: SpeechBody):
     if fmt not in ("wav", "mp3", "pcm"):
         return error_response(400, f"不支持的 response_format: {fmt}")
 
-    voice = resolve_voice(body.voice)
+    voice_req = (body.voice or "").strip()
     rate = tts_rate(body.speed)
     # 助手常重复“我在 / 还在吗”这类短句，缓存能省掉一次云端合成和 ffmpeg 转码。
     # 底部测试页可显式覆盖默认提供商/协议；不传则完全沿用 DB 配置，行为不变。
     tts_provider = (body.provider or "").strip().lower() or (
         config_value("TTS_PROVIDER", "builtin") or "builtin"
     ).strip().lower()
+    # 上游模式（dashscope / deepseek）空音色保持为空，交给 _tts_synthesize 用该 provider 的默认音色；
+    # 只有内置模式才把空音色 resolve 成内置默认，避免内置默认音色触发上游的音色校验误报。
+    voice = resolve_voice(voice_req) if (voice_req or tts_provider == "builtin") else ""
     upstream_model = ""
     if tts_provider == "builtin":
         # 内置模式：model 可为空，但传了必须是有效模型——传错直接拒绝，不静默吞掉。
@@ -2379,10 +2421,12 @@ async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload
     if not text:
         await _ws_send_fail(websocket, task_id, "TTS 未收到文本")
         return False
-    ds_voice = ((payload.get("parameters") or {}).get("voice") or "").strip()
+    voice_req = ((payload.get("parameters") or {}).get("voice") or "").strip()
+    # 上游模式空音色保持为空，交给各 provider 用自己的默认音色（内置模式才 resolve 成内置默认）。
+    ds_voice = resolve_voice(voice_req) if (voice_req or tts_provider == "builtin") else voice_req
     try:
         audio, _mt = await _tts_synthesize(
-            text, resolve_voice(ds_voice), tts_rate(1.0), "wav", tts_provider, proto, upstream_model
+            text, ds_voice, tts_rate(1.0), "wav", tts_provider, proto, upstream_model
         )
     except Exception as exc:  # noqa: BLE001
         await _ws_send_fail(websocket, task_id, f"TTS 失败: {exc}")

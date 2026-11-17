@@ -35,7 +35,8 @@ App 端通过 `uni.createInnerAudioContext()` 播放。
 文件缺失时只少一声提示，不影响状态机。
 
 重新生成（edge-tts，音色与网关 `edge` 厂商 / `192.168.1.100:9529` 默认一致）：
-- 安装：`python3 -m venv etts-venv && etts-venv/bin/pip install edge-tts`
-- 生成：`etts-venv/bin/python -c "import asyncio,edge_tts; asyncio.run(edge_tts.Communicate('我在','zh-CN-XiaoxiaoNeural').save('greeting.mp3'))"`
+提示音是打包内的现成 mp3，平时无需重新生成；如需重做，edge-tts 工具已挪出 static、
+放在仓库的 `xiaoxiong-app/audio-tool/`（Python venv，避免被整目录拷进包）：
+- 生成（在 `xiaoxiong-app/` 下执行）：`audio-tool/bin/python -c "import asyncio,edge_tts; asyncio.run(edge_tts.Communicate('我在','zh-CN-XiaoxiaoNeural').save('uni_app/src/static/audio/greeting.mp3'))"`
 - 其余两个文案同上，替换文字与输出文件名即可。
 - 注：`192.168.1.100:9529` 当前把默认音色路由到 kokoro 引擎且未加载音色，会报 `unknown kokoro voice`；本地直连 edge-tts 可得到相同音色，待该服务修好引擎路由后自动一致。

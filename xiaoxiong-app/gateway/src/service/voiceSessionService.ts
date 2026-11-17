@@ -38,9 +38,8 @@ import { detectAuspiciousQuery, type AuspiciousQuery } from './control/auspiciou
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
 import { detectWeatherCommand } from './control/weatherControl'
 import { detectProductQuery } from './control/productCatalog'
-import { detectNewsCommand } from './control/newsControl'
-import { createBaiduNewsSource, formatNews } from './news'
-import { createNewsTool } from './tools/newsTool'
+import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
+import { createNewsVideoSource, cleanNewsTitle, type NewsVideoCandidate, type NewsVideoSourceLike } from './news'
 import { createWeatherTool } from './tools/weatherTool'
 import { messages } from '../i18n'
 import { isNoise, isForeignNoise, resemblesSpoken } from '../asr/noiseFilter'
@@ -122,8 +121,8 @@ export interface VoiceSessionDeps {
   dealsQuery?: (keyword?: string | null) => Promise<DealsSnapshot>
   /** 天气查询：测试可注入桩避免联网。缺省用 createWeatherTool.call（懒加载位置 + 自带超时）。 */
   weatherQuery?: () => Promise<string>
-  /** 新闻查询：测试可注入桩避免联网。缺省用 createNewsTool + 百度新闻源（可换源）。 */
-  newsQuery?: (keyword?: string | null) => Promise<string>
+  /** 新闻视频音源：抓真实新闻视频并抽音轨。缺省用 B 站源；测试可注入桩避免联网。 */
+  newsVideoSource?: NewsVideoSourceLike
   /** 单轮 LLM 超时（毫秒）：超时主动舍弃本轮、断开下行播放、立即播友好兜底。测试注入更小值。 */
   llmTimeoutMs?: number
   /** TTS 帧间看门狗（毫秒）：上游挂起不产帧时断开本句，对话链绝不卡死。测试注入更小值。 */
@@ -216,6 +215,14 @@ export class VoiceSessionService {
   /** 最近一次 session.start 带下来的语音来源配置：供 announceCapabilityProblems 按「实际会用的那套能力」
    *  探测就绪状态（而非永远探测网关默认的内置），与 /api/health 的 provider-aware 探测保持一致。 */
   private lastVoice: VoiceConfig | undefined = undefined
+  /** 新闻播报的视频音源：抓真实新闻视频、抽音轨，走与音乐相同的 dash 短链下发。 */
+  private newsVideoSource: NewsVideoSourceLike
+  /**
+   * 当前新闻播放上下文：本轮抓到的新闻候选 + 正在播的下标（未选时为 -1）+ 话题词。
+   * 有了它，「播放下一条 / 换一条」在新闻场景下接着切新闻，不会被音乐分支的「播放」当成点歌。
+   * 一旦开始播音乐 / 停止 / 会话结束就清空，避免跨场景串台。
+   */
+  private newsPlayback: { items: NewsVideoCandidate[]; index: number; keyword: string | null } | null = null
   /** 跨轮记忆相关引用（来自设备长期记忆），首次建连时拉取并缓存，重武装时复用，避免重复拉取。 */
   private memoryStore: MemoryStore | undefined = undefined
   private memoryContext: string | undefined = undefined
@@ -314,6 +321,7 @@ export class VoiceSessionService {
 
   constructor(private readonly deps: VoiceSessionDeps) {
     this.deviceId = deps.deviceId ?? null
+    this.newsVideoSource = deps.newsVideoSource ?? createNewsVideoSource()
   }
 
   /**
@@ -501,6 +509,8 @@ export class VoiceSessionService {
 
   /** 客户端点「换一首 / 换个风格」：解析下一首并下发 media.play；无音乐源或解析失败则静默忽略。 */
   private async nextMusic(genre?: string): Promise<void> {
+    // 客户端点「换一首」即进入音乐场景，清掉新闻切条上下文
+    this.newsPlayback = null
     const source = this.musicSource
     if (!source) return
     const m = messages(this.lang).music
@@ -538,7 +548,7 @@ export class VoiceSessionService {
       channel: track.channel,
       // dash 走短链本地播放，不再给长代理 URL（长 URL 会被 DCloud 下载器截断）
       proxy: dashNext ? false : needsProxy(track.channel, track.url),
-      ...(dashNext ? { streamKey: adtsKeyFor(track.url) } : {}),
+      ...(dashNext ? { audioPath: `music/s/${adtsKeyFor(track.url)}.aac` } : {}),
       ...(this.autoLoop && this.defaultLoop > 1 ? { loop: this.defaultLoop } : {}),
     })
     // 自动字幕：开关开启时，「换一首」同样是一次播放，同源尽力拉取字幕下发，与 playTrack 一致。
@@ -559,6 +569,8 @@ export class VoiceSessionService {
     reuseSubtitle = false,
     contentType?: string
   ): Promise<void> {
+    // 真正开始播音乐了：新闻切条上下文到此为止，之后「下一条」应走音乐换歌。
+    this.newsPlayback = null
     // 记下当前曲目，供「循环播放」指令复用（不必重新检索就能把同一首再播 N 遍）；
     // 同时记下歌手与内容类型，供后续点歌/换内容按当前上下文走、措辞不一律当成「歌」。
     this.lastTrack = {
@@ -593,7 +605,7 @@ export class VoiceSessionService {
       channel: track.channel,
       // dash 走短链本地播放（长代理 URL 会被 DCloud 下载器截断，实测 936 字节即断）
       proxy: dashTrack ? false : needsProxy(track.channel, track.url),
-      ...(dashTrack ? { streamKey: adtsKeyFor(track.url) } : {}),
+      ...(dashTrack ? { audioPath: `music/s/${adtsKeyFor(track.url)}.aac` } : {}),
       ...(effectiveLoop && effectiveLoop > 1 ? { loop: effectiveLoop } : {}),
       ...(track.cover ? { cover: track.cover } : {}),
     })
@@ -722,6 +734,11 @@ export class VoiceSessionService {
 
   /** 用「用户核心词 + 选中歌名」拼成歌手+歌名去抽音轨，接上严格匹配，避免乱播。 */
   private async playChosen(chosen: MusicCandidate, query: string): Promise<void> {
+    // 新闻视频候选：和音乐共用选号流程，但选中后抽该视频音轨播放，不走点歌源。
+    if (chosen.newsBvid) {
+      await this.playNewsVideo({ bvid: chosen.newsBvid, title: chosen.title, cover: chosen.newsCover })
+      return
+    }
     const source = this.musicSource
     const m = messages(this.lang).music
     if (!source) {
@@ -760,7 +777,11 @@ export class VoiceSessionService {
       // 不放行到 LLM / 音乐直连，避免被答成「推荐歌曲」或再列一次歌单。
       if (looksLikeSelectionAttempt(text)) {
         this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-        await this.speakReply(messages(this.lang).music.chooseAgain())
+        // 新闻候选与音乐候选共用选号，重问话术按候选类型区分（新闻说「第几条」）。
+        const isNews = pending.items.some((c) => c.newsBvid)
+        await this.speakReply(
+          isNews ? messages(this.lang).news.chooseAgain() : messages(this.lang).music.chooseAgain()
+        )
         return true
       }
       return false
@@ -860,8 +881,11 @@ export class VoiceSessionService {
           this.deps.send({ type: 'media.resume' })
           await this.speakReply(m.resumed())
           break
-        case 'stop':
-          if (!this.musicActive) {
+        case 'stop': {
+          // 新闻播报不置 musicActive，但它同样是媒体播放：「停掉」要真停并清掉切条上下文。
+          const wasNews = this.newsPlayback !== null
+          this.newsPlayback = null
+          if (!this.musicActive && !wasNews) {
             await this.speakReply(m.musicNotPlaying())
             break
           }
@@ -870,6 +894,7 @@ export class VoiceSessionService {
           this.subtitleActive = false
           await this.speakReply(m.stopped())
           break
+        }
       }
     } catch (e) {
       // 占位播放源尚未实现：明确告知用户该源不可用，引导改用百度搜索
@@ -932,7 +957,14 @@ export class VoiceSessionService {
       await this.runPlayModeCommand(playModeCmd)
       return true
     }
-    // 新闻播报含「播放新闻」，musicControl 的 play 正则含裸「播放/放」会当点歌，
+    // 新闻播放中的「下一条 / 换一条」必须先于新闻重搜与音乐指令拦截：
+    // 这句本身没有新闻词，detectNewsCommand 命中不了；musicControl 的「播放」会把它当点歌
+    // 去搜「下一条」这首歌。只有确实在播新闻时才拦，音乐场景照旧走 music.next。
+    if (this.newsPlayback && detectNewsNextCommand(text)) {
+      await this.playNextNews()
+      return true
+    }
+    // 新闻播报含「播放新闻 / 播放资讯」，musicControl 的 play 正则含裸「播放/放」会当点歌，
     // 故新闻检测必须排在音乐指令之前（同类于上面的 playMode）。
     const news = detectNewsCommand(text)
     if (news) {
@@ -1092,23 +1124,87 @@ export class VoiceSessionService {
   }
 
   /**
-   * 新闻播报直连（绕开 LLM）：走百度新闻频道抓 headlines 口播，不发卡片、不编号。
-   * 数据源经 NewsSource 抽象注入，缺省用百度源，未来换源不动本方法。
-   * newsQuery 可由测试注入桩避免联网；抓取失败由 formatNews 出诚实兜底，catch 只兜意外错误。
+   * 新闻播报直连（绕开 LLM）：抓真实新闻视频、抽音轨走 media.play 播放，不发文字合成音频。
+   * 单条直接播；多条和音乐一样列编号候选让用户语音选一条（newsBvid 标记分流到新闻音轨）。
    */
   private async runNewsCommand(keyword: string | null): Promise<void> {
-    const query: (kw?: string | null) => Promise<string> =
-      this.deps.newsQuery ??
-      (async (kw?: string | null): Promise<string> => {
-        const tool = createNewsTool({ source: createBaiduNewsSource() })
-        const result = await tool.query(kw ?? null)
-        return formatNews(this.lang, result, kw ?? null, tool.limit)
-      })
+    const m = messages(this.lang).news
+    // 新一轮新闻先清掉旧上下文：抓取失败时不留下过期列表，否则「下一条」会播上一批的残留。
+    this.newsPlayback = null
     try {
-      await this.speakReply(await query(keyword))
+      // 抓真实新闻视频候选（B 站），标题已清洗（去下划线/特殊符号）。音频不从文字合成。
+      const hits = await this.newsVideoSource.search(keyword)
+      const candidates = hits.slice(0, 3)
+      if (!candidates.length) {
+        await this.speakReply(m.none(keyword ?? undefined))
+        return
+      }
+      // 记住本批候选（index=-1 表示还没开始播）：「下一条」据此接着切，不再掉进音乐点歌。
+      this.newsPlayback = { items: candidates, index: -1, keyword }
+      // 只有一条：直接抽这条的音轨播放，不必让用户选。
+      if (candidates.length === 1) {
+        await this.playNewsVideo(candidates[0])
+        return
+      }
+      // 多条：和音乐一样列编号候选、让用户语音选一条（pendingCandidates + parseSelection）。
+      // 候选项带 newsBvid，handleCandidateSelection 选中后据此走新闻音轨而非点歌。
+      this.pendingCandidates = {
+        items: candidates.map((c) => ({ title: c.title, artist: '', newsBvid: c.bvid, newsCover: c.cover })),
+        query: keyword ?? '',
+      }
+      this.pendingDeals = null // 与商品候选互斥，「第二条」不能产生歧义
+      await this.speakReply(m.candidates(candidates.map((c) => c.title)) + m.chooseHint())
     } catch {
-      await this.speakReply(messages(this.lang).news.unavailable())
+      await this.speakReply(m.unavailable())
     }
+  }
+
+  /**
+   * 播放一条选中（或唯一）的新闻视频：抽它的真实音轨 → 与音乐相同的 dash 短链下发。
+   * 文本标题清洗后仅作为助手框显示 + 播放器标题，不做 TTS 合成。
+   */
+  private async playNewsVideo(candidate: { bvid: string; title: string; cover?: string }): Promise<void> {
+    const m = messages(this.lang).news
+    const video = await this.newsVideoSource.resolveBvid(candidate)
+    if (!video?.url) {
+      await this.speakReply(m.unavailable())
+      return
+    }
+    const title = cleanNewsTitle(video.title) || candidate.title
+    // 同步「正在播第几条」：后续「下一条」从这条往后切（选中多条候选时也会走到这里）。
+    if (this.newsPlayback) {
+      const idx = this.newsPlayback.items.findIndex((c) => c.bvid === candidate.bvid)
+      if (idx >= 0) this.newsPlayback.index = idx
+    }
+    // 后台预热转封装（纯 JS fmp4→ADTS，无 ffmpeg），不阻塞 media.play；客户端取短链时等同一 key 完成。
+    void ensureAdtsFile(video.url).catch(() => undefined)
+    // media.play 由独立播放器播放，不推进 phase；先补文本 + llm.done 收尾思考态，避免卡在「思考中」。
+    this.deps.send({ type: 'llm.delta', text: title })
+    this.deps.send({ type: 'llm.done' })
+    this.deps.send({
+      type: 'media.play',
+      url: '',
+      title,
+      ...(video.cover ? { cover: video.cover } : {}),
+      audioPath: `music/s/${adtsKeyFor(video.url)}.aac`,
+    })
+  }
+
+  /**
+   * 新闻播放中用户说「播放下一条 / 换一条」：从当前下标的后一条接着抽音轨播放。
+   * 播到最后一条就如实告知并清掉上下文，让用户再说「播放新闻」抓一批新的——
+   * 不静默从头循环，否则用户分不清是重播还是真换了一条。
+   */
+  private async playNextNews(): Promise<void> {
+    const ctx = this.newsPlayback
+    if (!ctx?.items.length) return
+    const next = ctx.index + 1
+    if (next >= ctx.items.length) {
+      this.newsPlayback = null
+      await this.speakReply(messages(this.lang).news.noMore())
+      return
+    }
+    await this.playNewsVideo(ctx.items[next])
   }
 
   /**
@@ -2081,6 +2177,7 @@ export class VoiceSessionService {
     this.pendingCandidates = null
     this.pendingDeals = null
     this.pendingNextFallback = false
+    this.newsPlayback = null
     this.recentUserTurns = []
     this.autoExtractRuns = 0
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
@@ -2202,6 +2299,7 @@ export class VoiceSessionService {
     this.pendingCandidates = null
     this.pendingDeals = null
     this.pendingNextFallback = false
+    this.newsPlayback = null
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)

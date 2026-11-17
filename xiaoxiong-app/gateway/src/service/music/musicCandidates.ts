@@ -10,6 +10,10 @@ import { genreToKeyword } from './types'
 export interface MusicCandidate {
   title: string
   artist: string
+  /** 仅新闻视频候选用：选中后据此抽该视频音轨（普通音乐候选无此字段）。 */
+  newsBvid?: string
+  /** 仅新闻视频候选用：视频缩略图，作为播放器封面。 */
+  newsCover?: string
 }
 
 interface MusicBrainzRecording {

@@ -696,6 +696,7 @@ const I18N = {
     "test.protoNoModel": "未选模型时使用提供商默认模型。",
     "test.protoAsyncWarn": "（http-async 为录音文件异步转写，实时接口暂不支持）",
     "test.modelFollowConfig": "（不选，使用提供商默认模型）",
+    "test.voiceFollowConfig": "（不选，使用默认音色）",
     "test.send": "发送",
     "test.tabAsr": "语音识别 ASR",
     "test.tabLlm": "对话 LLM",
@@ -900,6 +901,7 @@ const I18N = {
     "test.protoNoModel": "With no model selected the provider's default model is used.",
     "test.protoAsyncWarn": "(http-async is async file transcription; not supported by the realtime API yet)",
     "test.modelFollowConfig": "(Not selected — use provider's default model)",
+    "test.voiceFollowConfig": "(Not selected — use default voice)",
     "test.send": "Send",
     "test.tabAsr": "Speech Recognition ASR",
     "test.tabLlm": "Chat LLM",
@@ -2522,6 +2524,8 @@ async function renderDashboard(){
     {id:'ja-JP-NanamiNeural',desc_zh:'女声·柔和',desc_en:'Female · soft'},
     {id:'ja-JP-KeitaNeural',desc_zh:'男声·清晰',desc_en:'Male · clear'},
   ];
+  // 各「提供商|模型」的默认音色，由 /voices 接口回填；测试页切提供商/模型时据此重选。
+  const VOICE_DEFAULTS = {};
   // 音色按「提供商 · 模型」分组；描述按当前界面语言取中/英；默认音色加「（默认）」标记
   const voiceIsEn = ()=> String(curLang||'').toLowerCase().startsWith('en');
   const voiceDescText = (v)=> v ? (voiceIsEn()? (v.desc_en||v.desc_zh||'') : (v.desc_zh||v.desc_en||'')) : '';
@@ -2531,10 +2535,15 @@ async function renderDashboard(){
     return v.id ? v.id.split('-').slice(0,2).join('-') : '其它';
   };
   const voiceDesc = (id)=>{ const f=VOICE_CATALOG.find(v=>v.id===id); return voiceDescText(f); };
-  const fillVoices = (def)=>{
+  const fillVoices = (def, list)=>{
+    const items0 = list || VOICE_CATALOG;
     voiceSel.innerHTML='';
+    // 音色非必选：留空表示按当前「提供商 · 模型」的默认音色合成（后端解析）。
+    const head=document.createElement('option');
+    head.value=''; head.textContent=t('test.voiceFollowConfig');
+    voiceSel.appendChild(head);
     const groups={};
-    VOICE_CATALOG.forEach(v=>{ const g=voiceGroupLabel(v); (groups[g]=groups[g]||[]).push(v); });
+    items0.forEach(v=>{ const g=voiceGroupLabel(v); (groups[g]=groups[g]||[]).push(v); });
     Object.entries(groups).forEach(([g,items])=>{
       const og=document.createElement('optgroup'); og.label=g;
       items.forEach(v=>{ const o=document.createElement('option'); o.value=v.id;
@@ -2544,26 +2553,54 @@ async function renderDashboard(){
         og.appendChild(o); });
       voiceSel.appendChild(og);
     });
-    if(def){ const o=document.createElement('option'); o.value=def; o.textContent=def+t('common.defaultParen'); voiceSel.appendChild(o); }
-    voiceSel.value = def || (VOICE_CATALOG[0] && VOICE_CATALOG[0].id) || '';
+    if(def && !items0.some(v=>v.id===def)){ const o=document.createElement('option'); o.value=def; o.textContent=def+t('common.defaultParen'); voiceSel.appendChild(o); }
+    voiceSel.value = '';   // 默认「不选」，走默认音色
     VOICE_DESC.textContent = t('tts.voiceNote') + voiceDesc(voiceSel.value) + t('tts.voiceParam');
   };
   voiceSel.onchange = ()=>{ VOICE_DESC.textContent = t('tts.voiceNote') + voiceDesc(voiceSel.value) + t('tts.voiceParam'); };
-  // 拉取「内置 + dashscope」两个提供商的音色（接口不可用时回退兜底目录）
+  // 音色联动：模型已在目录里标明所属提供商，所以「没选提供商但选了模型」时只按模型筛；
+  // 「选了提供商没选模型」才用该提供商默认模型；两者都没选则用全局默认提供商的默认模型。
+  function refreshTtsVoices(){
+    const pEl=document.getElementById('ttsProvider'), mEl=document.getElementById('ttsModel');
+    if(!pEl||!mEl) return;
+    const pVal=pEl.value, chosenModel=(mEl.value||'').trim();
+    const model=(chosenModel || voiceTestDefaultModel('tts', pVal) || '').trim();
+    let list, prov;
+    if(!pVal && chosenModel){
+      // 模型决定提供商：不从全局默认提供商里找，否则模型选了也拿不到它的音色。
+      list=VOICE_CATALOG.filter(v=>v.model===chosenModel);
+      prov=(list[0]&&list[0].provider)||voiceTestRealProvider('tts','');
+    }else{
+      prov=voiceTestRealProvider('tts', pVal);
+      list=VOICE_CATALOG.filter(v=>(v.provider||'builtin')===prov && (!model || !v.model || v.model===model));
+      if(!list.length) list=VOICE_CATALOG.filter(v=>(v.provider||'builtin')===prov);
+    }
+    const def=VOICE_DEFAULTS[prov+'|'+model] || VOICE_DEFAULTS[prov+'|'] ||
+      ((list.find(v=>v.is_default)||list[0]||{}).id);
+    fillVoices(def, list);
+  }
+  // 拉取三个提供商的音色（接口不可用时回退兜底目录），按当前提供商/模型过滤后展示。
   Promise.all([
     fetch('/voice/v1/audio/voices?provider=builtin',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
     fetch('/voice/v1/audio/voices?provider=dashscope',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
-  ]).then(([b,d])=>{
+    fetch('/voice/v1/audio/voices?provider=deepseek',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+  ]).then(([b,d,ds])=>{
     let all=[];
-    if(b && Array.isArray(b.voices)) all=all.concat(b.voices);
-    if(d && Array.isArray(d.voices)) all=all.concat(d.voices);
-    if(all.length){ VOICE_CATALOG=all; fillVoices((b&&b.default)||undefined); }
+    [b,d,ds].forEach(data=>{
+      if(!data || !Array.isArray(data.voices)) return;
+      all=all.concat(data.voices);
+      const key=(data.provider||'')+'|'+(data.model||'');
+      VOICE_DEFAULTS[key]=data.default;
+      VOICE_DEFAULTS[(data.provider||'')+'|']=data.default;
+    });
+    if(all.length){ VOICE_CATALOG=all; refreshTtsVoices(); }
   }).catch(()=>{});
   api('/admin/api/status').then(r=>r.ok?r.json():null).then(s=>{
     const def = s && s.health && s.health.tts_voice;
     if(s && s.port) testOrigin='http://127.0.0.1:'+s.port;   // 三个 tab 统一打本代理
-    fillVoices(def||undefined);
-  }).catch(()=>fillVoices());
+    if(def){ VOICE_DEFAULTS['builtin|']=def; VOICE_DEFAULTS['builtin|edge-tts']=def; }
+    refreshTtsVoices();
+  }).catch(()=>refreshTtsVoices());
 
   // TTS 合成
   document.getElementById('ttsGo').onclick = async ()=>{
@@ -2850,19 +2887,29 @@ async function renderDashboard(){
   // 协议选「全部」时，实际下发的协议由所选模型（或默认模型）自动确定。
   const VOICE_TEST_BUILTIN = {asr: 'sensevoice-small', tts: 'edge-tts'};
   const voiceTestEdit = (kind)=> kind==='asr' ? provEdit.stt : provEdit.tts;
+  const voiceTestDeepseekEdit = (kind)=> kind==='asr' ? provEdit.sttDeepseek : provEdit.ttsDeepseek;
   // 实际生效的提供商：显式选了就用它；「默认路由」按 DB 里的默认提供商。
   const voiceTestRealProvider = (kind, p)=>{
     if(p) return p;
-    return cfgOrig[kind==='asr' ? 'STT_PROVIDER' : 'TTS_PROVIDER'] === 'dashscope' ? 'dashscope' : 'builtin';
+    const cur=(cfgOrig[kind==='asr' ? 'STT_PROVIDER' : 'TTS_PROVIDER'] || '').trim().toLowerCase();
+    return cur==='dashscope' || cur==='deepseek' ? cur : 'builtin';
   };
   const voiceTestModels = (kind, p)=>{
+    // 「默认路由」时列全部已勾选模型：模型自带协议/提供商信息，允许只按模型测试。
+    if(!p){
+      const out=[VOICE_TEST_BUILTIN[kind]];
+      [voiceTestEdit(kind), voiceTestDeepseekEdit(kind)].forEach(e=>{
+        if(e && Array.isArray(e.cands)) e.cands.forEach(m=>{ if(m && !out.includes(m)) out.push(m); });
+      });
+      return out;
+    }
     if(voiceTestRealProvider(kind,p)==='builtin') return [VOICE_TEST_BUILTIN[kind]];
-    const e=voiceTestEdit(kind);
+    const e=p==='deepseek' ? voiceTestDeepseekEdit(kind) : voiceTestEdit(kind);
     return (e && Array.isArray(e.cands)) ? e.cands.slice() : [];
   };
   const voiceTestDefaultModel = (kind, p)=>{
     if(voiceTestRealProvider(kind,p)==='builtin') return VOICE_TEST_BUILTIN[kind];
-    const e=voiceTestEdit(kind);
+    const e=p==='deepseek' ? voiceTestDeepseekEdit(kind) : voiceTestEdit(kind);
     return (e && e.def) || '';
   };
   const modelProto = (m)=> modelProtocols(m).join('/');
@@ -2906,6 +2953,7 @@ async function renderDashboard(){
     mdl.disabled=false;
     mdl.value='';           // 不替用户自动选模型
     updateVoiceTestProto(kind);
+    if(kind==='tts') refreshTtsVoices();
   }
   function updateVoiceTestProto(kind){
     const mdl=document.getElementById(kind+'Model');
@@ -2928,7 +2976,7 @@ async function renderDashboard(){
     const mdl=document.getElementById(kind+'Model');
     if(prov) prov.onchange=()=>refreshVoiceTestSelects(kind);
     if(proto) proto.onchange=()=>refreshVoiceTestModels(kind);
-    if(mdl) mdl.onchange=()=>updateVoiceTestProto(kind);
+    if(mdl) mdl.onchange=()=>{ updateVoiceTestProto(kind); if(kind==='tts') refreshTtsVoices(); };
   });
   // loadConfig() 回填完勾选模型后也会刷新；DOM 还没建好时静默跳过。
   window.refreshVoiceTestSelects = ()=>['asr','tts'].forEach(refreshVoiceTestSelects);

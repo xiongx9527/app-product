@@ -65,7 +65,7 @@ function copyDir(src, dest) {
   mkdirSync(dest, { recursive: true })
   // cpSync + verbatimSymlinks：符号链接按原样拷（框架包的 Versions/Headers 结构必须保留），
   // 不解引用——不会把软链指向的 venv 等内容整个拷进来；filter 按名字排除本机工具目录
-  // （如 static/audio/etts-venv，edge-tts 生成提示音的 Python venv，20MB）。
+  // （如 edge-tts 生成提示音的 Python venv，已挪到 xiaoxiong-app/audio-tool/，不再位于 static 内）。
   cpSync(src, dest, {
     recursive: true,
     verbatimSymlinks: true,

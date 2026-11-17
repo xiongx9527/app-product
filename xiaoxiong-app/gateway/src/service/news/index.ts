@@ -1,3 +1,2 @@
-export type { NewsHeadline, NewsSource, NewsFetcher, NewsOptions, NewsResult } from './types'
-export { formatNews } from './types'
-export { createBaiduNewsSource, parseNewsHtml } from './baiduNewsSource'
+export { createNewsVideoSource, cleanNewsTitle } from './newsVideoSource'
+export type { NewsVideo, NewsVideoCandidate, NewsVideoOptions, NewsVideoSourceLike } from './newsVideoSource'

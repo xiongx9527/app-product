@@ -111,14 +111,24 @@ export interface Messages {
       source: () => string
     }
   }
-  /** 新闻播报直连口播：走百度新闻频道抓 headlines，纯 TTS 播报标题+来源，不进大模型 */
+  /** 新闻播报：抓真实新闻视频、抽音轨播放；多条时列候选让用户语音选一条（同音乐选号）。 */
   news: {
+    /** 播放器标题（media.play.title）；keyword 为话题词时带上话题 */
+    title: (keyword?: string) => string
     /** 抓到 N 条新闻的引导；keyword 为话题词（带话题搜索），无话题词即泛播当日头条 */
     intro: (count: number, keyword?: string) => string
     /** 没查到新闻（抓到 0 条）；keyword 为话题词时说明是「与该话题相关」 */
     none: (keyword?: string) => string
     /** 抓取失败/网络不可达时的诚实兜底，不编造新闻 */
     unavailable: () => string
+    /** 多条新闻视频候选：编号列出清洗后的标题（显示在助手框） */
+    candidates: (items: readonly string[]) => string
+    /** 让用户语音选一条的提示 */
+    chooseHint: () => string
+    /** 选号没听清时的重问 */
+    chooseAgain: () => string
+    /** 本批新闻播完后再说「下一条」：如实告知，引导重新抓一批 */
+    noMore: () => string
   }
   /** 数据来源展示名（按 lang 本地化）：值由数据源给 sourceKey，网关查表，客户端不认识 key。 */
   sources: Record<string, string>
@@ -272,6 +282,7 @@ const zhCN: Messages = {
     },
   },
   news: {
+    title: (keyword) => (keyword ? `${keyword}新闻播报` : '今日新闻播报'),
     intro: (count, keyword) =>
       keyword
         ? `查到 ${count} 条与「${keyword}」相关的新闻：`
@@ -279,6 +290,11 @@ const zhCN: Messages = {
     none: (keyword) =>
       keyword ? `暂时没查到与「${keyword}」相关的新闻。` : '暂时没查到新闻。',
     unavailable: () => '现在查不了新闻，稍后再试。',
+    candidates: (items) =>
+      `找到几条新闻：${items.map((it, i) => `第${['一', '二', '三', '四', '五'][i] ?? i + 1}条，${it}`).join('；')}。`,
+    chooseHint: () => '你想听第几条？',
+    chooseAgain: () => '没听清选哪条，请说第几条。',
+    noMore: () => '这几条新闻都播完啦，说「播放新闻」再给你找几条。',
   },
   sources: { smzdm: '什么值得买' },
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
@@ -420,6 +436,7 @@ const en: Messages = {
     },
   },
   news: {
+    title: (keyword) => (keyword ? `${keyword} news briefing` : 'News briefing'),
     intro: (count, keyword) =>
       keyword
         ? `Found ${count} news items about "${keyword}": `
@@ -427,6 +444,11 @@ const en: Messages = {
     none: (keyword) =>
       keyword ? `No news found about "${keyword}".` : 'No news found right now.',
     unavailable: () => "Can't fetch news right now. Please try again later.",
+    candidates: (items) =>
+      `Found a few news videos: ${items.map((it, i) => `number ${i + 1}, ${it}`).join('; ')}.`,
+    chooseHint: () => 'Which one would you like to play?',
+    chooseAgain: () => "Didn't catch that. Which number?",
+    noMore: () => "That's all the news for now. Say 'play news' to get more.",
   },
   sources: { smzdm: 'SMZDM' },
   clock: {

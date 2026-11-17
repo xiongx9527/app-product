@@ -1,7 +1,8 @@
 /**
- * 新闻播报意图的确定性识别：命中后绕开大模型，直接走百度新闻频道抓 headlines 口播。
+ * 新闻播报意图的确定性识别：命中后绕开大模型，直接抓真实新闻视频抽音轨播放。
  *
- * 触发词：新闻 / 消息 / 头条 / 热点 / 快讯（及英文 news/headlines）。
+ * 触发词：新闻 / 消息 / 头条 / 热点 / 快讯 / 资讯（及英文 news/headlines）。
+ * 「资讯」与新闻同义（用户确认「资讯也属新闻类」），「播放资讯」「科技资讯」都走新闻。
  * 「新闻/消息」是用户明确要加的关键词；「最新消息」里的「消息」也算新闻语境（不是即时通讯）。
  *
  * 话题词：形如「科技新闻」「关于科技的新闻」「科技最新消息」取触发词前的片段作 keyword；
@@ -13,7 +14,7 @@
  */
 
 /** 触发词。不带 /g，避免 test() 的 lastIndex 状态问题。 */
-const NEWS_SIGNAL = /新闻|消息|头条|热点|快讯|news|headlines?/i
+const NEWS_SIGNAL = /新闻|消息|头条|热点|快讯|资讯|news|headlines?/i
 
 /** 其它内容强特征：命中则不是新闻意图，交回下游（不与音乐/影视/曲艺抢） */
 const OTHER_CONTENT = /歌曲|音乐|专辑|首歌|唱歌|评书|相声|有声书|电影|电视剧|动画片|综艺/
@@ -43,12 +44,12 @@ function stripFillers(raw: string): string {
 }
 
 /** 剥完噪声后只剩这些泛词即视为无话题（泛播） */
-const GENERIC_TOPIC = /^(新闻|消息|头条|热点|快讯|最新|今天|今日|最近|近期|一些|点|个|再|news|headlines?)$/i
+const GENERIC_TOPIC = /^(新闻|消息|头条|热点|快讯|资讯|最新|今天|今日|最近|近期|一些|点|个|再|news|headlines?)$/i
 
 /** 话题词提取：从「XX的新闻 / XX最新消息 / XX新闻」里取 XX。 */
 function extractKeyword(t: string): string | null {
   // 触发词前的最长片段（贪婪到最后一个触发词之前），如「关于科技的新闻」→「关于科技」
-  const m = t.match(/^(.+?)(?:的)?(?:最新消息|最新新闻|新闻|消息|头条|热点|快讯|news|headlines?)\s*[？?。!！]?$/i)
+  const m = t.match(/^(.+?)(?:的)?(?:最新消息|最新新闻|新闻|消息|头条|热点|快讯|资讯|news|headlines?)\s*[？?。!！]?$/i)
   // 没匹配到（如纯「新闻」）说明触发词即整句，无话题词
   if (!m) return null
   let raw = stripFillers(m[1])
@@ -70,4 +71,24 @@ export function detectNewsCommand(text: string): NewsCommand | null {
   if (!t || !NEWS_SIGNAL.test(t)) return null
   if (OTHER_CONTENT.test(t)) return null
   return { keyword: extractKeyword(t) }
+}
+
+/**
+ * 新闻播放中「下一条 / 换一条 / 再来一条」的识别。
+ *
+ * 只在调用方确认「当前正在播新闻」时才使用——避免与音乐的「下一首 / 换一首」互抢。
+ * 这句话本身不带新闻词（用户就说「播放下一条」），detectNewsCommand 命中不了，
+ * 之前会掉进音乐分支的「播放」被当成点歌去搜「下一条」这首歌。
+ *
+ * 「下一条 / 播放下一条 / 换条新闻 / 再来一条」都算；
+ * 带其它内容强特征（歌/电影/评书…）的比如「下一条评书」不算，交回音乐。
+ */
+const NEWS_NEXT_RE = /^(下一?条|下一?条(新闻|资讯)|换一?条|换条(新闻|资讯)|换个?(新闻|资讯)|再来一?条|再来条(新闻|资讯)|再播一?条|再放一?条)$/
+
+export function detectNewsNextCommand(text: string): boolean {
+  const t = (text || '').trim()
+  if (!t || OTHER_CONTENT.test(t)) return false
+  if (NEWS_NEXT_RE.test(t)) return true
+  // 剥掉句首口语前缀（播放 / 放 / 给我 / 播报 / 再 …），让「播放下一条」也能命中
+  return NEWS_NEXT_RE.test(stripFillers(t))
 }

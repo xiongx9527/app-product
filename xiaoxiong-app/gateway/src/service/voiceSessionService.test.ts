@@ -108,8 +108,12 @@ function createHarness(
     capabilityProbe?: () => Promise<HealthReport | null>
     /** 注入商品/好价查询桩（口播文本 + 结构化 Deal[]），避免直连用例真的联网抓页面 */
     dealsQuery?: () => Promise<DealsSnapshot>
-    /** 注入新闻查询桩（口播文本），避免新闻直连用例真的联网抓百度 */
-    newsQuery?: (keyword?: string | null) => Promise<string>
+    /** 注入新闻视频候选（标题/BVID），避免新闻用例真的联网搜 B 站 */
+    newsHits?: Array<{ bvid: string; title: string; cover?: string }>
+    /** 记录 search 收到的关键词（话题词断言） */
+    newsKeywordSpy?: (keyword: string | null) => void
+    /** 注入抽音轨结果（m4s 直链）；缺省返回 null（抽不到→回退实时口播兜底） */
+    newsAudioUrl?: string | null
     /** 注入详情页补充信息桩；缺省返回 null（不联网），需要验证合并时再注入 */
     dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
     /** 智能体口播文本（经 ChannelSplitter 下发）；默认「好的，我来说一句。」。可注入泄漏标记验证兜底 */
@@ -238,7 +242,17 @@ function createHarness(
     musicSourceFactory: opts.musicSourceFactory,
     candidateFetcher: opts.candidateFetcher,
     dealsQuery: opts.dealsQuery,
-    newsQuery: opts.newsQuery,
+    // 新闻视频源桩：search 返回注入候选，resolveBvid 返回注入音轨（缺省 null→走兜底口播）
+    newsVideoSource: {
+      name: 'test-news-video',
+      searchKeyword: (keyword: string | null) => (keyword ? `${keyword} 新闻` : '今日新闻'),
+      search: async (keyword: string | null) => {
+        opts.newsKeywordSpy?.(keyword)
+        return opts.newsHits ?? []
+      },
+      resolveBvid: async (c: { bvid: string; title: string; cover?: string }) =>
+        opts.newsAudioUrl ? { url: opts.newsAudioUrl, title: c.title, bvid: c.bvid, ...(c.cover ? { cover: c.cover } : {}) } : null,
+    },
     // 默认不抓详情页：单测不联网；需要验证补充信息合并时由用例注入
     dealsDetail: opts.dealsDetail ?? (async () => null),
     locationRequestTimeoutMs: opts.locationRequestTimeoutMs ?? 50,
@@ -1990,15 +2004,15 @@ describe('新闻播报直连（绕开 LLM，不被当点歌）', () => {
   }
   const playSource = (resolve: MusicSource['resolve']): MusicSource => ({ resolve })
 
-  it('「播放新闻」：新闻直连口播，音乐源在场也不抢', async () => {
-    const queries: Array<string | null | undefined> = []
+  it('「播放新闻」：只有一条候选→直接抽音轨下发 media.play，音乐源在场也不抢', async () => {
+    const kws: Array<string | null> = []
     let musicCalls = 0
+    const audioUrl = 'https://upos-sz-mirrorcos.bilivideo.com/news-audio.m4s'
     const h = createHarness({
       finalizeText: '播放新闻',
-      newsQuery: async (keyword) => {
-        queries.push(keyword)
-        return '为你播报今天的 1 条新闻：测试标题，测试来源。'
-      },
+      newsKeywordSpy: (k) => kws.push(k),
+      newsHits: [{ bvid: 'BVnews1', title: '三分钟_了解今日新闻联播🔥', cover: 'https://i0.hdslb.com/cover.jpg' }],
+      newsAudioUrl: audioUrl,
       musicSourceFactory: () =>
         playSource(async () => {
           musicCalls += 1
@@ -2009,21 +2023,55 @@ describe('新闻播报直连（绕开 LLM，不被当点歌）', () => {
     await speakUtterance(h)
     await sleep(30)
 
-    expect(queries).toEqual([null])
+    expect(kws).toEqual([null])
     expect(musicCalls).toBe(0)
-    expect(texts(h)).toContain('测试标题')
     expect(h.agentCalls()).toBe(0)
-    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+    const plays = h.events.filter((e) => e.type === 'media.play') as Extract<ServerEvent, { type: 'media.play' }>[]
+    expect(plays).toHaveLength(1)
+    // 走 music/s 短链（纯 JS 转封装），不是文字合成的 news/s
+    expect(plays[0].audioPath).toMatch(/^music\/s\/[0-9a-f]{16}\.aac$/)
+    expect(plays[0].cover).toBe('https://i0.hdslb.com/cover.jpg')
+    // 标题清洗：无下划线/emoji
+    expect(plays[0].title).not.toMatch(/[_🔥]/)
+    // 思考态收尾
+    expect(h.events.some((e) => e.type === 'llm.done')).toBe(true)
   })
 
-  it('「科技新闻 / 再放个科技新闻」：带话题词查询，「再」按全新请求', async () => {
-    const queries: Array<string | null | undefined> = []
+  it('多条候选：列编号让用户选（同音乐），选中后只播一条', async () => {
+    const audioUrl = 'https://upos-sz-mirrorcos.bilivideo.com/news-audio.m4s'
+    const h = createHarness({
+      finalizeTexts: ['播放新闻', '第二条'],
+      newsHits: [
+        { bvid: 'BV1', title: '今日新闻一' },
+        { bvid: 'BV2', title: '今日新闻二', cover: 'https://i0.hdslb.com/cover2.jpg' },
+        { bvid: 'BV3', title: '今日新闻三' },
+      ],
+      newsAudioUrl: audioUrl,
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    // 第一轮应列出候选 + 选择提示，不直接播放
+    expect(texts(h)).toContain('找到几条新闻')
+    expect(texts(h)).toContain('你想听第几条')
+    expect(h.events.some((e) => e.type === 'media.play')).toBe(false)
+
+    h.playbackDone()
+    await sleep(30)
+    await speakUtterance(h)
+    await sleep(30)
+    const plays = h.events.filter((e) => e.type === 'media.play') as Extract<ServerEvent, { type: 'media.play' }>[]
+    expect(plays).toHaveLength(1)
+    expect(plays[0].cover).toBe('https://i0.hdslb.com/cover2.jpg')
+  })
+
+  it('「科技新闻 / 再放个科技新闻」：带话题词搜索，「再」按全新请求', async () => {
+    const kws: Array<string | null> = []
     const h = createHarness({
       finalizeTexts: ['科技新闻', '再放个科技新闻'],
-      newsQuery: async (keyword) => {
-        queries.push(keyword)
-        return `查到与「${keyword}」相关的新闻。`
-      },
+      newsKeywordSpy: (k) => kws.push(k),
+      newsHits: [{ bvid: 'BVt', title: '科技新闻播报' }],
+      // 抽不到音轨：走兜底口播，便于只断言关键词与话题文案
     })
     await startDialog(h.service)
     await speakUtterance(h)
@@ -2033,19 +2081,17 @@ describe('新闻播报直连（绕开 LLM，不被当点歌）', () => {
     await speakUtterance(h)
     await sleep(30)
 
-    expect(queries).toEqual(['科技', '科技'])
-    expect(texts(h)).toContain('「科技」')
+    expect(kws).toEqual(['科技', '科技'])
+    // 抽不到音轨走诚实兜底（标题只作为 display，不口播）
+    expect(texts(h)).toContain('现在查不了新闻')
     expect(h.agentCalls()).toBe(0)
   })
 
-  it('「播放新闻歌曲」：不命中新闻，交回音乐候选浏览而非新闻口播', async () => {
+  it('「播放新闻歌曲」：不命中新闻，交回音乐候选浏览而非新闻', async () => {
     let newsCalls = 0
     const h = createHarness({
       finalizeText: '播放新闻歌曲',
-      newsQuery: async () => {
-        newsCalls += 1
-        return '不应播报这条。'
-      },
+      newsKeywordSpy: () => { newsCalls += 1 },
       musicSourceFactory: () =>
         playSource(async () => ({ url: 'https://bili/a.m4s', title: '新闻歌曲', channel: 'bilibili' })),
     })
@@ -2053,26 +2099,75 @@ describe('新闻播报直连（绕开 LLM，不被当点歌）', () => {
     await speakUtterance(h)
     await sleep(30)
 
-    // 「新闻歌曲」被 OTHER_CONTENT 让回下游；「歌曲」是歌手浏览强特征，走音乐候选口播。
-    // A3 要的是「不被新闻抢、交回下游」，交回音乐浏览即符合，不强制 media.play。
+    // 「新闻歌曲」被 OTHER_CONTENT 让回下游；不该触发新闻搜索
     expect(newsCalls).toBe(0)
     expect(h.agentCalls()).toBe(0)
     expect(texts(h)).not.toContain('现在查不了新闻')
-    expect(texts(h)).not.toContain('为你播报')
   })
 
-  it('新闻查询抛错：catch 兜底口播「现在查不了新闻」，会话不中断', async () => {
-    const h = createHarness({
-      finalizeText: '播放新闻',
-      newsQuery: async () => {
-        throw new Error('boom')
-      },
-    })
+  it('新闻搜索无候选：兜底口播「暂时没查到新闻」，会话不中断', async () => {
+    const h = createHarness({ finalizeText: '播放新闻' })
     await startDialog(h.service)
     await speakUtterance(h)
     await sleep(30)
 
-    expect(texts(h)).toContain('现在查不了新闻，稍后再试。')
+    expect(texts(h)).toContain('暂时没查到新闻')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('新闻播放中「播放下一条」：接着切下一条新闻，不被当成点歌', async () => {
+    let musicCalls = 0
+    const audioUrl = 'https://upos-sz-mirrorcos.bilivideo.com/news-audio.m4s'
+    const h = createHarness({
+      finalizeTexts: ['播放新闻', '第二条', '播放下一条'],
+      newsHits: [
+        { bvid: 'BV1', title: '今日新闻一' },
+        { bvid: 'BV2', title: '今日新闻二' },
+        { bvid: 'BV3', title: '今日新闻三' },
+      ],
+      newsAudioUrl: audioUrl,
+      musicSourceFactory: () =>
+        playSource(async () => {
+          musicCalls += 1
+          return { url: 'https://bili/a.m4s', title: '稻香', channel: 'bilibili' }
+        }),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+    await speakUtterance(h) // 第二条 → 播「今日新闻二」
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+    await speakUtterance(h) // 播放下一条 → 应接着播「今日新闻三」
+    await sleep(30)
+
+    const plays = h.events.filter((e) => e.type === 'media.play') as Extract<ServerEvent, { type: 'media.play' }>[]
+    expect(plays.map((p) => p.title)).toEqual(['今日新闻二', '今日新闻三'])
+    expect(musicCalls).toBe(0)
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('「播放资讯 / 科技资讯」与新闻同义，走新闻视频源', async () => {
+    const kws: Array<string | null> = []
+    const h = createHarness({
+      finalizeTexts: ['播放资讯', '科技资讯'],
+      newsKeywordSpy: (k) => kws.push(k),
+      newsHits: [{ bvid: 'BVinfo', title: '今日资讯播报' }],
+      newsAudioUrl: 'https://upos-sz-mirrorcos.bilivideo.com/info.m4s',
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+    h.playbackDone()
+    await sleep(30)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(kws).toEqual([null, '科技'])
+    expect(h.events.filter((e) => e.type === 'media.play')).toHaveLength(2)
     expect(h.agentCalls()).toBe(0)
   })
 })

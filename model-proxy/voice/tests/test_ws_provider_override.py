@@ -2,7 +2,9 @@
 import asyncio
 import json
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -75,10 +77,77 @@ def _check_provider_fallback():
             os.environ["STT_PROVIDER"] = original
 
 
+async def _check_dashscope_voice_mismatch():
+    """跨提供商 / 跨模型的音色必须直接报错，不再静默回退默认音色。"""
+    tmp = tempfile.mkdtemp(prefix="voice-test-")
+    srv.voice_db.configure(os.path.join(tmp, "voice.db"))
+    srv.voice_db.ensure_schema()
+    try:
+        valid = srv._dashscope_voice_ids("cosyvoice-v3-flash")
+        assert valid, "本地音色库应有 cosyvoice-v3-flash 音色"
+        assert srv._dashscope_default_voice("cosyvoice-v3-flash") in valid
+
+        for bad in ("zh-CN-XiaoxiaoNeural", "longxiang"):
+            try:
+                await srv._tts_synthesize(
+                    "你好。", bad, "1.0", "wav", "dashscope", "ws", "cosyvoice-v3-flash"
+                )
+            except ValueError as exc:
+                assert bad in str(exc), str(exc)
+            else:
+                raise AssertionError(f"音色 {bad} 不应被 DashScope 接受")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def _check_deepseek_voice_mismatch():
+    """DeepSeek 音色必须属于其目录：内置 edge 音色 / 非 DeepSeek 音色直接报错。"""
+    tmp = tempfile.mkdtemp(prefix="voice-test-")
+    srv.voice_db.configure(os.path.join(tmp, "voice.db"))
+    srv.voice_db.ensure_schema()
+    original = srv.deepseek_tts_bytes
+    called = []
+
+    async def fake_ds_tts(text, voice, key):
+        called.append(voice)
+        return b"ID3fake"
+
+    srv.deepseek_tts_bytes = fake_ds_tts
+    try:
+        known = sorted(x["id"] for x in srv.voice_db.list_voices("deepseek"))
+        assert known, "本地音色库应有 DeepSeek 音色（stella/tide）"
+
+        # 截图场景：选了 DeepSeek，音色却是内置 edge-tts 的 zh-CN-XiaoxiaoNeural → 必须报错
+        for bad in ("zh-CN-XiaoxiaoNeural", "longanyang", "not-a-deepseek-voice"):
+            try:
+                await srv._tts_synthesize(
+                    "你好。", bad, "1.0", "wav", "deepseek", "http", "deepseek-tts"
+                )
+            except ValueError as exc:
+                assert bad in str(exc), str(exc)
+            else:
+                raise AssertionError(f"音色 {bad} 不应被 DeepSeek 接受")
+
+        # 合法音色放行；空音色走该 provider 默认
+        await srv._tts_synthesize(
+            "你好。", known[0], "1.0", "wav", "deepseek", "http", "deepseek-tts"
+        )
+        await srv._tts_synthesize(
+            "你好。", "", "1.0", "wav", "deepseek", "http", "deepseek-tts"
+        )
+        assert called[0] == known[0], called
+        assert called[1] in known, called
+    finally:
+        srv.deepseek_tts_bytes = original
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     asyncio.run(_check_tts_provider_override())
     _check_provider_fallback()
-    print("== SUMMARY: 2/2 provider 覆盖用例通过 ==")
+    asyncio.run(_check_dashscope_voice_mismatch())
+    asyncio.run(_check_deepseek_voice_mismatch())
+    print("== SUMMARY: 4/4 provider 与音色校验用例通过 ==")
     return 0
 
 

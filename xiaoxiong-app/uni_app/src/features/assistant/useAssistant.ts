@@ -7,7 +7,6 @@ import {
 } from '@/core/audio/promptPlayer'
 import {
   playMusic,
-  preloadMusic,
   stopMusic,
   pauseMusic,
   resumeMusic,
@@ -18,6 +17,7 @@ import {
   setMusicVolume,
   musicState,
 } from '@/core/audio/musicPlayer'
+import { playDownloadedMedia } from './mediaPlayback'
 import {
   isH5AudioSupported,
   onPlaybackIdle,
@@ -670,56 +670,30 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         if (sig === lastMediaPlaySig && now - lastMediaPlayAt < MEDIA_PLAY_DEDUP_MS) break
         lastMediaPlaySig = sig
         lastMediaPlayAt = now
-        // B站 dash 纯音轨：网关已转封装成 ADTS 并给短链 key（streamKey）。客户端用
-        // uni.downloadFile 下载短 URL（~45 字符）成本地文件再播放——DCloud AudioPlayer
-        // 对 HTTP 流会报 -99 且不发请求，本地文件播放 100% 可靠；而完整代理 URL 约 1000
-        // 字符会被 DCloud 原生下载器截断（实测 936 字节即断），所以必须用短链。
-        if (event.streamKey) {
-          // 整轨（评书单集 9MB+）下载 + 网关转封装要几秒：先把播放条亮出来显示「正在准备」，
-          // 别让界面在这段时间里空白，用户会以为「播放器没打开」。
-          preloadMusic(event.title)
-          const base = resolveGatewayHttpBase()
-          const shortUrl = `${base}/music/s/${event.streamKey}.aac`
-          uni.downloadFile({
-            url: shortUrl,
-            success: (r) => {
-              if (r.statusCode !== 200 || !r.tempFilePath) return
-              playMusic(
-                r.tempFilePath,
-                event.title,
-                event.loop != null ? { loop: event.loop } : undefined
-              )
-            },
-            fail: () => {
-              // 下载失败不静默吞掉：让播放条显示失败态（音乐条会保留并给出提示）
-              musicState.musicError.value = true
-            },
-          })
-        } else if (event.proxy && event.url.includes('.m4s')) {
-          uni.downloadFile({
-            url: playUrl,
-            success: (r) => {
-              if (r.statusCode !== 200 || !r.tempFilePath) {
-                playMusic(playUrl, event.title, event.loop != null ? { loop: event.loop } : undefined)
-                return
-              }
-              playMusic(
-                r.tempFilePath,
-                event.title,
-                event.loop != null ? { loop: event.loop } : undefined
-              )
-            },
-            fail: () => {
-              // 下载失败（网关/网络问题）：降级回直播流 URL，行为与旧版一致
-              playMusic(playUrl, event.title, event.loop != null ? { loop: event.loop } : undefined)
-            },
+        // 播放方式分两类：能拿到「可下载的文件地址」就先下到本地再播，否则直接把 URL 交给播放器。
+        // 之所以优先本地文件：DCloud AudioPlayer 直拉 HTTP 流不稳（实测 -99 且不发请求），本地文件 100% 可靠。
+        // 下载 + 起播的细节全部封装在 playDownloadedMedia 里，这里只负责决定「下哪个地址、带什么选项」。
+        //
+        // downloadUrl 有两个来源（同时存在时 audioPath 优先，因为它是网关预转封装好的短链、更稳）：
+        //  1) audioPath —— 网关已备好的音频短链相对路径（B 站 dash 音轨转封装后的 aac：
+        //     music/s/<key>.aac；音乐/评书/新闻视频音轨都走此短链）。路径由网关持有，客户端只拼 base，
+        //     不区分来源。dash 整轨较大（9MB+），加 preload 让播放器先亮出「正在准备」，避免界面空白。
+        //  2) m4s 代理直链 —— B 站 dash 未走短链时的降级路径：下载失败就带回退地址 fallbackUrl，
+        //     让 playDownloadedMedia 改用直播流重试（该直链经网关代理补 Referer，见 playUrl）。
+        // 两者都没有（普通网络电台/直链歌曲）时 downloadUrl 为 null，走 playMusic 直接播 playUrl。
+        const base = resolveGatewayHttpBase()
+        const loop = event.loop != null ? { loop: event.loop } : undefined
+        const downloadUrl = event.audioPath
+          ? `${base}/${event.audioPath}`
+          : event.proxy && event.url.includes('.m4s') ? playUrl : null
+        if (downloadUrl) {
+          playDownloadedMedia(downloadUrl, event.title, {
+            ...loop,
+            // 短链要预亮播放条；m4s 直链则留回退地址，下载失败时降级重试直播流。二者互斥。
+            ...(event.audioPath ? { preload: true } : { fallbackUrl: playUrl }),
           })
         } else {
-          playMusic(
-            playUrl,
-            event.title,
-            event.loop != null ? { loop: event.loop } : undefined
-          )
+          playMusic(playUrl, event.title, loop)
         }
         // 封面与音频同源（歌曲宝详情页），每次新播放覆盖，无封面时清空避免显示上一首
         musicCover.value = event.cover ?? ''

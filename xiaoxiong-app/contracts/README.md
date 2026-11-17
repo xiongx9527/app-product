@@ -129,7 +129,7 @@ App 端后台待唤醒时长期保持 `wake` 会话；`dialog` 一轮结束（T2
 - 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台（直接 mp3 流，无需 Key）；
 - 具体歌名/歌手请求 → 先试歌曲宝详情页拿**同源**音频直链（同时带封面与 LRC 字幕），拿不到再走 B 站原生搜索 API（WBI 签名）抽取音轨（视频也能播放，搜索结果同时带出同源视频封面 `pic`）。
 
-两边都搜不到时，工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。B 站直链带防盗链，由网关 `/music/stream` 代理转发给客户端；dash 纯音轨（`.m4s`）转封装后以 `/music/s/<key>.aac` 短链下发（见下方 `streamKey`）。
+两边都搜不到时，工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。B 站直链带防盗链，由网关 `/music/stream` 代理转发给客户端；dash 纯音轨（`.m4s`）转封装后以 `/music/s/<key>.aac` 短链下发（见下方 `audioPath`）。
 
 服务端 → 客户端：
 
@@ -148,9 +148,10 @@ App 端后台待唤醒时长期保持 `wake` 会话；`dialog` 一轮结束（T2
 { "type": "audio.duplex", "mode": "half" }
 { "type": "media.volume", "volume": 0.5 }
 { "type": "media.play", "url": "https://ice6.somafm.com/groovesalad-128-mp3", "title": "Groove Salad（轻电子/氛围）", "channel": "groovesalad", "proxy": true }
-{ "type": "media.play", "url": "https://.../track.m4s", "title": "稻香", "channel": "bilibili", "loop": 3, "streamKey": "9f2c1a7b3d4e5f60" }
+{ "type": "media.play", "url": "https://.../track.m4s", "title": "稻香", "channel": "bilibili", "loop": 3, "audioPath": "music/s/9f2c1a7b3d4e5f60.aac" }
 { "type": "media.play", "url": "https://.../kuwo.mp3", "title": "一路向北", "channel": "gequbao", "cover": "https://img.../albumcover.jpg" }
-{ "type": "media.play", "url": "https://.../track.m4s", "title": "岳飞传 评书", "channel": "bilibili", "cover": "https://i0.hdslb.com/.../cover.jpg", "streamKey": "1a2b3c4d5e6f7081" }
+{ "type": "media.play", "url": "https://.../track.m4s", "title": "岳飞传 评书", "channel": "bilibili", "cover": "https://i0.hdslb.com/.../cover.jpg", "audioPath": "music/s/1a2b3c4d5e6f7081.aac" }
+{ "type": "media.play", "url": "", "title": "三分钟了解今日新闻联播", "cover": "https://i0.hdslb.com/.../cover.jpg", "audioPath": "music/s/9f2c1a7b3d4e5f6" }
 { "type": "client.playMode", "mode": "float" }
 { "type": "client.playMode" }
 { "type": "media.pause" }
@@ -171,6 +172,8 @@ App 端后台待唤醒时长期保持 `wake` 会话；`dialog` 一轮结束（T2
 
 `media.play` 可带可选字段 `loop`（正整数，缺省/1 表示不循环）：客户端播完最后一遍后自动重播同一首直到达到总遍数；播完最后一遍进入「已播放完毕」态（暂停按钮变为「继续播放」按钮）。`loop>1` 时客户端在自己内部循环，不回服务端重新检索。`loop` 的默认值（来自 `session.start.playback.defaultLoop` / `session.playback.defaultLoop`，缺省 3）由网关在每次新播放的 `media.play` 里带入；语音「循环 N 遍」显式指定时优先于默认值。
 
+**下载后本地播的音频统一走 `audioPath`**（字符串，相对路径）：有值时客户端请求 `GET <httpBase>/<audioPath>` 下载到本地后用 `InnerAudioContext` 播放。路径由网关持有（源特有知识），客户端只管拼 `httpBase`、不区分来源。音乐、评书、新闻视频都走 B 站 dash 音轨的 `music/s/<key>.aac`（新闻播报 = 抓真实新闻视频后抽其音轨，**不从文字合成音频**；`url` 为空串，封面用视频缩略图 `cover`）。之所以本地播：dash 完整代理 URL 约 1000 字符会被 App 下载器截断在 936 字节——本地文件 100% 可靠。转封装是纯 JS（fMP4→ADTS），不依赖设备上的 ffmpeg。
+
 `media.play` 下发前，网关先下发一条 `media.volume`（取值来自 `session.start.playback.defaultVolume` / `session.playback.defaultVolume`，缺省 0.5，收敛到 [0,1]），客户端据此把本次播放音量设到默认值；后续语音「音量 30% / 调大 / 调小」在该值上相对增减。这样「默认音量」在网关侧真正生效，而非仅存于客户端设置。
 
 `client.playMode` 由语音「切换播放模式 / 换个播放模式」（绕开 LLM 的直连指令）下发，让客户端在**悬浮小圆播放器**与**普通播放条**之间二选一切换。`mode` 省略表示客户端自行翻转当前模式；`mode:"float"` 直接切到悬浮、`mode:"player"` 直接切回播放条。客户端切换后要落盘到 `playback.floatPlayer`，使设置页开关与实际呈现保持一致；悬浮与播放条、字幕框三者互斥，不同时显示。该指令含「播放」，识别时须排在音乐播放指令之前，避免被当成点歌。
@@ -179,7 +182,7 @@ App 端后台待唤醒时长期保持 `wake` 会话；`dialog` 一轮结束（T2
 
 `media.play` 可带可选字段 `proxy`（布尔）：为 `true` 表示该直链带防盗链、需经服务端 `/music/stream` 代理转发（客户端 `InnerAudioContext` 无法自定义 Referer）。**频道→是否代理的判定在服务端完成**（属于「百度」播放源的源特有知识），服务端在 `media.play` 里直接给 `proxy` 标记，客户端只认此标记、按 `httpBase` 拼 `/music/stream?url=<encoded>`（网关同时兼容 `/music/stream.m4a` 别名）即可，**客户端不再写死任何频道名**（如 `bilibili` / `haokan`）。
 
-`media.play` 可带可选字段 `streamKey`（字符串）：仅 B 站 dash 纯音轨（`.m4s`）需要。这类音轨是 fragmented MP4，设备播放器无法直接播放，网关要全量拉取并转封装成 ADTS 裸 AAC；完整代理 URL 约 1000 字符，会被 App 下载器截断在 936 字节，因此网关只下发短链 key。客户端有 `streamKey` 时请求 `GET /music/s/<streamKey>.aac` 下载后本地播放（该路由支持 `Range`），不要再拼 `/music/stream`；没有 `streamKey` 时仍按 `proxy` 处理。转封装在网关后台预热，**不阻塞 `media.play`**；客户端来取短链时网关等同一 key 的转换完成再响应。
+**B 站 dash 音轨的特殊性**（仍走上面的 `audioPath`，只是 `music/s/...aac`）：`.m4s` 是 fragmented MP4，设备播放器无法直接播放，网关全量拉取并转封装成 ADTS 裸 AAC；转封装在后台预热，**不阻塞 `media.play`**，客户端来取短链时网关等同一 key 的转换完成再响应（该路由支持 `Range`）。没有 `audioPath` 时按 `proxy` 处理。
 
 `media.detail` 是**结构化内容卡片的全量状态快照**（收到即整体替换，幂等），客户端在对话页**内嵌面板**展示、不用悬浮层。`kind` 是内容类型判别，容器不感知业务字段：`deals` 为商品详情类、`project` 为开源项目类（**两者列表项形状完全一致**，客户端共用同一个渲染器与操作栏），未来可扩展 `text`（纯文本）/ `chart` / `report`（图表报表）/ `webview`（嵌入页）等，各带自身 payload，但**列表项一律用同一个 `DetailItem` 形状**，换数据源不改事件结构。
 
@@ -273,7 +276,8 @@ App 端后台待唤醒时长期保持 `wake` 会话；`dialog` 一轮结束（T2
 #### 音乐流与短链
 
 - `GET /music/stream?url=<encoded>`（兼容 `/music/stream.m4a`）：代拉白名单内的 B 站音轨 / SomaFM 电台，支持 `Range` 与重定向；`url` 缺失或域名不在白名单返回 `400`。客户端不直接访问上游。
-- `GET /music/s/<key>.aac`：B 站 dash 音轨转封装后的 ADTS 短链（`key` 为 `media.play.streamKey`），支持 `Range`；未预热完成时等待同一 key 的转换。
+- `GET /music/s/<key>.aac`：B 站 dash 音轨转封装后的 ADTS 短链，支持 `Range`；未预热完成时等待同一 key 的转换。音乐、评书、新闻视频音轨均走此路由（新闻也是抓真实视频后抽的音轨，非文字合成）。
+- 由 `media.play.audioPath`（如 `music/s/<key>.aac`）拼在 `httpBase` 后访问。
 
 #### 提示音文件（已改为客户端本地，无此 HTTP 端点）
 「能力/权限不可用」提示音（网络 / ASR / TTS / LLM 未就绪、麦克风未授权、识别失败、思考超时）
@@ -395,7 +399,7 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 
 - **ASR 流程**：`run-task` →（收 `task-started`）→ 发二进制音频（建议 WAV / 16k / 16bit / 单声道）+ `finish-task` → 收 `result-generated`（文本）+ `task-finished`。
 - **TTS 流程**：`run-task` →（收 `task-started`）→ 发 `continue-task`(文本) + `finish-task` → 收二进制音频帧 + `task-finished`。
-- **错误处理**：`task-failed` **不关闭连接**，可继续发下一个 `run-task` 复用连接。常见原因：`task` 非法（非 `asr`/`tts`）、内置 ASR 收到非 WAV、或「模型与提供商对不上」（内置模式下传了上游 ws 模型，提示去配置上游提供商）。
+- **错误处理**：`task-failed` **不关闭连接**，可继续发下一个 `run-task` 复用连接。常见原因：`task` 非法（非 `asr`/`tts`）、内置 ASR 收到非 WAV、「模型与提供商对不上」（内置模式下传了上游 ws 模型，提示去配置上游提供商）、或「音色与提供商/模型对不上」（如把内置 edge-tts 音色传给 DashScope；不再静默替换成默认音色）。
 - **协议判定**：`protocol`（ws / http）由 `model` 名字推断（`_model_uses_ws`：含 `cosyvoice` / `realtime` / `streaming` / `gummy` 即 ws），与上游线协议一致。
 - **提供商覆盖**：`run-task.payload.provider` 只对本次任务生效，等价于 HTTP 接口的 `provider` 字段；留空才读全局 `STT_PROVIDER` / `TTS_PROVIDER`。管理面板测试页的 WS 分支必须下发用户选中的提供商，否则选了 DashScope 仍会按内置模式校验模型。
 

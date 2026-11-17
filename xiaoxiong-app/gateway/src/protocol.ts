@@ -191,8 +191,10 @@ export type ServerEvent =
    *  （源特有知识），客户端只认此标记，不再写死频道名 / host。
    *  cover 为与音频同源的封面图（如歌曲宝详情页 mp3_cover），供客户端播放器展示。 */
   | { type: 'media.play'; url: string; title: string; channel?: string; loop?: number; proxy?: boolean; cover?: string
-      /** dash 音轨短链 key：有值时客户端下载 /music/s/<key>.aac 后本地播放（完整直链 URL 过长会被截断） */
-      streamKey?: string }
+      /** 音频短链相对路径：有值时客户端下载 <httpBase>/<audioPath> 后本地播放（如 music/s/<key>.aac）。
+       *  下载后本地播是已验证可靠的链路：dash 直链 URL 过长会被截断。
+       *  路径由网关持有（源特有知识），客户端只管拼 httpBase，不区分音乐/新闻。 */
+      audioPath?: string }
   /** 让客户端停止当前播放 */
   | { type: 'media.stop' }
   /** 让客户端暂停当前播放（再响一声「暂停」用 media.resume 恢复） */
