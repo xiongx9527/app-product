@@ -21,9 +21,9 @@
   - 写 `ws://127.0.0.1:<port>/ws` 到 `getFilesDir()/gateway.url`；
   - 发 `LocalBroadcast` action=`com.xiaoxiong.assistant.gateway.READY`、extra `port`；
   - 客户端 `core/transport/gatewayBootstrap.getGatewayWsUrl()` 在 APP-PLUS 下经 `plus.io` 读取该文件（best-effort 探测 root + 回退 `VITE_GATEWAY_WS_URL`），内嵌模式建连前 `await` 此地址。
-- **`onGatewayReady` 契约（待 `app-product-wake` 原生插件落地）**：更稳的回传是经原生插件桥 `onGatewayReady(cb)` 回调实际端口后再放行 UI 建连（`docs/mobile-embedded-gateway.md §6/§7`），替代文件轮询；当前文件+广播为过渡实现。
+- **`onGatewayReady` 契约（尚未实现）**：更稳的回传是经原生插件桥 `onGatewayReady(cb)` 回调实际端口后再放行 UI 建连（`docs/mobile-embedded-gateway.md §6/§7`），替代文件轮询；当前文件 + 广播是已实现的过渡方案。
 - 回环地址不暴露到局域网，天然隔离；有屏/无屏设备同包运行时均走此通道。外部 LAN 模式（网关在别机 `192.168.x.x:9529`）仍按 `session.start.voice.url` 配置，不受影响。
-- **待真机验证**：原生写 `/data/data/<pkg>/files/gateway.url` 与 `plus.io` 各 root（PRIVATE_DOC/APPLICATION/…）的精确映射随系统/SDK 版本走，开发机无法确诊；当前 best-effort 探测 + 兜底，若某机型不在探测项内需补或改原生写确定的 plus.io root。
+- **端口文件路径**：原生写 `/data/data/<pkg>/files/gateway.url`，`plus.io` 各 root（PRIVATE_DOC/APPLICATION/…）与文件路径的精确映射随系统/SDK 版本走；客户端按 best-effort 探测多个 root 并回退 `VITE_GATEWAY_WS_URL`，新机型不在探测项内时需补探测或改原生写入。
 
 ## 音频
 
@@ -37,29 +37,41 @@
 
 上行采集按端分流（都是只读启动、用户开启助手时才开始，不在建连时占用麦克风）：
 
-- **App（Android / iOS，目标端）**：`app-product-wake` 原生插件的 `startPcm({ sampleRate:16000, channels:1, bitsPerSample:16, frameMs:32 })` → `onPcmFrame` 回调 `ArrayBuffer` 帧直接上行；`stopPcm()` 停止。由原生层用 Android `AudioRecord` / iOS `AVAudioEngine` 直接吐 PCM。插件未落地时 `isAppCaptureSupported()` 为 false，客户端明确提示「不支持录音采集」，不静默假装能唤醒。
+- **App（Android / iOS，目标端）**：`app-product-wake` 原生插件的 `startPcm({ sampleRate:16000, channels:1, bitsPerSample:16, frameMs:32 })` → `onPcmFrame` 回调音频帧直接上行；`stopPcm()` 停止。由原生层用 Android `AudioRecord` / iOS `AVAudioEngine` 直接吐 PCM。插件未安装或旧基座缺少接口时 `isAppCaptureSupported()` 为 false，客户端明确提示「不支持录音采集」，不静默假装能唤醒。
+  - **原生 PCM 直连（`?role=pcm`）**：App 端另有一条原生 OkHttp WebSocket 连接 `ws://127.0.0.1:<port>/ws?deviceId=<id>&role=pcm`，只收发音频帧——上行采集 PCM 与下行 TTS 音频都走它，绕开播报期不可靠的 weex 原生→JS 回调。该连接**不建会话、不 `bindTransport`**，事件仍由普通 `/ws?deviceId=<id>` 连接下发；客户端 JS 不感知它的存在。旧基座没有该能力时自动降级回 `onPcmFrame` + JS 播放。
 - **H5（仅开发阶段调试用）**：`navigator.mediaDevices.getUserMedia` + WebAudio `ScriptProcessor`，每帧 4096 采样转 16bit PCM 上行。
 - 微信小程序与 HarmonyOS 确定不支持，不提供采集实现。
 - **不用 `uni.getRecorderManager`**：它只录成文件（`onStop` 才给路径），且 App 端不支持 `onFrameRecorded`，无法提供 20–40ms 的持续分片；其 `format` 虽支持 `aac/mp3/wav/PCM`，但那是文件封装，不是实时流。
 
-TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声明解码。
+TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声明解码。App 端下行 TTS 与上行 PCM 共用 `role=pcm` 原生直连，由原生 AudioTrack 直接播放，不经 JS base64 解码。
 
 ## 消息
 
 客户端 → 服务端：
 
 ```json
-{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "" }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }, "recommend": { "dealsCount": 3 }, "mcp": { "servers": [ { "name": "fs", "transport": "stdio", "command": "npx @modelcontextprotocol/server-filesystem", "args": ["/tmp"] } ] } }
-{ "type": "audio.chunk", "seq": 1 }
+{ "type": "session.start", "sessionId": "uuid", "lang": "zh-CN", "timezone": "Asia/Shanghai", "mode": "dialog", "deviceId": "a1b2c3d4-...", "location": { "latitude": 31.23, "longitude": 121.47, "address": "上海市" }, "voice": { "provider": "builtin", "url": "http://127.0.0.1:9529", "apiKey": "", "model": "", "asrModel": "", "ttsModel": "", "voice": "zh-CN-XiaoxiaoNeural", "params": { "voice": "zh-CN-XiaoxiaoNeural" } }, "playback": { "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5, "autoLoop": false }, "recommend": { "dealsCount": 3 }, "memory": { "auto": false }, "mcp": { "servers": [ { "name": "fs", "transport": "stdio", "command": "npx @modelcontextprotocol/server-filesystem", "args": ["/tmp"] } ] } }
 { "type": "session.cancel" }
-{ "type": "session.skip_current" }
+{ "type": "session.skip_current", "dropText": "小熊小熊" }
 { "type": "session.end" }
 { "type": "session.location", "latitude": 31.23, "longitude": 121.47, "address": "上海市" }
 { "type": "session.playback_done" }
 { "type": "session.playback", "source": "baidu", "autoSubtitle": true, "defaultLoop": 3, "defaultVolume": 0.5 }
+{ "type": "music.next", "genre": "周杰伦" }
+{ "type": "music.volume", "volume": 0.4 }
+{ "type": "session.diag", "state": "speaking", "speaking": true, "cue": false, "muted": false, "frames": 62, "rms": 0.03, "connected": true }
 ```
 
-音频二进制帧与 `audio.chunk` 二选一，最终以实现为准。
+音频只发**二进制帧**（16k / 16bit / 单声道 PCM），没有 `audio.chunk` 文本消息；文本帧全部是控制消息。
+
+`session.diag` 是**临时诊断消息**：客户端上报 `onPcm` 发送端真实状态（帧数、rms、是否静音、是否在播报、是否已连），网关只落盘日志用于定位真机链路问题，不参与会话逻辑。定位完成后会随埋点一起移除，客户端不得依赖它。
+
+`session.start.mode` 为会话模式：
+
+- `wake`：只做 ASR。网关只下发 `asr.partial` / `asr.final`，不跑 LLM / TTS；客户端对 `asr.final.text` 做「小熊小熊」匹配，命中后以 `dialog` 模式重新 `session.start` 进入对话。
+- `dialog`：完整对话（默认）。LLM、TTS、音乐、工具全部启用。
+
+App 端后台待唤醒时长期保持 `wake` 会话；`dialog` 一轮结束（T2 超时 / 用户退出）后重新回到 `wake`。
 
 `session.playback_done` 是客户端在**本地播放队列真正清空**后发给网关的回执。
 `session.playback` 是播放源**实时变更**消息：设置页改了播放源后由客户端在已建立的会话里推送，
@@ -67,7 +79,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 未连接时客户端退化为「下一次 `session.start` 随 `playback.source` 生效」，不强行发送。
 `source` 取值与 `session.start.playback.source` 一致（`baidu` / `netease` / `tencent` / `kugou`）。`autoSubtitle` / `defaultLoop` / `defaultVolume` 同样可随本消息实时刷新（取值与 `session.start.playback` 一致），下次新播放（点歌/换一首）即生效。
 
-`recommend` 为推荐设置（好价商品 / 开源工具的推荐条数），来自客户端设置页，缺省各 3、范围 1–10。网关据此作为好价/开源工具未显式指定条数时的默认（工具上限 1–10）；客户端改了经下一次 `session.start`（重连/重唤醒）生效。
+`recommend` 为推荐设置：`dealsCount` 是好价商品每次推荐的条数，来自客户端设置页，缺省 3、范围 1–10。网关据此作为好价工具未显式指定条数时的默认（工具上限 1–10）；客户端改了经下一次 `session.start`（重连/重唤醒）生效。
 
 `mcp` 为 MCP 服务器列表，来自客户端设置页（用户自行填写并开启）。网关在会话建连（`session.start`）时逐个连上并把它们的工具注册进助手工具箱，语音助手即可调用这些工具；`rearm` / 下次 `session.start` 同样会重新下发并重建连接，故修改即时生效。`servers` 各项字段：
 - `name`：服务器显示名；
@@ -83,7 +95,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 队列为空时不等回执，立刻释放，避免用户下一句被误排队。
 网关同时按已下发音频时长设超时兜底，客户端没回执也不会把队列卡死。
 
-`session.start` 的 `lang` 当前仅支持 `zh-CN`：唤醒词、ASR、TTS 均为中文，客户端不做多语言切换。
+`session.start` 的 `lang` 是 BCP-47 语言码（如 `zh-CN` / `en-US`），服务端按它本地化下发的文案。网关按语言前缀匹配文案目录（`en-US` / `en_GB` → `en`），未命中回退 `zh-CN`。客户端界面已支持 `zh-CN` / `en-US`；**语音链路（唤醒词、ASR、TTS）当前以中文为主**，客户端语音连接固定上报 `zh-CN`，切换界面语言不会改变语音识别语言与音色。
 
 `session.start` 的 `timezone` 为客户端本地 IANA 时区（如 `Asia/Shanghai`），时间类工具据此返回用户所在时区的时间；缺省或非法时网关退回东 8 区（`Asia/Shanghai`）。客户端默认东 8 区，可在设置页修改。
 
@@ -99,23 +111,25 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 `session.start` 的 `voice` 为客户端本机的语音服务配置（可选；ASR / LLM / TTS 共用一份）：
 
 - `provider`：`builtin`（网关内置，默认）或 `dashscope`（用户自带 DashScope Key）。
-- `url`：服务根地址。`builtin` 默认 `http://127.0.0.1:9529`；`dashscope` 默认 `https://dashscope.aliyuncs.com`，也支持业务空间地址与 `/compatible-mode/v1`、`/api-ws/v1/inference` 写法，由网关归一化。
+- `url`：服务根地址。`builtin` 默认 `http://127.0.0.1:9529`；`dashscope` 默认 `https://dashscope.aliyuncs.com`，也支持自建 MAAS 实例地址与 `/compatible-mode/v1` 写法，由网关归一化。**DashScope 的语音（ASR / TTS）固定打官方云端入口**（`VOICE_DASHSCOPE_URL` 可覆盖）：`url` 只决定 LLM 走哪个实例，自建 MAAS 通常只有 LLM、没有语音入口。
 - `apiKey`：默认空。`builtin` 通常为空；`dashscope` 必填，三件事共用。
 - `model`：LLM 模型名（可选，来自设置页「LLM 模型」下拉）；留空由网关用来源默认。
 - `asrModel`：ASR 模型名（可选，来自设置页，两个来源各填一份）。网关注入 `asr.params.model`，**独立顶层字段，不进 `params` 共用通道**（该通道会按能力剥离 TTS 专用字段，ASR 拿不到 `model`）。留空则沿用来源默认识别模型。
-- `ttsModel`：TTS 模型名（可选，同上两个来源各一份）。网关注入 `tts.params.model`，**优先于 `params.model`（音色所属模型 `voiceModel`）**；留空则沿用音色所属模型 / 来源默认。`params.model` 仍是音色所属模型，二者互不覆盖、不串味。
-- `params`：ASR / LLM / TTS 共用的厂商级参数通道，含 `voice`（音色）与 `model`（音色所属模型）；仅 TTS 使用其中 `voice` / `model`，ASR / LLM 会剥离这两个 TTS 专用字段。
-- **缺省 `voice`**（旧客户端）时，网关完全沿用自身 env 配置，行为不变；新增的 `asrModel` / `ttsModel` 同样缺省即沿用来源默认，旧配置零改动兼容。
-- 网关按本次会话的 `voice` 生成临时配置：`builtin` 的 LLM 用 OpenAI 兼容 provider + `${url}/llm/v1`、ASR / TTS 用 `${url}/voice`（注意两个前缀不同；不能沿用 env 的 `ollama` 直连模式）；`dashscope` 的 LLM 走 OpenAI 兼容 `${root}/compatible-mode/v1` + `qwen-plus`，ASR / TTS 走 `wss://${host}/api-ws/v1/inference`（`dashscopeWs.ts`）。ASR / TTS 的模型缺省为 `paraformer-realtime-v2` / `cosyvoice-v2`，可由 `asrModel` / `ttsModel` 覆盖。
+- `ttsModel`：TTS 模型名（可选，同上两个来源各一份）。网关注入 `tts.params.model`，**优先于 `params.model`（音色所属模型）**；留空则沿用音色所属模型 / 来源默认。`params.model` 仍是音色所属模型，二者互不覆盖、不串味。
+- `voice`（客户端便捷字段，可缺省）：当前选中音色；实际生效以 `params.voice` 为准。客户端也会在 `voice` 有值时同时下发 `params: { "voice": ..., "model": "<音色所属模型>" }`。
+- `params`：ASR / LLM / TTS 共用的厂商级参数通道，含 `voice`（音色）与 `model`（音色所属模型，如 `cosyvoice-v3-flash`）；仅 TTS 使用其中 `voice` / `model`，ASR / LLM 会剥离这两个 TTS 专用字段。
+- `endpointMs`（可选）：ASR 句末静音判定毫秒数（停顿超过它才定稿为一轮），缺省回退网关运行配置（默认 2500ms）。
+- **缺省 `voice`**（旧客户端）时，网关完全沿用自身配置，行为不变；新增的 `asrModel` / `ttsModel` / `endpointMs` 同样缺省即沿用来源默认，旧配置零改动兼容。
+- 网关按本次会话的 `voice` 生成临时配置：`builtin` 的 LLM 用 OpenAI 兼容 provider + `${url}/llm/v1`、ASR / TTS 用 `${url}/voice`（注意两个前缀不同；不能沿用 env 的 `ollama` 直连模式）；`dashscope` 的 LLM 走 `${llmRoot}/compatible-mode/v1`，ASR / TTS 走 `wss://<cloud-host>/api-ws/v1/inference`（`dashscopeWs.ts`）。DashScope 的 ASR / TTS 缺省模型是 `paraformer-realtime-v2` / `cosyvoice-v3-flash`（默认音色 `longyumi_v3`），可由 `asrModel` / `ttsModel` 覆盖。
 - 同一 `deviceId` 再次 `session.start` 时，`provider | url | apiKey` 不变则复用会话与记忆；变化则关闭旧会话并按新配置重建，下一次连接 / 唤醒生效。
 - API Key 只存在客户端本地并经 WSS 文本帧传输，网关不落库；客户端不得直连 DashScope。
 - 本地 AI 服务的语音接口前缀为 `/voice`（LLM 为 `/llm/v1`）；网关 `ASR_BASE_URL` / `TTS_BASE_URL` 须带上 `/voice`。旧拼写 `/voide` 已废弃，不保留别名。
 
-音乐播放为网关内置能力：当前仅 `baidu` 一种播放源（`session.start.playback.source` 缺省/未知值一律回退到 `baidu`）。网关始终注册音乐工具（`play_music` / `stop_music` / `pause_music` / `resume_music` / `next_music`），按请求类型自动分流——
+音乐播放为网关内置能力：当前只有 `baidu` 播放源真正实现（`session.start.playback.source` 缺省/未知值一律回退到 `baidu`）；`netease` / `tencent` / `kugou` 是设置页占位，选中后运行时仍按 `baidu` 处理。网关始终注册音乐工具（`play_music` / `stop_music` / `pause_music` / `resume_music` / `next_music`），按请求类型自动分流——
 - 风格/氛围请求（轻音乐/电子/爵士…）→ SomaFM 免费电台（直接 mp3 流，无需 Key）；
 - 具体歌名/歌手请求 → 先试歌曲宝详情页拿**同源**音频直链（同时带封面与 LRC 字幕），拿不到再走 B 站原生搜索 API（WBI 签名）抽取音轨（视频也能播放，搜索结果同时带出同源视频封面 `pic`）。
 
-两边都搜不到时，工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。B 站直链带防盗链，由网关 `/music/stream` 代理转发给客户端。
+两边都搜不到时，工具明确告知「没找到这首歌」，绝不退回随机电台（避免乱播放）。B 站直链带防盗链，由网关 `/music/stream` 代理转发给客户端；dash 纯音轨（`.m4s`）转封装后以 `/music/s/<key>.aac` 短链下发（见下方 `streamKey`）。
 
 服务端 → 客户端：
 
@@ -130,13 +144,17 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 { "type": "tts.start", "format": "pcm16", "sampleRate": 24000 }
 { "type": "tts.stop" }
 { "type": "tts.end" }
+{ "type": "audio.duck", "duck": true }
 { "type": "audio.duplex", "mode": "half" }
-{ "type": "media.play", "url": "https://ice6.somafm.com/groovesalad-128-mp3", "title": "Groove Salad（轻电子/氛围）", "channel": "groovesalad" }
-{ "type": "media.play", "url": "https://.../track.m4s", "title": "稻香", "channel": "bilibili", "loop": 3 }
+{ "type": "media.volume", "volume": 0.5 }
+{ "type": "media.play", "url": "https://ice6.somafm.com/groovesalad-128-mp3", "title": "Groove Salad（轻电子/氛围）", "channel": "groovesalad", "proxy": true }
+{ "type": "media.play", "url": "https://.../track.m4s", "title": "稻香", "channel": "bilibili", "loop": 3, "streamKey": "9f2c1a7b3d4e5f60" }
 { "type": "media.play", "url": "https://.../kuwo.mp3", "title": "一路向北", "channel": "gequbao", "cover": "https://img.../albumcover.jpg" }
-{ "type": "media.play", "url": "https://.../track.m4s", "title": "岳飞传 评书", "channel": "bilibili", "cover": "https://i0.hdslb.com/.../cover.jpg" }
+{ "type": "media.play", "url": "https://.../track.m4s", "title": "岳飞传 评书", "channel": "bilibili", "cover": "https://i0.hdslb.com/.../cover.jpg", "streamKey": "1a2b3c4d5e6f7081" }
 { "type": "client.playMode", "mode": "float" }
 { "type": "client.playMode" }
+{ "type": "media.pause" }
+{ "type": "media.resume" }
 { "type": "media.stop" }
 { "type": "media.subtitle", "title": "七里香", "artist": "周杰伦", "lines": [{ "time": 1, "text": "窗外的麻雀" }, { "time": 9, "text": "在电线杆上多嘴" }] }
 { "type": "media.subtitle", "close": true }
@@ -159,7 +177,9 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 `media.play` 可带可选字段 `cover`（字符串）：与音频**同源**的封面图地址——歌曲来自歌曲宝详情页 `mp3_cover`，评书/视频类来自 B 站视频封面 `pic`，统一经网关规范化（清 JSON 转义残留、`http→https`、协议相对补 https）。**所有播放内容同等对待**：客户端有封面则显示圆形封面，无封面时显示**占位唱片**（而不是不显示悬浮）；每次新播放覆盖，停止播放时清空。
 
-`media.play` 可带可选字段 `proxy`（布尔）：为 `true` 表示该直链带防盗链、需经服务端 `/music/stream` 代理转发（客户端 `InnerAudioContext` 无法自定义 Referer）。**频道→是否代理的判定在服务端完成**（属于「百度」播放源的源特有知识），服务端在 `media.play` 里直接给 `proxy` 标记，客户端只认此标记、按 `httpBase` 拼 `/music/stream.m4a?url=<encoded>` 即可，**客户端不再写死任何频道名**（如 `bilibili` / `haokan`）。
+`media.play` 可带可选字段 `proxy`（布尔）：为 `true` 表示该直链带防盗链、需经服务端 `/music/stream` 代理转发（客户端 `InnerAudioContext` 无法自定义 Referer）。**频道→是否代理的判定在服务端完成**（属于「百度」播放源的源特有知识），服务端在 `media.play` 里直接给 `proxy` 标记，客户端只认此标记、按 `httpBase` 拼 `/music/stream?url=<encoded>`（网关同时兼容 `/music/stream.m4a` 别名）即可，**客户端不再写死任何频道名**（如 `bilibili` / `haokan`）。
+
+`media.play` 可带可选字段 `streamKey`（字符串）：仅 B 站 dash 纯音轨（`.m4s`）需要。这类音轨是 fragmented MP4，设备播放器无法直接播放，网关要全量拉取并转封装成 ADTS 裸 AAC；完整代理 URL 约 1000 字符，会被 App 下载器截断在 936 字节，因此网关只下发短链 key。客户端有 `streamKey` 时请求 `GET /music/s/<streamKey>.aac` 下载后本地播放（该路由支持 `Range`），不要再拼 `/music/stream`；没有 `streamKey` 时仍按 `proxy` 处理。转封装在网关后台预热，**不阻塞 `media.play`**；客户端来取短链时网关等同一 key 的转换完成再响应。
 
 `media.detail` 是**结构化内容卡片的全量状态快照**（收到即整体替换，幂等），客户端在对话页**内嵌面板**展示、不用悬浮层。`kind` 是内容类型判别，容器不感知业务字段：`deals` 为商品详情类、`project` 为开源项目类（**两者列表项形状完全一致**，客户端共用同一个渲染器与操作栏），未来可扩展 `text`（纯文本）/ `chart` / `report`（图表报表）/ `webview`（嵌入页）等，各带自身 payload，但**列表项一律用同一个 `DetailItem` 形状**，换数据源不改事件结构。
 
@@ -237,16 +257,28 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 ### 端点
 
 #### GET /api/health
-健康检查。
+健康检查（网关能力状态）。
 
-- 响应 `200`：`{ "ok": true }`
+- 普通轮询：`GET /api/health`
+- 一键检测（真正调用模型 / 合成，暴露欠费、模型名、密钥等「连通但不可用」故障）：`GET /api/health?deep=1`
+- 可选请求头 `x-voice-config`：当前选中的语音来源配置（`VoiceConfig` JSON，不含敏感日志）。带上后探测按所选来源展开（如 DashScope），否则按网关默认来源。
+- 响应 `200`：`{ "ok": true, "providers": { "asr": ProviderStatus, "llm": ProviderStatus, "tts": ProviderStatus, "network": NetworkStatus } }`
+
+`ProviderStatus` 字段：`provider`（builtin / dashscope / stub…）、`configured`（是否真接入引擎，stub 为 false）、`reachable`（真实探测是否可用；`deep=1` 时是功能性探测）、`message`（可直接展示的状态文案）、`endpoint`（仅 configured 时带出 host:port）。`NetworkStatus`：`reachable` / `message` / 可选 `host`（百度 / B 站 / 歌曲宝 / 什么值得买 / SomaFM 任一可达即视为外网正常）。
+
+#### 运行诊断 diag
+
+- `GET /api/diag`：只读、本机诊断，返回 `{ "errors": string[] }`（最近音乐转封装 / 短链错误）。仅供联调排查，不是稳定业务接口。
+
+#### 音乐流与短链
+
+- `GET /music/stream?url=<encoded>`（兼容 `/music/stream.m4a`）：代拉白名单内的 B 站音轨 / SomaFM 电台，支持 `Range` 与重定向；`url` 缺失或域名不在白名单返回 `400`。客户端不直接访问上游。
+- `GET /music/s/<key>.aac`：B 站 dash 音轨转封装后的 ADTS 短链（`key` 为 `media.play.streamKey`），支持 `Range`；未预热完成时等待同一 key 的转换。
 
 #### 提示音文件（已改为客户端本地，无此 HTTP 端点）
 「能力/权限不可用」提示音（网络 / ASR / TTS / LLM 未就绪、麦克风未授权、识别失败、思考超时）
 全部为客户端打包内的本地 mp3（`uni_app/src/static/audio/`，唯一一份，App 离线也能播）。
-历史上曾由网关经 `/static/cues/<name>.mp3` 下发，该端点已移除；`client.cue` 只传提示音名，
-客户端按名播打包内文件。
-- 客户端优先从网关拉取，拉取失败时回退到打包内的 `static/audio/<name>.mp3`。
+历史上曾由网关经 `/static/cues/<name>.mp3` 下发，该端点已移除；`client.cue` 只传提示音名，客户端按名播打包内文件，**不再从网关拉取**。
 
 #### 会话记录 sessions
 
@@ -255,13 +287,6 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
   - 响应 `201`：`{ "id": number }`
 - `GET /api/sessions?deviceId=xxx`：列出会话（按 id 倒序，最多 100）。
   - 响应 `200`：数组，元素含 `id / device_id / started_at / ended_at / created_at`。
-
-#### 设备数据 device-data
-
-- `POST /api/device-data`：写入一条设备数据。
-  - body：`{ "type": string, "payload": object }`
-  - 响应 `201`：`{ "id": number }`
-- `GET /api/device-data?deviceId=xxx`：列出（倒序，最多 200）。
 
 #### 命令日志 command-logs
 
@@ -272,7 +297,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 #### 设置接口（语音助手自用，/api/admin，不需要登录）
 
-语音助手自身的设置页（`uni_app` 的 `pages/settings`）使用的接口，与通用数据接口（sessions / device-data / command-logs）区分开。这是客户端与网关之间的第一方通信。
+语音助手自身的设置页（`uni_app` 的 `pages/settings`）使用的接口，与通用数据接口（sessions / command-logs）区分开。这是客户端与网关之间的第一方通信。
 
 > **免登录**：`/api/admin/*` 是语音助手自身使用的接口，**永远不需要登录**，也不做任何鉴权。不要为这些端点加登录开关或 Bearer 拦截——它们面向本机设置页，登录只属于未来的平台托管模式（届时由不同入口承载）。
 
@@ -280,7 +305,7 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 
 设备维度的用户长期记忆（习惯 / 偏好 / 作息 / 日程等），只存本机 SQLite，按 `deviceId` 隔离，不上云、不跨设备同步。同设备下 `(device_id, key)` 唯一，重复写同一 `key` 覆盖更新。
 
-- `GET /api/admin/memories?deviceId=xxx`：列出该设备全部记忆（按最近更新倒序），每项为 `{ "key": string, "value": string, "updatedAt": number }`。缺 `deviceId` 返回 `400`。
+- `GET /api/admin/memories?deviceId=xxx&page=1&pageSize=20&q=关键词`：分页列出该设备记忆（按最近更新倒序）。`page` 从 1 起；`pageSize` 默认 20、上限 100；`q` 对 `key` / `value` 模糊检索。响应 `{ "items": [{ "key": string, "value": string, "createdAt": number, "updatedAt": number }], "total": number, "page": number, "pageSize": number }`。缺 `deviceId` 返回 `400`。
 - `DELETE /api/admin/memories?deviceId=xxx`（body `{ "key"?: string }`）：删除记忆。`key` 缺省或空串表示清空该设备全部记忆；否则按「话题/内容」模糊匹配（命中 `key` 等于、包含，或 `value` 包含）删除。响应 `{ "deleted": number }`。
 
 > 语音侧的「记住 / 回忆 / 忘了XX」由对话智能体的 `remember` / `recall` / `forget` 工具与「忘了XX / 清空记忆」直接指令处理（见 `gateway/src/service/memoryControl.ts` 与 `tools/memoryTool.ts`），写入同样落到本接口背后的 `user_memory` 表。设置页（`uni_app` 的 `pages/settings`）可调 REST 查看与删除。
@@ -293,6 +318,16 @@ TTS 下行默认 `pcm16 / 24000 Hz`，由 `tts.start` 声明，客户端按声�
 - `GET /api/admin/config?deviceId=xxx`：返回 `{ "config": <AppConfig> | null }`；未保存过返回 `null`。缺 `deviceId` 返回 `400`。
 
 > **保存必须走网关、连不上要报错**：`onSave` 在 `persistConfig()`（本机落盘）之后，`POST /api/admin/config` 到网关；POST 成功（2xx）时保存完成、不额外显示文字（加载遮罩即为反馈）。网关没启动 / 请求失败 / 非 2xx 时显示行内红字错误（「配置仅存到本机，未同步到网关」），**不谎报成功**。语音服务配置本身另经 `session.start.voice` 下发网关生效（见上「session.start 的 voice」），与这里的落库是两条独立链路。
+
+##### 模型 / 音色目录（设置页下拉框数据源）
+
+均为 `GET`、免登录。`provider` 只接受 `builtin` / `dashscope`；地址由网关配置持有并中转，前端不直接请求第三方。
+
+- `GET /api/admin/llm-models?provider=&apiKey=&url=`：返回 `{ "models": string[] }`。`apiKey` 可选（百炼必填、内置通常为空）；`url` 可选，用户当前来源地址，保证列表与真实推理同地址（不传用网关默认）。
+- `GET /api/admin/tts-voices?provider=&lang=&apiKey=`：返回 `{ "defaultVoice": string, "voices": [{ "value": string, "label": string }] }`。内置来源实时中转 9529 音色目录；百炼用官方标准目录，`lang` 决定标签文案（默认 `zh-CN`）。
+- `GET /api/admin/voice-models?provider=&capability=asr|tts&apiKey=&url=`：返回 `{ "models": string[] }`。ASR / TTS 模型下拉框数据源；内置来源实时拉 9529 `/voice/v1/models`，失败时合并同源官方兜底清单。
+
+列表拉取失败返回 `502`（带 `error`）；`provider` / `capability` 非法返回 `400`。设置页必须让失败分支也给出可用状态，不能停在空数组 / 永久 disabled。
 
 
 #### 参数加密（PARAM_ENCRYPT=true）
@@ -330,13 +365,14 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 | TTS | `GET /voice/v1/audio/voices` | 音色目录 `{ default, provider, model, protocol, voices: [{ id, provider, model, desc_zh, desc_en, is_default }] }`；可选查询参数 `provider` / `model`，都不传时用默认提供商 + 默认模型。`provider` 支持 `builtin` / `dashscope`（兼容旧值 `openai_audio`）/ `deepseek`；`protocol` 是该模型的调用协议（`http` / `ws` / `http-async`，不含厂商名，厂商由 `provider` 表达）。数据来自本地 SQLite 的 `voices` / `speech_models` 表（`model-proxy/voice/seed/*.json` 初始化，`init_catalog.py` 灌库），每个模型各有一个默认音色。该接口与其他 `/voice` 数据接口一样受 IP 白名单 + API-Key 约束：开启 `VOICE_API_KEY_AUTH` 后需带 `Authorization: Bearer <key>`（管理面板已登录会话走 Cookie），不是公开匿名接口 |
 | 翻译 | `POST /voice/v1/audio/translations` | `multipart/form-data` 上传音频，先 ASR 识别原文、再经 LLM 代理翻译成 `target_lang`（默认英语）文本；无 LLM 上游时如实返回 503，不把识别原文冒充翻译 |
 | 服务级 | `GET /voice/health`、`GET /voice/v1/models` | 整体健康状态 / 统一模型目录。`/voice/v1/models` 的每条模型形如 `{ id, object, owned_by, type, context_length, dimension, provider, protocol }`：`provider` 是厂商（`builtin` / `dashscope` / `deepseek` / `openai_audio`），`protocol` 是该模型的调用形态（`http` / `ws` / `http-async`），取值来自本地 SQLite 的 `speech_models` 表；内置本地引擎也是走 `/voice/v1` 的 HTTP，协议为 `http` 而非 `local` |
+| 提供商 | `GET /voice/v1/providers` | 语音提供商清单（STT / TTS 两个端口），每条含 `vendor` / `protocol` / `host`（脱敏）/ `model` / `ready` / `models`，**不含密钥**；形状对齐 `/llm/v1/providers` |
 | LLM 对话 | `POST /llm/v1/chat/completions` | OpenAI 兼容，流式/非流式同一端点（`stream` 字段区分，SSE 或单个 JSON） |
 | LLM 嵌入 | `POST /llm/v1/embeddings` | OpenAI 兼容向量接口：`{ input, model, encoding_format?, dimensions? }` → `{ object:"list", data:[{ index, embedding }] }`；Ollama / DashScope / Gemini 走各自路径，Anthropic 与 OpenAI Responses 线协议不提供向量接口（501） |
 | LLM 模型 | `GET /llm/v1/models` | OpenAI 风格模型目录（配置并集） |
 | LLM 提供商 | `GET /llm/v1/providers` | 已配置提供商清单（脱敏、无密钥） |
 
 - 语音接口统一在 `/voice` 前缀下，**不按 ASR/TTS 分一级路径**（与 DashScope 形态一致）。
-- 业务请求可带 `provider`、`model`、`protocol` 覆盖默认路由（管理面板底部「测试」页用）；不传则完全沿用配置。`protocol` 为**对上游的线协议**（`http` / `ws` / `http-async`），必填，取自模型的协议字段。
+- 业务请求可带 `provider`、`model`、`protocol` 覆盖默认路由（管理面板底部「测试」页用）；三者都是**可选**，不传则完全沿用配置。`protocol` 为**对上游的线协议**（`http` / `ws` / `http-async`），留空按模型自动推断（内置恒为 `http`；上游模型名含 `cosyvoice` / `realtime` / `streaming` / `gummy` 判为 `ws`，其余 `http`）。
 
 ### 对外 WS 实时接口 `/voice/ws/inference`（已实现）
 
@@ -348,7 +384,7 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 
 | 方向 | 事件 | 关键字段 |
 |---|---|---|
-| C→S | `run-task` | `payload.task` = `asr` / `tts`；`payload.model`（上游模型，如 `paraformer-realtime-v2` / `cosyvoice-v2`，可空沿用配置）；`payload.parameters.voice`（TTS 音色） |
+| C→S | `run-task` | `payload.task` = `asr` / `tts`；`payload.model`（上游模型，如 `paraformer-realtime-v2` / `cosyvoice-v3-flash`，可空沿用配置）；`payload.parameters.voice`（TTS 音色，如 `longyumi_v3`） |
 | S→C | `task-started` | `streaming: "duplex"` |
 | C→S | 二进制音频帧（ASR）/ `continue-task`（`payload.input.text`，TTS） | — |
 | C→S | `finish-task` | 结束本次输入 |
@@ -364,11 +400,19 @@ REST 层失败返回对应 HTTP 状态；语音链路错误见上文的 `error` 
 
 > HTTP 形态统一为 **OpenAI 音频 API 标准形状**（`/voice/v1/audio/transcriptions`、`/speech`、`/translations`），不再单独提供 DashScope 形状的 HTTP 端点（原 `/api/v1/services/aigc/...` 与 `/compatible-mode/v1/chat/completions` 已移除，收敛到一套路径）。需要实时流式再走下面的 WS。
 
-> 注意：OpenAPI 3.0 不描述 WebSocket，所以本 WS 接口**不会出现在 `/docs`（Swagger UI）**。HTTP 接口（符合 OpenAI 音频 API 标准的 `/voice/v1/audio/transcriptions`、`/speech`、`/translations` 等）在 `/docs` 自动生成、可直接调试。
+> 注意：OpenAPI 3.0 不描述 WebSocket，所以本 WS 接口**不会出现在 `/docs`（Swagger UI）**。它单独渲染在 `GET /docs/ws`：正文直接从本文档 `### 对外 WS 实时接口` 章节抽取，改契约即同步，无需另写一份。HTTP 接口（符合 OpenAI 音频 API 标准的 `/voice/v1/audio/transcriptions`、`/speech`、`/translations` 等）在 `/docs` 自动生成、可直接调试。
 
 ### LLM 代理接口（/llm/v1）
 
-本地 LLM 代理是**纯 OpenAI 兼容反向代理**：入站固定 OpenAI `chat/completions` 形状，出站按 `LLM_UPSTREAM_PROTOCOL` 翻译到上游（Ollama / DashScope / OpenAI 等），网关换 `base_url` 即用。与语音接口不同，LLM 没有独立的 WS 形态，全部走 HTTP。
+本地 LLM 代理是**OpenAI 兼容反向代理**：入站固定 OpenAI `chat/completions` 形状，出站按**模型行上声明的线协议**翻译到上游。线协议对齐 Java 工程 `fw-plus-ai-native` 的 `LlmProtocol`，共 5 种：
+
+- `openai_chat_completions`：OpenAI / DeepSeek / DashScope / Ollama 等兼容端点；**默认值**，未知协议也回退到它；
+- `azure_openai_chat_completions`：Azure OpenAI；
+- `openai_responses`：OpenAI Responses API；
+- `anthropic_messages`：Anthropic `/v1/messages`；
+- `gemini`：Gemini `generateContent` / `streamGenerateContent`。
+
+**协议是模型级字段、只写调用形态**，不带厂商 / 引擎名 / 端点路径；厂商由 `vendor` 表达。协议跟在模型行上，不在提供商行旁单列。旧协议名（`openai` / `deepseek` / `dashscope` / `ollama` / `azure` / `anthropic` / `gemini`）仍可作为别名，代理统一收敛到上面的线协议（`ollama` 别名会启用 Ollama 原生 `/api/chat` 端点）。网关换 `base_url` 即用；与语音接口不同，LLM 没有独立的 WS 形态，全部走 HTTP。
 
 > 为什么只有一个 `/chat/completions`：OpenAI 的约定就是**流式与非流式共用同一个端点**，靠请求体里的 `stream: true/false` 区分——`true` 走 SSE 分块返回，`false` 返回单个 JSON。多数上游（Ollama / DashScope / OpenAI）都遵循这一形状，所以代理只需暴露这一个对话接口，无需为流式另开 URL。语音助手只走对话，不需要旧的 `/completions`（非对话补全）。向量（embeddings）是 OpenAI 兼容的**独立端点** `POST /llm/v1/embeddings`（见下表），与对话分开。
 

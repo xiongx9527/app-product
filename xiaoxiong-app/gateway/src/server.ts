@@ -9,7 +9,6 @@ import { createDocsController } from './controller/docsController'
 import { handleMusicStream, handleAdtsByKey, getMusicDiagnostics } from './controller/musicStreamController'
 import { createVoiceConnection } from './controller/voiceController'
 import { buildHealth } from './service/health'
-import { aecBenchmark } from './service/voiceSessionService'
 import type { VoiceConfig } from './voiceConfig'
 import { encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
 import type { GatewayConfig } from './config'
@@ -56,11 +55,7 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       // 运行期诊断（只读、本机）：NodeMobile 的 console 不进 logcat，统一从这里查转封装/短链错误。
       // 必须排在 apiBase catch-all 之前，否则会被通用 api 路由抢走。
       if (url.pathname === '/api/diag') {
-        const diag = [...getMusicDiagnostics()]
-        if (url.searchParams.get('aec') === '1') {
-          try { diag.push('AEC-BENCH ' + aecBenchmark()) } catch (e) { diag.push('AEC-BENCH ERR ' + (e as Error).message) }
-        }
-        writeJson(res, 200, { errors: diag }, { 'access-control-allow-origin': '*' })
+        writeJson(res, 200, { errors: getMusicDiagnostics() }, { 'access-control-allow-origin': '*' })
         return
       }
       if (url.pathname === '/api/health' || url.pathname === '/health') {

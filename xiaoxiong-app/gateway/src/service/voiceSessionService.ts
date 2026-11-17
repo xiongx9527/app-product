@@ -45,6 +45,7 @@ import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
 import { buildHealth } from './health'
+import { EchoCanceller } from './echoCanceller'
 import { appendFileSync } from 'node:fs'
 
 // ===== 临时诊断：播报期插话识别链路（定位后移除）=====
@@ -170,48 +171,6 @@ function nextPreference(text: string): string | undefined {
   return genreToKeyword(kw)
 }
 
-/**
- * 临时可行性基准（AEC spike，定位后移除）：纯 JS NLMS 自适应滤波，无外部依赖。
- * 测设备 NodeMobile 处理 1 秒 16k 音频（512 阶滤波）的耗时，判定网关侧软件 AEC 算力是否可行。
- * 实时要求 < 1000ms；留一半余量则 < 500ms 为佳。
- */
-export function aecBenchmark(): string {
-  const SR = 16000
-  const N = SR // 1 秒
-  const M = 512 // 滤波器阶数（32ms @16k，覆盖典型回声尾）
-  const mu = 0.05 // 步长
-  // 模拟远端(TTS)信号 x、近端回声 d = x 卷积房间脉冲 + 少量"人声"
-  const x = new Float32Array(N)
-  const d = new Float32Array(N)
-  for (let i = 0; i < N; i += 1) x[i] = (Math.sin(i * 0.07) + Math.sin(i * 0.013) * 0.5) * 0.3
-  const h = new Float32Array(M)
-  for (let i = 0; i < M; i += 1) h[i] = Math.exp(-i / 80) * Math.sin(i * 0.2) * 0.02
-  for (let i = 0; i < N; i += 1) {
-    let e = 0
-    for (let j = 0; j < M && i - j >= 0; j += 1) e += h[j] * x[i - j]
-    d[i] = e + (i % 4000 < 500 ? Math.sin(i * 0.5) * 0.05 : 0) // 模拟间歇人声
-  }
-  // NLMS
-  const w = new Float32Array(M)
-  const y = new Float32Array(N)
-  const t0 = Date.now()
-  for (let i = 0; i < N; i += 1) {
-    let dot = 0
-    for (let j = 0; j < M && i - j >= 0; j += 1) dot += w[j] * x[i - j]
-    y[i] = dot
-    const err = d[i] - dot
-    let pw = 1e-6
-    for (let j = 0; j < M && i - j >= 0; j += 1) pw += x[i - j] * x[i - j]
-    const step = mu / pw
-    for (let j = 0; j < M && i - j >= 0; j += 1) w[j] += step * err * x[i - j]
-  }
-  const ms = Date.now() - t0
-  // 收敛效果：最后 100 样本的残余误差 rms vs 原始近端 rms
-  let se = 0, sd = 0
-  for (let i = N - 100; i < N; i += 1) { se += (d[i] - y[i]) ** 2; sd += d[i] * d[i] }
-  return `ms=${ms} for 1s@16k M=${M} residualRms=${Math.sqrt(se / 100).toFixed(4)} origRms=${Math.sqrt(sd / 100).toFixed(4)} realtime=${ms < 1000}`
-}
-
 export class VoiceSessionService {
   private active = false
   private cancelled = false
@@ -306,6 +265,13 @@ export class VoiceSessionService {
    * 只有 VAD 判为语音的帧才喂给 ASR，最后一个人声帧之后静音够久才定稿。
    */
   private readonly vad = new EnergyVad()
+  /**
+   * 播报期软件回声消除：用下发的 TTS 作参考，从上行采集里减掉扬声器回声，只留真人插话再送 VAD/ASR。
+   * 原生/AEC 硬件消不干净的 TTS 回声是「播报期插话识别成 TTS 内容」的根因，这里在网关侧补上。
+   */
+  private readonly aec = new EchoCanceller()
+  /** 本句是否推过 TTS 参考（没推参考时 AEC 输出=原样，避免非播报期误处理）。 */
+  private aecActive = false
   /** 轮次编号：旧轮的在途回调据此作废，避免两轮抢着发事件。 */
   private turn = 0
   /** 是否已经给客户端发过 tts.start（音频帧下发中）。 */
@@ -1465,12 +1431,12 @@ export class VoiceSessionService {
     }
     // 帧一直会来，顺手把到期的回声抑制恢复掉
     if (this.halfDuplex && !this.echo.muted()) this.syncDuplex()
-    // 播报期与思考/空闲期用同一套 VAD 门槛：早先给播报期加过 strict（门槛加倍），
-    // 想靠它挡 TTS 回声，但回声防护其实由下游文本层的 resemblesSpoken（草稿/定稿）
-    // 和 App 端 AEC 负责，VAD 加倍只会把用户正常音量的插话也一起挡在门外——
-    // 没有帧喂给 ASR 就没有 asr.partial，说话当下看不到识别文字，体感「播报时很难插话」。
-    // 用户要求播报期识别与思考期一致，故不再传 strict。
-    const vad = this.vad.push(chunk)
+    // 软件 AEC：播报期把下发的 TTS 当参考，从这帧采集里减掉扬声器回声，只留真人插话。
+    // 上面的 frameRms 用原始 chunk（要检测真人开口触发 duck），这里 VAD/ASR 用消除后的帧。
+    // 没推过参考（非播报期）时 process 原样返回，零影响。
+    const cleanChunk = this.aecActive ? this.aec.process(chunk) : chunk
+    // VAD/ASR 用消除回声后的帧，与思考/空闲期同一套门槛，不加 strict。
+    const vad = this.vad.push(cleanChunk)
     // barge-in duck：播报期能量超过阈值（真人开口，非 TTS 底噪）就压低 TTS。
     // 不再依赖 vad.started——真人说话帧断续时 VAD 连续 2 帧门槛满足不了，started 几乎不触发。
     this.updateDuck(vad.voiced, frameRms > 0.02)
@@ -1495,7 +1461,8 @@ export class VoiceSessionService {
     // 播报期 duck 且能量超阈值时，即使 VAD 因帧断续没确认 inSpeech（frames 为空），
     // 也把当前人声帧喂给 ASR——否则 ASR 只收到零碎帧+TTS 回声，识别成「滕王格式文字版」乱码。
     const forceFeed = this.playbackPending && this.ducked && frameRms > 0.02 && vad.frames.length === 0
-    const framesToFeed = forceFeed ? [chunk] : vad.frames
+    // 喂 ASR 的帧必须是 AEC 消除回声后的，否则等于把 TTS 回声送进识别
+    const framesToFeed = forceFeed ? [cleanChunk] : vad.frames
     for (const frame of framesToFeed) {
       void this.asr.push(frame)
         .then((partial) => {
@@ -1767,6 +1734,8 @@ export class VoiceSessionService {
       }
     } finally {
       this.processing = false
+      // 整轮播报结束：停掉软件 AEC，避免空闲期用残留的旧 TTS 参考误消环境声/下一句人声。
+      if (this.aecActive) { this.aec.reset(); this.aecActive = false }
       // 队列卡死兜底（真机铁证：skip/break/await playback 提前退出后，队列还剩句子却无人消费，
       // 界面停在「已完成」但队列有内容不动）：会话仍 active、未被取消、且队列非空时，
       // 主动 kick 一轮消费队首。用 setTimeout(0) 异步调度，避免在本轮 finally 内重入。
@@ -1955,6 +1924,9 @@ export class VoiceSessionService {
         this.echo.onDownlink()
         // 每下发一帧就把回声保护窗口往后挪：窗口始终盖住「最后一帧之后的一小段余音」
         this.echoUntil = Date.now() + 1200
+        // 软件 AEC：把下发的 TTS（24k）推作远端参考；播报首帧 reset 一次，句间延续系数以覆盖回声尾。
+        if (!this.aecActive) { this.aec.reset(); this.aecActive = true }
+        this.aec.pushReference(frame)
         this.deps.sendAudio(frame)
       }
     } finally {

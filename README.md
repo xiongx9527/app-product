@@ -1,176 +1,243 @@
 # app-product
 
-语音助手客户端。一套 uni-app（Vue3 + TypeScript + Vite）代码，覆盖 Android / iOS / HarmonyOS App。
+语音助手客户端 + 同包 Node 网关。一套 uni-app（Vue3 + TypeScript + Vite）代码，
+**目标端只有 Android / iOS App**（自定义基座 + 原生插件）；H5 仅开发阶段调试用。
 
-核心链路：**本地唤醒 → 打招呼 → 语音对话 → 静默提示 → 退出本轮 → 继续待唤醒**。
+主链路：**网关 ASR 识别唤醒词「小熊小熊」→ 本地招呼「我在」→ 语音对话 →
+T1 静默提示 → T2 退出本轮 → 回到待唤醒**。
 
-## 特性
+> 微信小程序与 HarmonyOS 确定不支持，代码里不保留它们的降级分支。
+> 客户端只与网关通信；ASR / LLM / TTS / 内容源都由网关侧接入，前端不直连第三方。
 
-- 本地唤醒词「小熊小熊」，唤醒后立即播本地招呼「我在」，不等网络。
+## 能力
+
+### 语音对话
+
+- 唤醒：App 采集 PCM 上行，网关 ASR 出文本，客户端 `matchWakeWord` 命中「小熊小熊」；
+  唤醒后立即播本地招呼，不等 WebSocket 建连。**不是本地 KWS**。
+- 唤醒模式（`session.start.mode='wake'`）只跑 ASR，不跑 LLM / TTS；命中唤醒词后
+  切到 `dialog` 模式开始一轮对话。
 - 静默两段计时：T1 提示「还在吗？」，T2 无回应则退出本轮，回到待唤醒。
-- ASR / LLM / TTS 全部可配置：按厂商选择，参数独立保存。
-- 支持自带服务（BYOK）直连厂商或本地服务；登录与计费上线后支持平台托管，付费用户无需配置。
-- 语言可配置，默认 `zh-CN`。
-- 设备控制、设备商城、设备数据存储为后续阶段（见路线图）。
+- 思考 / 播报期间插话排队（最多 3 句），当前句播完后按序处理；只有「小熊小熊」
+  能打断当前句（客户端发 `session.skip_current`，只跳当前、不清队列）。
+- 回声治理：原生采集侧 AEC + 网关侧软件 AEC（NLMS，用下发 TTS 作参考消回声）+
+  strict VAD / 能量门控 / 已播文本比对 / 杂音与外语过滤。
+- App 端音频走原生直连：上行 PCM 与下行 TTS 都经 `?role=pcm` WebSocket 在原生层
+  收发，绕开播报期不可靠的 weex 回调；TTS 由原生 AudioTrack 播放，本地提示音走
+  不抢音频焦点的原生 MediaPlayer。
+- 语言：界面支持 `zh-CN` / `en-US`；语音链路默认中文，识别语言与 TTS 音色随全局
+  语言 / 语音来源配置。
 
-## 技术栈
+### 内容与工具
 
-| 层 | 选型 |
-|---|---|
-| 应用框架 | uni-app（Vue3 + TS + Vite） |
-| 唤醒 | App：原生插件 `app-product-wake`（sherpa-onnx KWS）；H5：Web Speech API（仅调试） |
-| 音频 | 上行 16kHz / 16bit / 单声道 PCM |
-| 状态机 | `core/assistant` 纯函数，可单测 |
-| 配置 | 客户端本地存储 `app-product.config.v1` |
-| Agent（后续） | AgentScope 2 TypeScript，跑在自建 Node 网关，不进客户端 |
+- **点歌 / 音频内容**：百度源（歌曲宝详情页同源音频 + 封面 + LRC，拿不到再走 B 站
+  音轨 + 百度兜底）；评书 / 相声 / 有声书 / 电视 / 电影 / 动画等视频类内容抽取 B 站
+  音轨播放音频；SomaFM 风格电台。B 站 dash 音轨由网关转封装 ADTS 并以短链
+  `/music/s/<key>.aac` 下发。
+- **字幕**：同源字幕只展示、不播报，不配第三方歌词库；无同源字幕时显示「暂无字幕」。
+- **播放控制**：播放 / 暂停 / 继续 / 停止 / 上一首 / 下一首 / 音量 / 循环 / 自动字幕；
+  顶部播放条 + 字幕面板 + 可拖拽悬浮唱片播放器。
+- **天气、时间 / 日期 / 农历、择吉日**：时间按配置时区返回；问日期报全阳历 + 星期 +
+  农历；问吉日用内置黄历宜忌数据扫未来 30 天。历法表述固定中文。
+- **好价商品**：什么值得买好价查询，详情卡片支持编号选择、跨轮保留候选。
+- **长期记忆**：网关 SQLite 存储，支持手动「记住 / 忘掉」与可选的自动抽取 / 合并。
+- **MCP 工具**：设置页添加 stdio / sse / http MCP 服务器，网关连接后把工具注册进
+  助手工具箱，可按工具白名单 / 黑名单启用。
+- **我的收藏**：当前为客户端内存列表演示（自动收藏流程可见），网关持久化接口待接。
+
+### 设置
+
+设置页按「运行模式 → 语音来源 → 参数」组织：
+
+- 运行模式：`byok`（自带服务，当前唯一可用）/ `platform`（平台托管，登录 + 计费后开放）。
+- 语音来源：`builtin`（内置 / 自建 9529 服务）与 `dashscope`（阿里云百炼），
+  两份地址、Key、模型各自独立保存，切换来源不丢参数。
+- 每个来源可选 LLM 模型、ASR 模型、TTS 模型 / 音色；下拉选项由网关实时从来源拉取，
+  默认留空由来源决定。
+- 播放设置（播放源、自动字幕、默认循环 / 音量、悬浮播放器、字幕字号 / 颜色）、
+  好价条数、自动连接、主题、自动记忆、MCP 服务器。
+- 一键检测：按当前来源探测 LLM / ASR / TTS 地址与模型可用性，并检查外网连通性。
+
+## 架构
+
+```
+App（Android / iOS）
+├── uni-app 界面（Vue3 + TS）
+├── 原生插件 app-product-wake
+│   ├── PCM 采集 / 播放（AudioTrack、AEC、本地提示音）
+│   └── ?role=pcm 原生直连网关（上行 PCM + 下行 TTS）
+└── 内嵌网关（nodejs-mobile，127.0.0.1:<动态端口>）
+        ├── WS /ws：语音会话、事件、TTS 音频
+        ├── REST /api/*：健康、会话、记忆、模型目录、配置
+        ├── SQLite：会话 / 记忆 / 命令日志 / 设置备份（权威存储）
+        ├── AgentScope TS：智能体、工具、MCP
+        └── 外网内容源：B 站 / 百度 / 歌曲宝 / 什么值得买 / SomaFM
+                 │
+        ┌────────┴────────┐
+        │                 │
+   9529 本地 AI 服务    DashScope 云端
+   （STT / TTS / LLM / Embeddings）
+```
+
+- **网关是客户端唯一后端**：语音走 WS，数据走 REST；第三方能力只在网关落地。
+- **会话与连接解耦**：客户端持久化 `deviceId`，重唤醒 / 重连复用同一会话
+  （保留对话记忆与待选歌单），`session.end` 才真正结束。
+- **App 内嵌运行**：Android 在 `:gateway` 独立进程、iOS 在 App 进程内后台线程启动
+  nodejs-mobile，网关只绑 `127.0.0.1`，端口由系统分配并写入 `.gateway_port`；
+  桌面开发时网关是普通 Node 进程（默认 `8787`）。
+- **配置存储**：客户端本机 `app-product.config.v1` 为主；设置页「保存配置」可把整份
+  `AppConfig` 备份到网关 SQLite，按 `deviceId` 覆盖更新。
 
 ## 目录
 
 ```
 app-product/
-├── model-proxy/            # 开发辅助：安装 Ollama / 本地 AI 服务、统一启停各服务（模型代理）
+├── model-proxy/                  # 本地 AI 服务（9529）+ Ollama / 服务编排脚本
 ├── xiaoxiong-app/
-│   ├── uni_app/            # 客户端
+│   ├── uni_app/                  # uni-app 客户端
 │   │   └── src/
-│   │       ├── core/       # 与业务无关：状态机、唤醒、音频、配置、传输、适配
-│   │       ├── features/   # 业务编排与页面逻辑
-│   │       ├── pages/      # 路由页面（index / settings）
-│   │       └── static/audio/   # 本地招呼与提示音
-│   ├── gateway/            # 后端 Node 网关（WebSocket 语音 + REST 数据）
-│   ├── scripts/            # 跨平台开发服务器管理器（start/stop/restart/status/log）
-│   └── contracts/          # 客户端 ↔ 服务端消息契约
-└── docs/superpowers/specs/ # 设计文档
+│   │       ├── core/             # 状态机、唤醒词、音频、配置、传输、i18n、适配
+│   │       ├── features/         # 业务编排：助手、记忆、详情、收藏、推荐
+│   │       ├── pages/            # 首页 / 设置 / 收藏 / 好价 / 长期记忆 / MCP
+│   │       └── static/audio/     # 本地招呼与提示音
+│   ├── gateway/                  # Node 网关（WS 语音 + REST 数据 + SQLite + AgentScope）
+│   ├── native/                   # Android / iOS 原生工程（唤醒插件、网关壳、framework）
+│   ├── scripts/                  # 开发服务器、打包、真机安装、USB 联网脚本
+│   └── contracts/                # 客户端 ↔ 网关协议契约（唯一协议来源）
+├── docs/                         # 设计文档、内嵌网关方案、DashScope WS 语音说明
+└── AGENTS.md                     # 协作约定与踩坑记录
 ```
 
+## 技术栈
+
+| 层 | 选型 |
+|---|---|
+| 客户端 | uni-app（Vue3 + TypeScript + Vite），仅 Android / iOS App |
+| 原生桥 | Android Java 插件 `app-product-wake`；iOS `XiaoxiongGateway` framework |
+| 网关 | Node + AgentScope TS + `ws` + Drizzle ORM + SQLite（`node:sqlite`） |
+| 内嵌运行时 | nodejs-mobile（Node 24.20.0），Android `:gateway` 进程 / iOS 后台线程 |
+| 本地 AI 服务 | Python FastAPI（9529）：SenseVoice STT、edge-tts TTS、LLM / Embeddings 代理 |
+| 数据 | 网关 SQLite 为业务数据权威源；客户端本机存储只放配置与设备标识 |
+| 协议 | `xiaoxiong-app/contracts/README.md`；网关 Swagger `/docs` |
+
 ## 快速开始
+
+### 客户端
 
 ```bash
 cd xiaoxiong-app/uni_app
 npm install
-npm run dev:app       # Android / iOS 真机（HBuilderX 自定义基座）
-npm run test          # 状态机 / 唤醒词 / 配置 单测
+npm run test          # vitest
+npm run type-check    # vue-tsc
+npm run dev:h5        # 浏览器调试 UI / 链路
+npm run dev:app       # Android / iOS（需 HBuilderX / 自定义基座）
+```
+
+### 网关（桌面开发）
+
+```bash
+cd xiaoxiong-app/gateway
+npm install
+npm run dev           # tsx watch，默认 8787
+npm run test
 npm run type-check
 ```
 
-App 与鸿蒙需要 HBuilderX / DevEco Studio 自定义基座，原生唤醒插件落地后才能在真机验证。详见 `xiaoxiong-app/uni_app/README.md`。
-
-### 本地 Ollama（可选）
-
-本地 AI 服务的 LLM 是纯转发代理，Ollama 只是可选上游之一。若要用本机 Ollama 跑模型、
-或让网关直连它的原生接口，先安装并下载模型：
-
-macOS：
+### 本地 AI 服务（9529）
 
 ```bash
-./model-proxy/install-ollama.sh
-./model-proxy/pull-ollama-models.sh
-```
-
-Windows（CMD / PowerShell）：
-
-```bat
-model-proxy\install-ollama.cmd
-model-proxy\pull-ollama-models.cmd
-```
-
-模型清单在 `model-proxy/ollama-models.txt`，也可直接把模型名传给下载脚本。用法与网关配置对应关系见 `model-proxy/README.md`。
-
-### 本地 AI 服务（可选）
-
-网关的 ASR / TTS / LLM 指向 9529 的 OpenAI 兼容服务。仓库提供原生安装脚本
-（macOS / Windows，不使用 Docker），一个进程同时提供：SenseVoice STT、
-edge-tts TTS，以及一个 **LLM 纯转发代理**（`/llm/v1`，把请求原样转发到任意
-OpenAI 兼容上游，不加载本地模型、不绑定 Ollama）。
-
-macOS：
-
-```bash
-./model-proxy/install-voice.sh
+./model-proxy/install-voice.sh    # 首次安装（venv + 依赖 + SenseVoice 模型）
 ./model-proxy/voice.sh start      # 后台启动
-./model-proxy/voice.sh status     # 运行状态
-./model-proxy/voice.sh log        # 查看日志
-./model-proxy/voice.sh stop       # 停止
+./model-proxy/voice.sh status
+./model-proxy/voice.sh log
+./model-proxy/voice.sh stop
 ```
 
-Windows（CMD / PowerShell）：
+Windows 用同目录下的 `.cmd`（`model-proxy\install-voice.cmd`、`voice.cmd` 等）。
+管理面板：`http://127.0.0.1:9529/admin`；安装、配置、鉴权、模型目录与测试说明见
+`model-proxy/README.md`。
 
-```bat
-model-proxy\install-voice.cmd
-model-proxy\voice.cmd start
-model-proxy\voice.cmd status
-model-proxy\voice.cmd log
-model-proxy\voice.cmd stop
-```
-
-`start` / `restart` / `check` 会先检查依赖环境：本地模式检查 Python 包、SenseVoice 模型和
-ffmpeg；代理模式检查基础包和上游地址。检查不通过时服务不会启动，终端和 `voice.log`
-里会给出具体安装命令；**启动脚本不会自动安装依赖**，需要用户手动执行安装脚本。
-
-只跑 TTS 时用 `--tts-only` / `-TtsOnly`，可跳过约 240MB 的 SenseVoice 模型。
-不想在本机装模型和 ffmpeg 时用 `--proxy-only` / `-ProxyOnly`，把 STT / TTS 代理到远程
-OpenAI 兼容服务（需先在 `voice.conf` 填上游地址，否则启动检查会失败）。
-监听地址、端口、API Key、上游地址等都在首次安装生成的 `voice.conf` 里配置；
-默认监听 `0.0.0.0:9529`，默认不启用 API Key。
-完整配置项、代理示例和网关 `.env` 对应关系见 `model-proxy/README.md`。
-
-### 一键启停所有服务（macOS / Linux）
-
-上面的 Ollama、本地 AI 服务，加上 Node 网关与前端，可以用 `model-proxy/services.sh`
-统一启停，不用逐个敲命令：
+### 一键启停（macOS / Linux）
 
 ```bash
-./model-proxy/services.sh start          # 启动 ollama / voice / gateway / uniapp
-./model-proxy/services.sh status         # 查看各服务状态
-./model-proxy/services.sh log voice -f   # 跟踪某个服务日志
-./model-proxy/services.sh stop all       # 全部停止
+./model-proxy/services.sh start          # ollama / voice / gateway / uniapp
+./model-proxy/services.sh status
+./model-proxy/services.sh log voice -f
+./model-proxy/services.sh stop all
 ```
 
-也可只操作部分服务（`start voice`、`restart gateway`、`stop backend` 等），
-或先 `check` 只做依赖检查。它是编排层，`voice` 仍由 `voice.sh` 管理、
-`gateway` / `uniapp` 仍由 `xiaoxiong-app/scripts/dev-server.mjs` 管理；
-启动前不会自动安装依赖。LLM 走远程代理时不需要本机 Ollama，可用
-`start voice gateway uniapp`。完整用法见 `model-proxy/README.md`。
-目前统一管理器只有 bash 版（macOS / Linux），Windows 仍用各服务各自的 `.cmd` 脚本。
+### 真机出包
+
+`build.sh` 会自动全量重编译前端与网关 bundle（先清 `dist` 与 vite 缓存），再接入 DCloud
+离线 SDK。首次使用先把 `xiaoxiong-app/scripts/.build_env.example` 复制成
+`.build_env.dev` / `.test` / `.pro` 并填 appid / AppKey（该文件不入库）。
+
+```bash
+cd xiaoxiong-app
+./scripts/build.sh dev android            # 前端 + 网关 bundle + APK，产物在
+                                          # native/android/app/build/outputs/apk/debug/
+node scripts/install-android-offline.mjs  # 干净安装 + 补麦克风权限 + Doze 白名单
+```
+
+iOS：`./scripts/build.sh dev ios` 完成资源接入与壳工程集成，再用
+`native/ios/reprovision.sh` 做真机构建 / 重签 / 装机（详见 `xiaoxiong-app/native/README.md`）。
+
+真机联调需要 `adb reverse tcp:9529 tcp:9529`，让设备上的网关访问电脑的本地 AI 服务；
+拔线或重启后反代会掉，重插后要重建。
 
 ## 配置模型
 
-设置页按 **运行模式 → 厂商 → 参数** 三层组织：
-
 | 层 | 说明 |
 |---|---|
-| 运行模式 | `byok` 自带服务（当前可用）；`platform` 平台托管（登录 + 计费后开放，付费用户免配置） |
-| 厂商 | ASR：OpenAI 兼容 / 阿里云 DashScope / FunASR；LLM：OpenAI 兼容 / Ollama / DashScope / DeepSeek / AgentScope 网关；TTS：OpenAI 兼容 / Kokoro / DashScope |
-| 参数 | 地址、模型、API Key、语言、音色、格式、采样率、温度、超时等，按厂商动态渲染 |
+| 运行模式 | `byok` 自带服务（当前可用）；`platform` 平台托管（登录 + 计费后开放） |
+| 语音来源 | `builtin` 内置 / 自建 9529；`dashscope` 阿里云百炼；各存一份 url / apiKey |
+| 能力参数 | LLM `model`、ASR `asrModel`、TTS `ttsModel` + 音色 `voice` / `voiceModel` |
+| 行为设置 | 播放源 / 字幕 / 循环 / 音量、好价条数、自动连接、主题、记忆、MCP |
 
-配置只保存在本机；切换厂商时各自参数保留，换回来不用重填。每张卡片支持「测试连接」与「恢复默认」。
+参数值统一经 `coerceFieldValue` 收敛（数字范围、枚举合法性、布尔），脏配置不会带崩
+运行时。API Key 只落本机；平台模式上线后由网关持有，客户端不落 Key。
 
-本机已对接的参考服务：
+## 协议与数据
 
-| 服务 | 地址 | 说明 |
-|---|---|---|
-| openai-voice | `http://127.0.0.1:9529/v1` | OpenAI 兼容 ASR / TTS，STT `sensevoice`，TTS 支持流式 |
-| kokoro-voice | `http://127.0.0.1:9530` | 本地 TTS，100 个音色，`pcm` / `wav` 流式 |
-| Ollama | `http://127.0.0.1:11434` | 本地 / 云端模型，OpenAI 兼容端点为 `/v1` |
+- **唯一协议来源**：`xiaoxiong-app/contracts/README.md`。先改契约再改代码；新增事件 /
+  接口必须同步契约。
+- 语音 WS：`/ws?deviceId=<id>`，客户端上行 PCM、JSON 控制帧；网关下发
+  `asr.*` / `llm.*` / `tts.*` / `media.*` / `audio.*` 事件与 TTS 二进制音频。
+- 原生音频直连：`/ws?deviceId=<id>&role=pcm` 是内部音频专用连接，只收发音频帧、
+  不绑定会话，避免抢走 JS 连接的事件下发。
+- REST：`/api/health?deep=1`、`/api/sessions`、`/api/command-logs`、
+  `/api/admin/{config,memories,llm-models,tts-voices,voice-models}`、`/api/diag`、
+  `/music/stream?url=`、`/music/s/<key>.aac`；Swagger `/docs`、`/api/openapi.json`。
+- 设置接口 `/api/admin/*` 面向本机设置页，免登录；登录只属于未来的平台托管模式。
 
 ## 当前状态
 
-- 状态机、唤醒词匹配、配置读写共 26 个单测通过，`type-check` 通过。
-- H5 可用浏览器语音真实唤醒，跑通完整会话链路；后端仍为 Mock。
-- App 原生唤醒桥接已就位，插件 `app-product-wake` 待实现（Android 先行）。
-- ASR / LLM / TTS 直连链路尚未接入，等待代理接口细节。
+- Android 真机已跑通主链路并完成多轮回归：网关 ASR 唤醒、对话、TTS 播报、播报期插话排队、
+  点歌 / 字幕 / 播放器、天气 / 时间 / 好价、长期记忆、MCP、多语音来源切换。
+- iOS 已具备同包网关 framework、原生插件与离线打包链，真机联调按 `native/ios` 流程进行。
+- H5 仅用于 UI 与链路调试，不是交付端；小程序 / 鸿蒙不提供实现。
+- 已知限制：
+  - 「我的收藏」只有客户端内存列表，网关持久化接口未实现；
+  - 平台托管模式（登录 + 计费）未开放；
+  - 播报期喊「小熊小熊」打断仍在优化（普通插话已可用）；
+  - 设备控制 / 设备数据 / 设备商城属于后续阶段。
+- 提交前必须跑 `npm run test` 与 `npm run type-check`（客户端、网关各自）。
 
 ## 路线图
 
-1. 基础能力：唤醒、会话状态机、本地招呼、配置页（当前阶段）。
+1. 基础能力：唤醒、会话状态机、本地招呼、语音对话、配置页（当前阶段）。
 2. 设备控制：BLE / Wi-Fi 设备发现、配对、语音下发命令。
-3. 设备数据：采集设备数据存本地；付费用户后续可同步云端。
-4. 登录与计费：平台托管模式，付费用户无需配置 ASR / LLM / TTS。
+3. 设备数据：采集后写网关 SQLite；付费用户后续同步云端。
+4. 登录与计费：平台托管模式，付费用户免配置 ASR / LLM / TTS。
 5. 设备商城：App 内购买设备，形成「语音入口 → 设备控制 → 硬件收入」闭环。
 
 ## 文档
 
+- 协议契约：`xiaoxiong-app/contracts/README.md`
 - 设计文档：`docs/superpowers/specs/2026-11-06-app-product-design.md`
-- 协议契约：`contracts/README.md`
+- 内嵌网关方案：`docs/mobile-embedded-gateway.md`
+- DashScope WS 语音：`docs/dashscope-ws-voice.md`
 - 客户端说明：`xiaoxiong-app/uni_app/README.md`
-- 开发脚本说明：`model-proxy/README.md`
-- 协作约定：`AGENTS.md`
+- 原生层说明：`xiaoxiong-app/native/README.md`、`xiaoxiong-app/native/ios/app/README.md`
+- 本地 AI 服务：`model-proxy/README.md`
+- 协作约定与踩坑：`AGENTS.md`
