@@ -105,6 +105,7 @@ model-proxy/
 | LLM | `POST /llm/v1/chat/completions` | 入站固定 OpenAI 格式，出站按模型声明的线协议翻译到上游（含 SSE 流式） |
 | LLM | `POST /llm/v1/embeddings` | OpenAI 兼容向量接口（Anthropic / Responses 线协议无向量接口，返回 501） |
 | 目录 | `GET /voice/v1/providers`、`/voice/v1/models`、`/llm/v1/providers`、`/llm/v1/models` | 提供商 / 模型目录（脱敏，不含密钥） |
+| 热词纠错 | 对外 `GET/POST /voice/v1/corrections`、管理 `GET/POST /admin/api/corrections` | ASR 同音错词→正确词词表；对外只做下载/上传，管理端做分页/启用/审核（需鉴权）。三库对等 + Redis 缓存，见下节 |
 | 健康 | `GET /`、`/health`、`/voice/health`、`/llm/health` | 后端、模型、ffmpeg、鉴权、缓存、远程同步状态 |
 | 文档 | `GET /docs`、`/docs/ws` | Swagger（HTTP）与 WS 实时接口文档 |
 | 管理 | `GET /admin` | 管理面板（独立账号，见下） |
@@ -114,6 +115,42 @@ model-proxy/
 >
 > `/docs/ws` 的正文从 `xiaoxiong-app/contracts/README.md` 的
 > 「对外 WS 实时接口」章节抽取，改 WS 契约时保持该标题稳定即可自动同步。
+
+### 热词纠错词表
+
+把语音识别的同音错词纠正为正确词（如"若神父"→"洛神赋"）。9529 是词表权威源，从空表起步，
+由客户端 `learn_correction` 学习上传或管理面板添加；各客户端增量同步，本地先存、择机上传。
+存储层三库对等（SQLite / MySQL / PostgreSQL），可选 Redis 缓存。
+
+**对外接口**（`/voice/v1/corrections`，客户端网关用，无鉴权）—— 只有两个：
+
+- **GET 下载**：`GET /voice/v1/corrections?since=<毫秒时间戳>`（`since=0` 首次全量），返回
+  `updated_at > since` 的变更，**只下发 enabled=1 的**，附 `max_updated_at`（客户端记下作水位）。
+- **POST 上传**：`{"correct":"洛神赋","wrong":"若神父","correct_pinyin":"...","wrong_pinyin":"..."}`。
+  客户端学习到的纠错词，标记 `uploaded=1`，**默认不启用**，等管理端审核通过后自动启用下发。
+  拼音缺省由 pypinyin 补算；返回 `{ok, main_id, variant_id, is_new, updated_at}`。
+
+**管理端接口**（`/admin/api/corrections`，需 admin Cookie 鉴权）—— 与管理面板配套：
+
+- **GET 列表**：`GET /admin/api/corrections?page=1&page_size=10`，**主表（正确词）分页**，每条带
+  `variants[]`（其下错词明细），返回 `items` / `total` / `page` / `pages`。
+- **POST 管理操作**（body 带 `op`）：
+  - `{op:"set_enabled", main_id:3, value:true}` 启用/禁用整组（也兼容 `variant_id`）
+  - `{op:"set_reviewed", main_id:3, value:true}` 审核标记
+  - `{op:"approve", variant_id:7}` 审核通过子表：置 reviewed+enabled 并自动启用主表（仅 uploaded=1 的可审）
+  - 不带 `op`：`{"correct":"洛神赋"}` 只建主表（默认禁用，需启用后才能加明细）；
+    `{"correct":"洛神赋","wrong":"滕王格式"}` 加子表错词（本地添加，默认禁用）
+
+字段：`main_id` / `variant_id`（id）、`correct`（正确词）、`correct_pinyin`（正确词拼音）、`wrong`（错词）、
+`pinyin`（错词拼音，匹配用）、`source`（`local` 本地 / `synced` 同步）、`uploaded`（1=客户端上传）、
+`reviewed`（审核标记）、`enabled`（启用，控制是否同步）、`updated_at`（毫秒，任何变更都前移）。
+
+来源显示：管理面板把 `uploaded=1` 显示为"客户端上传"，否则"本地添加"。本地添加默认禁用，
+启用后才能加错词明细；客户端上传的错词需审核，审核后自动启用。不提供删除（热词只增不删）。
+
+配置（环境变量）：`VOICE_CORRECTION_DB`（`sqlite`/`mysql`/`postgresql`，不配按 DSN 推断，默认 sqlite）、
+`VOICE_DB_PATH`、`VOICE_MYSQL_DSN`、`VOICE_REMOTE_DSN`/`VOICE_PG_DSN`、`REDIS_URL`（缓存）。
+驱动按需装：sqlite 标准库、mysql `pip install pymysql`、pg `pip install "psycopg[binary]"`。
 
 ### 提供商、模型与协议
 

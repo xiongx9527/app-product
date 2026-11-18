@@ -35,10 +35,14 @@ PYTHON_BIN="${PYTHON:-python3}"
 # 国内优先走 hf-mirror，失败再回退 huggingface.co；两边是同一份模型。
 MODEL_MIRROR="https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main"
 MODEL_FALLBACK="https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main"
+# Silero VAD：幻觉二级判断用（打嗝/吸鼻子/回声脑补的单字）。独立仓库，下载到同一个 sensevoice 目录。
+VAD_MIRROR="https://hf-mirror.com/onnx-community/silero-vad/resolve/main/onnx"
+VAD_FALLBACK="https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx"
 
 DO_STT=1
 DO_TTS=1
 DOWNLOAD_MODEL=1
+DOWNLOAD_VAD=1  # Silero VAD 是幻觉二级判断的默认必需依赖；--skip-vad 可跳过
 PROXY_ONLY=0
 DRY_RUN=0
 
@@ -89,6 +93,10 @@ while [ $# -gt 0 ]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      ;;
+    --skip-vad)
+      # 跳过 Silero VAD（幻觉二级判断会降级为文本层）。默认要下载，仅在明确不需要时用。
+      DOWNLOAD_VAD=0
       ;;
     --python)
       shift
@@ -264,12 +272,32 @@ else
   download_model_file "model.int8.onnx" 100000000
   download_model_file "tokens.txt" 100000
 
+  # Silero VAD（幻觉二级判断）：默认必需依赖，镜像失败回退官方源；两个源都失败才 die。
+  # 仅在明确 --skip-vad 时跳过（此时幻觉拦截降级为文本层）。
+  if [ "$DOWNLOAD_VAD" -eq 1 ]; then
+    log "  下载 Silero VAD（幻觉二级判断依赖）..."
+    if ! download_file "$VAD_MIRROR/model.onnx" "$MODEL_DIR/silero_vad.onnx" 1000000; then
+      log "  镜像下载失败，改用 huggingface.co 重试..."
+      download_file "$VAD_FALLBACK/model.onnx" "$MODEL_DIR/silero_vad.onnx" 1000000 \
+        || die "VAD 模型下载失败（幻觉二级判断依赖）；网络受限可加 --skip-vad 跳过"
+    fi
+  else
+    log "  已跳过 Silero VAD（--skip-vad）：幻觉拦截降级为文本层"
+  fi
+
   if [ "$DRY_RUN" -eq 0 ]; then
     model_size=$(wc -c <"$MODEL_DIR/model.int8.onnx" | tr -d ' ')
     token_size=$(wc -c <"$MODEL_DIR/tokens.txt" | tr -d ' ')
     [ "$model_size" -ge 100000000 ] || die "model.int8.onnx 不完整（${model_size} 字节）"
     [ "$token_size" -ge 100000 ] || die "tokens.txt 不完整（${token_size} 字节）"
     log "  模型就绪：model.int8.onnx（${model_size} 字节），tokens.txt（${token_size} 字节）"
+    if [ -s "$MODEL_DIR/silero_vad.onnx" ]; then
+      log "  Silero VAD 就绪（幻觉二级判断可用）"
+    elif [ "$DOWNLOAD_VAD" -eq 0 ]; then
+      log "  Silero VAD 已按 --skip-vad 跳过（幻觉拦截降级为文本层）"
+    else
+      die "Silero VAD 模型不完整；检查下载或加 --skip-vad 跳过"
+    fi
   fi
 fi
 

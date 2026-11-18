@@ -93,6 +93,8 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         "基础库只由 seed/init_catalog.py 维护，保存动作按 (kind, provider) 整体替换启用表", []),
     7: ("schema_version 增加 description 列，按版本逐级记录表结构变更；补齐 v1~v6 历史说明",
         ["col:schema_version:description:TEXT"]),
+    8: ("新增 asr_corrections + asr_correction_variants 两表：ASR 同音错词→正确词（与主表一对多），"
+        "作为所有客户端共享的纠错词表权威源（learn_correction 工具写入，网关静默同步）", []),
 }
 
 
@@ -181,6 +183,28 @@ def ensure_schema() -> None:
             PRIMARY KEY(kind, provider, model)
         );
         CREATE INDEX IF NOT EXISTS idx_enabled_models_kp ON enabled_speech_models(kind, provider);
+        -- ASR 纠错词表（权威源，供所有客户端同步）：主表 correct（正确词，唯一）+ 变体表 wrong（错词）。
+        -- 与网关侧 asr_corrections / asr_correction_variants 两表结构一致，同步时联表成 flat {wrong,pinyin,correct}。
+        -- learn_correction 工具写入：先 upsert 主表拿 id，再 upsert 变体。
+        CREATE TABLE IF NOT EXISTS asr_corrections (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            correct    TEXT NOT NULL UNIQUE,   -- 正确词
+            pinyin     TEXT NOT NULL DEFAULT '', -- 正确词拼音
+            note       TEXT,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS asr_correction_variants (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            correction_id INTEGER NOT NULL,    -- 主表 id
+            wrong         TEXT NOT NULL,       -- 错词（识别错的文本）
+            pinyin        TEXT NOT NULL DEFAULT '', -- 错词拼音，匹配用它
+            note          TEXT,
+            updated_at    INTEGER NOT NULL,
+            UNIQUE(correction_id, wrong),
+            FOREIGN KEY(correction_id) REFERENCES asr_corrections(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_asr_variants_cid ON asr_correction_variants(correction_id);
+        CREATE INDEX IF NOT EXISTS idx_asr_variants_pinyin ON asr_correction_variants(pinyin);
         CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
         CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
         CREATE INDEX IF NOT EXISTS idx_health_ts ON health_snapshots(ts);
@@ -555,6 +579,82 @@ def _seed_voices() -> None:
             rows,
         )
         c.commit()
+
+
+# ── ASR 纠错词表（权威源，供客户端增量同步） ──────────────────────────
+def list_asr_corrections(since: int = 0) -> list[dict[str, Any]]:
+    """返回错词→正确词的 flat 列表（联表），since>0 时只返回 updated_at>since 的变更记录。
+
+    结构与网关侧 listFlat 一致：{wrong, pinyin, correct, updated_at}，网关拿到可直接
+    load 进 asrCorrector。按 updated_at 增量同步——新增或修正映射都会前移 updated_at，
+    客户端记录水位即可只拉变更，避免每次全量。
+    """
+    if _db_path is None:
+        return []
+    sql = """
+        SELECT v.id AS variant_id, m.id AS main_id,
+               v.wrong, v.pinyin, m.correct, v.updated_at
+        FROM asr_correction_variants v
+        JOIN asr_corrections m ON m.id = v.correction_id
+    """
+    args: list[Any] = []
+    if since > 0:
+        sql += " WHERE v.updated_at > ?"
+        args.append(since)
+    sql += " ORDER BY v.updated_at, v.id"
+    rows = _conn_get().execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def max_asr_correction_ts() -> int:
+    """当前词表最大 updated_at（毫秒时间戳），供客户端记录同步水位。"""
+    if _db_path is None:
+        return 0
+    row = _conn_get().execute(
+        "SELECT MAX(updated_at) AS ts FROM asr_correction_variants"
+    ).fetchone()
+    return int(row["ts"] or 0) if row else 0
+
+
+def upsert_asr_correction(correct: str, correct_pinyin: str, wrong: str, wrong_pinyin: str,
+                          note: str = "") -> dict[str, Any]:
+    """写入一条错词→正确词（learn_correction 用）。主表按 correct 去重，变体按 (correction_id, wrong) 去重。
+    返回 {correct, wrong, updated_at, is_new}。updated_at 用毫秒时间戳，保证增量同步水位精确。"""
+    if _db_path is None:
+        return {}
+    c = _conn_get()
+    now_ms = int(time.time() * 1000)
+    c.execute(
+        "INSERT INTO asr_corrections(correct, pinyin, note, updated_at) VALUES(?,?,?,?) "
+        "ON CONFLICT(correct) DO UPDATE SET pinyin=excluded.pinyin, note=excluded.note, updated_at=excluded.updated_at",
+        (correct, correct_pinyin, note or None, now_ms),
+    )
+    row = c.execute("SELECT id FROM asr_corrections WHERE correct=?", (correct,)).fetchone()
+    if not row:
+        return {}
+    cid = int(row["id"])
+    existed = c.execute(
+        "SELECT id FROM asr_correction_variants WHERE correction_id=? AND wrong=?", (cid, wrong)
+    ).fetchone()
+    is_new = existed is None
+    variant_id = int(existed["id"]) if existed else 0
+    if is_new:
+        cur = c.execute(
+            "INSERT INTO asr_correction_variants(correction_id, wrong, pinyin, note, updated_at) "
+            "VALUES(?,?,?,?,?)",
+            (cid, wrong, wrong_pinyin, note or None, now_ms),
+        )
+        variant_id = int(cur.lastrowid or 0)
+    else:
+        # 已存在也前移 updated_at（修正映射场景，让增量同步能带上）
+        c.execute(
+            "UPDATE asr_correction_variants SET pinyin=?, note=?, updated_at=? "
+            "WHERE correction_id=? AND wrong=?",
+            (wrong_pinyin, note or None, now_ms, cid, wrong),
+        )
+    c.commit()
+    return {"main_id": cid, "variant_id": variant_id, "correct": correct, "wrong": wrong,
+            "updated_at": now_ms, "is_new": is_new}
 
 
 def list_voices(provider: str | None = None, model: str | None = None) -> list[dict[str, Any]]:

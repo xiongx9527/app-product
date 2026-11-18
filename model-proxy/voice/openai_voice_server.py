@@ -112,6 +112,7 @@ import admin_panel  # Web 管理面板（鉴权 + 配置编辑 + 启停 + 日志
 import voice_db  # 本地管理数据库（SQLite）：配置的真相源 + 事件 / 审计
 import voice_sync  # 远程数据库同步（Postgres）
 import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库的门面
+import voice_correction_store  # ASR 纠错词表统一存储（SQLite/MySQL/PgSQL + Redis 缓存）
 import upstream_pool  # 上游地址池：多地址 + 账号池，健康探测 + 轮询
 import model_catalog  # 统一模型目录（LLM / TTS / STT 三端口，对齐 fw-plus-ai-native）
 from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -134,6 +135,12 @@ ZCR_NON_SPEECH_THRESHOLD = 0.22
 # 能量下限：真人说话峰值 RMS 最低 0.0168；近静音底噪（peak~0.004）ZCR 低会漏过门控，
 # SenseVoice 仍可能脑补文本。低于此值判非语音，不误伤正常说话。
 ZCR_MIN_PEAK = 0.01
+# 频谱平坦度门控阈值（有声帧幅度谱中位数）。真机样本（2026-11-18）：
+#   真人语音 0.053（唤醒词「小熊小熊」实测），提示音回声 0.138；
+#   咳嗽「哎」0.322~0.348，冲击噪声 0.265~0.524。
+# 取 0.20：两侧余量都够。补的是 ZCR 漏掉的低频噪声——该咳嗽样本 ZCR 仅
+# 0.178~0.218（低于 0.22），但能量是宽带的，平坦度高、一定能拦住。
+FLATNESS_NON_SPEECH_THRESHOLD = 0.20
 
 # 配置优先级从高到低：命令行覆盖 > 环境变量 > 配置文件 > 这里的默认值。
 DEFAULTS = {
@@ -793,6 +800,65 @@ VOICE_ALIASES = {
 
 _recognizer = None
 
+# Silero VAD（sherpa-onnx）：在送 SenseVoice 前量出「真正有人说话」的时长，随识别结果下发，
+# 网关据此做二级判断（短语音 + 无有效意图 → 幻觉丢弃）。装 VoiceActivityDetector 很轻（几 ms），
+# 每次请求 new 一个即可，避免全局实例的跨线程状态污染。
+_vad_config = None
+VAD_MODEL_NAME = "silero_vad.onnx"
+VAD_SPEECH_MIN_DURATION = 0.05  # 低于此的语音段忽略（碎片）
+VAD_SILENCE_DURATION = 0.05     # 语音段之间的静音分隔
+
+
+def vad_model_path() -> str:
+    return os.path.join(sensevoice_dir(), VAD_MODEL_NAME)
+
+
+def vad_ready() -> bool:
+    p = vad_model_path()
+    return os.path.isfile(p) and os.path.getsize(p) > 0
+
+
+def vad_speech_duration(x) -> float:
+    """返回音频里 VAD 判定为「真人语音」的总秒数；无模型/异常返回 -1（表示未知，网关不据此判断）。
+
+    Silero VAD 是模型级的语音检测，比 ZCR/能量可靠：实测真机打嗝/吸鼻子/语气词 ≤0.46s、
+    真人有效指令 ≥1.45s（详见项目记忆）。但它只提供信号——真人单字短指令也可能很短，
+    所以网关要再结合「识别文本是否命中有效意图」才算最终判定，这里只负责给出时长。
+    """
+    global _vad_config
+    if not vad_ready():
+        return -1.0
+    try:
+        import numpy as np
+        import sherpa_onnx
+
+        if _vad_config is None:
+            c = sherpa_onnx.VadModelConfig()
+            c.silero_vad.model = vad_model_path()
+            c.silero_vad.min_silence_duration = VAD_SILENCE_DURATION
+            c.silero_vad.min_speech_duration = VAD_SPEECH_MIN_DURATION
+            c.silero_vad.threshold = 0.3
+            c.sample_rate = SAMPLE_RATE
+            _vad_config = c
+        # 前后补 0.3s 静音，让 VAD 能看到完整语音边界（短音频首尾字不吞）
+        pad = int(0.3 * SAMPLE_RATE)
+        s = np.concatenate([np.zeros(pad, dtype=np.float32), x, np.zeros(pad, dtype=np.float32)])
+        vad = sherpa_onnx.VoiceActivityDetector(_vad_config, buffer_size_in_seconds=30)
+        seg = 512
+        for i in range(0, len(s), seg):
+            chunk = s[i:i + seg].astype(np.float32)
+            if len(chunk) < seg:
+                chunk = np.pad(chunk, (0, seg - len(chunk)))
+            vad.accept_waveform(chunk)
+        vad.flush()
+        total = 0.0
+        while not vad.empty():
+            total += len(vad.front.samples) / SAMPLE_RATE
+            vad.pop()
+        return total
+    except Exception:
+        return -1.0
+
 
 class TTSCache:
     """按 (文本, 音色, 语速, 格式) 缓存合成结果，避免重复请求云端。"""
@@ -928,6 +994,9 @@ def looks_like_non_speech(x) -> bool:
 
     判据用过零率（ZCR）：真人浊音有基频、波形平滑，ZCR≈0.09~0.10；咳嗽/吸鼻涕/
     静电/白噪声是宽带信号，ZCR≈0.5。实测两者相差 5 倍，阈值 0.28 稳稳分开。
+    ZCR 对低频宽带噪声不敏感（真机咳嗽样本 ZCR 仅 0.178~0.218，低于 0.22 门限），
+    所以再叠一层频谱平坦度：真人声能量集中在基频与谐波（≈0.04~0.07），冲击/摩擦
+    噪声能量铺满频带（≈0.27~0.52）。两个判据任一命中即判非语音。
     只看有声帧（低能量帧的 ZCR 被静音底噪主导，无意义），避免整段平均被静音拉低。
     返回 True 表示这段不是讲话 → 上游直接给空文本，不触发任何回答。
     """
@@ -947,12 +1016,28 @@ def looks_like_non_speech(x) -> bool:
     if active.size == 0:
         return True
     zcr = float(np.mean(np.abs(np.diff(np.sign(active), axis=1)) > 0))
-    # 诊断：记录每段送识别音频的 ZCR，便于用真机真实咳嗽/吸鼻涕样本校准阈值。
+    # 频谱平坦度 = 幅度谱几何均值 / 算术均值。用幅度谱而不是功率谱：功率会平方动态
+    # 范围，把咳嗽的宽带谱压得比真人谐波还「平」——真机咳嗽实测 0.32~0.35（幅度），
+    # 功率谱下只有 0.03，与真人语音不可分。加 Hann 窗压频谱泄漏，丢 DC 项：
+    # 直流偏置会让算术均值虚高。
+    # 取中位数而不是均值：少数冲击帧/静音混入都不该主导整段判断。
+    window = np.hanning(n)
+    spec = np.abs(np.fft.rfft(active * window, axis=1))
+    spec = np.maximum(spec[:, 1:], 1e-6)  # 下限防止 log(0)
+    flatness = float(
+        np.median(np.exp(np.mean(np.log(spec), axis=1)) / np.mean(spec, axis=1))
+    )
+    blocked = zcr > ZCR_NON_SPEECH_THRESHOLD or flatness > FLATNESS_NON_SPEECH_THRESHOLD
+    # 诊断：记录每段送识别音频的声学特征，便于用真机真实咳嗽/吸鼻涕样本校准阈值。
     # 只打短音频（<2s，噪声误触发都是短促的），避免长语音刷屏。
     duration = x.size / SAMPLE_RATE
     if duration < 2.0:
-        print(f"[ZCR-GATE] dur={duration:.2f}s zcr={zcr:.3f} peak={peak:.4f} block={zcr > ZCR_NON_SPEECH_THRESHOLD}", flush=True)
-    return zcr > ZCR_NON_SPEECH_THRESHOLD
+        print(
+            f"[SPEECH-GATE] dur={duration:.2f}s zcr={zcr:.3f} flat={flatness:.3f} "
+            f"peak={peak:.4f} block={blocked}",
+            flush=True,
+        )
+    return blocked
 
 
 # ---------------------------------------------------------------------------
@@ -1008,16 +1093,18 @@ def _dump_end(name: str, text: str, blocked: bool) -> None:
 
 
 def transcribe_sensevoice(payload: bytes, language: str):
-    """同步转写；调用方用 asyncio.to_thread 包一层，避免模型加载时阻塞事件循环。"""
+    """同步转写；调用方用 asyncio.to_thread 包一层，避免模型加载时阻塞事件循环。
+    返回 (text, duration, lang, speech_duration)：speech_duration 是 VAD 判出的真语音秒数
+    （-1=未装 VAD 模型/异常），供网关做「短语音+无有效意图→幻觉」二级判断。"""
     x = decode_wav(payload)
     if x.size == 0:
-        return "", 0.0, language or "zh"
+        return "", 0.0, language or "zh", -1.0
     dump_name = _dump_begin(payload, x)
     # 非语音（咳嗽/吸鼻涕/静音/电流声）直接返回空，绝不让 SenseVoice 脑补出「我/对/嗯」。
     # 这是从源头杜绝「咳嗽触发回答」——与识别成什么字无关，真人讲话（ZCR~0.1）不受影响。
     if looks_like_non_speech(x):
         _dump_end(dump_name, "", True)
-        return "", x.size / SAMPLE_RATE, language or "zh"
+        return "", x.size / SAMPLE_RATE, language or "zh", -1.0
     rec = get_sensevoice()
     stream = rec.create_stream()
     # 双保险：模型加载时已锁 language，这里再按流设一次（部分 sherpa-onnx 版本
@@ -1026,12 +1113,13 @@ def transcribe_sensevoice(payload: bytes, language: str):
         stream.set_option("language", language or sensevoice_language())
     except Exception:
         pass
+    speech_duration = vad_speech_duration(x)
     stream.accept_waveform(SAMPLE_RATE, x)
     rec.decode_stream(stream)
     text = (stream.result.text or "").strip()
     lang = getattr(stream.result, "lang", "") or language or "zh"
     _dump_end(dump_name, text, False)
-    return text, x.size / SAMPLE_RATE, lang
+    return text, x.size / SAMPLE_RATE, lang, speech_duration
 
 
 def sensevoice_check() -> dict:
@@ -1392,6 +1480,57 @@ def _voice_provider_entries() -> list[dict]:
             tts_models, voice_db.model_protocol("tts", tts_provider, tts_model)
             or ("ws" if _model_uses_ws(tts_model) else "http"))
     return out
+
+
+@app.get("/voice/v1/corrections")
+def voice_corrections_get(since: int = 0):
+    """对外接口（客户端网关用）：增量下载纠错词表。
+    since=0 首次全量，之后带上次返回的最大更新时间戳，只取 enabled=1 的变更。
+    管理端（分页/主表明细/启用/审核）走 /admin/api/corrections，与此接口分离。
+    """
+    store = voice_correction_store.get_store()
+    rows = store.list(since=since, enabled_only=True)
+    return {"corrections": rows, "max_updated_at": store.max_updated_at()}
+
+
+@app.post("/voice/v1/corrections")
+async def voice_corrections_post(request: Request):
+    """学习一条 ASR 纠错词：{correct, wrong, correct_pinyin?, wrong_pinyin?}。
+    拼音缺省时由服务端用 pinyin-pro 算（无声调），与网关侧格式一致。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return error_response(400, "请求体必须是 JSON")
+    store = voice_correction_store.get_store()
+    # 对外接口只接受客户端学习上传的纠错词：{correct, wrong, pinyin...}，标记 uploaded=1。
+    # 管理端操作（启用/禁用/审核/分页）一律走 /admin/api/corrections，不在此接口。
+    correct = str(body.get("correct") or "").strip()
+    wrong = str(body.get("wrong") or "").strip()
+    if not correct or not wrong:
+        return error_response(400, "correct 和 wrong 都不能为空")
+    def calc_py(w: str, given: str = "") -> str:
+        given = str(given or "").strip()
+        if given:
+            return given
+        try:
+            from pypinyin import lazy_pinyin  # type: ignore
+            return " ".join(lazy_pinyin(w))
+        except Exception:
+            return ""
+    device_id = str(body.get("device_id") or "").strip()
+    result = store.upsert(
+        correct=correct,
+        correct_pinyin=calc_py(correct, body.get("correct_pinyin")),
+        wrong=wrong,
+        wrong_pinyin=calc_py(wrong, body.get("wrong_pinyin")),
+        source="uploaded",  # 客户端上传（来源类型，9529 只有 source 表达来源）
+        device_id=device_id,
+    )
+    # 客户端上传默认不启用，等管理端审核通过后自动启用（approve 会置 enabled）
+    if result.get("variant_id"):
+        store.set_enabled(result["variant_id"], False)
+    return {"ok": True, **result}
+
 
 
 @app.get("/voice/v1/providers")
@@ -1906,8 +2045,9 @@ async def _tts_synthesize(
 async def _asr_recognize(
     payload: bytes, filename: str, content_type: str,
     stt_provider: str, protocol: str, model: str, language: str = "",
-) -> tuple[str, float, str]:
-    """识别核心：返回 (文本, 时长秒, 语种)。失败抛异常，由调用方决定 4xx / 5xx。
+) -> tuple[str, float, str, float]:
+    """识别核心：返回 (文本, 时长秒, 语种, VAD语音秒数)。失败抛异常，由调用方决定 4xx / 5xx。
+    VAD语音秒数仅内置 SenseVoice 有（-1=未装模型/非内置），供网关二级判断幻觉用。
 
     - 客户端错误（不支持的格式 / 协议）抛 ValueError → 调用方转 400；
     - 引擎 / 上游失败抛 RuntimeError → 调用方转 502（内置未就绪转 503）。
@@ -1919,12 +2059,12 @@ async def _asr_recognize(
         # 本地 SenseVoice 只认 WAV：直接交给它只会得到空文本，先挡掉非 WAV。
         if payload[:4] != b"RIFF" or payload[8:12] != b"WAVE":
             raise ValueError("只支持 WAV 音频（网关上行会补 WAV 头）")
-        text, duration, lang = await asyncio.to_thread(transcribe_sensevoice, payload, language)
-        return text, duration, lang
+        text, duration, lang, speech_duration = await asyncio.to_thread(transcribe_sensevoice, payload, language)
+        return text, duration, lang, speech_duration
     if stt_provider == "deepseek":
         # 官方 ASR 是整段上传（≤120s），没有 model / 语种参数，语种自动识别
         text = await deepseek_asr_text(payload, _deepseek_key("STT"))
-        return text, 0.0, ""
+        return text, 0.0, "", -1.0
     upstream_model = (model or "").strip()
     if not upstream_model:
         raise RuntimeError("已选择上游 ASR，请在请求里带 model 或配置 STT_UPSTREAM_MODEL")
@@ -1943,11 +2083,13 @@ async def _asr_recognize(
             text = await dashscope_asr_text(base, key, upstream_model, payload, audio_fmt(payload))
     else:
         text = await forward_transcriptions_openai(payload, filename, content_type, upstream_model)
-    return text, 0.0, ""
+    return text, 0.0, "", -1.0
 
 
-def _asr_response(text: str, response_format: str, duration: float = 0.0, language: str = "") -> Any:
-    """把识别文本按 OpenAI 形状格式化（transcriptions / translations 共用）。"""
+def _asr_response(text: str, response_format: str, duration: float = 0.0, language: str = "", speech_duration: float = -1.0) -> Any:
+    """把识别文本按 OpenAI 形状格式化（transcriptions / translations 共用）。
+    speech_duration 是 VAD 真语音秒数，作为非标准字段下发给自家网关做幻觉二级判断；
+    标准 OpenAI 客户端会忽略它，不影响兼容。"""
     if response_format == "text":
         return Response(content=text, media_type="text/plain; charset=utf-8")
     if response_format == "verbose_json":
@@ -1956,13 +2098,14 @@ def _asr_response(text: str, response_format: str, duration: float = 0.0, langua
             "language": language,
             "duration": duration,
             "text": text,
+            "speech_duration": speech_duration,
             "segments": (
                 [{"id": 0, "start": 0.0, "end": duration, "text": text}]
                 if text
                 else []
             ),
         }
-    return {"text": text}
+    return {"text": text, "speech_duration": speech_duration}
 
 
 @app.post("/voice/v1/audio/speech")
@@ -2179,7 +2322,7 @@ async def transcriptions(
             proto = resolve_voice_protocol(protocol, upstream_model, stt_provider)
 
     try:
-        text, duration, lang = await _asr_recognize(
+        text, duration, lang, speech_duration = await _asr_recognize(
             payload,
             file.filename or "audio.wav",
             file.content_type or "audio/wav",
@@ -2195,7 +2338,7 @@ async def transcriptions(
         status = 503 if (stt_provider == "builtin" and not sensevoice_ready()) else 502
         return error_response(status, f"转写失败: {exc}")
 
-    return _asr_response(text, response_format, duration, lang)
+    return _asr_response(text, response_format, duration, lang, speech_duration)
 
 
 def _lang_matches(lang: str, target_lang: str) -> bool:
@@ -2299,7 +2442,7 @@ async def translations(
         if not proto:
             proto = resolve_voice_protocol(protocol, upstream_model, stt_provider)
     try:
-        text, duration, lang = await _asr_recognize(
+        text, duration, lang, speech_duration = await _asr_recognize(
             payload,
             file.filename or "audio.wav",
             file.content_type or "audio/wav",
@@ -2325,8 +2468,8 @@ async def translations(
     if response_format == "text":
         return Response(content=text, media_type="text/plain; charset=utf-8")
     if response_format == "verbose_json":
-        return _asr_response(text, "verbose_json", duration, lang)
-    return {"text": text}
+        return _asr_response(text, "verbose_json", duration, lang, speech_duration)
+    return {"text": text, "speech_duration": speech_duration}
 
 
 # ── WebSocket 实时接口（/voice/ws，与 /voice/v1 平行，区分 WS 与 HTTP） ──
@@ -2475,7 +2618,7 @@ async def _ws_handle_asr(websocket: WebSocket, task_id: str, model: str, payload
         return False
 
     try:
-        text, _duration, _lang = await _asr_recognize(
+        text, _duration, _lang, _speech_duration = await _asr_recognize(
             audio_bytes, "audio.wav", f"audio/{fmt}", stt_provider, proto, upstream_model, ""
         )
     except ValueError as exc:
@@ -3453,6 +3596,23 @@ def main(argv=None) -> None:
     remote_dsn = os.environ.get("VOICE_REMOTE_DSN") or None
     redis_url = os.environ.get("REDIS_URL") or None
     store = config_store.configure(db_path, remote_dsn, redis_url)
+    # ASR 纠错词表存储：三库对等（sqlite/mysql/postgresql）+ Redis 缓存。
+    # db_kind 不显式配时按 VOICE_REMOTE_DSN / VOICE_MYSQL_DSN 推断，默认 sqlite（复用 voice.db）。
+    try:
+        correction_store = voice_correction_store.configure(
+            db_kind=os.environ.get("VOICE_CORRECTION_DB") or None,
+            sqlite_path=db_path,
+            redis_url=redis_url,
+        )
+        correction_store.ensure_schema()
+        _startup_log(
+            f"[local-ai] 纠错词表库: {correction_store.backend_name}"
+            f"（缓存 {'Redis' if correction_store.cache_enabled else '关闭'}）",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 纠错库初始化失败不应阻止语音服务启动（纠错是增强能力）
+        _startup_log(f"[local-ai] 纠错词表库初始化失败（纠错功能不可用）: {exc}", flush=True)
     seeded = store.seed_from_conf(_file_values())
     if seeded:
         _startup_log(

@@ -27,6 +27,7 @@ from typing import Any
 import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库，调用方无感
 import upstream_pool  # 上游地址池：配置变更后需要清掉池缓存（见 admin_config_save）
 import voice_db  # 本地库：配置真相源 + 事件 / 审计 + 会话（落库，跨重启一致）
+import voice_correction_store  # ASR 纠错词表（管理端维护；对外同步接口在 openai_voice_server）
 import httpx  # 探测上游连通性（/admin/api/probe）
 import llm_protocols  # 由协议名推导模型列表接口地址（prepare_models）
 
@@ -333,6 +334,9 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.cfg-table th, table.cfg-table td { border:1px solid var(--line); padding:5px 6px; text-align:center; vertical-align:middle; font-size:12px; }
   table.cfg-table th { background:#161a22; color:var(--mut); font-weight:600; white-space:nowrap; }
   table.cfg-table input { width:100%; box-sizing:border-box; background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:5px 7px; font-size:12px; }
+  .hw-input, input[data-hw-variant-input] { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:7px 10px; font-size:13px; outline:none; }
+  .hw-input:focus, input[data-hw-variant-input]:focus { border-color:var(--acc); }
+  .hw-input::placeholder, input[data-hw-variant-input]::placeholder { color:var(--mut); }
   table.cfg-table td.acc-cell { cursor:pointer; width:120px; max-width:120px; vertical-align:middle; }
   table.cfg-table td.acc-cell:hover { background:#1f2530; }
   table.cfg-table td.acc-cell .acc-url, table.cfg-table td.acc-cell .acc-key { display:block; max-width:108px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -611,6 +615,8 @@ const I18N = {
     "common.reply": "回复",
     "common.save": "保存",
     "common.saved": "已保存",
+    "common.search": "搜索",
+    "common.refresh": "刷新",
     "common.saving": "保存中…",
     "common.status": "状态",
     "common.stop": "停止",
@@ -639,6 +645,43 @@ const I18N = {
     "config.embed": "向量模型",
     "config.security": "安全",
     "config.title": "配置",
+    "config.asrModels": "模型",
+    "config.hotwords": "热词",
+    "config.reviewTab": "热词审核",
+    "config.reviewHint": "客户端上传的纠错词在此审核，通过后自动启用并同步给所有设备。",
+    "config.reviewSearch": "搜索错词/正确词/拼音",
+    "config.hotwordsHint": "热词纠错表：把语音识别的同音错词纠正为正确词。所有客户端共享，自动同步。",
+    "config.hotwordWrong": "错词（如 若神父）",
+    "config.hotwordCorrect": "正确词（如 洛神赋）",
+    "config.hotwordNote": "来源（诗词/人名/歌手）",
+    "config.hotwordEmpty": "暂无热词",
+    "config.hotwordDel": "删除",
+    "config.hotwordPinyin": "错词拼音",
+    "config.hotwordCorrectPinyin": "正确词拼音",
+    "config.hotwordSource": "来源",
+    "config.hotwordUploaded": "上传",
+    "config.hotwordLocal": "手动添加",
+    "config.hotwordSynced": "客户端上传",
+    "config.hotwordYes": "是",
+    "config.hotwordNo": "否",
+    "config.hotwordReviewed": "已审核",
+    "config.hotwordCreatedAt": "创建时间",
+    "config.hotwordDevice": "设备",
+    "config.hotwordFromUpload": "客户端上传",
+    "config.hotwordUpdatedAt": "更新时间",
+    "config.hotwordEnableFirst": "请先启用主表后再添加错词",
+    "config.hotwordReview": "标记已审",
+    "config.hotwordUnreview": "取消审核",
+    "config.hotwordStatus": "状态",
+    "config.hotwordAction": "操作",
+    "config.hotwordEnabled": "已启用",
+    "config.hotwordDisabled": "未启用",
+    "config.hotwordEnable": "启用",
+    "config.hotwordDisable": "禁用",
+    "config.hotwordDelConfirm": "确认删除热词：",
+    "config.hotwordPage": "第 {p}/{n} 页，共 {total} 条",
+    "config.prevPage": "上一页",
+    "config.nextPage": "下一页",
     "hdr.label": "自定义请求头（仅 LLM 对话请求透传到上游；不保存，本次填写本次生效）",
     "hdr.name": "Header 名",
     "llm.defaultModel": "默认模型",
@@ -816,6 +859,8 @@ const I18N = {
     "common.reply": "Reply",
     "common.save": "Save",
     "common.saved": "Saved",
+    "common.search": "Search",
+    "common.refresh": "Refresh",
     "common.saving": "Saving…",
     "common.status": "Status",
     "common.stop": "Stop",
@@ -844,6 +889,22 @@ const I18N = {
     "config.embed": "Embeddings",
     "config.security": "Security",
     "config.title": "Config",
+    "config.asrModels": "Models",
+    "config.hotwords": "Hotwords",
+    "config.reviewTab": "Review",
+    "config.reviewHint": "Review client-uploaded corrections; approval auto-enables and syncs to all devices.",
+    "config.reviewSearch": "Search wrong/correct/pinyin",
+    "config.hotwordsHint": "Hotword corrections: map ASR homophone typos to the correct word. Shared by all clients, auto-synced.",
+    "config.hotwordWrong": "Wrong (e.g. ruo shen fu)",
+    "config.hotwordCorrect": "Correct (e.g. Luo Shen Fu)",
+    "config.hotwordNote": "Source (poem/person/singer)",
+    "config.hotwordEmpty": "No hotwords yet",
+    "config.hotwordDel": "Delete",
+    "config.hotwordPinyin": "Pinyin",
+    "config.hotwordDelConfirm": "Delete hotword:",
+    "config.hotwordPage": "Page {p}/{n}, {total} entries",
+    "config.prevPage": "Prev",
+    "config.nextPage": "Next",
     "hdr.label": "Custom request headers (forwarded to upstream only for LLM chat; not saved, applies to this session)",
     "hdr.name": "Header name",
     "llm.defaultModel": "Default model",
@@ -1039,8 +1100,45 @@ function buildConfigCard(){
     <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">${t('common.loadingX')}</div>
       <div class="row" style="margin-top:12px"><button id="cfgSave_llm">${t('common.save')}</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
     <div id="c-asr" class="cfgpane" hidden>
-      <div id="asrTableWrap" class="hint">${t('common.loadingX')}</div>
-      <div class="row" style="margin-top:12px"><button id="cfgSave_asr">${t('common.save')}</button><span class="hint" id="cfgStat_asr" style="margin-left:10px"></span></div>
+      <div class="tabs" id="asrSubTabs" style="margin:4px 0 10px">
+        <button class="tab active" data-asrsub="models">${t('config.asrModels')}</button>
+        <button class="tab" data-asrsub="hotwords">${t('config.hotwords')}</button>
+        <button class="tab" data-asrsub="review">${t('config.reviewTab')}</button>
+      </div>
+      <div id="asr-sub-models">
+        <div id="asrTableWrap" class="hint">${t('common.loadingX')}</div>
+        <div class="row" style="margin-top:12px"><button id="cfgSave_asr">${t('common.save')}</button><span class="hint" id="cfgStat_asr" style="margin-left:10px"></span></div>
+      </div>
+      <div id="asr-sub-hotwords" hidden>
+        <div class="hint" style="margin-bottom:8px">${t('config.hotwordsHint')}</div>
+        <div class="row" style="align-items:center;justify-content:flex-end;gap:8px;margin-bottom:8px">
+          <input id="hotwordSearch" class="hw-input" placeholder="${t('config.reviewSearch')}" style="width:180px" />
+          <button class="mini" id="hotwordSearchBtn">${t('common.search')||'搜索'}</button>
+          <button class="mini" id="hotwordRefresh">${t('common.refresh')||'刷新'}</button>
+        </div>
+        <div id="hotwordTableWrap" class="hint">${t('common.loadingX')}</div>
+        <div class="row" style="margin-top:10px;align-items:center;justify-content:space-between">
+          <div class="row" style="align-items:center">
+            <input id="hotwordCorrect" class="hw-input" placeholder="${t('config.hotwordCorrect')}" style="width:220px" />
+            <button id="hotwordAdd">${t('common.add')}</button>
+            <span class="hint" id="hotwordStat" style="margin-left:10px"></span>
+          </div>
+          <div class="row" id="hotwordPager" style="align-items:center"></div>
+        </div>
+      </div>
+      <div id="asr-sub-review" hidden>
+        <div class="hint" style="margin-bottom:8px">${t('config.reviewHint')}</div>
+        <div class="row" style="align-items:center;justify-content:flex-end;gap:8px;margin-bottom:8px">
+          <input id="reviewSearch" class="hw-input" placeholder="${t('config.reviewSearch')}" style="width:180px" />
+          <button class="mini" id="reviewSearchBtn">${t('common.search')||'搜索'}</button>
+          <button class="mini" id="reviewRefresh">${t('common.refresh')||'刷新'}</button>
+        </div>
+        <div id="reviewTableWrap" class="hint">${t('common.loadingX')}</div>
+        <div class="row" style="margin-top:8px;align-items:center;justify-content:space-between">
+          <span class="hint" id="reviewStat"></span>
+          <div class="row" id="reviewPager" style="align-items:center"></div>
+        </div>
+      </div>
     </div>
     <div id="c-tts" class="cfgpane" hidden>
       <div id="ttsTableWrap" class="hint">${t('common.loadingX')}</div>
@@ -1134,11 +1232,277 @@ function cfgVal(k){
   return inp.value;
 }
 
+let hwPage = 1;
+let hwExpanded = new Set();  // 展开的主表 id
+async function loadHotwords(){
+  const wrap=document.getElementById('hotwordTableWrap'); if(!wrap) return;
+  wrap.className='hint'; wrap.textContent=t('common.loadingX');
+  try{
+    const q=document.getElementById('hotwordSearch')?.value.trim()||'';
+    const r=await fetch('/admin/api/corrections?page='+hwPage+'&page_size=10&q='+encodeURIComponent(q),{credentials:'same-origin'});
+    const data=await r.json();
+    const items=data.items||[];
+    if(!items.length && hwPage>1){ hwPage=Math.max(1,(data.pages||1)); return loadHotwords(); }
+    if(!items.length){
+      wrap.className='';
+      wrap.innerHTML='<table class="cfg-table"><thead><tr>'
+        +'<th style="width:24px"></th><th>'+t('config.hotwordCorrect')+'</th>'
+        +'<th>'+t('config.hotwordCorrectPinyin')+'</th><th>'+t('config.hotwordSource')+'</th>'
+        +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
+        +'<th>'+t('config.hotwordStatus')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead>'
+        +'<tbody><tr><td colspan="9" class="hint" style="text-align:center;padding:16px">'+t('config.hotwordEmpty')+'</td></tr></tbody></table>';
+      const pager=document.getElementById('hotwordPager');
+      if(pager) pager.innerHTML='<button class="mini" disabled>'+t('config.prevPage')+'</button>'
+        +'<span class="hint" style="margin:0 10px">'+t('config.hotwordPage').replace('{p}',1).replace('{n}',1).replace('{total}',0)+'</span>'
+        +'<button class="mini" disabled>'+t('config.nextPage')+'</button>';
+      return;
+    }
+    wrap.className='';
+    let html='<table class="cfg-table"><thead><tr>'
+      +'<th style="width:24px"></th><th>'+t('config.hotwordCorrect')+'</th>'
+      +'<th>'+t('config.hotwordCorrectPinyin')+'</th><th>'+t('config.hotwordSource')+'</th>'
+      +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
+      +'<th>'+t('config.hotwordStatus')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead><tbody>';
+    items.forEach(m=>{
+      const on=m.enabled==1, mid=m.main_id, open=hwExpanded.has(mid);
+      html+='<tr><td class="row-act"><button class="mini" data-hw-expand="'+mid+'">'+(open?'−':'+')+'</button></td>'
+        +'<td>'+escapeHtml(m.correct||'')+'</td>'
+        +'<td class="hint">'+escapeHtml(m.correct_pinyin||'')+'</td>'
+        +'<td>'+(m.source=='uploaded'?t('config.hotwordSynced'):t('config.hotwordLocal'))+'</td>'
+        +'<td class="hint">'+escapeHtml(m.device_id||'')+'</td>'
+        +'<td class="hint">'+fmtTime(m.created_at)+'</td><td class="hint">'+fmtTime(m.updated_at)+'</td>'
+        +'<td>'+(on?'<span class="badge">'+t('config.hotwordEnabled')+'</span>':'<span class="hint">'+t('config.hotwordDisabled')+'</span>')+'</td>'
+        +'<td class="row-act">'
+        +(m.source=='uploaded'
+          ? '<span class="hint">'+(on?'客户端上传·已启用':'客户端上传·待审核')+'</span>'
+          : '<button class="mini" data-hw-toggle="'+mid+'" data-on="'+on+'">'
+            +(on?t('config.hotwordDisable'):t('config.hotwordEnable'))+'</button>')
+        +(!on && !(m.variants||[]).length && m.source!='uploaded' ?' <button class="mini danger" data-hw-del-main="'+mid+'">'+t('common.delete')+'</button>':'')+'</td></tr>';
+      if(open){
+        html+='<tr><td colspan="9" style="padding:0;background:#0f1115">'
+          +'<table class="cfg-table" style="margin:0"><thead><tr><th style="width:24px"></th><th>'+t('config.hotwordWrong')+'</th>'
+          +'<th>'+t('config.hotwordPinyin')+'</th><th>'+t('config.hotwordSource')+'</th>'
+          +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
+          +'<th>'+t('config.hotwordStatus')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead><tbody>';
+        (m.variants||[]).forEach(v=>{
+          const vOn=v.enabled==1;
+          let act='';
+          if(v.source=='uploaded'){  // 客户端上传：审核状态由"热词审核" tab 管理，此处不提供禁用/删除
+            act = '—';
+          } else {  // 本地添加：手动启用/禁用、未启用可删除
+            act = '<button class="mini" data-hw-variant-toggle="'+v.variant_id+'" data-on="'+vOn+'">'
+              +(vOn?t('config.hotwordDisable'):t('config.hotwordEnable'))+'</button>';
+            if(!vOn) act += ' <button class="mini danger" data-hw-del-variant="'+v.variant_id+'">'+t('common.delete')+'</button>';
+          }
+          html+='<tr><td></td><td>'+escapeHtml(v.wrong||'')+'</td><td class="hint">'+escapeHtml(v.pinyin||'')+'</td>'
+            +'<td>'+(v.source=='uploaded'?t('config.hotwordSynced'):t('config.hotwordLocal'))+'</td>'
+            +'<td class="hint">'+escapeHtml(v.device_id||'')+'</td>'
+            +'<td class="hint">'+fmtTime(v.created_at)+'</td><td class="hint">'+fmtTime(v.updated_at)+'</td>'
+            +'<td>'+(vOn?'<span class="badge">'+t('config.hotwordEnabled')+'</span>':'<span class="hint">'+t('config.hotwordDisabled')+'</span>')+'</td>'
+            +'<td class="row-act">'+act+'</td></tr>';
+        });
+        // 未启用的主表不能加明细
+        if(on){
+          html+='<tr><td colspan="9" style="padding:6px 8px">'
+          +'<div style="display:flex;align-items:center;gap:8px">'
+          +'<input data-hw-variant-input="'+mid+'" placeholder="'+t('config.hotwordWrong')+'" style="flex:1;min-width:0" /> '
+          +'<button class="mini" data-hw-variant-add="'+mid+'" data-correct="'+escapeHtml(m.correct||'')+'">'+t('common.add')+'</button>'
+          +'<span class="hint" data-hw-variant-stat="'+mid+'" style="white-space:nowrap"></span></div></td></tr>';
+        } else {
+          html+='<tr><td colspan="9" style="padding:6px" class="hint">'+t('config.hotwordEnableFirst')+'</td></tr>';
+        }
+        html+='</tbody></table></td></tr>';
+      }
+    });
+    html+='</tbody></table>';
+    wrap.innerHTML=html;
+    // 分页条填入独立容器（与添加区同一行）
+    const pages=data.pages||1;
+    const pager=document.getElementById('hotwordPager');
+    if(pager) pager.innerHTML='<button class="mini" id="hwPrev" '+(hwPage<=1?'disabled':'')+'>'+t('config.prevPage')+'</button>'
+      +'<span class="hint" style="margin:0 10px">'+t('config.hotwordPage').replace('{p}',hwPage).replace('{n}',pages).replace('{total}',data.total||0)+'</span>'
+      +'<button class="mini" id="hwNext" '+(hwPage>=pages?'disabled':'')+'>'+t('config.nextPage')+'</button>';
+    // 删除主表（级联删其下所有错词）
+    wrap.querySelectorAll('[data-hw-del-main]').forEach(b=>{
+      b.onclick=async()=>{
+        if(!confirm(t('config.hotwordDelConfirm'))) return;
+        const mid=Number(b.dataset.hwDelMain);
+        const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
+          headers:{'content-type':'application/json'},body:JSON.stringify({op:'delete_main',main_id:mid})});
+        if(r.ok) await loadHotwords();
+      };
+    });
+    // 删除子表错词
+    wrap.querySelectorAll('[data-hw-del-variant]').forEach(b=>{
+      b.onclick=async()=>{
+        if(!confirm(t('config.hotwordDelConfirm'))) return;
+        const vid=Number(b.dataset.hwDelVariant);
+        const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
+          headers:{'content-type':'application/json'},body:JSON.stringify({op:'delete_variant',variant_id:vid})});
+        if(r.ok) await loadHotwords();
+      };
+    });
+    // 审核通过子表（客户端上传的）：审核后自动启用该词及主表
+    wrap.querySelectorAll('[data-hw-approve]').forEach(b=>{
+      b.onclick=async()=>{
+        const vid=Number(b.dataset.hwApprove);
+        const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
+          headers:{'content-type':'application/json'},body:JSON.stringify({op:'approve',variant_id:vid})});
+        if(r.ok) await loadHotwords();
+      };
+    });
+    wrap.querySelectorAll('[data-hw-variant-toggle]').forEach(b=>{
+      b.onclick=async()=>{
+        const vid=Number(b.dataset.hwVariantToggle), on=b.dataset.on==='true';
+        const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
+          headers:{'content-type':'application/json'},body:JSON.stringify({op:'set_enabled',variant_id:vid,value:!on})});
+        if(r.ok) await loadHotwords();
+      };
+    });
+    wrap.querySelectorAll('[data-hw-variant-add]').forEach(b=>{
+      b.onclick=async()=>{
+        const mid=b.dataset.hwVariantAdd, correct=b.dataset.correct;
+        const inp=wrap.querySelector('[data-hw-variant-input="'+mid+'"]');
+        const wrong=inp?.value.trim()||'';
+        const stat=wrap.querySelector('[data-hw-variant-stat="'+mid+'"]');
+        if(!wrong){ if(stat) stat.textContent=t('config.hotwordWrong'); return; }
+        const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
+          headers:{'content-type':'application/json'},
+          body:JSON.stringify({correct:correct,wrong:wrong,enabled:1})});
+        if(r.ok){ await loadHotwords(); } else if(stat){ stat.textContent='HTTP '+r.status; }
+      };
+    });
+    wrap.querySelectorAll('[data-hw-expand]').forEach(b=>{
+      b.onclick=()=>{ const mid=Number(b.dataset.hwExpand); if(hwExpanded.has(mid)) hwExpanded.delete(mid); else hwExpanded.add(mid); loadHotwords(); };
+    });
+    wrap.querySelectorAll('[data-hw-toggle]').forEach(b=>{
+      b.onclick=async()=>{
+        const mid=Number(b.dataset.hwToggle), on=b.dataset.on==='true';
+        const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
+          headers:{'content-type':'application/json'},
+          body:JSON.stringify({op:'set_enabled',main_id:mid,value:!on})});
+        if(r.ok) await loadHotwords();
+      };
+    });
+    const prev=document.getElementById('hwPrev'), next=document.getElementById('hwNext');
+    if(prev) prev.onclick=()=>{ if(hwPage>1){ hwPage--; loadHotwords(); } };
+    if(next) next.onclick=()=>{ if(hwPage<pages){ hwPage++; loadHotwords(); } };
+  }catch(e){ wrap.className='hint'; wrap.textContent=String(e); }
+}
+
+let reviewPage = 1;
+// 毫秒时间戳 → 本地可读时间（无有效值显示 —）
+function fmtTime(ms){
+  if(!ms || !Number.isFinite(ms)) return '—';
+  const d=new Date(ms);
+  const p=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+async function loadReview(){
+  const wrap=document.getElementById('reviewTableWrap'); if(!wrap) return;
+  wrap.className='hint'; wrap.textContent=t('common.loadingX');
+  try{
+    const q=document.getElementById('reviewSearch')?.value.trim()||'';
+    const r=await fetch('/admin/api/corrections?scope=review&page='+reviewPage+'&page_size=10&q='+encodeURIComponent(q),{credentials:'same-origin'});
+    const data=await r.json();
+    const items=data.items||[];
+    const stat=document.getElementById('reviewStat');
+    if(stat) stat.textContent=(data.pending||0)>0 ? (t('config.reviewTab')+': '+(data.pending)) : '';
+    if(!items.length && reviewPage>1){ reviewPage=Math.max(1,(data.pages||1)); return loadReview(); }
+    if(!items.length){
+      wrap.className='';
+      wrap.innerHTML='<table class="cfg-table"><thead><tr>'
+        +'<th>'+t('config.hotwordWrong')+'</th><th>'+t('config.hotwordPinyin')+'</th>'
+        +'<th>'+t('config.hotwordCorrect')+'</th><th>'+t('config.hotwordCorrectPinyin')+'</th>'
+        +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordSource')+'</th>'
+        +'<th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
+        +'<th>'+t('config.hotwordReviewed')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead>'
+        +'<tbody><tr><td colspan="10" class="hint" style="text-align:center;padding:16px">'+t('config.hotwordEmpty')+'</td></tr></tbody></table>';
+    }
+    else{
+      wrap.className='';
+      let html='<table class="cfg-table"><thead><tr>'
+        +'<th>'+t('config.hotwordWrong')+'</th><th>'+t('config.hotwordPinyin')+'</th>'
+        +'<th>'+t('config.hotwordCorrect')+'</th><th>'+t('config.hotwordCorrectPinyin')+'</th>'
+        +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordSource')+'</th>'
+        +'<th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
+        +'<th>'+t('config.hotwordReviewed')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead><tbody>';
+      items.forEach(v=>{
+        const done=v.reviewed==1;
+        html+='<tr><td>'+escapeHtml(v.wrong||'')+'</td><td class="hint">'+escapeHtml(v.pinyin||'')+'</td>'
+          +'<td>'+escapeHtml(v.correct||'')+'</td><td class="hint">'+escapeHtml(v.correct_pinyin||'')+'</td>'
+          +'<td class="hint">'+escapeHtml(v.device_id||'')+'</td>'
+          +'<td>'+t('config.hotwordFromUpload')+'</td>'
+          +'<td class="hint">'+fmtTime(v.created_at)+'</td><td class="hint">'+fmtTime(v.updated_at)+'</td>'
+          +'<td>'+(done?'✓':'—')+'</td>'
+          +'<td class="row-act">'+(done?'—':'<button class="mini" data-hw-approve="'+v.variant_id+'">'+t('config.hotwordReview')+'</button>')+'</td></tr>';
+      });
+      html+='</tbody></table>';
+      wrap.innerHTML=html;
+      wrap.querySelectorAll('[data-hw-approve]').forEach(b=>{
+        b.onclick=async()=>{
+          const vid=Number(b.dataset.hwApprove);
+          const rr=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
+            headers:{'content-type':'application/json'},body:JSON.stringify({op:'approve',variant_id:vid})});
+          if(rr.ok) await loadReview();
+        };
+      });
+    }
+    const pages=data.pages||1;
+    const pager=document.getElementById('reviewPager');
+    if(pager) pager.innerHTML='<button class="mini" id="rvPrev" '+(reviewPage<=1?'disabled':'')+'>'+t('config.prevPage')+'</button>'
+      +'<span class="hint" style="margin:0 10px">'+t('config.hotwordPage').replace('{p}',reviewPage).replace('{n}',pages).replace('{total}',data.total||0)+'</span>'
+      +'<button class="mini" id="rvNext" '+(reviewPage>=pages?'disabled':'')+'>'+t('config.nextPage')+'</button>';
+    const prev=document.getElementById('rvPrev'), next=document.getElementById('rvNext');
+    if(prev) prev.onclick=()=>{ if(reviewPage>1){ reviewPage--; loadReview(); } };
+    if(next) next.onclick=()=>{ if(reviewPage<pages){ reviewPage++; loadReview(); } };
+  }catch(e){ wrap.className='hint'; wrap.textContent=String(e); }
+}
+
 function wireConfig(){
   document.querySelectorAll('#cfgTabs .tab').forEach(t=>{
     t.onclick=()=>{ document.querySelectorAll('#cfgTabs .tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
       ['llm','asr','tts','embed','sec'].forEach(p=>{ const e=document.getElementById('c-'+p); if(e) e.hidden=(t.dataset.ctab!==p); }); };
   });
+  // ASR 内的子 tab：模型 / 热词
+  document.querySelectorAll('#asrSubTabs .tab').forEach(t=>{
+    t.onclick=()=>{
+      document.querySelectorAll('#asrSubTabs .tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
+      const sub=t.dataset.asrsub;
+      const models=document.getElementById('asr-sub-models'), hot=document.getElementById('asr-sub-hotwords'), rev=document.getElementById('asr-sub-review');
+      if(models) models.hidden=(sub!=='models');
+      if(hot){ hot.hidden=(sub!=='hotwords'); if(sub==='hotwords') loadHotwords(); }
+      if(rev){ rev.hidden=(sub!=='review'); if(sub==='review') loadReview(); }
+    };
+  });
+  // 审核搜索
+  const rvBtn=document.getElementById('reviewSearchBtn');
+  if(rvBtn) rvBtn.onclick=()=>{ reviewPage=1; loadReview(); };
+  const rvInput=document.getElementById('reviewSearch');
+  if(rvInput) rvInput.onkeydown=(e)=>{ if(e.key==='Enter'){ reviewPage=1; loadReview(); } };
+  const rvRefresh=document.getElementById('reviewRefresh');
+  if(rvRefresh) rvRefresh.onclick=()=>loadReview();
+  // 热词搜索
+  const hwBtn=document.getElementById('hotwordSearchBtn');
+  if(hwBtn) hwBtn.onclick=()=>{ hwPage=1; loadHotwords(); };
+  const hwInput=document.getElementById('hotwordSearch');
+  if(hwInput) hwInput.onkeydown=(e)=>{ if(e.key==='Enter'){ hwPage=1; loadHotwords(); } };
+  const hwRefresh=document.getElementById('hotwordRefresh');
+  if(hwRefresh) hwRefresh.onclick=()=>loadHotwords();
+  // 热词：新增 / 删除
+  const hwAdd=document.getElementById('hotwordAdd');
+  if(hwAdd) hwAdd.onclick=async()=>{
+    const c=document.getElementById('hotwordCorrect').value.trim();
+    const stat=document.getElementById('hotwordStat');
+    if(!c){ stat.textContent=t('config.hotwordCorrect'); return; }
+    stat.className='hint'; stat.textContent=t('common.saving');
+    try{
+      // 只加主表词条（错词留空由学习补；来源=local/uploaded 由系统自动记录）
+      const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({correct:c})});
+      if(r.ok){ document.getElementById('hotwordCorrect').value=''; stat.textContent=t('common.saved')||'OK'; await loadHotwords(); }
+      else { stat.textContent='HTTP '+r.status; }
+    }catch(e){ stat.textContent=String(e); }
+  };
   const postConfig = async (patch, statId)=>{
     const stat=document.getElementById(statId); stat.className='hint'; stat.textContent=t('common.saving');
     try{
@@ -3210,6 +3574,57 @@ def register_admin_routes(
         except Exception as e:  # noqa: BLE001
             push = {"ok": False, "error": str(e)}
         return {"ok": True, "remote_push": push}
+
+    # ── ASR 热词纠错词表（管理端）：分页/主表明细 + 启用/禁用/审核/添加 ──
+    @app.get("/admin/api/corrections", dependencies=[Depends(require_admin)])
+    def admin_corrections_list(page: int = 1, page_size: int = 10, scope: str = "", q: str = ""):
+        store = voice_correction_store.get_store()
+        if scope == "review":  # 审核 tab：客户端上传的按子表分页
+            return store.list_review(page=page, page_size=page_size, q=q)
+        return store.list_grouped(page=page, page_size=page_size, q=q)
+
+    @app.post("/admin/api/corrections", dependencies=[Depends(require_admin)])
+    async def admin_corrections_post(request: Request):
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="请求体不是合法 JSON")
+        store = voice_correction_store.get_store()
+        op = str(body.get("op") or "").strip()
+        if op == "approve":  # 审核通过子表：reviewed+enabled，并自动启用主表
+            return {"ok": store.approve_variant(int(body.get("variant_id") or 0))}
+        if op == "delete_main":  # 删主表（级联删其下所有错词）
+            return {"ok": store.delete_main(int(body.get("main_id") or 0))}
+        if op == "delete_variant":  # 删一条子表错词
+            return {"ok": store.delete_variant(int(body.get("variant_id") or 0))}
+        if op in ("set_enabled", "set_reviewed"):  # 启用/禁用、审核标记
+            mid = int(body.get("main_id") or 0)
+            vid = int(body.get("variant_id") or 0)
+            value = bool(body.get("value"))
+            if mid:
+                ok = store.set_main_enabled(mid, value) if op == "set_enabled" else store.set_main_reviewed(mid, value)
+            else:
+                ok = store.set_enabled(vid, value) if op == "set_enabled" else store.set_reviewed(vid, value)
+            return {"ok": ok}
+        # 添加：只 correct=建主表（默认禁用，需启用）；correct+wrong=加子表错词
+        correct = str(body.get("correct") or "").strip()
+        wrong = str(body.get("wrong") or "").strip()
+        if not correct:
+            raise HTTPException(status_code=400, detail="correct 不能为空")
+        def calc_py(w):
+            try:
+                from pypinyin import lazy_pinyin
+                return " ".join(lazy_pinyin(w))
+            except Exception:
+                return ""
+        if not wrong:
+            result = store.upsert_main_only(correct, calc_py(correct), "local", "")
+            store.set_main_enabled(result["main_id"], False)  # 本地添加默认禁用
+            return {"ok": True, **result, "enabled": 0}
+        # 加子表错词（本地添加 source=local，默认禁用）
+        result = store.upsert(correct, calc_py(correct), wrong, calc_py(wrong), source="local")
+        store.set_enabled(result["variant_id"], False)
+        return {"ok": True, **result, "enabled": 0}
 
     @app.get("/admin/api/logs", dependencies=[Depends(require_admin)])
     def admin_logs(n: int = 200):
