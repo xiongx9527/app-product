@@ -74,10 +74,18 @@ export function createBaikeTool(lang: Lang | string, options: BaikeToolOptions =
       if (!query) return prefix === 'en' ? 'Please tell me what to look up.' : '请告诉我想查什么。'
       return format(await snapshot({ query }), query)
     },
-    /** 语音直连入口：同一份查询同时拿到词条结构与文案。 */
-    snapshotWithText: async (query: string): Promise<{ entry: BaikeEntry | null; text: string }> => {
+    /**
+     * 语音直连入口：同时拿到词条结构、口播文案，以及**真正被播报的正文**。
+     * spoken 必给：字幕必须与音频同源——音频念的是 trimSummary 截断后的正文，
+     * 用完整 summary 铺字幕会让字幕比语音快近一倍（真机实测 500 字字幕配 287 字音频）。
+     */
+    snapshotWithText: async (query: string): Promise<{ entry: BaikeEntry | null; text: string; spoken: string }> => {
       const entry = await snapshot({ query })
-      return { entry, text: format(entry, query) }
+      return {
+        entry,
+        text: format(entry, query),
+        spoken: entry?.summary ? trimSummary(entry.summary, MAX_SUMMARY_CHARS) : '',
+      }
     },
   }
 }

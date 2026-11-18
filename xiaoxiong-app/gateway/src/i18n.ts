@@ -181,7 +181,8 @@ function sourceDisplayName(kind: string, lang: string): string {
 
 const zhCN: Messages = {
   systemPrompt:
-    '你是「小熊」语音助手，住在用户的设备里。用简体中文、简短自然地回答，避免长篇大论。' +
+    '你是「小熊」语音助手，住在用户的设备里。用简体中文、简短自然地回答，每次回复控制在 100 字以内，避免长篇大论（省流量、播报更快）。' +
+    '注意：这条字数限制只约束你自己组织的回答；调用工具返回的百科摘要、商品列表、歌词等内容照常完整给出，不要自行截断或复述。' +
     '音乐控制请用工具：play_music 开始播放、stop_music 停止、pause_music 暂停、resume_music 继续、' +
     'next_music 换一首/换个风格。用户说“放点音乐/来首歌/想听歌”用 play_music；说“换一首/下一首/换个风格/来点别的”' +
     '用 next_music（可带 genre）；说“暂停/先停一下”用 pause_music，说“继续/接着放”用 resume_music，说“关掉/别放了”用 stop_music。' +
@@ -352,7 +353,8 @@ const en: Messages = {
   ...zhCN,
   systemPrompt:
     'You are «XiongXiong», a voice assistant living inside the user\'s device. ' +
-    'Reply concisely and naturally in English, avoiding long-winded answers. ' +
+    'Reply concisely and naturally in English, keeping each reply within 100 characters to save data and speak faster. ' +
+    'Note: this length limit applies only to answers you compose yourself; content returned by tools (encyclopedia summaries, product lists, lyrics) should be given in full — do not truncate or paraphrase it. ' +
     'Use tools for music control: play_music to start, stop_music to stop, ' +
     'pause_music to pause, resume_music to resume, next_music to switch to another track / style. ' +
     'When the user says "play some music / a song / I want to listen to music", use play_music; ' +

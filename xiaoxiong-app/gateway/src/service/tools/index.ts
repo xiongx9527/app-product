@@ -12,6 +12,7 @@ import {
 import { createWeatherTool } from './weatherTool'
 import type { WeatherSource } from '../weather'
 import { createBaikeTool } from './baikeTool'
+import { createPoemTool } from './poemTool'
 import type { BaikeSource } from '../baike'
 import {
   createMusicTool,
@@ -24,7 +25,7 @@ import {
 import { createMusicSearchTool } from './musicSearchTool'
 import { createSubtitleTool } from './subtitleTool'
 import { createDealsTool } from './dealsTool'
-import { createSmzdmSource, type DealsSource } from '../deals'
+import { createDealsSource, createDealsAllSources, type DealsSource } from '../deals'
 import type { MusicSource } from '../music/types'
 import {
   createRememberTool,
@@ -80,6 +81,7 @@ export {
   type BaikeEntry,
 } from '../baike'
 export { createBaikeTool, BAIKE_TOOL_NAME } from './baikeTool'
+export { createPoemTool, POEM_TOOL_NAME } from './poemTool'
 export { createSmzdmSource, parseDeals, formatDeals, filterDeals, type Deal, type DealsSource, type DealsFetcher, type DealsOptions } from '../deals'
 export {
   createRememberTool,
@@ -112,7 +114,7 @@ export function createToolkit(
   defaultVolume?: number,
   autoLoop?: boolean,
   dealsCount?: number,
-  dealsSource: DealsSource = createSmzdmSource(),
+  dealsSource: DealsSource = createDealsSource(),
   /** 自动记忆（自动抽取）开关：来自客户端 session.start.memory.auto，缺省关。开启时助手才会主动调用 remember 沉淀长期记忆。 */
   autoMemory: boolean = false,
   /** 天气数据源：换源只改这里/默认工厂一处；缺省用 createDefaultWeatherSource（wttr.in，无 api-key）。 */
@@ -127,7 +129,14 @@ export function createToolkit(
     createCurrentTimeTool(lang, timeZone),
     createCurrentLocationTool(lang, locationProvider, requestLocation),
     createWeatherTool(lang, locationProvider, weatherSource, requestLocation),
-    createDealsTool(lang, { source: dealsSource, defaultLimit: dealsCount }),
+    createDealsTool(lang, {
+      source: dealsSource,
+      // 内置源才补备用源（自动多源降级）；测试注入的桩源不补，避免意外联网
+      fallbackSources: createDealsAllSources().some((s) => s.name === dealsSource.name)
+        ? createDealsAllSources().filter((s) => s.name !== dealsSource.name)
+        : [],
+      defaultLimit: dealsCount,
+    }),
     createBaikeTool(lang, baikeSource ? { source: baikeSource } : {}),
   ]
   // 媒体指令需要 emit 把指令下发给客户端，且需要 musicSource 决定播什么；
@@ -144,6 +153,8 @@ export function createToolkit(
         createSubtitleTool(lang, getMusicSource, emit),
       ]
     : []
+  // 诗词/古文工具：只需 emit（下发朗读音频+字幕），无需 musicSource。有 emit 就注册。
+  const poemTools: Tool[] = emit ? [createPoemTool(lang, { emit })] : []
   // 长期记忆工具：仅当本设备有记忆存储时注册（无 deviceId 的旧客户端不注册）。
   // 这样助手能「记住你的习惯」「忘了XX」，且记忆只落本机、按设备隔离。
   // remember（助手主动沉淀记忆）受自动记忆开关约束：关闭时只有手动指令（记录下 / 帮我记 等，
@@ -155,7 +166,7 @@ export function createToolkit(
         createForgetTool(lang, memoryStore),
       ]
     : []
-  return new ToolkitImpl({ tools: [...baseTools, ...musicTools, ...memoryTools] as unknown as Tool[] })
+  return new ToolkitImpl({ tools: [...baseTools, ...musicTools, ...poemTools, ...memoryTools] as unknown as Tool[] })
 }
 
 /** 供 voiceSessionService 把媒体指令转成 ServerEvent 透传给客户端。 */

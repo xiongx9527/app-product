@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isNoise, isForeignNoise, resemblesSpoken, pcmRms, stripTrailingEcho } from './noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken, pcmRms, stripTrailingEcho, isBareAckFragment } from './noiseFilter'
 
 describe('ASR 杂音过滤', () => {
   it('纯符号、空白、幻觉短词判为噪声', () => {
@@ -19,6 +19,19 @@ describe('ASR 杂音过滤', () => {
     expect(isNoise('今天天气怎么样')).toBe(false)
     expect(isNoise('滚。')).toBe(false)
     expect(isNoise('好')).toBe(false)
+  })
+
+  it('咳嗽/清嗓/犹豫被识别成叠字拟声 → 判噪声，不触发一轮回答', () => {
+    expect(isNoise('嗯嗯')).toBe(true)
+    expect(isNoise('咳咳')).toBe(true)
+    expect(isNoise('嗯额')).toBe(true)
+    expect(isNoise('呃呃呃')).toBe(true)
+    expect(isNoise('咳，咳咳。')).toBe(true)
+    // 实义叠字/带实义词不放行误杀
+    expect(isNoise('好好')).toBe(false)
+    expect(isNoise('是是')).toBe(false)
+    expect(isNoise('对对')).toBe(false)
+    expect(isNoise('嗯，播放音乐')).toBe(false)
   })
 
   it('极短英文虚词碎片判为噪声，任何会话语言下都拦', () => {
@@ -91,6 +104,23 @@ describe('stripTrailingEcho（去掉 SenseVoice 句尾多吐的重复词）', ()
     expect(stripTrailingEcho('播放音乐吧！音乐吧。')).toBe('播放音乐吧！')
   })
 
+  it('真机案例：带朗读动词的无标点词组重复（朗诵滕王阁序滕王阁序 → 朗诵滕王阁序）', () => {
+    expect(stripTrailingEcho('朗诵滕王阁序滕王阁序')).toBe('朗诵滕王阁序')
+    expect(stripTrailingEcho('背诵静夜思静夜思')).toBe('背诵静夜思')
+    expect(stripTrailingEcho('朗诵岳阳楼记岳阳楼记')).toBe('朗诵岳阳楼记')
+  })
+
+  it('词组折叠绝不误伤唤醒词/真实 A+A 表达', () => {
+    // 唤醒词和真实重复表达没有朗读动词，必须原样保留（否则唤醒失效）
+    expect(stripTrailingEcho('小熊小熊')).toBe('小熊小熊')
+    expect(stripTrailingEcho('搜索搜索')).toBe('搜索搜索')
+    expect(stripTrailingEcho('取消取消')).toBe('取消取消')
+    expect(stripTrailingEcho('走走停停')).toBe('走走停停')
+    expect(stripTrailingEcho('走吧？走')).toBe('走吧？走')
+    expect(stripTrailingEcho('去北京？上海也行。')).toBe('去北京？上海也行。')
+    expect(stripTrailingEcho('朗诵滕王阁序')).toBe('朗诵滕王阁序')
+  })
+
   it('尾部是全新内容（不是重复）时保留', () => {
     expect(stripTrailingEcho('去北京？上海也行。')).toBe('去北京？上海也行。')
     expect(stripTrailingEcho('先吃饭。然后散步。')).toBe('先吃饭。然后散步。')
@@ -104,5 +134,40 @@ describe('stripTrailingEcho（去掉 SenseVoice 句尾多吐的重复词）', ()
 
   it('空串原样返回', () => {
     expect(stripTrailingEcho('')).toBe('')
+  })
+})
+
+describe('空闲期纯应答片段（isBareAckFragment）', () => {
+  it('只有应答/语气、没有内容的片段命中（真机噪声高频输出）', () => {
+    expect(isBareAckFragment('是。')).toBe(true)
+    expect(isBareAckFragment('对。')).toBe(true)
+    expect(isBareAckFragment('啊？')).toBe(true)
+    expect(isBareAckFragment('啥')).toBe(true)
+    expect(isBareAckFragment('好的')).toBe(true)
+    expect(isBareAckFragment('对对')).toBe(true)
+    // 口头语前缀 + 语气字（真机：播报期收回来的回声被识别成「你看嗯。」）
+    expect(isBareAckFragment('你看嗯。')).toBe(true)
+    expect(isBareAckFragment('那个啊')).toBe(true)
+    // 真机高频：含笑/鼻音的「嗯哼」被识别成实词放行，触发一轮无关回答
+    expect(isBareAckFragment('嗯哼。')).toBe(true)
+  })
+
+  it('短指令 / 实义短句 / 选号不误判为应答', () => {
+    expect(isBareAckFragment('停')).toBe(false)
+    expect(isBareAckFragment('暂停')).toBe(false)
+    expect(isBareAckFragment('继续')).toBe(false)
+    expect(isBareAckFragment('下一首')).toBe(false)
+    expect(isBareAckFragment('几点了')).toBe(false)
+    expect(isBareAckFragment('你好')).toBe(false)
+    expect(isBareAckFragment('在吗')).toBe(false)
+    expect(isBareAckFragment('9')).toBe(false)
+    expect(isBareAckFragment('播放音乐')).toBe(false)
+    expect(isBareAckFragment('')).toBe(false)
+  })
+
+  it('含实义字的长句/命令一律放行（只吃「全应答字」或「口头语前缀+语气字」）', () => {
+    expect(isBareAckFragment('嗯，播放音乐')).toBe(false)
+    expect(isBareAckFragment('对，来一首周杰伦的歌')).toBe(false)
+    expect(isBareAckFragment('是我说的那首歌')).toBe(false)
   })
 })

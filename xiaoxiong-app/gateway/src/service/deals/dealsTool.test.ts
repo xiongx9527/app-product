@@ -3,6 +3,13 @@ import { createDealsTool, DEALS_TOOL_NAME } from '../tools/dealsTool'
 import { createToolkit } from '../tools'
 import { filterDeals, formatDeals, splitKeywordTerms, type Deal, type DealsFetcher } from './types'
 import { createSmzdmSource, parseDeals, parseTagDeals } from './smzdm'
+import {
+  isSourceCooling,
+  resetSourceCooldowns,
+  looksAntiBot,
+  markSourceCooldown,
+} from './sourceCooldown'
+import type { DealsSource } from './types'
 
 /** 固定 HTML 片段，覆盖标题/价格/标签/商城/时间/链接的解析。 */
 const SAMPLE_HTML = `
@@ -335,5 +342,84 @@ describe('createToolkit 登记 query_deals', () => {
   it('工具集包含 query_deals', () => {
     const schemas = createToolkit('zh-CN').getJSONSchemas()
     expect(schemas.some((s) => s.function.name === DEALS_TOOL_NAME)).toBe(true)
+  })
+})
+
+describe('多源降级 + 反爬冷却', () => {
+  function stubSource(name: string, baseUrl: string): DealsSource {
+    return {
+      name,
+      baseUrl,
+      pageUrl: () => baseUrl,
+      parse: parseDeals,
+    }
+  }
+
+  it('主源返回 WAF 拦截页（0 条）→ 冷却主源、自动换备用源', async () => {
+    resetSourceCooldowns()
+    const primary = stubSource('test-primary', 'https://primary.test/')
+    const fallback = stubSource('test-fallback', 'https://fallback.test/')
+    const f: DealsFetcher = async (url) => ({
+      ok: true,
+      status: 200,
+      // 主源返回 WAF 页（解析 0 条），备用源返回正常商品列表
+      text: async () => (url.includes('primary') ? '<html><title>WAF拦截页面</title>probev3</html>' : SAMPLE_HTML),
+    })
+    const tool = createDealsTool('zh-CN', {
+      source: primary,
+      fallbackSources: [fallback],
+      fetcher: f,
+    })
+    const out = (await tool.call?.({ keyword: '棉柔巾' })) as string
+    expect(isSourceCooling('test-primary')).toBe(true) // 主源被冷却
+    expect(out).toContain('全棉') // 用的是备用源的商品
+  })
+
+  it('冷却中的源被跳过，直接用下一个源', async () => {
+    resetSourceCooldowns()
+    markSourceCooldown('test-primary', 10 * 60 * 1000)
+    const primary = stubSource('test-primary', 'https://primary.test/')
+    const fallback = stubSource('test-fallback', 'https://fallback.test/')
+    const f = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => SAMPLE_HTML,
+    })) as unknown as DealsFetcher
+    const tool = createDealsTool('zh-CN', {
+      source: primary,
+      fallbackSources: [fallback],
+      fetcher: f,
+    })
+    await tool.call?.({ keyword: '耳机' })
+    const urls = (f as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0])
+    expect(urls.some((u: string) => u.includes('primary'))).toBe(false) // 没碰冷却源
+    expect(urls.some((u: string) => u.includes('fallback'))).toBe(true)
+    resetSourceCooldowns()
+  })
+
+  it('全部源都没结果 → 诚实文案，不下发商品', async () => {
+    resetSourceCooldowns()
+    const primary = stubSource('test-primary2', 'https://primary2.test/')
+    const fallback = stubSource('test-fallback2', 'https://fallback2.test/')
+    // 用足够长的正常页面（无商品项）：确保不被误判为反爬页，anyOk=true → 走「没找到」而非「源故障」
+    const noDealsHtml = '<html><body>' + '<div class="other">占位内容</div>'.repeat(100) + '</body></html>'
+    const f: DealsFetcher = async () => ({ ok: true, status: 200, text: async () => noDealsHtml })
+    const tool = createDealsTool('zh-CN', {
+      source: primary,
+      fallbackSources: [fallback],
+      fetcher: f,
+    })
+    const out = (await tool.call?.({ keyword: '耳机' })) as string
+    expect(out).toContain('没找到')
+    // 空结果只换源、不冷却（下次仍可重试）；只有反爬页才冷却
+    expect(isSourceCooling('test-primary2')).toBe(false)
+    expect(isSourceCooling('test-fallback2')).toBe(false)
+    resetSourceCooldowns()
+  })
+
+  it('looksAntiBot 识别 WAF / 验证码页，不误判正常页', () => {
+    expect(looksAntiBot('<html>probev3 WAF拦截页面</html>')).toBe(true)
+    expect(looksAntiBot('<html>short</html>')).toBe(true) // 过短
+    expect(looksAntiBot(SAMPLE_HTML)).toBe(false)
   })
 })

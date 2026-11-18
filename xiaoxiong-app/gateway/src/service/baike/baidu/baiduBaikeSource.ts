@@ -14,11 +14,12 @@
  * 整块 parse 拿不到；局部字段正则对三种卡片都稳定（见 baiduBaikeSource.test.ts）。
  */
 
-import type { BaikeEntry, BaikeFetcher, BaikeSource } from './types'
+import type { BaikeEntry, BaikeFetcher, BaikeSource } from '../types'
 
-/** 与好价源一致的浏览器 UA：百度对裸 curl 有反爬，带 UA 才稳定拿到搜索页。 */
+/** 浏览器 UA：必须用**移动 UA**——设备内嵌网关用 PC UA 访问百度搜索页会被 302 到 seccaptcha
+ *  验证码页（真机实测 PC UA 302、移动 UA 200 且百科卡片结构兼容），导致查询不到词条。 */
 const USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36'
 
 /** 清洗摘要/标题：去 <em>/<b> 等 HTML 标签、解实体、压空白、去「- 百度百科」后缀。 */
 export function cleanBaikeText(raw: string): string {

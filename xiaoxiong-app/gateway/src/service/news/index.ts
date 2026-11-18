@@ -1,2 +1,2 @@
-export { createNewsVideoSource, cleanNewsTitle } from './newsVideoSource'
-export type { NewsVideo, NewsVideoCandidate, NewsVideoOptions, NewsVideoSourceLike } from './newsVideoSource'
+export { createNewsVideoSource, cleanNewsTitle } from './bilibili/newsVideoSource'
+export type { NewsVideo, NewsVideoCandidate, NewsVideoOptions, NewsVideoSourceLike } from './bilibili/newsVideoSource'

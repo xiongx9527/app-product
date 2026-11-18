@@ -127,6 +127,13 @@ def _startup_log(msg: str = "", **_kwargs: Any) -> None:
 # 与网关契约保持一致：上行 16k，下行 24k；两边都是 16bit 单声道。
 SAMPLE_RATE = 16000
 TTS_SAMPLE_RATE = 24000
+# SenseVoice 前 ZCR 声学门控阈值。真机日志校准（2026-11-18）：
+#   真人说话 ZCR 0.086~0.144（5 条），吸鼻涕/咳嗽/噪声 0.309~0.439（8 条），空档很宽。
+#   取两组中点 0.22，离两侧都最远、最稳。
+ZCR_NON_SPEECH_THRESHOLD = 0.22
+# 能量下限：真人说话峰值 RMS 最低 0.0168；近静音底噪（peak~0.004）ZCR 低会漏过门控，
+# SenseVoice 仍可能脑补文本。低于此值判非语音，不误伤正常说话。
+ZCR_MIN_PEAK = 0.01
 
 # 配置优先级从高到低：命令行覆盖 > 环境变量 > 配置文件 > 这里的默认值。
 DEFAULTS = {
@@ -912,11 +919,105 @@ def decode_wav(payload: bytes):
     return x
 
 
+def looks_like_non_speech(x) -> bool:
+    """判断一段音频是否「不是真人讲话」，用于挡掉 SenseVoice 对非语音的幻觉。
+
+    背景（2026-11-18 实机铁证）：SenseVoice 对纯静音/白噪声会稳定脑补出文本
+    （静音→「没。」、白噪声→「嗯。」），网关据此触发无意义回答；用户咳嗽/吸鼻涕
+    被识别成「我/对/同意/对呀」，逐字屏蔽会误伤真人说的同名词，是死路。
+
+    判据用过零率（ZCR）：真人浊音有基频、波形平滑，ZCR≈0.09~0.10；咳嗽/吸鼻涕/
+    静电/白噪声是宽带信号，ZCR≈0.5。实测两者相差 5 倍，阈值 0.28 稳稳分开。
+    只看有声帧（低能量帧的 ZCR 被静音底噪主导，无意义），避免整段平均被静音拉低。
+    返回 True 表示这段不是讲话 → 上游直接给空文本，不触发任何回答。
+    """
+    import numpy as np
+
+    if x.size < 320:  # 短于 20ms，无参考价值，交给下游（通常也是空）
+        return False
+    # 20ms 帧的过零率
+    n = 320
+    frames = x[: x.size // n * n].reshape(-1, n)
+    # 只看有声帧：帧 RMS 超过整段峰值能量的 8%，滤掉静音/尾音底噪
+    frame_rms = np.sqrt((frames ** 2).mean(axis=1))
+    peak = float(frame_rms.max()) if frame_rms.size else 0.0
+    if peak < ZCR_MIN_PEAK:  # 近静音底噪：真机真人说话峰值≥0.0168，0.01 不误伤
+        return True
+    active = frames[frame_rms > peak * 0.08]
+    if active.size == 0:
+        return True
+    zcr = float(np.mean(np.abs(np.diff(np.sign(active), axis=1)) > 0))
+    # 诊断：记录每段送识别音频的 ZCR，便于用真机真实咳嗽/吸鼻涕样本校准阈值。
+    # 只打短音频（<2s，噪声误触发都是短促的），避免长语音刷屏。
+    duration = x.size / SAMPLE_RATE
+    if duration < 2.0:
+        print(f"[ZCR-GATE] dur={duration:.2f}s zcr={zcr:.3f} peak={peak:.4f} block={zcr > ZCR_NON_SPEECH_THRESHOLD}", flush=True)
+    return zcr > ZCR_NON_SPEECH_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# 临时诊断（默认关闭，定位完删除）：VOICE_DUMP_WAV=<dir> 时把送识别的短音频
+# 原样落盘并在 index.log 记一行「时长 / 峰值 / ZCR / 是否被门控拦 / 识别文本」。
+# 目的：确认真机「嗯/对/啊/啥」这类短促误触发到底是噪声还是人声，给 ZCR 门限
+# 提供样本，而不是靠猜或往网关黑名单里加正常字。超过 4 秒的音频不落盘（长句不关心）。
+# ---------------------------------------------------------------------------
+VOICE_DUMP_DIR = (os.environ.get("VOICE_DUMP_WAV") or "").strip()
+VOICE_DUMP_LIMIT = 600
+_dump_seq = 0
+
+
+def _dump_begin(payload: bytes, x) -> str:
+    """落盘一段送识别音频；返回文件名（未开启 / 过长 / 超上限时返回空串）。"""
+    global _dump_seq
+    if not VOICE_DUMP_DIR or _dump_seq >= VOICE_DUMP_LIMIT:
+        return ""
+    duration = x.size / SAMPLE_RATE
+    if duration > 4.0:
+        return ""
+    import os as _os
+    import time as _time
+
+    _dump_seq += 1
+    name = (
+        f"{_dump_seq:04d}-{_time.strftime('%H%M%S')}"
+        f"-{int(duration * 1000):05d}ms-{len(payload)}B.wav"
+    )
+    try:
+        _os.makedirs(VOICE_DUMP_DIR, exist_ok=True)
+        with open(_os.path.join(VOICE_DUMP_DIR, name), "wb") as fh:
+            fh.write(payload)
+    except OSError as exc:
+        print(f"[DUMP] write failed: {exc}", flush=True)
+        return ""
+    return name
+
+
+def _dump_end(name: str, text: str, blocked: bool) -> None:
+    """把识别结论追加到 index.log，与落盘音频同名对齐。"""
+    if not name:
+        return
+    import os as _os
+    import time as _time
+
+    try:
+        with open(_os.path.join(VOICE_DUMP_DIR, "index.log"), "a", encoding="utf-8") as fh:
+            stamped = _time.strftime("%Y-%m-%dT%H:%M:%S")
+            fh.write(f'{stamped} {name} blocked={int(blocked)} text="{text}"\n')
+    except OSError:
+        pass
+
+
 def transcribe_sensevoice(payload: bytes, language: str):
     """同步转写；调用方用 asyncio.to_thread 包一层，避免模型加载时阻塞事件循环。"""
     x = decode_wav(payload)
     if x.size == 0:
         return "", 0.0, language or "zh"
+    dump_name = _dump_begin(payload, x)
+    # 非语音（咳嗽/吸鼻涕/静音/电流声）直接返回空，绝不让 SenseVoice 脑补出「我/对/嗯」。
+    # 这是从源头杜绝「咳嗽触发回答」——与识别成什么字无关，真人讲话（ZCR~0.1）不受影响。
+    if looks_like_non_speech(x):
+        _dump_end(dump_name, "", True)
+        return "", x.size / SAMPLE_RATE, language or "zh"
     rec = get_sensevoice()
     stream = rec.create_stream()
     # 双保险：模型加载时已锁 language，这里再按流设一次（部分 sherpa-onnx 版本
@@ -929,6 +1030,7 @@ def transcribe_sensevoice(payload: bytes, language: str):
     rec.decode_stream(stream)
     text = (stream.result.text or "").strip()
     lang = getattr(stream.result, "lang", "") or language or "zh"
+    _dump_end(dump_name, text, False)
     return text, x.size / SAMPLE_RATE, lang
 
 

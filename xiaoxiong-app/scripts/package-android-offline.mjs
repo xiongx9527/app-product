@@ -243,6 +243,16 @@ if (args.gateway) {
   mkdirSync(join(gwAssets, 'static'), { recursive: true })
   copyFileSync(bundleFile, join(gwAssets, 'gateway.bundle.mjs'))
   console.log('[ok] 网关 bundle -> assets/gateway/gateway.bundle.mjs')
+  // ASR 纠错词表 seed：整个 seed/ 目录拷到 assets/gateway/seed/，运行时整体拷到 no_backup(=GATEWAY_HOME)，
+  // 网关从 <GATEWAY_HOME>/seed/ 读主表 asr_corrections.json + 字表 asr_correction_variants.json。
+  // 整目录拷贝：以后 seed/ 加词表文件不用改打包脚本。
+  const asrSeedDir = join(gatewayRoot, 'seed')
+  if (existsSync(asrSeedDir)) {
+    copyDir(asrSeedDir, join(gwAssets, 'seed'))
+    console.log(`[ok] ASR 纠错词表 seed -> assets/gateway/seed/ (${readdirSync(asrSeedDir).filter((f) => f.endsWith('.json')).length} 个 json)`)
+  } else {
+    console.warn(`[warn] 未找到 ASR 纠错词表 seed 目录 ${asrSeedDir}：词表将只从已存在的 SQLite 读取`)
+  }
   if (existsSync(cuesDir)) {
     copyDir(cuesDir, join(gwAssets, 'static', 'cues'))
     console.log(`[ok] 提示音 -> assets/gateway/static/cues/ (${readdirSync(join(gwAssets, 'static', 'cues')).length} 个)`)

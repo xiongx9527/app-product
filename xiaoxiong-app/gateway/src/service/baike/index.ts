@@ -6,10 +6,10 @@
  * 组合根可按名字注入指定源，缺省用默认源。换源不碰取数/格式化逻辑（同 weather / deals 范式）。
  */
 import type { BaikeSource } from './types'
-import { createBaiduBaikeSource } from './baiduBaikeSource'
+import { createBaiduBaikeSource } from './baidu/baiduBaikeSource'
 
 export type { BaikeEntry, BaikeFetcher, BaikeSource } from './types'
-export { createBaiduBaikeSource, parseBaikeHtml, cleanBaikeText } from './baiduBaikeSource'
+export { createBaiduBaikeSource, parseBaikeHtml, cleanBaikeText } from './baidu/baiduBaikeSource'
 
 /** 源工厂注册表：key 为源名（小写），值为工厂。百度只是默认的一个。 */
 const BAIKE_SOURCE_FACTORIES: Record<string, () => BaikeSource> = {

@@ -75,6 +75,8 @@ xiaoxiong-app/uni_app/src/
 - 后端：智能体系统提示、下发给客户端的 `error` 文案等都按 `session.start` 的 `lang` 本地化，文案进 `xiaoxiong-app/gateway/src/i18n.ts` 的目录，按 `lang` 取值。
 - 唤醒词、ASR、TTS 的默认语言跟随全局配置；厂商参数留空即继承。
 - **ASR 识别语言走通用参数 `voice.params.language`**（2026-11-17 按用户要求从独立 `asrLanguage` 顶层字段改为走 params）：前端 `activeVoiceConfig()` 把 `appConfig.language`（zh-CN/en-US）规范化成基础码（zh/en）写进 `params.language`（无论有没有选音色都下发 params）；网关 `sharedParams` 把它带进 `asr.params.language`，`asr/http.ts` 的 `form.append('language', String(this.params.language || 'zh'))` 据此下发。**注意**：`params` 是 ASR/LLM/TTS 共用通道，`language` 会同时流进 LLM（`agentService` 作 `presetGenParams`，且 `llmKey=JSON.stringify(resolved.llm)`，改语言会触发 agent 重建丢对话历史）与 TTS 参数——这是用户明确接受的取舍；若日后要隔离，只能在网关 `sharedParams` 之外单独给 LLM 剥掉 language，不要再恢复独立顶层字段。没带 language 时由网关 env `ASR_PARAMS` 或 `HttpVoiceAsr` 的 zh 兜底继续生效。服务端 9529 SenseVoice 另有模型加载级 `SENSEVOICE_LANGUAGE`（默认 zh）锁定。
+- **咳嗽/吸鼻涕误识别从源头挡：SenseVoice 前的 ZCR 声学门控**（2026-11-18）：SenseVoice 对纯静音/白噪声会稳定脑补出文本（实测静音→「没。」、白噪声→「嗯。」），导致咳嗽/吸鼻涕被识别成「我/对/同意/对呀」触发无意义回答。**逐字加黑名单是死路**（这些是正常口语，会误伤真人），必须从音频层判断「是不是真人讲话」。`model-proxy/voice/openai_voice_server.py` 的 `looks_like_non_speech(x)` 在 `transcribe_sensevoice` 送模型前算过零率 ZCR：真人浊音 ZCR≈0.09~0.14、吸鼻涕/咳嗽/宽带噪声≈0.31~0.44（真机日志校准），阈值 0.22（两组中点）+ 能量下限 peak≥0.01，命中或非语音返回空文本。只对有声帧（RMS>峰值8%）算，避免静音拉低。服务对 <2s 音频打 `[ZCR-GATE] zcr=.. block=..` 日志，真机校准阈值就靠它。测试 `tests/test_vad_gate.py`（stdlib，`venv/bin/python tests/test_vad_gate.py`）。**改 9529 服务代码后必须用 venv python 重启服务才生效**；ZCR 阈值 0.28 是按已验证样本定的，调阈值前先用真机音频测人声/噪声的 ZCR 分布。网关侧 `asr/noiseFilter.ts` 只保留叠字拟声（嗯嗯/咳咳）和语气词单字的噪声判断，不再列「我/对」等幻觉单字（源头已解决，列了反而误伤真人单字应答）。
+- **ASR 近音错字纠错词表：两表 + 拼音匹配**（2026-11-18）：ZCR 挡的是「非语音」，这个词表挡的是「真人说了但 SenseVoice 识成近音错字」（滕王格世→滕王阁序、周杰轮→周杰伦、李存序→李存勖）。**逐字黑名单/纯拼音模糊匹配都走过弯路会误伤**（天气→天津、一路向北→一路刘备），最终方案是 SQLite 两表：`gateway/src/db/schema.ts` 的 `asr_corrections`（主表：correct 热词 + pinyin + note，correct 唯一）+ `asr_correction_variants`（字表：correction_id 外键 + wrong 错词 + 错词 pinyin + note，一热词多错词）。匹配在 `service/asr/asrCorrector.ts`：输入片段转无声调拼音 → 字表同拼音的 correct 全一致才纠（`Map<pinyin,Set<correct>>`，size>1 不纠，防「shi li」歧义），2~5 字滑窗最长优先。词表来源：`gateway/seed/asr_corrections.json`（主表）+ `asr_correction_variants.json`（字表），启动时 `service/asrCorrectionSeed.ts` 幂等灌入 + 加载进内存 corrector；管理接口 `/api/admin/asr-corrections` GET 列主表+字表、POST 批量加 `{items:[{correct,wrong,note?}]}`、DELETE `?correct=X&wrong=Y`，改后即时刷新。打包脚本整目录拷 seed/ 到 assets/gateway/seed/，运行时 GatewayNodeService 递归拷到 GATEWAY_HOME。维护词表改 seed JSON 或调管理接口，别改代码。拼音由 pinyin-pro 统一 `toneType:none`+空格分隔+小写（seed/接口都自动算，格式必须一致）。SenseVoice 不支持 hotwords（`set_option` 无效），解码阶段热词注入做不了，只能后处理。
 
 ### 配置
 
@@ -93,6 +95,27 @@ xiaoxiong-app/uni_app/src/
 - SQL（网关侧 Node 端）必须用参数化查询，禁止把外部字符串直接拼进 SQL。
 - H5 开发阶段没有 `plus.sqlite`，`isSupported()` 为 false，调用方需降级。
 - 设备数据默认存本地；付费用户后续可同步云端，云端不是当前实现。
+
+#### 网关 SQLite 表结构（权威定义：`gateway/src/db/schema.ts` + `gateway/src/db/client.ts` 的 BOOTSTRAP_SQL）
+
+库文件默认 `gateway/data/app.db`（`config.db.path`，`:memory:` 为测试内存库）。Node 内置 `node:sqlite`，无原生编译依赖。建表走 `BOOTSTRAP_SQL` 的 `CREATE TABLE IF NOT EXISTS`（drizzle-kit 的 generate/push 在 node:sqlite rc 工具有 bug，暂不用 migrations），业务查询全走 Drizzle mapper（`gateway/src/mapper/*`），不写行级 SQL。新增表/字段须同时改 schema.ts 和 BOOTSTRAP_SQL；旧库加列因 IF NOT EXISTS 不生效，需像 `user_memory.created_at` 那样在 createDb 里显式 ALTER 补列。
+
+| 表 | 列 | 索引/约束 | mapper | 用途 |
+|---|---|---|---|---|
+| `sessions` | id PK自增, device_id, started_at, ended_at, created_at | 无 | sessionMapper.create/listByDevice | 语音会话记录 |
+| `command_logs` | id PK自增, device_id, command NOT NULL, result NOT NULL, created_at | 无 | commandLogMapper.create/listByDevice(200) | 命令日志 |
+| `user_memory` | id PK自增, device_id, key NOT NULL, value NOT NULL, created_at, updated_at | UNIQUE(device_id,key) `uq_user_memory_device_key` | memoryMapper.save/list/listPage/forget | 用户长期记忆，按设备隔离、同 key 覆盖 |
+| `app_config` | id PK自增, device_id, config NOT NULL(JSON字符串), updated_at | UNIQUE(device_id) `uq_app_config_device` | configMapper.save/get | 设置页保存配置的本机副本（真相源仍是客户端 setStorageSync） |
+
+时间列默认 `strftime('%s','now')`（秒级）。client.ts 对旧库缺 `user_memory.created_at` 做了 ALTER 补列 + 用 updated_at 兜底。`device_id` 维度全部按设备隔离，见下方生成规则。
+
+#### device_id 生成规则（`uni_app/src/core/config/deviceId.ts`）
+
+- 格式 UUID v4：优先 `crypto.randomUUID()`，回退 `Math.random()` 按 v4 格式拼。
+- 首次生成后存 `uni.setStorageSync('app-product.deviceId', id)` + 内存缓存，之后恒复用；非 App 环境（浏览器/测试）回退进程内内存态、不持久化。
+- **卸载重装会变**（storage 清空 → 新 UUID），旧记忆/配置成孤儿（数据还在库里但新 id 读不到）。覆盖安装/重启/重连/重唤醒不变。
+- 用途：WS 连接 `?deviceId=`（网关据此复用会话、保留记忆/待选歌单）、原生 PCM 直连、`/api/admin/memories`、`/api/admin/config` 的设备维度。
+- **Android 正在改**：原生插件 `app-product-wake` 加 `getStableDeviceId()` 读 `ANDROID_ID`（Settings.Secure，卸载重装不变、无需权限）；前端优先调原生、失败回退 storage UUID。iOS 待做（方案：Keychain 存 UUID，卸载重装保留；IDFV 单 App 场景会变，不够可靠）。注意 Node.js 网关侧做不到跨卸载持久化——它的 home 是 App 私有 `no_backup` 目录，卸载必删；稳定标识必须从系统级 API（ANDROID_ID/Keychain）读，只能走原生层。
 
 ### 协议
 
@@ -137,9 +160,17 @@ xiaoxiong-app/uni_app/src/
 - **"再"字表示全新请求**：语音指令含"再"（再放 / 再减…）时关掉跨轮上下文，不沿用上一轮的歌手 / 状态。
 - **少调 LLM**：高置信控制指令（音乐 / 音量 / 记忆 / 新闻等）直连绕开大模型，不进 LLM。
 - **新闻播报直连**：识别在 `service/control/newsControl.ts`（触发词 新闻 / 消息 / 头条 / 热点 / 快讯 / news / headlines，话题词从触发词前提取，含歌曲 / 影视等其它内容强特征则让回下游）；检测在 `voiceSessionService.handleDirectCommand` 中**排在音乐指令之前**（否则「播放新闻」被裸「播放」当点歌）。抓取走 `service/news`（`NewsSource` 抽象，默认百度新闻频道）+ `service/tools/newsTool`（6s 超时、按 URL 60s TTL、并发复用 Promise、失败不缓存），源地址只在网关侧、前端不出现也不接受传入。只口播「标题 + 来源」、不发卡片 / 不编号 / 不进 LLM；失败 / 0 条 / 正常三态分别走 `formatNews` 的诚实文案，绝不编造新闻。引导与兜底按 `lang` 本地化（网关 `i18n.ts` 的 `news.*`），标题保持原文。
-- **百科播报用百度百科自己的 TTS 音频，不自己文字转语音**（2026-11-17）：百科词条直连命中后，网关 `runBaikeCommand` 调**百度百科 getaudio 接口**拿 mp3 直链（`service/baike/baikeTts.ts`），`media.play` 下发让客户端边下边播（和音乐同一套 InnerAudioContext）。sign 算法 `md5(text+"9"+per+time+once+固定盐)` 逆向自百度 `lemma_*.js`、多组真机样本验证；接口是百度非公开、可能失效，**失败就静默不播（只发 `llm.done` 收尾），绝不用网关文字转语音兜底**（用户明令「播不了就算了」）。mp3 直链约一百多分钟有效，即用即取不缓存。音频直链真机已验证可播（CDP 注入 Audio 走完 loadstart→ended）。
-  - **文字不进助手框，进字幕面板且转成歌词格式**：百科摘要经 `splitSummaryToLines`（`baikeTts.ts`）按中文句末标点切行、短句并入前句、按字数/4.5字每秒分配每行 time → `media.subtitle`；前端 `activeSubtitleIndex`/`activeSubtitleSplit` 按播放进度逐句高亮「边读边转」，每次只显示短句（悬浮歌词 `disc-lyric` 塞得下），不要把几百字整段单行塞进固定宽度（右边看不到）。
+- **百科播报用百度百科自己的 TTS 音频，不自己文字转语音**（2026-11-17）：百科词条直连命中后，网关 `runBaikeCommand` 调**百度百科 getaudio 接口**拿 mp3 直链（`service/baike/baikeTts.ts`），`media.play` 下发让客户端边下边播（和音乐同一套 InnerAudioContext）。sign 算法 `md5(text+"9"+per+time+once+固定盐)` 逆向自百度 `lemma_*.js`、多组真机样本验证；接口是百度非公开、可能失效，**失败就静默不播（只发 `llm.done` 收尾），绝不用网关文字转语音兜底**（用户明令「播不了就算了」）。mp3 直链约一百多分钟有效，即用即取不缓存。
+  - **必须落盘成本地短链下发，不能下发第三方直链**（2026-11-18 真机踩坑）：之前以为"CDP WebView Audio 能播直链"就直接用，但 App 实际走 InnerAudioContext 直拉第三方 HTTP 流**无声（-99、不发请求）**——音乐/新闻都靠 `audioPath` 本地短链才稳。现在网关 `service/mediaCache.ts` 在 media.play 前把外部 mp3 下载落盘到独立 `cache/media/<md5>.mp3`（不参与 ADTS 的 LRU=2，否则会被音乐挤掉），下发 `audioPath=/media/s/<key>.mp3`，客户端下载本地播。server.ts 注册 `/media/s/` 独立短链路由（Range/CORS）。百科 `runBaikeCommand` 和诗词 `runPoemCommand` 都走这条。下载失败回退原始 url。测试 `service/mediaCache.test.ts`。
+  - **助手框只显示简短播报确认，全文进字幕面板**：百科播报时 `llm.delta` 只发一句「正在为你播报：XX。」（i18n `baike.playing`，同音乐 playing 风格），百科全文**不进助手框**。新闻单条播放同理（`news.playing`，新闻无字幕）。
+  - **字幕转成歌词格式 + 自动换行**：百科摘要经 `splitSummaryToLines`（`baikeTts.ts`）按中文句末标点切行、短句并入前句、按字数/4.5字每秒分配每行 time → `media.subtitle`；前端 `activeSubtitleIndex`/`activeSubtitleSplit` 按播放进度逐句高亮「边读边转」。悬浮歌词 `disc-lyric` **必须自动换行**（`white-space:normal` + `word-break:break-all`，固定 200px 宽内折行），字号按 190/w 微缩——**不要用旧的 `nowrap`+`overflow:visible`**（长句横向溢出、左右被截断看不全，真机截图实锤）。
   - **封面用词条配图**：百度搜索页百科卡片的 `poster` 里 `gimg3.baidu.com/.../src=<编码的 bkimg URL>` 解码成稳定 `bkimg.cdn.bcebos.com` 直链（`baiduBaikeSource.ts` 的 `extractBaikeImage`），随 `media.play.cover` 下发（同源展示）。`media.play` 新增 `source?: 'music'|'tts'` 来源方式区分音乐 / 第三方 TTS。
+- **诗词/古文朗读走百度汉语 edu 源，不让 LLM 背全文**（2026-11-17）：用户说「背诵/朗诵/念一下/读一下 XX」+ 作品名（`control/poemControl.ts` 识别，含「歌/歌曲/音乐」等点歌句式排除，避免劫持「念出3首周杰伦的歌」），`runPoemCommand` 调 `service/edu`（按作品名→百度搜索页 aladdin 卡片提 32 位 sid → `hanyuapp.baidu.com/dictapp/swan/poemdetail?sid` 拿逐句原文 + `voiceInfo.url` 百度朗读 mp3）。字幕显示全文、mp3 经 `media.play(source:tts)`、助手框只播一句确认。两个关键约束：
+  - **作品名在第一个中文标点处截断**：ASR 常把多句连成一句（「背诵回乡偶书，给我回答没有书的好价」→ 作品名只取「回乡偶书」），截断避免把后续指令当书名；超 15 字也截断。
+  - **查不到就诚实提示、不回退**：查不到 sid（部分作品百度搜索无 aladdin 卡片，如回乡偶书/滕王阁序纯搜）时播「暂时没找到《X》的诗词内容」并 return true，**绝不能返回 false 往下走**——否则后面的好价分支会被句里的「好价」命中、答非所问（「背诵回乡偶书」回答「没有书的好价」）。也不交 LLM 自己背全文。
+  edu 源按"一个源一个子目录"放 `edu/baidu/`，经 `edu/index.ts` 汇聚。`query_poem` 工具也注册进了 toolkit（LLM 点名诗词时可主动调）。
+- **长文本不经过 LLM/我们的 TTS**：LLM 自由回答在 `runAgent` 流式 delta 累计 `MAX_LLM_SPOKEN_CHARS=100`，超限停止下发（助手框+TTS 同步截断、句子边界），i18n systemPrompt 也加 ≤100 字约束；**工具结果（百科摘要/商品/歌词/诗词原文）不受限**。起因：用户「王勃的滕王阁序」被 LLM 背全文、太长没人听。
+- **好价多源自动降级 + 反爬冷却**（2026-11-17）：smzdm 被腾讯云 WAF 普遍拦截（本机+设备都拦，换 WiFi 无效），默认主源换成值值值 `zhizhizhi.com`（`deals/zhizhizhi/`，设备网络可访问，分类页+本地关键词过滤；标题兼容 PC 版 `ht3` 和 WAP 版 `h3`）。`createDealsAllSources()` 给主源+备用源，某源没结果/被反爬就冷却（`deals/sourceCooldown.ts`，默认 10 分钟）自动换下一个；**只有确认反爬页才冷却，空结果只换源不冷却**。`media.detail` 只在有商品时下发，没找到下发 `close:true` 清掉空「为你找到」框。
 - **回复要诚实**：关闭字幕 / 暂停 / 停止等确认必须反映真实状态；没字幕、没在播放就别说"已显示 / 已暂停 / 已关闭"；保存配置连不上或写失败要如实报错，不谎报成功。
 - **详情卡片**：编号同行最前、列表显示字段、缺值占位、来源显示站点名、选号跨轮保留且量词通用、关详情回列表、无朋友圈入口、各 kind 共用同一协议。
 - **展示信息克制**：面板别默认加语义重复的状态列。

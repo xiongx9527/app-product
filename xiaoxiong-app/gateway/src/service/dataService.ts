@@ -3,6 +3,7 @@ import { sessionMapper } from '../mapper/sessionMapper'
 import { commandLogMapper } from '../mapper/commandLogMapper'
 import { memoryMapper, type MemoryEntry } from '../mapper/memoryMapper'
 import { configMapper } from '../mapper/configMapper'
+import { asrCorrectionMapper, type CorrectionInput } from '../mapper/asrCorrectionMapper'
 
 /**
  * 数据业务层：把各 Mapper 组合成高层能力，供 controller 调用。
@@ -13,6 +14,7 @@ export function createDataService(db: AppDb) {
   const command = commandLogMapper(db)
   const memory = memoryMapper(db)
   const config = configMapper(db)
+  const asrCorrection = asrCorrectionMapper(db)
   return {
     createSession: session.create,
     endSession: session.end,
@@ -25,9 +27,17 @@ export function createDataService(db: AppDb) {
     forgetMemory: memory.forget,
     saveAppConfig: config.save,
     getAppConfig: config.get,
+    listFlatAsrCorrections: asrCorrection.listFlat,
+    listMainAsrCorrections: asrCorrection.listMain,
+    listAsrVariants: asrCorrection.listVariants,
+    findAsrCorrection: asrCorrection.findMain,
+    upsertAsrCorrection: asrCorrection.upsertMain,
+    upsertAsrVariant: asrCorrection.upsertVariant,
+    disableAsrCorrection: asrCorrection.disableMain,
+    disableAsrVariant: asrCorrection.disableVariant,
   }
 }
 
 export type DataService = ReturnType<typeof createDataService>
-export type { MemoryEntry }
+export type { MemoryEntry, CorrectionInput }
 

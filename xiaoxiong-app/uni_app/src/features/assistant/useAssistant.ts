@@ -1292,16 +1292,22 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   }
 
   /**
-   * 当前应高亮的字幕行下标：按播放进度（秒）匹配最后一行 time <= currentTime 的行。
-   * onTimeUpdate 是采样回调（非实时），加上解码/缓冲，进度读数常略滞后于实际听感，
-   * 高亮会「慢半拍」；这里给约 1 秒的提前量抵消滞后，让当前行跟上正在唱的内容。
-   * 字幕与音频同源、时间相对音轨开头；无字幕/未播放时为 -1。
+   * 字幕高亮相对播放进度的时间偏移（秒）。
+   * - music（歌曲）：onTimeUpdate 采样/解码滞后，给 +1s 提前量让歌词跟唱（原设计）。
+   * - tts（百科/诗词朗读）：字幕是按字数估算 time 的「边读边转」，本身就可能快于百度 TTS 音频，
+   *   再加提前量会更超前——用户实测字幕比语音快。故 tts 用负偏移让字幕稍微滞后、贴合语音。
    */
-  const SUBTITLE_LEAD_SEC = 1.0
+  // 网关已按真实音频时长铺准字幕 time（不再前端拉伸），tts 不需要额外偏移；
+  // 歌曲(music)仍保留 +1s 提前量抵消 onTimeUpdate 采样滞后、让歌词跟唱。
+  const subtitleLeadSec = computed(() => (mediaSource.value === 'tts' ? 0 : 1.0))
+
+  // 字幕行直接用网关下发的 lines：网关已按真实音频时长铺好每行 time（见 baikeTts.splitSummaryToLines
+  // 的 durationSec 参数），前端不要再拉伸——二次拉伸会把末行 time 拉到≈duration，
+  // 导致 activeSubtitleSplit 最后一行 span≈0、逐字高亮瞬间全亮（用户反馈「字幕太快」的根因）。
   const activeSubtitleIndex = computed(() => {
     const lines = subtitle.value?.lines
     if (!lines?.length) return -1
-    const cur = musicState.currentTime.value + SUBTITLE_LEAD_SEC
+    const cur = musicState.currentTime.value + subtitleLeadSec.value
     let idx = -1
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].time <= cur) idx = i
@@ -1327,12 +1333,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     const lines = subtitle.value?.lines
     const idx = activeSubtitleIndex.value
     if (!lines || idx < 0 || !lines[idx]) return { sung: '', rest: '' }
+    // 百科/诗词(tts)不做逐字高亮：TTS 朗读有停顿/轻重，逐字平分时长会让字「唰唰」advance、
+    // 观感「字幕太快」。整句一行一行转（边读边转）更贴合朗读、更从容。
+    if (mediaSource.value === 'tts') return { sung: lines[idx].text, rest: '' }
     const chars = Array.from(lines[idx].text)
     if (chars.length === 0) return { sung: '', rest: '' }
     const start = lines[idx].time
     const end = idx + 1 < lines.length ? lines[idx + 1].time : (musicState.duration.value || start + 4)
     const span = Math.max(end - start, 0.1)
-    const cur = musicState.currentTime.value + SUBTITLE_LEAD_SEC
+    const cur = musicState.currentTime.value + subtitleLeadSec.value
     const prog = Math.min(Math.max((cur - start) / span, 0), 1)
     const n = Math.min(Math.round(prog * chars.length), chars.length)
     return { sung: chars.slice(0, n).join(''), rest: chars.slice(n).join('') }

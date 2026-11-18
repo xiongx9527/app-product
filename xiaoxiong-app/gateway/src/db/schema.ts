@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { sqliteTable, integer, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, integer, text, uniqueIndex, index } from 'drizzle-orm/sqlite-core'
 
 /**
  * 数据库表结构（Drizzle schema）。表定义即源码，迁移 SQL 由 drizzle-kit 生成，
@@ -57,7 +57,52 @@ export const appConfig = sqliteTable(
   (t) => ({ uniq: uniqueIndex('uq_app_config_device').on(t.deviceId) })
 )
 
+/**
+ * ASR 纠错词表（全局共享，不分设备）——两张表，主表维护热词，字表维护错词。
+ *
+ * 主表 asr_corrections：一个热词（正确词）+ 它的拼音 + 描述/备注。correct 唯一。
+ * 字表 asr_correction_variants：某热词下的错词字 + 错词拼音（一对多，correction_id 外键）。
+ *  例：主表「李存勖 / li cun cun xu」；字表「李存序/li cun xu」「李存须/li cun xu」…
+ *
+ * 匹配：输入片段转拼音 → 字表找 pinyin 相同的错词 → 经 correction_id 取主表 correct
+ *      → 命中的 correct 全一致才纠（shi li 命中多个不同 correct → 不纠，防误伤）。
+ * enabled=0 软删除，可回溯。
+ */
+export const asrCorrections = sqliteTable(
+  'asr_corrections',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    correct: text('correct').notNull(), // 正确热词
+    pinyin: text('pinyin').notNull(), // 正确词的无声调拼音
+    note: text('note'), // 备注/描述（如「歌手」「诗词名」）
+    enabled: integer('enabled').notNull().default(1),
+    createdAt: integer('created_at').default(sql`(strftime('%s', 'now'))`),
+    updatedAt: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
+  },
+  (t) => ({ uniq: uniqueIndex('uq_asr_correction').on(t.correct) })
+)
+
+/** 字表：每个热词下的错词（wrong 字 + 拼音），一个热词可有多个错词。 */
+export const asrCorrectionVariants = sqliteTable(
+  'asr_correction_variants',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    correctionId: integer('correction_id').notNull().references(() => asrCorrections.id),
+    wrong: text('wrong').notNull(), // 错词字（如「李存序」）
+    pinyin: text('pinyin').notNull(), // 错词的无声调拼音
+    note: text('note'), // 备注（如来源/实机失误场景）
+    enabled: integer('enabled').notNull().default(1),
+    createdAt: integer('created_at').default(sql`(strftime('%s', 'now'))`),
+  },
+  (t) => ({
+    uniq: uniqueIndex('uq_asr_correction_variant').on(t.correctionId, t.wrong),
+    // 匹配路径是「输入拼音 → 找 pinyin 相同的错词」，pinyin 上建普通索引避免全表扫描
+    byPinyin: index('idx_asr_variant_pinyin').on(t.pinyin),
+  })
+)
+
 export type SessionRow = typeof sessions.$inferSelect
 export type CommandLogRow = typeof commandLogs.$inferSelect
 export type UserMemoryRow = typeof userMemory.$inferSelect
 export type AppConfigRow = typeof appConfig.$inferSelect
+export type AsrCorrectionRow = typeof asrCorrections.$inferSelect

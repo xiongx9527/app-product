@@ -4,9 +4,12 @@ import { WebSocketServer } from 'ws'
 import { loadConfig } from './config'
 import { createDb } from './db/client'
 import { createDataService } from './service/dataService'
+import { seedAsrCorrections } from './service/asrCorrectionSeed'
+import { loadAsrCorrections } from './service/voiceSessionService'
 import { createApiController } from './controller/apiController'
 import { createDocsController } from './controller/docsController'
 import { handleMusicStream, handleAdtsByKey, getMusicDiagnostics } from './controller/musicStreamController'
+import { handleMediaByKey } from './service/mediaCache'
 import { createVoiceConnection } from './controller/voiceController'
 import { buildHealth } from './service/health'
 import type { VoiceConfig } from './voiceConfig'
@@ -31,6 +34,13 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
   const data = createDataService(db)
   const api = createApiController(data, config)
   const docs = createDocsController()
+
+  // ASR 纠错词表：seed 幂等灌入 SQLite → 加载进内存纠正器。
+  // fire-and-forget（createGateway 是同步的），启动后几百 ms 内完成；失败不影响启动。
+  void seedAsrCorrections(data)
+    .then(() => data.listFlatAsrCorrections())
+    .then((rows) => loadAsrCorrections(rows))
+    .catch((e) => console.error('[asr-correction] seed 加载失败：', e))
 
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
@@ -152,6 +162,13 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       if (url.pathname.startsWith('/music/s/')) {
         const key = url.pathname.slice('/music/s/'.length).replace(/\.(aac|mp3)$/, '')
         await handleAdtsByKey(req, res, key)
+        return
+      }
+      // 外部音频本地短链（/media/s/<16hex>.mp3）：百科/诗词第三方 TTS mp3 落盘后本地播，
+      // 不参与 ADTS 的 LRU 清理。独立短链，避免 DCloud AudioPlayer 直拉第三方 HTTP 流不稳。
+      if (url.pathname.startsWith('/media/s/')) {
+        const key = url.pathname.slice('/media/s/'.length).replace(/\.mp3$/, '')
+        handleMediaByKey(req, res, key)
         return
       }
       // 提示音不再经网关下发：全部走客户端打包内本地文件（唯一一份），断网 / 网关异常都能播。

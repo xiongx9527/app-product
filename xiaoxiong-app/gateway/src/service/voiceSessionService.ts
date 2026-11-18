@@ -12,7 +12,7 @@ import { MusicSourceNotImplementedError } from './music/types'
 import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest, detectContentType } from './music/types'
 import { formatMemories, formatDeals, type MemoryStore, type RequestLocation } from './tools'
 import { createDealsTool, enrichDeal, type DealsSnapshot } from './tools/dealsTool'
-import { createSmzdmSource, toDetailItems, type Deal, type DealDetail } from './deals'
+import { createDealsSource, createDealsAllSources, toDetailItems, type Deal, type DealDetail } from './deals'
 import { detectDealsCommand } from './control/dealsControl'
 import {
   searchCandidates,
@@ -40,13 +40,17 @@ import { detectWeatherCommand } from './control/weatherControl'
 import { detectProductQuery } from './control/productCatalog'
 import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
 import { detectBaikeCommand } from './control/baikeControl'
+import { detectPoemCommand } from './control/poemControl'
 import { createNewsVideoSource, cleanNewsTitle, type NewsVideoCandidate, type NewsVideoSourceLike } from './news'
 import { createWeatherTool } from './tools/weatherTool'
 import { createBaikeTool } from './tools/baikeTool'
 import type { BaikeEntry } from './baike'
-import { fetchBaikeAudioUrl, splitSummaryToLines } from './baike/baikeTts'
+import { queryPoem, type PoemEntry } from './edu'
+import { fetchBaikeAudioUrl, splitSummaryToLines } from './baike/baidu/baikeTts'
+import { cacheExternalAudio, getCachedAudioDuration, type MediaFetcher } from './mediaCache'
 import { messages } from '../i18n'
-import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho } from '../asr/noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho, isBareAckFragment } from '../asr/noiseFilter'
+import { AsrCorrector, type CorrectionEntry } from './asr/asrCorrector'
 import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
@@ -85,6 +89,18 @@ const DEFAULT_CONSOLIDATE_THRESHOLD = 30
 
 /** 自动记忆合并（摘要）频率默认值：每这么多次抽取触发一次合并（避免每次都打 LLM）。 */
 const DEFAULT_CONSOLIDATE_EVERY = 5
+
+/** 默认 ASR 同音纠错器（确定性、零误纠）。懒加载，避免模块加载时的 pinyin 初始化开销。 */
+let defaultAsrCorrector: AsrCorrector | null = null
+function getDefaultAsrCorrector(): AsrCorrector {
+  if (!defaultAsrCorrector) defaultAsrCorrector = new AsrCorrector()
+  return defaultAsrCorrector
+}
+
+/** 网关启动时把 SQLite 词表灌入默认纠错器（管理接口改词后也调它即时刷新）。 */
+export function loadAsrCorrections(corrections: readonly CorrectionEntry[]): void {
+  getDefaultAsrCorrector().load(corrections)
+}
 
 /** 单个语音会话的业务编排：ASR → 智能体 → TTS，并记录日志到数据库。 */
 export interface VoiceSessionDeps {
@@ -128,9 +144,15 @@ export interface VoiceSessionDeps {
   /** 新闻视频音源：抓真实新闻视频并抽音轨。缺省用 B 站源；测试可注入桩避免联网。 */
   newsVideoSource?: NewsVideoSourceLike
   /** 百科查询：测试可注入桩避免联网。缺省用 createBaikeTool.snapshotWithText（多源可换）。 */
-  baikeQuery?: (query: string) => Promise<{ entry: BaikeEntry | null; text: string }>
+  baikeQuery?: (query: string) => Promise<{ entry: BaikeEntry | null; text: string; spoken?: string }>
+  /** 诗词/古文查询：测试可注入桩避免联网。缺省用 queryPoem（edu/baidu）。 */
+  poemQuery?: (title: string) => Promise<PoemEntry | null>
+  /** ASR 同音错字纠正（定稿时当场纠，让「我说」框显示正确文字）。测试可注入桩；缺省用内置 AsrCorrector。 */
+  asrCorrect?: (text: string) => string
   /** 百科播报音频直链：调百度百科 getaudio 拿 mp3 URL。测试可注入桩避免联网。 */
   baikeAudioUrl?: (text: string) => Promise<string>
+  /** 外部音频本地短链缓存：下载 mp3 落盘返回 /media/s/<key>.mp3。测试默认 no-op（返回 null→回退原 url）。 */
+  mediaCache?: (url: string, fetcher?: MediaFetcher) => Promise<string | null>
   /** 单轮 LLM 超时（毫秒）：超时主动舍弃本轮、断开下行播放、立即播友好兜底。测试注入更小值。 */
   llmTimeoutMs?: number
   /** TTS 帧间看门狗（毫秒）：上游挂起不产帧时断开本句，对话链绝不卡死。测试注入更小值。 */
@@ -314,6 +336,12 @@ export class VoiceSessionService {
   private readonly queue: string[] = []
   /** 最近送进 TTS 的原文，用于把「收回来的自己的声音」判成回声丢弃。 */
   private readonly spoken: string[] = []
+  /**
+   * 助手最近一次用问句收尾的时刻：窗口内用户的「对/是/好」是在回答，不能当空闲噪声丢。
+   * 短应答（对/是/嗯/啥）本身没有内容，脱离「刚被问过」就没有意义——环境噪/回声被
+   * ASR 脑补出来的正是这种片段（真机 2026-11-18：噪声「对。」触发了一轮不相干的回答）。
+   */
+  private lastQuestionAt = 0
   /**
    * 最后一次下发音频之后的回声保护窗口（毫秒）：窗口内定稿的文本一律按回声对待。
    * 播放结束（含被打断）后仍留一小段尾巴，盖住扬声器余音经空气/回路传回麦克风的延迟。
@@ -986,6 +1014,13 @@ export class VoiceSessionService {
       await this.runBaikeCommand(baike.keyword)
       return true
     }
+    // 诗词/古文朗读：背诵/朗诵/念/读 + 作品名，走 edu 数据源（原文+百度朗读音频），
+    // 不让 LLM 自己背全文。放在百科之后、音乐之前。
+    const poem = detectPoemCommand(text)
+    if (poem && await this.runPoemCommand(poem.title)) {
+      return true
+    }
+    // 诗词意图但没查到：runPoemCommand 返回 false，继续往下走交 LLM（受 ≤100 字闸门兜底）
     const action = detectMusicCommand(text)
     const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
       action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
@@ -1154,7 +1189,8 @@ export class VoiceSessionService {
       (async () => createBaikeTool(this.lang).snapshotWithText(keyword))
     let text: string
     let title: string
-    let summary: string
+    /** 真正会被播报的正文（与音频同源）；字幕必须用它，不能用完整 summary。 */
+    let spoken: string
     let image: string | undefined
     try {
       const r = await query(keyword)
@@ -1165,7 +1201,8 @@ export class VoiceSessionService {
       }
       text = r.text
       title = r.entry.title || keyword
-      summary = r.entry.summary || ''
+      // 桩/旧实现可能不带 spoken：退回完整摘要（行为同旧版，不炸）
+      spoken = r.spoken ?? r.entry.summary ?? ''
       image = r.entry.image
     } catch {
       await this.speakReply(messages(this.lang).llmUnavailable())
@@ -1178,17 +1215,28 @@ export class VoiceSessionService {
       const audioUrl = this.deps.baikeAudioUrl
         ? await this.deps.baikeAudioUrl(text)
         : await fetchBaikeAudioUrl(text)
-      // 助手框显示简短确认（同音乐 playing 风格），百科全文不进助手框、只在字幕面板逐句展示。
-      this.deps.send({ type: 'llm.delta', text: messages(this.lang).baike.playing(title) })
-      this.deps.send({ type: 'llm.done' })
-      // 字幕转成歌词格式：摘要按句切行、带 time，播放器逐句高亮「边读边转」，单行短塞得进悬浮歌词。
-      this.deps.send({ type: 'media.subtitle', title, lines: splitSummaryToLines(summary) })
+      // 第三方 mp3 直链 DCloud AudioPlayer 直拉不稳（-99、不发请求）——先落盘成本地短链再下发。
+      // 缓存失败就回退原始 url（至少有可能播），audioPath 有值时客户端走下载本地播的稳定链路。
+      const mediaPath = await (this.deps.mediaCache ?? cacheExternalAudio)(audioUrl)
+      // 用落盘音频的真实时长生成字幕 time：网关按字数估算的语速（4.5字/秒）远慢于百度 TTS 实际
+      // （实测 6.5字/秒），不按真实时长铺会让字幕走不完/走太快。拿不到时长就回退估算。
+      const durationSec = mediaPath ? getCachedAudioDuration(mediaPath) : 0
+      // 确认句走 speakReply：既在助手框显示、也 TTS 播报出来（同音乐/新闻点歌确认）。
+      // 不 await，避免阻塞 media.play；百科全文不进助手框、只在字幕面板逐句展示。
+      void this.speakReply(messages(this.lang).baike.playing(title))
+      // 字幕转成歌词格式：只切「真正被播报的正文」并按真实音频时长铺满。
+      // 不能用完整 summary——音频只念 trimSummary(≤300 字)，用 500 字摘要铺 66 秒会让字幕
+      // 每秒推进 7.6 字而语音只有 4.3 字/秒（真机实测第 2 行提前 11 秒翻、末尾还显示没播的内容）。
+      this.deps.send({ type: 'media.subtitle', title, lines: splitSummaryToLines(spoken, durationSec || undefined) })
       // 封面用百科卡片的词条配图（同源），无图则不覆盖（客户端会按 cover 缺省清空）。
+      // audioPath 是相对路径（media/s/<key>.mp3），客户端自己拼 httpBase 下载后本地播；
+      // url 保留原始直链作兼容（客户端有 audioPath 时优先用它）。
       this.deps.send({
         type: 'media.play',
         url: audioUrl,
         title,
         source: 'tts',
+        ...(mediaPath ? { audioPath: mediaPath.replace(/^\//, '') } : {}),
         ...(image ? { cover: image } : {}),
       })
     } catch {
@@ -1196,6 +1244,67 @@ export class VoiceSessionService {
       // 只补 llm.done 收尾思考态，避免卡在「思考中」；字幕/封面都没下发，界面保持原样。
       this.deps.send({ type: 'llm.done' })
     }
+  }
+
+  /**
+   * 诗词/古文朗读直连（绕开 LLM）：走 edu 数据源（百度汉语原文 + 百度朗读音频），
+   * 不让 LLM 自己背全文（用户明确「长文本不经过 LLM/TTS」）。文字进字幕面板、音频走 media.play，
+   * 助手框只播一句简短确认。提不到作品 sid 就诚实回退 LLM（受 ≤100 字闸门约束）。
+   */
+  /** @returns 是否命中并处理（没查到返回 false，交回调用方走 LLM） */
+  private async runPoemCommand(title: string | null): Promise<boolean> {
+    if (!title) {
+      await this.speakReply(this.lang.toLowerCase().startsWith('en') ? 'Which poem would you like?' : '想背哪首？说个诗词名，比如「背诵滕王阁序」。')
+      return true
+    }
+    const query = this.deps.poemQuery ?? ((t: string) => queryPoem(t))
+    let entry: PoemEntry | null = null
+    try {
+      entry = await query(title)
+    } catch {
+      entry = null
+    }
+    if (!entry) {
+      // 没查到（百度搜索无该作品 aladdin 卡片）：明确告知没找到，不再往下走别的直连分支
+      // （否则「背诵回乡偶书」会被后面的好价分支抢走、答非所问），也不让 LLM 自己背全文。
+      await this.speakReply(
+        this.lang.toLowerCase().startsWith('en')
+          ? `Sorry, I couldn't find "${title}".`
+          : `暂时没找到《${title}》的诗词内容。`
+      )
+      return true
+    }
+    // 与百科同理：先落盘音频拿真实时长，再按字数比例铺字幕 time（固定 3.2 秒/行会走太快/太慢）。
+    let durationSec = 0
+    let mediaPath: string | null = null
+    if (entry.audioUrl) {
+      mediaPath = await (this.deps.mediaCache ?? cacheExternalAudio)(entry.audioUrl)
+      if (mediaPath) durationSec = getCachedAudioDuration(mediaPath)
+    }
+    const weights = entry.lines.map((t) => t.replace(/[，。！？、\s]/g, '').length)
+    const totalWeight = weights.reduce((a, b) => a + b, 0)
+    let acc = 0
+    const lines = entry.lines.map((text, i) => {
+      const line = { time: Math.round(acc * 10) / 10, text }
+      acc += durationSec && totalWeight > 0 ? durationSec * weights[i] / totalWeight : 3.2
+      return line
+    })
+    this.deps.send({ type: 'media.subtitle', title: entry.title, lines })
+    if (entry.audioUrl) {
+      // 第三方 mp3 直链直拉不稳，下发 local 短链 audioPath 走下载本地播。
+      this.deps.send({
+        type: 'media.play',
+        url: entry.audioUrl,
+        title: entry.title,
+        source: 'tts',
+        ...(mediaPath ? { audioPath: mediaPath.replace(/^\//, '') } : {}),
+      })
+    }
+    const confirm = this.lang.toLowerCase().startsWith('en')
+      ? `Found "${entry.title}".`
+      : `找到${entry.author ? entry.author + '的' : ''}《${entry.title}》，正在为你朗读。`
+    await this.speakReply(confirm)
+    return true
   }
 
   /**
@@ -1253,10 +1362,9 @@ export class VoiceSessionService {
     }
     // 后台预热转封装（纯 JS fmp4→ADTS，无 ffmpeg），不阻塞 media.play；客户端取短链时等同一 key 完成。
     void ensureAdtsFile(video.url).catch(() => undefined)
-    // media.play 由独立播放器播放，不推进 phase；助手框显示简短确认（同音乐/百科风格），
-    // 新闻无字幕，只补 llm.done 收尾思考态，避免卡在「思考中」。
-    this.deps.send({ type: 'llm.delta', text: messages(this.lang).news.playing(title) })
-    this.deps.send({ type: 'llm.done' })
+    // 确认句走 speakReply：既在助手框显示、也 TTS 播报出来（同音乐点歌确认，用户要「有文字也要播报」）。
+    // 不 await，避免阻塞 media.play（同 playTrack 模式）；llm.done 由 speakReply 内部收尾。
+    void this.speakReply(messages(this.lang).news.playing(title))
     this.deps.send({
       type: 'media.play',
       url: '',
@@ -1293,7 +1401,14 @@ export class VoiceSessionService {
       this.deps.dealsQuery ??
       (async (): Promise<DealsSnapshot> => {
         // DealsOptions.source 必需（数据源由调用方注入，工具本身不绑定站点）。
-        const tool = createDealsTool(this.lang, { source: createSmzdmSource() })
+        const primary = createDealsSource()
+        const tool = createDealsTool(this.lang, {
+          source: primary,
+          // 内置源才补备用源（自动降级）；测试注入桩源不补
+          fallbackSources: createDealsAllSources().some((s) => s.name === primary.name)
+            ? createDealsAllSources().filter((s) => s.name !== primary.name)
+            : [],
+        })
         // 具体商品名（推荐一款空调）→ 带关键词走站内真搜索，能搜到普通商品、不限定好价；
         // 好价信号句（打折/优惠/便宜…）→ 限定好价 feed。
         // 多抓一些候选：下面要按长期记忆偏好挑 3 条，只取 3 条就没有挑选余地。
@@ -1306,16 +1421,20 @@ export class VoiceSessionService {
       // 「推荐几件」按用户长期记忆里的偏好排序（确定性纯函数，不调 LLM）；
       // 没有记忆或都没命中时等价于取前 3 条，与没有个性化时行为一致。
       const picked = pickDeals(deals, await this.dealPreferenceKeywords(), 3)
-      this.pendingDeals = { items: picked, query: '' }
-      // 全量快照（列表形态）：编号列表卡片 + 每项完整详情，客户端只认此协议快照。
-      this.deps.send({ type: 'media.detail', kind: 'deals', items: toDetailItems(picked, this.lang) })
       const m = messages(this.lang).deals
-      // 有结果口播编号让用户选；没结果如实播报兜底文案（「没有好价」也照常回应）。
-      // 价格等详情只在卡片展示，不逐条朗读（同字幕口径）。
-      const spoken = picked.length
-        ? `${m.candidates(picked.map((d) => d.title))}${m.chooseHint()}`
-        : text
-      await this.speakReply(spoken)
+      if (picked.length) {
+        // 有结果：记住候选供选号、下发编号列表卡片（全量快照），口播编号让用户选。
+        this.pendingDeals = { items: picked, query: '' }
+        this.deps.send({ type: 'media.detail', kind: 'deals', items: toDetailItems(picked, this.lang) })
+        const spoken = `${m.candidates(picked.map((d) => d.title))}${m.chooseHint()}`
+        await this.speakReply(spoken)
+      } else {
+        // 没找到：清除旧卡片（close）、清掉候选列表，只如实口播兜底，
+        // 不下发空 items 快照（否则前端显示空的「为你找到」框）。
+        this.pendingDeals = null
+        this.deps.send({ type: 'media.detail', kind: 'deals', items: [], close: true })
+        await this.speakReply(text)
+      }
     } catch {
       await this.speakReply(formatDeals(this.lang, []))
     }
@@ -1386,7 +1505,7 @@ export class VoiceSessionService {
   /** 补抓选中商品的详情页；任何失败都返回 null，卡片退回列表数据照常展示。 */
   private async lookupDealDetail(deal: Deal): Promise<DealDetail | null> {
     if (!deal) return null
-    const lookup = this.deps.dealsDetail ?? ((d: Deal) => enrichDeal(createSmzdmSource(), d))
+    const lookup = this.deps.dealsDetail ?? ((d: Deal) => enrichDeal(createDealsSource(), d))
     try {
       return await lookup(deal)
     } catch {
@@ -1790,6 +1909,13 @@ export class VoiceSessionService {
     // 看到的是同一份干净文本。诊断同时记录 raw 原文，便于追溯 ASR 的原始输出。
     const rawText = text
     text = stripTrailingEcho(text)
+    // ASR 同音错字当场纠（周杰轮→周杰伦、滕王格世→滕王阁序），让「我说」框显示正确文字，
+    // 错字停在当轮、不流到下游意图识别/LLM。确定性零误纠，纠不动的原样保留。
+    const corrected = (this.deps.asrCorrect ?? ((t: string) => getDefaultAsrCorrector().correct(t)))(text)
+    if (corrected !== text) {
+      bargeDiag(`ASR-CORRECT "${text}" → "${corrected}"`)
+      text = corrected
+    }
     // 临时诊断：定稿文本 + 噪声过滤结果，确认 endpoint 有没有触发、文本有没有被丢
     bargeDiag(
       `FINAL text="${text}"${text !== rawText ? ` raw="${rawText}"` : ''} pb=${this.playbackPending} noise=${isNoise(text)} `
@@ -1849,6 +1975,16 @@ export class VoiceSessionService {
     // 避免被丢给大模型由 play_music 自动播放（破坏「按歌手浏览要给候选列表让用户选」）。
     if (this.processing) {
       this.enqueueDuringBusy(text)
+      return
+    }
+
+    // 空闲：纯应答/语气片段（对。/是。/嗯。/啥？/你看嗯。）没有内容，脱离「刚被问过」
+    // 就没有语义——环境噪/回声被 SenseVoice 脑补出来的正是这类片段，送去大模型只会凭空
+    // 多一轮不相干的回答（真机 2026-11-18：「对。」「你看嗯。」各触发一轮）。
+    // 必须在直连命令之前判：短指令本身就是 1~3 字（停/暂停/几点了），但它们含实义字，
+    // isBareAckFragment 不会命中；助手刚用问句收尾时（20s 内）短应答是在回答问题，放行。
+    if (isBareAckFragment(text) && Date.now() - this.lastQuestionAt > 20_000) {
+      bargeDiag(`IDLE-ACK-DROP text="${text}"`)
       return
     }
 
@@ -2022,6 +2158,11 @@ export class VoiceSessionService {
     let ttsStarted = false
     let ttsChain: Promise<void> = Promise.resolve()
     let timedOut = false
+    // 长文本不经过 LLM/TTS：LLM 自由回答累计超过上限就停止下发（工具返回的百科/好价/歌词
+    // 不经过这里，不受限）。不硬切半句——只在句子边界停，超长部分不念（省流量+播报不过长）。
+    const MAX_LLM_SPOKEN_CHARS = 100
+    let emittedChars = 0
+    let lengthCapped = false
     const enqueue = (sentence: string) => {
       // 特殊符号/markdown/emoji 只留在界面，不送进 TTS 念出来
       const clean = sanitizeForSpeech(sentence)
@@ -2042,7 +2183,14 @@ export class VoiceSessionService {
     const replyPromise = this.agent.reply(
       text,
       (delta) => {
-        if (stale() || timedOut) return
+        if (stale() || timedOut || lengthCapped) return
+        // 字数闸门：LLM 生成累计超限就停发（不硬切半句，本句播完即止）。
+        if (emittedChars + delta.length > MAX_LLM_SPOKEN_CHARS) {
+          emittedChars = MAX_LLM_SPOKEN_CHARS + 1
+          lengthCapped = true
+          return
+        }
+        emittedChars += delta.length
         this.deps.send({ type: 'llm.delta', text: delta })
         buffer += delta
         let cut = sentenceCut(buffer)
@@ -2115,6 +2263,11 @@ export class VoiceSessionService {
     this.spoken.push(sentence)
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
+    // 助手用问句收尾时记下时刻：随后 20s 内的「对/是/好」是在回答问题，
+    // 不能被空闲期的纯应答过滤当成噪声丢掉（见 finalizeUtterance 的 isBareAckFragment 判定）。
+    if (/(吗|呢|要不要|是不是|好不好|行不行|对不对|还是|怎么样|[?？])\s*$/u.test(sentence.trim())) {
+      this.lastQuestionAt = Date.now()
+    }
     const gapMs = this.deps.ttsFrameGapMs ?? 15_000
     const iterator = this.tts.synthesize(sentence)[Symbol.asyncIterator]()
     try {

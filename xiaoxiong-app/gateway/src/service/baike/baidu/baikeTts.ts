@@ -84,10 +84,12 @@ const MIN_LINE_CHARS = 8
 
 /**
  * 把百科摘要切成字幕行，供播放器「边读边转」逐句高亮：
- * 按中文句末标点切句，每行 time 为累计起始秒（按字数 / 语速估算）。
- * 网关只有文本、拿不到 mp3 时长，故按字数比例估算；客户端最后一行用真实 duration 收尾，观感可接受。
+ * 按中文句末标点切句，每行 time 为累计起始秒。
+ * - 传了 durationSec（网关已拿到 mp3 真实时长）：按各行字数占比把 time 铺满整段音频，
+ *   字幕走完时刻正好贴合音频结束（实测百度 TTS 语速约 6.5 字/秒，远快于早先 4.5 估算）。
+ * - 没传：按 CHARS_PER_SEC 估算（兼容无音频场景/测试）。
  */
-export function splitSummaryToLines(summary: string): Array<{ time: number; text: string }> {
+export function splitSummaryToLines(summary: string, durationSec?: number): Array<{ time: number; text: string }> {
   const clean = (summary || '').trim()
   if (!clean) return []
   // 在句末标点后切开，标点保留在该句
@@ -103,11 +105,15 @@ export function splitSummaryToLines(summary: string): Array<{ time: number; text
       sentences.push(piece)
     }
   }
+  const weights = sentences.map((s) => s.replace(/[。！？；!?;，,、\s]/g, '').length)
+  const total = weights.reduce((a, b) => a + b, 0)
   const lines: Array<{ time: number; text: string }> = []
   let time = 0
-  for (const s of sentences) {
-    lines.push({ time: Math.round(time * 10) / 10, text: s })
-    time += s.replace(/[。！？；!?;，,、\s]/g, '').length / CHARS_PER_SEC
+  for (let i = 0; i < sentences.length; i += 1) {
+    lines.push({ time: Math.round(time * 10) / 10, text: sentences[i] })
+    time += durationSec && total > 0
+      ? durationSec * weights[i] / total
+      : weights[i] / CHARS_PER_SEC
   }
   return lines
 }

@@ -58,6 +58,24 @@ describe('createBaikeTool', () => {
     expect(r.text).toContain('后唐开国皇帝')
   })
 
+  it('snapshotWithText 的 spoken 是真正被播报的正文（截断后、不含标题前缀）', async () => {
+    const long = '甲'.repeat(280) + '。' + '乙'.repeat(50)
+    const tool = createBaikeTool('zh-CN', { source: stubSource({ title: 'X', summary: long }) })
+    const r = await tool.snapshotWithText('X')
+    // text 供口播（含标题前缀），spoken 供字幕（与音频同源，不含前缀、已截断）
+    expect(r.text.startsWith('X：')).toBe(true)
+    expect(r.spoken).toBe('甲'.repeat(280) + '。')
+    expect(r.spoken).not.toContain('乙')
+  })
+
+  it('snapshotWithText 无结果时 spoken 为空（不拿兜底文案当正文）', async () => {
+    const tool = createBaikeTool('zh-CN', { source: stubSource(null) })
+    const r = await tool.snapshotWithText('不存在xyz')
+    expect(r.entry).toBeNull()
+    expect(r.text).toContain('暂时没查到')
+    expect(r.spoken).toBe('')
+  })
+
   it('inputSchema 要求 query 字段', () => {
     const tool = createBaikeTool('zh-CN')
     expect(tool.inputSchema).toBeDefined()

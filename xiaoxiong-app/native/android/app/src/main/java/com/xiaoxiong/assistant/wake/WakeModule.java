@@ -687,4 +687,25 @@ public class WakeModule extends UniModule {
             }
         }
     }
+
+    /**
+     * 稳定设备标识：ANDROID_ID（Settings.Secure.ANDROID_ID）。
+     * 签名不变时卸载重装不变、无需权限——替代 JS 侧自生成 UUID（存 storage，卸载即变）。
+     * 恢复出厂设置后会变、部分 ROM 可能按签名隔离，但这是 Android 无账号体系下最可靠的标识。
+     * 读取失败返回空串，JS 侧回退到旧的 storage UUID 方案。
+     */
+    @UniJSMethod(uiThread = false)
+    public String getStableDeviceId() {
+        try {
+            Context ctx = safeContext();
+            if (ctx == null) return "";
+            String id = android.provider.Settings.Secure.getString(
+                    ctx.getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
+            return id == null ? "" : id;
+        } catch (Throwable e) {
+            Log.w(TAG, "getStableDeviceId failed: " + e.getMessage());
+            return "";
+        }
+    }
+
 }

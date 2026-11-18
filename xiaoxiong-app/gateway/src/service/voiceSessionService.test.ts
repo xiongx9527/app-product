@@ -10,6 +10,7 @@ import type { ResolvedCapabilities } from '../voiceConfig'
 import type { ServerEvent } from '../protocol'
 import type { HealthReport } from './health'
 import type { MusicSource } from './music/types'
+import type { PoemEntry } from './edu'
 import type { DealsSnapshot } from './tools/dealsTool'
 import type { Deal, DealDetail } from './deals'
 import type { BaikeEntry } from './baike'
@@ -89,6 +90,8 @@ function createHarness(
     candidateFetcher?: (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
     /** 句末静音定稿阈值（毫秒）；默认 10ms，贴近真实长停顿测试时调大 */
     asrEndpointMs?: number
+    /** ASR 纠错桩；默认 no-op（避免 pinyin 开销打乱时序），纠错本身由 asrCorrector.test.ts 覆盖 */
+    asrCorrect?: (text: string) => string
     /** LLM 超时（ms）：注入小值验证超时兜底 + 队列继续消费（回归排队卡死） */
     llmTimeoutMs?: number
     /** TTS 帧间看门狗（ms）：注入小值验证上游挂起时链不死 */
@@ -121,6 +124,8 @@ function createHarness(
     baikeQuerySpy?: (query: string) => void
     /** 注入百科音频直链桩，避免百科用例真的调百度 getaudio。缺省给固定假 URL。 */
     baikeAudioUrl?: (text: string) => Promise<string>
+    /** 注入诗词查询桩，避免诗词用例真的联网抓百度。缺省返回 null（查不到）。 */
+    poemQuery?: (title: string) => Promise<PoemEntry | null>
     /** 注入详情页补充信息桩；缺省返回 null（不联网），需要验证合并时再注入 */
     dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
     /** 智能体口播文本（经 ChannelSplitter 下发）；默认「好的，我来说一句。」。可注入泄漏标记验证兜底 */
@@ -243,6 +248,11 @@ function createHarness(
     data,
     send: (event) => events.push(event),
     sendAudio: () => {},
+    // 纠错器默认 no-op：避免 pinyin 计算的同步开销打乱本文件精确的 sleep 时序；
+    // 纠错本身由 asrCorrector.test.ts 单独覆盖。
+    asrCorrect: opts.asrCorrect ?? ((t: string) => t),
+    // 媒体短链缓存默认 no-op（返回 null→回退原始 url），避免测试真去下载第三方音频
+    mediaCache: async () => null,
     asrEndpointMs: opts.asrEndpointMs ?? 10,
     llmTimeoutMs: opts.llmTimeoutMs,
     ttsFrameGapMs: opts.ttsFrameGapMs,
@@ -258,6 +268,8 @@ function createHarness(
       : undefined,
     // 百科音频直链桩：缺省给固定假 URL，避免测试真的调百度 getaudio 联网。
     baikeAudioUrl: opts.baikeAudioUrl ?? (async () => 'https://tts.baidu.com/test.mp3'),
+    // 诗词查询桩：缺省返回 null（查不到），避免诗词用例真的联网抓百度。
+    poemQuery: opts.poemQuery ?? (async () => null),
     // 新闻视频源桩：search 返回注入候选，resolveBvid 返回注入音轨（缺省 null→走兜底口播）
     newsVideoSource: {
       name: 'test-news-video',
@@ -3186,6 +3198,26 @@ describe('百科查询直连（绕开 LLM，助手框显示 + 播报）', () => 
     expect(h.agentCalls()).toBe(0)
   })
 
+  it('字幕与音频同源：只用实际播报的正文，不用完整 summary（否则字幕比语音快近一倍）', async () => {
+    const spoken = '五代后唐开国皇帝，军事才能出众。他善于骑射，长于谋略。'
+    const h = createHarness({
+      finalizeText: '百科李存勖',
+      baikeQuery: async () => ({
+        entry: { title: '李存勖', summary: `${spoken}这段因超出播报字数被截断，从未念出来。` },
+        text: `李存勖：${spoken}`,
+        spoken,
+      }),
+      baikeAudioUrl: async () => 'https://tts.baidu.com/audio.mp3',
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const subs = h.events.filter((e) => e.type === 'media.subtitle') as Array<{ lines: Array<{ time: number; text: string }> }>
+    expect(subs.length).toBe(1)
+    expect(subs[0].lines.map((l) => l.text).join('')).toBe(spoken)
+  })
+
   it('百科音频接口失败：不播、不用网关文字转语音兜底（播不了就算了）', async () => {
     const h = createHarness({
       finalizeText: '百科李存勖',
@@ -3236,5 +3268,112 @@ describe('百科查询直连（绕开 LLM，助手框显示 + 播报）', () => 
     expect(called).toBe(false)
     expect(texts(h)).toContain('想查谁的百科')
     expect(h.agentCalls()).toBe(0)
+  })
+})
+
+describe('诗词朗读直连（背诵/朗诵，绕开 LLM）', () => {
+  function texts(h: Harness): string {
+    return h.events
+      .filter((e): e is Extract<ServerEvent, { type: 'llm.delta' }> => e.type === 'llm.delta')
+      .map((e) => e.text)
+      .join('')
+  }
+
+  it('「朗诵岳阳楼记」：查到→字幕逐句原文 + 百度朗读音频，助手框只播确认', async () => {
+    let queried = ''
+    const h = createHarness({
+      finalizeText: '朗诵岳阳楼记',
+      poemQuery: async (t) => {
+        queried = t
+        return {
+          title: '岳阳楼记', author: '范仲淹', dynasty: '宋', sid: 'abc',
+          lines: ['庆历四年春，', '滕子京谪守巴陵郡。'],
+          audioUrl: 'https://hanyu-poem-mp3.cdn.bcebos.com/abc.mp3',
+        }
+      },
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    expect(queried).toBe('岳阳楼记')
+    expect(texts(h)).toContain('正在为你朗读')
+    expect(texts(h)).not.toContain('庆历四年春')
+    const plays = h.events.filter((e) => e.type === 'media.play') as Array<{ url: string; source?: string }>
+    expect(plays.length).toBe(1)
+    expect(plays[0].url).toBe('https://hanyu-poem-mp3.cdn.bcebos.com/abc.mp3')
+    expect(plays[0].source).toBe('tts')
+    const subs = h.events.filter((e) => e.type === 'media.subtitle') as Array<{ title: string; lines: Array<{ text: string }> }>
+    expect(subs.length).toBe(1)
+    expect(subs[0].title).toBe('岳阳楼记')
+    expect(subs[0].lines.map((l) => l.text)).toEqual(['庆历四年春，', '滕子京谪守巴陵郡。'])
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('「背诵回乡偶书，给我回答没有书的好价」：作品名截断到回乡偶书，查不到诚实提示、不被好价抢走', async () => {
+    let queried = ''
+    let dealsCalled = false
+    const h = createHarness({
+      finalizeText: '背诵回乡偶书，给我回答没有书的好价',
+      poemQuery: async (t) => { queried = t; return null },
+      dealsQuery: async () => { dealsCalled = true; return { deals: [], text: '' } },
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    // 作品名在标点处截断，不带后面的「给我回答没有书的好价」
+    expect(queried).toBe('回乡偶书')
+    // 查不到时诚实提示，不交给 LLM、也不被好价分支抢走
+    expect(texts(h)).toContain('暂时没找到')
+    expect(texts(h)).not.toContain('好价')
+    expect(dealsCalled).toBe(false)
+    expect(h.agentCalls()).toBe(0)
+  })
+})
+
+describe('空闲期纯应答/环境噪声不该触发一轮回答', () => {
+  it('空闲时定稿「对。」：直接丢弃，不进直连、不进大模型、不回传 asr.final', async () => {
+    const h = createHarness({ finalizeText: '对。' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(40)
+
+    expect(h.agentCalls()).toBe(0)
+    expect(h.events.some((e) => e.type === 'asr.final')).toBe(false)
+  })
+
+  it('短指令不受影响：空闲定稿「停」仍然照常处理（含实义字，不算纯应答）', async () => {
+    const h = createHarness({ finalizeText: '停' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(40)
+
+    // 「停」不是纯应答片段：正常下发 asr.final（是否命中命令由直连决定，这里只看没被丢弃）
+    expect(h.events.some((e) => e.type === 'asr.final' && e.text === '停')).toBe(true)
+  })
+
+  it('助手刚用问句收尾时「对。」是在回答，正常进大模型', async () => {
+    const h = createHarness({
+      replyText: '要不要换一首歌？',
+      finalizeTexts: ['你好，随便聊聊', '对。'],
+    })
+    await startDialog(h.service)
+    await speakUtterance(h) // 第一轮：助手问句收尾，记录 lastQuestionAt
+    await sleep(40)
+    h.finishReply()
+    await sleep(20)
+    h.playbackDone()
+    await sleep(40)
+    expect(h.agentCalls()).toBe(1)
+
+    // 紧接着的短应答：20s 窗口内，必须放行进大模型（而不是当噪声丢掉）
+    const h2 = h
+    await speakUtterance(h2)
+    await sleep(40)
+    expect(h2.agentCalls()).toBe(2)
+    expect(h2.events.some((e) => e.type === 'asr.final' && e.text === '对。')).toBe(true)
+    h2.finishReply()
+    await sleep(10)
   })
 })

@@ -49,6 +49,10 @@ export interface DealsSource {
   name: string
   /** 首页地址（换源只改这里/配置）。 */
   baseUrl: string
+  /** 该源抓取时用的 UA（不同站点反爬策略不同）；缺省用 dealsTool 默认 UA。 */
+  userAgent?: string
+  /** 搜索页结果是否仍要按关键词本地过滤（分类页这类非精确搜索需要 true）。 */
+  filterSearch?: boolean
   /** 按页码生成要抓取的页面 URL；page<=1 返回首页。 */
   pageUrl(page: number): string
   /** 解析列表页 HTML 为 Deal[]（失败抛错，由上层降级）。 */
@@ -76,6 +80,8 @@ export type DealsFetcher = (
 export interface DealsOptions {
   /** 好价数据源，由外部（组合根）注入，工具本身不绑定任何具体站点。 */
   source: DealsSource
+  /** 备用数据源：主源被反爬/找不到时自动依次切换（带冷却，见 sourceCooldown）。 */
+  fallbackSources?: DealsSource[]
   /** 列表缓存时间（毫秒）。缺省读 DEALS_CACHE_TTL_MS 或 60000。 */
   cacheTtlMs?: number
   /** 关键词查询最多抓几页。缺省读 DEALS_KEYWORD_PAGES 或 3。 */

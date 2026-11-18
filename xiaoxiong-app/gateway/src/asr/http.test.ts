@@ -48,3 +48,21 @@ describe('HttpVoiceAsr：内置 ASR 必须显式下发 language', () => {
     expect(captured.form!.get('language')).toBe('zh')
   })
 })
+
+describe('HttpVoiceAsr：上游失败不能把占位文本当用户原话', () => {
+  it('定稿时上游抛错 → finalize reject（由会话层走 asr-error 提示，而不是喂给大模型）', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED') }))
+    const asr = new HttpVoiceAsr('http://127.0.0.1:9529/voice')
+    await asr.push(pcmFrame())
+    await expect(asr.finalize()).rejects.toThrow(/asr unavailable/)
+  })
+
+  it('定稿时上游 500（返回非 JSON 错误页）同样 reject', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('Internal Server Error', { status: 500 })))
+    const asr = new HttpVoiceAsr('http://127.0.0.1:9529/voice')
+    await asr.push(pcmFrame())
+    await expect(asr.finalize()).rejects.toThrow(/asr unavailable/)
+  })
+})

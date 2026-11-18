@@ -22,6 +22,19 @@ const HALLUCINATIONS = new Set([
 /** 单个语气词：单独出现时几乎都是噪声，不值得触发一轮回答。 */
 const FILLERS = new Set(['嗯', '啊', '哦', '呃', '额', '噢', '欸', '喂', '呀', '呢', '吧', '嘛', '唉'])
 
+/**
+ * 咳嗽/清嗓/犹豫被 SenseVoice 误识别成的拟声字。这些字本身无语义，
+ * 整段由它们构成（含叠用，如「嗯嗯」「咳咳」「嗯额」）就是噪声，不该触发一轮回答。
+ * 注意：不在此列的实义叠字（「好好」「是是」「对对」）可能是真实简短应答，不拦。
+ */
+const COUGH_FILLER_CHARS = new Set(['嗯', '啊', '哦', '呃', '额', '噢', '欸', '咳', '呵', '嘶', '嘘', '嗽', '呼', '哈'])
+
+/** 整段是咳嗽/语气拟声字的叠用（「嗯嗯」「咳咳」「嗯额呃」）→ 噪声。 */
+function isCoughFillerBurst(core: string): boolean {
+  if (core.length < 2 || core.length > 6) return false
+  return [...core].every((ch) => COUGH_FILLER_CHARS.has(ch))
+}
+
 /** 去掉空白、标点、符号、emoji 后剩下的「有效内容」。 */
 function coreText(text: string): string {
   return text.replace(/[\s\p{P}\p{S}]/gu, '')
@@ -105,9 +118,56 @@ export function isNoise(text: string): boolean {
   // 极短纯假名（はい / うん…）：中文/英文会话里冒出的日语碎片同样是静音/回声幻觉
   //（用户实测「はい.」被当成用户说话触发了一轮回答）。
   if (core.length <= 4 && /^[\p{Script=Hiragana}\p{Script=Katakana}]+$/u.test(core)) return true
-  // 单字：只有语气词当噪声，实义单字（如「滚」「好」）保留
-  if (core.length === 1) return FILLERS.has(core)
+  // 单字：只有语气词/咳嗽拟声当噪声；实义单字（滚/好/停/是/对/我）保留。
+  // 咳嗽被识别成「我/对」的幻觉已从源头解决——9529 SenseVoice 前的 ZCR 声学门控
+  // （见 openai_voice_server.py looks_like_non_speech），非语音直接返回空，不会到这一层。
+  if (core.length === 1) return FILLERS.has(core) || COUGH_FILLER_CHARS.has(core)
+  // 咳嗽/清嗓/犹豫的叠用拟声（「嗯嗯」「咳咳」「嗯额」）：整段无语义，判噪声。
+  // 必须在单字之后、返回 false 之前；只吃拟声字集合，不影响「好好」「是是」等实义叠字。
+  if (isCoughFillerBurst(core)) return true
   return false
+}
+
+/**
+ * 构成「纯应答 / 纯语气」片段的字：对、是、好、行、嗯、啊、啥…
+ * 只用于 isBareAckFragment 的组合判定，不进 isNoise——这些字单独出现可能是真人应答。
+ * 注意不收实义词（停/播/大/小/几/点/你/我/在），否则「停」「几点了」「在吗」会被当应答丢掉。
+ */
+const ACK_CHARS = new Set([...'对是好行中嗯啊哦呃额噢欸唉喂呀呢吧嘛啥咋哎嘿哈哼呗咯啦的了吗'])
+
+/** 整个片段就是一个应答/语气词（含常见叠用和「的/了」尾）。 */
+const BARE_ACK_TOKENS = new Set([
+  '对', '是', '好', '行', '中', '嗯', '啊', '哦', '呃', '额', '噢', '欸', '唉', '喂', '呀', '呢', '吧', '嘛',
+  '对对', '是是', '嗯嗯', '好啊', '对啊', '对的', '是的', '好的', '好了', '行了', '好嘞', '行吧', '好吧',
+  '啥', '什么', '咋', '哎', '嘿', '哈', '呵呵', '哈哈', '嗯呢', '对呀', '是呀', '哦哦', '啊啊', '嗯嗯嗯', '嗯哼',
+])
+
+/** 常见口头语前缀：只有后面整段仍是语气词时才算应答（「你看嗯」「那个啊」）。 */
+const ACK_PREFIXES = ['你看', '我说', '那个', '这个', '就是', '然后', '所以', '但是', '其实']
+
+/**
+ * 「只有应答/语气、没有任何内容」的短片段（对。/是。/嗯。/啊。/啥？/你看嗯。/好的）。
+ *
+ * 为什么不并进 isNoise：isNoise 是「任何上下文都算噪声」的判定。而「对/是/好」本身是
+ * 真人回答问题的正常话，之前特意不列黑名单以免误伤单选应答。这类片段只在**没有待确认
+ * 问题**的空闲期才没有意义——是环境噪/回声被 SenseVoice 脑补出来的典型输出（真机
+ * 2026-11-18：噪声冒出的「对。」「你看嗯。」各自触发了一轮不相干的 LLM 回答）。
+ * 因此「是不是纯应答」在这里判，**要不要丢由会话层结合上下文决定**。
+ *
+ * 只认整段由应答/语气字构成，或「口头语前缀 + 语气字」；含实义字（停/播放/几点/你好）
+ * 一律返回 false，保证短指令与真实短问句不被误杀。
+ */
+export function isBareAckFragment(text: string): boolean {
+  const core = coreText(text)
+  if (!core || core.length > 4) return false
+  if (BARE_ACK_TOKENS.has(core)) return true
+  for (const prefix of ACK_PREFIXES) {
+    if (!core.startsWith(prefix)) continue
+    const rest = core.slice(prefix.length)
+    if (rest && rest.length <= 2 && [...rest].every((ch) => ACK_CHARS.has(ch))) return true
+  }
+  // 2~4 字全部由应答/语气字组成（「对啊」「是的呀」「对对了」这类口误/叠用）
+  return core.length >= 2 && [...core].every((ch) => ACK_CHARS.has(ch))
 }
 
 /** 语言 → 该语言必须出现的 Unicode 脚本。 */
@@ -168,8 +228,31 @@ function normalize(text: string): string {
  *  - 尾巴核心已在标点之前的主体里出现过（coreText 比对）→ 认定重复，删到标点为止。
  *  - 中英混排、无句末标点、尾巴是全新内容（不是重复）都保持原文。
  */
+/**
+ * 折叠「A+A」式整词组重复（SenseVoice 句尾重复的另一形态，无标点）。
+ * 实机：朗诵滕王阁序 → "朗诵滕王阁序滕王阁序"（"滕王阁序"重复两遍），导致作品名查不到。
+ * 只处理完全一致的重复段（每段≥2字），保守避免误伤正常表达（如"追追追""走走停停"）。
+ */
+function collapseRepeatedPhrase(text: string): string {
+  const core = text.trim().replace(/[。．.！!？?，,、\s]+$/u, '')
+  // 只在带朗读动词时折叠：诗词/古文重复（"朗诵滕王阁序滕王阁序"）总带"朗诵/背诵"。
+  // 绝不能对纯"A+A"折叠——"小熊小熊"(唤醒词)、"搜索搜索"、"取消取消"都是真实用户输入，
+  // 折叠会破坏唤醒词（实测导致 asr.queued 收不到"小熊小熊"、唤醒失效）。
+  const verb = /^(朗诵一下|背诵一下|念一下|读一下|朗诵|背诵|念|读|吟)/u.exec(core)
+  if (!verb) return text
+  const rest = core.slice(verb[0].length)
+  if (rest.length >= 4 && rest.length % 2 === 0 && rest.slice(0, rest.length / 2) === rest.slice(rest.length / 2)) {
+    const tail = text.trim().slice(core.length)
+    return verb[0] + rest.slice(0, rest.length / 2) + tail
+  }
+  return text
+}
+
 export function stripTrailingEcho(text: string): string {
   if (!text) return text
+  // 先折叠无标点的整词组重复（"滕王阁序滕王阁序"），再走下面有标点的尾巴重复逻辑。
+  const collapsed = collapseRepeatedPhrase(text)
+  if (collapsed !== text) return collapsed
   // SenseVoice 习惯给整句补一个收尾句号（「…天气。」）。先把这个收尾标点摘掉再分析，
   // 否则「最后一个标点」会落到收尾句号上、尾巴变空，永远删不掉重复词。
   const trimmed = text.trim().replace(/[。．.！!？?，,、\s]+$/u, '')

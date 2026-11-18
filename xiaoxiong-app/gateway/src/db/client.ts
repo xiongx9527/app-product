@@ -53,6 +53,27 @@ const BOOTSTRAP_SQL = `
     updated_at INTEGER DEFAULT (strftime('%s', 'now'))
   );
   CREATE UNIQUE INDEX IF NOT EXISTS uq_app_config_device ON app_config(device_id);
+  CREATE TABLE IF NOT EXISTS asr_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correct TEXT NOT NULL,
+    pinyin TEXT NOT NULL,
+    note TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_asr_correction ON asr_corrections(correct);
+  CREATE TABLE IF NOT EXISTS asr_correction_variants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    correction_id INTEGER NOT NULL REFERENCES asr_corrections(id),
+    wrong TEXT NOT NULL,
+    pinyin TEXT NOT NULL,
+    note TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_asr_correction_variant ON asr_correction_variants(correction_id, wrong);
+  CREATE INDEX IF NOT EXISTS idx_asr_variant_pinyin ON asr_correction_variants(pinyin);
 `
 
 /** 创建数据库连接（Node 内置 node:sqlite，无原生编译依赖）并引导建表。 */
@@ -72,6 +93,12 @@ export function createDb(path: string): AppDb {
     sqlite.exec('UPDATE user_memory SET created_at = updated_at WHERE created_at IS NULL')
   } catch {
     // 列已存在，无需处理
+  }
+  // 旧库 asr_corrections 可能缺 note 列（早期版本无）
+  try {
+    sqlite.exec('ALTER TABLE asr_corrections ADD COLUMN note TEXT')
+  } catch {
+    // 列已存在
   }
   return drizzle({ client: sqlite })
 }

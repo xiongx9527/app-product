@@ -1,0 +1,97 @@
+[
+  {
+    "correct": "滕王阁序",
+    "wrong": "滕王格世",
+    "pinyin": "teng wang ge shi"
+  },
+  {
+    "correct": "滕王阁序",
+    "wrong": "滕王格式",
+    "pinyin": "teng wang ge shi"
+  },
+  {
+    "correct": "岳阳楼记",
+    "wrong": "岳洋楼记",
+    "pinyin": "yue yang lou ji"
+  },
+  {
+    "correct": "李存勖",
+    "wrong": "李存序",
+    "pinyin": "li cun xu"
+  },
+  {
+    "correct": "李存勖",
+    "wrong": "李存须",
+    "pinyin": "li cun xu"
+  },
+  {
+    "correct": "李存勖",
+    "wrong": "李存旭",
+    "pinyin": "li cun xu"
+  },
+  {
+    "correct": "李存勖",
+    "wrong": "李存畜",
+    "pinyin": "li cun chu"
+  },
+  {
+    "correct": "李存勖",
+    "wrong": "李存虚",
+    "pinyin": "li cun xu"
+  },
+  {
+    "correct": "李存勖",
+    "wrong": "李存需",
+    "pinyin": "li cun xu"
+  },
+  {
+    "correct": "周杰伦",
+    "wrong": "周杰轮",
+    "pinyin": "zhou jie lun"
+  },
+  {
+    "correct": "静夜思",
+    "wrong": "静夜丝",
+    "pinyin": "jing ye si"
+  },
+  {
+    "correct": "将进酒",
+    "wrong": "将进九",
+    "pinyin": "jiang jin jiu"
+  },
+  {
+    "correct": "林俊杰",
+    "wrong": "林俊节",
+    "pinyin": "lin jun jie"
+  },
+  {
+    "correct": "张学友",
+    "wrong": "张学有",
+    "pinyin": "zhang xue you"
+  },
+  {
+    "correct": "刘德华",
+    "wrong": "刘得华",
+    "pinyin": "liu de hua"
+  },
+  {
+    "correct": "陈奕迅",
+    "wrong": "陈奕讯",
+    "pinyin": "chen yi xun"
+  },
+  {
+    "correct": "一路向北",
+    "wrong": "一路像北",
+    "pinyin": "yi lu xiang bei"
+  },
+  {
+    "correct": "七里香",
+    "wrong": "七里湘",
+    "pinyin": "qi li xiang"
+  },
+  {
+    "correct": "稻香",
+    "wrong": "稻湘",
+    "pinyin": "dao xiang"
+  }
+]

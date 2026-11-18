@@ -10,6 +10,8 @@ const PARTIAL_MIN_BYTES = 12800
  * 不让一轮会话被慢服务拖死（用户感知就是「喊了没反应 / 好慢」）。
  */
 const ASR_TIMEOUT_MS = 6000
+/** 定稿失败时的占位文本（只用于 UI 诊断，绝不能被当成用户原话进后续链路）。 */
+const ASR_UNAVAILABLE_TEXT = '（ASR 服务暂不可用）'
 
 /**
  * 对接本地语音服务（openai-voice，OpenAI 兼容）的 ASR。
@@ -70,7 +72,12 @@ export class HttpVoiceAsr implements AsrProvider {
     await this.inflight
     const pcm = Buffer.concat(this.buffer)
     this.reset()
-    return this.transcribe(pcm, false)
+    const text = await this.transcribe(pcm, false)
+    // 占位文本绝不能当「用户说的话」往下走：真机 2026-11-18 实锤，ASR 上游 500 时
+    // 网关把「（ASR 服务暂不可用）」当成用户输入交给大模型，答了一轮完全不相干的内容。
+    // 抛给 finalizeUtterance 的 catch：下发 asr-error 提示音（「没听清，再说一遍」）并丢弃本轮。
+    if (text === ASR_UNAVAILABLE_TEXT) throw new Error('asr unavailable')
+    return text
   }
 
   reset(): void {
@@ -102,6 +109,9 @@ export class HttpVoiceAsr implements AsrProvider {
         body: form,
         signal: AbortSignal.timeout(ASR_TIMEOUT_MS),
       })
+      // 非 2xx（网关/上游 500）不是识别结果：直接当失败处理，绝不能把错误页正文
+      // 当成用户说的话往下走（否则会送进大模型答非所问）。
+      if (!res.ok) throw new Error(`ASR HTTP ${res.status}`)
       const text = await res.text()
       try {
         const parsed = JSON.parse(text) as { text?: string }
@@ -112,7 +122,7 @@ export class HttpVoiceAsr implements AsrProvider {
     } catch (err) {
       // 超时/断连：舍弃这次识别，partial 静默跳过，定稿回退占位，绝不把会话挂死
       console.error('[asr] 调用本地语音服务失败（已 abort 断开）：', err)
-      return partial ? '' : '（ASR 服务暂不可用）'
+      return partial ? '' : ASR_UNAVAILABLE_TEXT
     }
   }
 

@@ -9,6 +9,12 @@ import {
   type DealsOptions,
   type DealsSource,
 } from '../deals'
+import {
+  isSourceCooling,
+  markSourceCooldown,
+  clearSourceCooldown,
+  looksAntiBot,
+} from '../deals/sourceCooldown'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const DEALS_TOOL_NAME = 'query_deals'
@@ -24,8 +30,8 @@ const USER_AGENT =
 /** collectDeals 的运行上下文：由 createDealsTool 构造，共享同一份 fetchPage 缓存。 */
 export interface DealsContext {
   source: DealsSource
-  /** 第二参可选：搜索页用 source.parseSearch，缺省 source.parse（缓存 key 仍是 URL）。 */
-  fetchPage: (url: string, parse?: (html: string) => Deal[]) => Promise<Deal[]>
+  /** 第二参可选：搜索页用 source.parseSearch，缺省 source.parse；第三参为该源 UA。 */
+  fetchPage: (url: string, parse?: (html: string) => Deal[], userAgent?: string, sourceName?: string) => Promise<Deal[]>
   keywordPages: number
 }
 
@@ -60,7 +66,7 @@ export async function collectDeals(
       if (u) searchUrls.push(u)
     }
     const settled = await Promise.allSettled(
-      searchUrls.map((u) => ctx.fetchPage(u, ctx.source.parseSearch ?? ctx.source.parse))
+      searchUrls.map((u) => ctx.fetchPage(u, ctx.source.parseSearch ?? ctx.source.parse, ctx.source.userAgent, ctx.source.name))
     )
     const merged: Deal[] = []
     const seen = new Set<string>()
@@ -77,13 +83,18 @@ export async function collectDeals(
       }
     }
     if (merged.length) {
-      return { deals: merged.slice(0, limit), anyOk }
+      // 精确搜索页（smzdm tag）标题本就含关键词，不过滤；非精确搜索（zhizhizhi 分类页）
+      // 含同类其它商品，需按关键词本地过滤，否则「空调」会混进冰箱洗衣机。
+      return {
+        deals: ctx.source.filterSearch ? filterDeals(merged, keyword, limit) : merged.slice(0, limit),
+        anyOk,
+      }
     }
     // tag 页 404 / WAF 挑战 / 无结果：回退「feed + 本地过滤」兜底（结果仍与关键词相关）。
   }
   const urls = Array.from({ length: pages }, (_, i) => ctx.source.pageUrl(i + 1))
   // 注意不能直接 map(ctx.fetchPage)：map 会把 index 传进第二参 parse，数字不是函数
-  const settled = await Promise.allSettled(urls.map((u) => ctx.fetchPage(u)))
+  const settled = await Promise.allSettled(urls.map((u) => ctx.fetchPage(u, ctx.source.parse, ctx.source.userAgent, ctx.source.name)))
   const merged: Deal[] = []
   const seen = new Set<string>()
   let anyOk = false
@@ -131,34 +142,48 @@ export function createDealsTool(
 
   function fetchPage(
     url: string,
-    parse: (html: string) => Deal[] = source.parse
+    parse: (html: string) => Deal[],
+    userAgent?: string,
+    sourceName?: string
   ): Promise<Deal[]> {
+    // 缓存 key 带 UA：同一 URL 不同源的 UA/解析不同，不能复用（header 决定站点返回内容）
+    const cacheKey = `${userAgent ?? 'pc'}|${url}`
     const now = Date.now()
-    const hit = cache.get(url)
+    const hit = cache.get(cacheKey)
     if (hit && hit.expires > now) return hit.promise
     const promise = (async () => {
       try {
         const res = await fetcher(url, {
           headers: {
-            'User-Agent': USER_AGENT,
+            // 不同源反爬 UA 不同：缺省 PC UA，源可覆盖（如 zhizhizhi 需移动 UA）
+            'User-Agent': userAgent ?? USER_AGENT,
             'Accept-Language': 'zh-CN,zh;q=0.9',
           },
         })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return parse(await res.text())
+        const html = await res.text()
+        // 命中反爬/WAF 页：冷却该源（下次请求跳过），并当本次失败处理换其它源
+        if (sourceName && looksAntiBot(html)) {
+          markSourceCooldown(sourceName)
+          throw new Error(`anti-bot page from ${sourceName}`)
+        }
+        return parse(html)
       } catch (e) {
         // 失败不缓存，下次调用可重试；并发复用仍走当前 promise。
-        cache.delete(url)
+        cache.delete(cacheKey)
         throw e
       }
     })()
-    cache.set(url, { promise, expires: now + cacheTtlMs })
+    cache.set(cacheKey, { promise, expires: now + cacheTtlMs })
     return promise
   }
 
-  const ctx: DealsContext = { source, fetchPage, keywordPages }
+  /** 所有可用源：主源在前，备用源在后（冷却中的由 snapshot 跳过）。
+   *  备用源由组合根显式注入；这里不自动补，避免测试桩源意外联网。 */
+  const allSources = [source, ...(options.fallbackSources ?? [])]
 
-  /** 一次查询 → 口播文本 + 结构化列表。call 与语音直连都复用它，零二次抓取。 */
+  /** 一次查询 → 口播文本 + 结构化列表。call 与语音直连都复用它，零二次抓取。
+   *  多源依次尝试：主源没有 / 被反爬就冷却它、换下一个源；全失败才回兜底文案。 */
   async function snapshot(
     args: { keyword?: string; limit?: number; dealsOnly?: boolean } = {},
   ): Promise<DealsSnapshot> {
@@ -167,18 +192,37 @@ export function createDealsTool(
       ...args,
       limit: typeof args.limit === 'number' ? args.limit : defaultLimit,
     }
-    const { deals, anyOk } = await collectDeals(ctx, resolved)
-    const text =
-      !deals.length && !anyOk
-        ? prefix === 'en'
-          ? "Couldn't fetch deal info right now."
-          : '暂时查不到好价信息。'
-        : formatDeals(lang, deals, keyword)
-    return { text, deals }
+    let anyFetched = false // 是否有任一源成功抓到页面（区分「源故障」与「真没结果」）
+    for (const src of allSources) {
+      if (isSourceCooling(src.name)) continue // 冷却期内跳过该源
+      const srcCtx: DealsContext = {
+        source: src,
+        fetchPage: (url, parse, ua) => fetchPage(url, parse ?? src.parse, ua ?? src.userAgent, src.name),
+        keywordPages,
+      }
+      try {
+        const { deals, anyOk } = await collectDeals(srcCtx, resolved)
+        anyFetched = anyFetched || anyOk
+        if (deals.length) {
+          clearSourceCooldown(src.name) // 该源可用，重置冷却
+          return { text: formatDeals(lang, deals, keyword), deals }
+        }
+        // 该源本次没查到：只换下一个源，不冷却（下次仍可试；反爬页已在 fetchPage 里冷却）
+      } catch {
+        // 抓取异常/反爬：换下一个源（反爬冷却已由 fetchPage 标记）
+      }
+    }
+    // 全部源都没抓到页面 → 源故障文案；抓到了但没匹配商品 → 「没找到」
+    const text = !anyFetched
+      ? prefix === 'en'
+        ? "Couldn't fetch deal info right now."
+        : '暂时查不到好价信息。'
+      : formatDeals(lang, [], keyword)
+    return { text, deals: [] }
   }
 
   const descriptions: Record<string, string> = {
-    zh: '查询商品 / 搜索商品 / 查好价。用户问商品、东西、买卖、XX 多少钱，或说「搜索耳机」「查询商品」这类纯商品查询时调用：走站内真搜索，能搜到普通商品，不限于是好价商品——此时不要传 dealsOnly。用户明确说优惠、打折、折扣、好价、特价、促销、秒杀、划算、便宜时才传 dealsOnly=true，限定查好价商品（没有好价就返回「暂无」，不要因为怕没结果就不调用）。keyword 传商品核心词（如「耳机」「咖啡机」）；不传 keyword 且 dealsOnly=true 返回最新好价。返回页面上的现价与优惠标签，不要自行计算折扣率，也不要编造页面没有的信息。结果用于语音播报。',
+    zh: '查询商品 / 搜索商品 / 查好价。用户问商品、东西、买卖、XX 多少钱，或说「搜索耳机」「查询商品」这类纯商品查询时调用：走站内真搜索，能搜到普通商品，不限于是好价商品——此时不要传 dealsOnly。用户明确说优惠、打折、折扣、好价、特价、促销、秒杀、划算、便宜时才传 dealsOnly=true，限定查好价商品（没有好价就返回「暂无」，不要因为怕没结果就不调用）。keyword 必须完整保留用户说的品牌/型号/限定词，不要只留品类词：「华为手机」要原样传、不能简化成「手机」（否则会搜出苹果等其它品牌），「降噪耳机」「咖啡机」同理。不传 keyword 且 dealsOnly=true 返回最新好价。返回页面上的现价与优惠标签，不要自行计算折扣率，也不要编造页面没有的信息；搜不到就如实说没找到，不要用同类其它商品凑数。结果用于语音播报。',
     en: 'Search products / query deals. Call whenever the user asks about products, items, stuff, "how much is X", "search headphones" or other plain product searches: this hits the on-site search and can find ordinary products, not only deals — do NOT pass dealsOnly then. Pass dealsOnly=true ONLY when the user explicitly says discount/deal/on sale/bargain words (优惠/打折/折扣/好价/特价/促销) to restrict to deal items; if none found the tool returns a "none" message, so never skip the call. keyword is the product term (e.g. "headphones"); omit keyword with dealsOnly=true to get the latest deals. Returns the prices and tags shown on the page — do not compute discounts yourself and never invent info not on the page. Use the result for a spoken reply.',
   }
 

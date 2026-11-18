@@ -3,6 +3,8 @@ import { listLlmModels } from '../service/llmModels'
 import { listTtsVoices } from '../service/ttsVoices'
 import { listVoiceModels } from '../service/voiceModels'
 import { openApiSpec } from '../openapi'
+import { pinyin } from 'pinyin-pro'
+import { loadAsrCorrections } from '../service/voiceSessionService'
 
 export interface ApiRequest {
   method: string
@@ -93,6 +95,69 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
       try {
         const config = await data.getAppConfig(deviceId)
         return { status: 200, body: { config: config ? JSON.parse(config) : null } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+
+    // 设置接口（/api/admin/asr-corrections）：ASR 纠错词表（两表，全局非设备维度）。
+    // GET 列出主表+各字表；POST 批量加 {items:[{correct, wrong, note?}]}；
+    // DELETE ?correct=X&wrong=Y 删某错词 / ?correct=X 停用整条热词。改后立即刷新内存纠正器。
+    const refreshCorrector = async () => loadAsrCorrections(await data.listFlatAsrCorrections())
+    if (pathname === '/api/admin/asr-corrections' && method === 'GET') {
+      try {
+        const mains = await data.listMainAsrCorrections()
+        const items = await Promise.all(mains.map(async (m) => ({
+          ...m,
+          variants: await data.listAsrVariants(m.correct),
+        })))
+        return { status: 200, body: { corrections: items } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+    if (pathname === '/api/admin/asr-corrections' && method === 'POST') {
+      // 批量：{items:[{correct, wrong, note?}]}；也兼容单条 {correct, wrong}。
+      const b = body as {
+        items?: Array<{ correct?: string; wrong?: string; note?: string }>
+        correct?: string; wrong?: string; note?: string
+      } | null
+      const rawItems = b?.items ?? (b ? [b] : [])
+      const items = rawItems.filter((x) => x && typeof x.correct === 'string' && x.correct.trim()
+        && typeof x.wrong === 'string' && x.wrong.trim())
+      if (!items.length) {
+        return { status: 400, body: { error: '需提供 correct→wrong 项（单条或 items 数组）' } }
+      }
+      const toPy = (w: string) => pinyin(w, { toneType: 'none', type: 'array' }).join(' ')
+      try {
+        const mainIds = new Map<string, number>()
+        for (const x of items) {
+          const correct = x.correct!.trim()
+          const wrong = x.wrong!.trim()
+          let id = mainIds.get(correct)
+          if (!id) {
+            id = await data.upsertAsrCorrection({ correct, pinyin: toPy(correct) })
+            mainIds.set(correct, id)
+          }
+          await data.upsertAsrVariant(id, {
+            wrong, pinyin: toPy(wrong), ...(x.note ? { note: x.note } : {}),
+          })
+        }
+        await refreshCorrector()
+        return { status: 200, body: { ok: true, count: items.length } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+    if (pathname === '/api/admin/asr-corrections' && method === 'DELETE') {
+      const correct = query.get('correct')
+      const wrong = query.get('wrong')
+      if (!correct) return { status: 400, body: { error: 'correct 必填' } }
+      try {
+        if (wrong) await data.disableAsrVariant(correct, wrong) // 删某错词
+        else await data.disableAsrCorrection(correct) // 停用整条
+        await refreshCorrector()
+        return { status: 200, body: { ok: true } }
       } catch (err) {
         return { status: 500, body: { error: (err as Error).message } }
       }

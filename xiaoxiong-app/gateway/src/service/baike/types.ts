@@ -6,7 +6,7 @@
  * 设计参照 weather / deals 的 source 范式：source 负责「去哪取 + 怎么解析成统一结构」，
  * 工具层负责「把统一结构格式化成口播文案」，两者解耦。
  *
- * 默认实现见 baiduBaikeSource.ts：抓百度搜索结果页，取「百度百科」卡片的摘要。
+ * 默认实现见 baidu/baiduBaikeSource.ts：抓百度搜索结果页，取「百度百科」卡片的摘要。
  * 之所以抓搜索页而不是词条页 /item/：词条页有百度安全验证（403），
  * 而搜索结果 JSON 里自带百科摘要（description / abstract），无需点进词条、无需 api-key。
  */

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { cleanBaikeText, parseBaikeHtml } from './baiduBaikeSource'
-import { createDefaultBaikeSource, createBaikeSource, listBaikeSources, DEFAULT_BAIKE_SOURCE } from './index'
+import { createDefaultBaikeSource, createBaikeSource, listBaikeSources, DEFAULT_BAIKE_SOURCE } from '../index'
 
 /**
  *  fixture 反映真实百度搜索页结构：摘要在 source 锚点之前，标题在锚点之后。

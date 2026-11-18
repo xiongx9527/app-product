@@ -318,3 +318,61 @@ describe('apiController：/api/admin/tts-voices（内置目录跟随来源鉴权
     expect(seenAuth).toBe('Bearer secret')
   })
 })
+
+describe('apiController：/api/admin/asr-corrections 纠错词表（主表+字表）', () => {
+  it('POST 批量加：一个 correct 带多个 wrong；GET 主表+字表', async () => {
+    const { api } = makeApi()
+    const post = await api({
+      method: 'POST', pathname: '/api/admin/asr-corrections', query: new URLSearchParams(),
+      body: { items: [
+        { correct: '李存勖', wrong: '李存序', note: '实机' },
+        { correct: '李存勖', wrong: '李存须' },
+      ] },
+    })
+    expect(post.status).toBe(200)
+    expect(asBody(post.body).count).toBe(2)
+    const list = await api({ method: 'GET', pathname: '/api/admin/asr-corrections', query: new URLSearchParams(), body: null })
+    expect(list.status).toBe(200)
+    const rows = asBody(list.body).corrections as Array<{
+      correct: string; pinyin: string; enabled: number
+      variants: Array<{ wrong: string; pinyin: string; enabled: number }>
+    }>
+    const li = rows.find((r) => r.correct === '李存勖')
+    expect(li?.pinyin).toBe('li cun xu')
+    expect(li?.variants.length).toBe(2)
+    expect(li?.variants.some((v) => v.wrong === '李存序' && v.pinyin === 'li cun xu')).toBe(true)
+  })
+
+  it('参数非法返回 400', async () => {
+    const { api } = makeApi()
+    const bad = await api({
+      method: 'POST', pathname: '/api/admin/asr-corrections', query: new URLSearchParams(),
+      body: { correct: '只有正确词没有错词' },
+    })
+    expect(bad.status).toBe(400)
+    const empty = await api({
+      method: 'POST', pathname: '/api/admin/asr-corrections', query: new URLSearchParams(), body: {},
+    })
+    expect(empty.status).toBe(400)
+  })
+
+  it('DELETE 某错词软删：字表该项 enabled=0，主表仍在', async () => {
+    const { api } = makeApi()
+    await api({
+      method: 'POST', pathname: '/api/admin/asr-corrections', query: new URLSearchParams(),
+      body: { correct: '李存勖', wrong: '李存序' },
+    })
+    const del = await api({
+      method: 'DELETE', pathname: '/api/admin/asr-corrections',
+      query: new URLSearchParams('correct=李存勖&wrong=李存序'), body: null,
+    })
+    expect(del.status).toBe(200)
+    const list = await api({ method: 'GET', pathname: '/api/admin/asr-corrections', query: new URLSearchParams(), body: null })
+    const rows = asBody(list.body).corrections as Array<{
+      correct: string; variants: Array<{ wrong: string; enabled: number }>
+    }>
+    const li = rows.find((r) => r.correct === '李存勖')
+    expect(li).toBeTruthy()
+    expect(li!.variants.find((v) => v.wrong === '李存序')?.enabled).toBe(0)
+  })
+})
