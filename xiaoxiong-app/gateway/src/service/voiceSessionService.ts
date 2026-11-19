@@ -1077,10 +1077,6 @@ export class VoiceSessionService {
    * 返回 true 表示已被直连命令消费。
    */
   private async handleDirectCommand(text: string): Promise<boolean> {
-    // 直连意图统一调度：业务已迁进各 skill（auspicious=10 / time=20 / weather=30 …），
-    // dispatchDirectCommand 按 skill 自声明的 priority 依次询问、consumed 短路。
-    // 顺序由 priority 保证（择日<时间<天气<…），不再靠这里的 if 级联顺序。
-    if (await this.dispatchDirectCommand(text)) return true
     const memCmd = detectMemoryCommand(text)
     if (memCmd && this.deviceId) {
       await this.runMemoryCommand(memCmd)
@@ -1117,6 +1113,10 @@ export class VoiceSessionService {
       return true
     }
     // 诗词意图但没查到：runPoemCommand 返回 false，继续往下走交 LLM（受 ≤100 字闸门兜底）
+    // skill 调度放在这里（mediaControl/新闻/百科/诗词之后）：music_skill 的 play 正则含裸
+    // 「播放/放」，若提前会抢走「播放新闻/切换播放模式/百科…」；放在这些守卫之后才安全。
+    // time/weather/auspicious skill 不含播放词，放这里不影响它们被识别。
+    if (await this.dispatchDirectCommand(text)) return true
     const action = detectMusicCommand(text)
     const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
       action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
@@ -1584,8 +1584,17 @@ export class VoiceSessionService {
       queueRemaining: () => self.queue.length,
       getLocation: () => self.getLocation(),
       requestClientLocation: () => self.requestClientLocation(),
-      // 媒体播放系统能力：skill 与 play_media 工具共用这一个实例，状态唯一。
+      // 媒体播放系统能力：skill 与工具共用这一个实例，状态唯一。
       media: self.media,
+      // 内容播放请求：music_skill 识别意图后委托核心执行（核心仍持有跨轮候选状态与播放实现）。
+      // 这样 skill 是意图入口、核心是执行器，逐步可把执行实现搬进能力层/skill。
+      content: {
+        play: async (text) => { await self.runMusicCommand('play', text); return true },
+        next: async (text) => { await self.runMusicCommand('next', text); return true },
+        recommend: async (text) => { await self.runMusicCommand('recommend', text); return true },
+        // 选号仍由核心在 finalizeUtterance 的回声比对前处理，这里返回 false 避免重复消费。
+        select: async () => false,
+      },
     }
     this.skills = modules.map((m) => m.create(ctx))
     this.skillPromptAddon = skillPromptAddon(modules, self.lang)
