@@ -36,15 +36,49 @@ describe('weatherTool', () => {
     expect(createWeatherTool('en-US', () => null).description.toLowerCase()).toContain('weather')
   })
 
-  it('formatWeather 按语言组织当前+未来天气', () => {
+  it('formatWeather 按语言组织当前+未来天气（中文口语化）', () => {
     const zh = formatWeather('zh-CN', { latitude: 31.23, longitude: 121.47, address: '上海市' }, SAMPLE)
     expect(zh).toContain('上海')
-    expect(zh).toContain('21°')
+    expect(zh).toContain('21度')          // 气温说「度」不说「°」
     expect(zh).toContain('湿度60%')
-    expect(zh).toContain('风速3 m/s')
-    expect(zh).toContain('未来几天')
-    expect(zh).toContain('11-08')
-    expect(zh).toContain('降水80%')
+    expect(zh).toContain('有点风')         // 风速 m/s → 口语风力
+    expect(zh).not.toContain('m/s')
+    expect(zh).toContain('接下来几天')
+    expect(zh).toContain('今天')          // 日期说「今天/明天/后天」
+    expect(zh).toContain('明天')
+    expect(zh).toContain('后天')
+    expect(zh).toContain('很可能下雨')     // 降水概率 → 口语
+    expect(zh).not.toContain('11-08')
+    expect(zh).toContain('温馨提示')       // 天气提示
+    expect(zh).toContain('适合出门')       // 晴天提示「适合什么」
+  })
+
+  it('温馨提示按天气给不同建议（注意什么/适合什么）', () => {
+    const base = { latitude: 31.23, longitude: 121.47, address: '上海市' }
+    const rain = formatWeather('zh-CN', base, {
+      ...SAMPLE,
+      current: { ...SAMPLE.current!, weather_code: 63 }, // 中雨
+    })
+    expect(rain).toContain('带伞')
+    const storm = formatWeather('zh-CN', base, {
+      ...SAMPLE,
+      current: { ...SAMPLE.current!, weather_code: 95 }, // 雷阵雨
+    })
+    expect(storm).toContain('待室内')
+  })
+
+  it('体感温度与实际差 ≤2 度时不提体感，>2 度才提', () => {
+    const base = { latitude: 31.23, longitude: 121.47, address: '上海市' }
+    const close = formatWeather('zh-CN', base, {
+      ...SAMPLE,
+      current: { ...SAMPLE.current!, temperature_2m: 21, apparent_temperature: 22 },
+    })
+    expect(close).not.toContain('体感')
+    const far = formatWeather('zh-CN', base, {
+      ...SAMPLE,
+      current: { ...SAMPLE.current!, temperature_2m: 21, apparent_temperature: 26 },
+    })
+    expect(far).toContain('体感26度')
   })
 
   it('位置缺失时给出提示而非联网', async () => {
@@ -56,14 +90,14 @@ describe('weatherTool', () => {
     const source = stubSource()
     const t = createWeatherTool('zh-CN', () => ({ latitude: 31.23, longitude: 121.47 }), source)
     const out = await t.call?.()
-    expect(out).toContain('21°')
+    expect(out).toContain('21度')
     expect(source.fetch).toHaveBeenCalledWith(31.23, 121.47, expect.any(Function))
   })
 
   it('可换源：注入不同 WeatherSource 即走不同数据源，工具逻辑不变', async () => {
     const source = stubSource({ current: { temperature_2m: 5, weather_code: 71 } })
     const t = createWeatherTool('zh-CN', () => ({ latitude: 1, longitude: 2 }), source)
-    expect(await t.call?.()).toContain('5°')
+    expect(await t.call?.()).toContain('5度')
     expect(source.name).toBe('stub')
   })
 
@@ -96,7 +130,7 @@ describe('weatherTool', () => {
     const t = createWeatherTool('zh-CN', provider, stubSource(), requestLocation)
     const out = await t.call?.()
     expect(out).toContain('上海')
-    expect(out).toContain('21°')
+    expect(out).toContain('21度')
   })
 
   it('懒加载：requestLocation 仍拿不到位置时给出提示而非联网', async () => {

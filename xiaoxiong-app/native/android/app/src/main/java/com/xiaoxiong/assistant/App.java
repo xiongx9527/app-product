@@ -59,9 +59,26 @@ public class App extends DCloudApplication {
         }
     }
 
-    /** 当前进程是否为主/UI 进程：processName == 包名即主进程，":gateway" 等后缀为非主进程。 */
-    private boolean isMainProcess() {
-        final String processName = getApplicationInfo().processName;
-        return getPackageName().equals(processName);
+  /** 当前进程是否为主/UI 进程：进程名 == 包名即主进程，":gateway" 等后缀为非主进程。
+   *  必须读 /proc/self/cmdline，不能用 getApplicationInfo().processName——后者在部分
+   *  Android/SDK 版本下于 :gateway 进程里仍返回裸包名（不含 ":gateway" 后缀），导致
+   *  isMainProcess() 误判为 true，:gateway 进程也去 startForegroundService/registerUniModule，
+   *  重复初始化造成竞态，偶发表现为「关掉重开后网关起不来」。实测 /proc/self/cmdline
+   *  在 :gateway 进程为 "com.xiaoxiong.assistant:gateway"，可可靠区分。 */
+  private boolean isMainProcess() {
+    final String pkg = getPackageName();
+    String cmdline = "";
+    try (java.io.BufferedReader r = new java.io.BufferedReader(
+        new java.io.FileReader("/proc/self/cmdline"))) {
+      cmdline = r.readLine();
+    } catch (Throwable ignored) { }
+    if (cmdline != null) {
+      // cmdline 以 \0 结尾/分隔，readLine 可能只取到第一段；取首个 \0 之前的部分
+      int nul = cmdline.indexOf('\0');
+      String procName = nul >= 0 ? cmdline.substring(0, nul) : cmdline.trim();
+      if (!procName.isEmpty()) return pkg.equals(procName);
     }
+    // 读不到 /proc 时的兜底：退回进程名比较（多数机型正确）
+    return pkg.equals(getApplicationInfo().processName);
+  }
 }

@@ -1,13 +1,14 @@
 ﻿<#
 .SYNOPSIS
-  安装本地语音服务：STT（SenseVoice）+ TTS（edge-tts），Windows 原生运行，不使用 Docker。
+  安装本地语音服务：STT（SenseVoice）+ TTS（edge-tts + kokoro），Windows 原生运行，不使用 Docker。
 
 .DESCRIPTION
   默认同时安装 STT 和 TTS：
     1. 在 VoiceHome 下创建独立 Python 虚拟环境，不污染系统 Python；
     2. STT：sherpa-onnx + SenseVoice-small 模型（约 240MB，下载后离线可用）；
-    3. TTS：edge-tts + ffmpeg（edge-tts 只输出 MP3，网关要求 WAV，需要 ffmpeg 转码）；
-    4. 首次安装时把 voice.conf.example 复制成 VoiceHome\voice.conf。
+    3. TTS：edge-tts + ffmpeg（在线，MP3 需转 WAV）；
+    4. TTS 内置 kokoro：kokoro-onnx + 本地 ONNX 模型（约 353MB），纯本地、强制安装；
+    5. 首次安装时把 voice.conf.example 复制成 VoiceHome\voice.conf。
 
   运行目录默认 %LOCALAPPDATA%\app-product\voice，可用 -VoiceHome 覆盖。
 
@@ -17,6 +18,7 @@
   powershell -ExecutionPolicy Bypass -File .\scripts\install-voice.ps1 -SttOnly
   powershell -ExecutionPolicy Bypass -File .\scripts\install-voice.ps1 -ProxyOnly
   powershell -ExecutionPolicy Bypass -File .\scripts\install-voice.ps1 -DryRun
+  powershell -ExecutionPolicy Bypass -File .\scripts\install-voice.ps1 -SkipKokoro  # 网络受限应急
 #>
 [CmdletBinding()]
 param(
@@ -24,6 +26,7 @@ param(
     [switch]$TtsOnly,
     [switch]$ProxyOnly,
     [switch]$SkipModel,
+    [switch]$SkipKokoro,
     [switch]$DryRun,
     [string]$Python = "",
     [string]$VoiceHome = ""
@@ -59,6 +62,7 @@ if (-not $VoiceHome) {
 $VenvDir = Join-Path $VoiceHome "venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $ModelDir = Join-Path $VoiceHome "models\sensevoice"
+$KokoroModelDir = Join-Path $VoiceHome "models\kokoro"
 $ConfigFile = Join-Path $VoiceHome "voice.conf"
 $ModeFile = Join-Path $VoiceHome "install-mode"
 $ConfigTemplate = Join-Path $ReqDir "voice.conf.example"
@@ -84,6 +88,12 @@ else {
 
 $ModelMirror = "https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main"
 $ModelFallback = "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main"
+# 内置 kokoro 本地 TTS：kokoro-onnx 官方 model-files-v1.1 发布（全精度模型 + 中文音色库）。
+# 不用 int8 量化版：它含 ConvInteger 算子，onnxruntime CPU 版不支持。
+# 国内 GitHub 直连常只有几十 KB/s，默认优先走 ghfast.top 镜像；可用环境变量 KOKORO_MIRROR 覆盖。
+$KokoroRelease = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1"
+$KokoroMirror = $env:KOKORO_MIRROR
+if (-not $KokoroMirror) { $KokoroMirror = "https://ghfast.top/$KokoroRelease" }
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -126,7 +136,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "需要 Python 3.10+（当前 $version）"
 }
 
-Write-Step "[1/4] 准备运行目录：$VoiceHome"
+Write-Step "[1/5] 准备运行目录：$VoiceHome"
 if ($DryRun) {
     Write-DryRun "创建 $VoiceHome 和 $ModelDir"
     Write-DryRun "写入 $ModeFile（$InstallMode）"
@@ -154,7 +164,7 @@ else {
     Write-Warning "未找到配置模板 $ConfigTemplate，启动时将使用内置默认值。"
 }
 
-Write-Step "[2/4] 准备 Python 虚拟环境"
+Write-Step "[2/5] 准备 Python 虚拟环境"
 # 使用 venv 而不是直接装进系统 Python：依赖较多，隔离后卸载也只需删 VoiceHome。
 if (Test-Path $VenvPython) {
     Write-Host "  复用已有虚拟环境：$VenvDir"
@@ -197,7 +207,7 @@ else {
     }
 }
 
-Write-Step "[3/4] 检查 ffmpeg（本地 TTS 把 edge-tts 的 MP3 转成 WAV 需要它）"
+Write-Step "[3/5] 检查 ffmpeg（本地 TTS 把 edge-tts 的 MP3 转成 WAV 需要它）"
 if ($ProxyOnly) {
     Write-Host "  跳过：代理模式不需要 ffmpeg"
 }
@@ -285,16 +295,16 @@ function Get-ModelFile {
 }
 
 if ($ProxyOnly) {
-    Write-Step "[4/4] 跳过 SenseVoice 模型下载（-ProxyOnly）"
+    Write-Step "[4/5] 跳过 SenseVoice 模型下载（-ProxyOnly）"
 }
 elseif (-not $DoStt) {
-    Write-Step "[4/4] 跳过 SenseVoice 模型下载（-TtsOnly）"
+    Write-Step "[4/5] 跳过 SenseVoice 模型下载（-TtsOnly）"
 }
 elseif (-not $DownloadModel) {
-    Write-Step "[4/4] 跳过 SenseVoice 模型下载（-SkipModel）"
+    Write-Step "[4/5] 跳过 SenseVoice 模型下载（-SkipModel）"
 }
 else {
-    Write-Step "[4/4] 下载 SenseVoice 模型（约 240MB）到 $ModelDir"
+    Write-Step "[4/5] 下载 SenseVoice 模型（约 240MB）到 $ModelDir"
 
     if (-not (Get-ModelFile -Name "model.int8.onnx" -MinBytes 100000000)) {
         throw "下载 model.int8.onnx 失败"
@@ -313,6 +323,49 @@ else {
             throw "tokens.txt 不完整（$tokenSize 字节）"
         }
         Write-Host "  模型就绪：model.int8.onnx（$modelSize 字节），tokens.txt（$tokenSize 字节）"
+    }
+}
+
+# [5/5] 内置 kokoro（纯本地 TTS）模型：kokoro-onnx 依赖在 requirements-tts.txt 强制安装，
+# 这里强制下载全精度 ONNX 模型 + 中文音色库到 VoiceHome\models\kokoro（约 353MB，离线可用）。
+if ($ProxyOnly) {
+    Write-Step "[5/5] 跳过 kokoro 模型下载（-ProxyOnly）"
+}
+elseif (-not $DoTts) {
+    Write-Step "[5/5] 跳过 kokoro 模型下载（-SttOnly）"
+}
+elseif ($SkipKokoro) {
+    Write-Step "[5/5] 已跳过 kokoro 模型（-SkipKokoro）：内置 kokoro 将不可用"
+}
+else {
+    Write-Step "[5/5] 下载内置 kokoro 模型（约 353MB）到 $KokoroModelDir"
+    if ($DryRun) {
+        Write-DryRun "创建 $KokoroModelDir"
+    }
+    else {
+        New-Item -ItemType Directory -Force -Path $KokoroModelDir | Out-Null
+    }
+    $kokoroOnnx = Join-Path $KokoroModelDir "kokoro-v1.0.onnx"
+    $kokoroVoices = Join-Path $KokoroModelDir "voices-v1.0.bin"
+    if (-not (Get-RemoteFile -Url "$KokoroMirror/kokoro-v1.0.onnx" -Destination $kokoroOnnx -MinBytes 320000000)) {
+        Write-Host "  镜像下载失败，改用 GitHub 官方源重试..."
+        if (-not (Get-RemoteFile -Url "$KokoroRelease/kokoro-v1.0.onnx" -Destination $kokoroOnnx -MinBytes 320000000)) {
+            throw "下载 kokoro-v1.0.onnx 失败；网络受限可加 -SkipKokoro 跳过"
+        }
+    }
+    if (-not (Get-RemoteFile -Url "$KokoroMirror/voices-v1.0.bin" -Destination $kokoroVoices -MinBytes 26000000)) {
+        Write-Host "  镜像下载失败，改用 GitHub 官方源重试..."
+        if (-not (Get-RemoteFile -Url "$KokoroRelease/voices-v1.0.bin" -Destination $kokoroVoices -MinBytes 26000000)) {
+            throw "下载 voices-v1.0.bin 失败；网络受限可加 -SkipKokoro 跳过"
+        }
+    }
+    if (-not $DryRun) {
+        $onnxSize = (Get-Item $kokoroOnnx).Length
+        $voicesSize = (Get-Item $kokoroVoices).Length
+        if ($onnxSize -lt 320000000 -or $voicesSize -lt 26000000) {
+            throw "kokoro 模型文件不完整（onnx=$onnxSize, voices=$voicesSize 字节）"
+        }
+        Write-Host "  kokoro 就绪：kokoro-v1.0.onnx（$onnxSize 字节），voices-v1.0.bin（$voicesSize 字节）"
     }
 }
 

@@ -96,7 +96,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const thinkingDone = ref(false)
   const replyDone = ref(false)
   const phase = ref<Phase>('idle')
-  // 临时诊断：记录「本轮完成」是被哪一处设的，定位提前显示
+  /**
+   * 「本轮完成」短暂展示后回到「正在听」（用户 2026-11-19 要求统一）：
+   * 播完先显示「本轮完成」约 1 秒，然后自动切回「正在听」——麦克风常开、可直接说下一句，
+   * 与唤醒后的「正在听」显示一致。期间若用户已开口/开启新一轮（phase 被改成
+   * thinking/listening/speaking 等），回调发现 phase 不再是 done 就不覆盖。
+   */
+  let doneToListeningTimer: ReturnType<typeof setTimeout> | null = null
+  const DONE_TO_LISTENING_MS = 1000
   function setPhaseDone(source: string): void {
     transport.sendDiag?.({
       state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
@@ -104,6 +111,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       trace: `PHASE-DONE by=${source} speaking=${isSpeaking.value}`,
     })
     phase.value = 'done'
+    if (doneToListeningTimer) clearTimeout(doneToListeningTimer)
+    doneToListeningTimer = setTimeout(() => {
+      doneToListeningTimer = null
+      // 助手仍开启（非 idle）、且期间没有新活动改写 phase 时，才切回「正在听」
+      if (phase.value === 'done' && state.value !== 'idle') phase.value = 'listening'
+    }, DONE_TO_LISTENING_MS)
   }
   const isSpeaking = ref(false)
   /**
@@ -127,6 +140,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const errorMessage = ref('')
   /** 内嵌网关启动中（enable 时轮询 gateway.url 直到原生进程写出）；启动阶段界面静默，不显示也不播报 */
   const gatewayPreparing = ref(false)
+  /** 网关启动失败：首页据此显示失败提示（而非误报"已就绪"），引导点语音球重试 */
+  const gatewayFailed = ref(false)
   /** 队列已满（排队数超上限）的专用话术，显示在「我说」卡片右上角（与排队数量徽标同位置同款式），
    *  不进「你说」正文、不用顶部横幅、不弹浮层 */
   const queueFullMsg = ref('')
@@ -205,17 +220,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let thinkingCueTimer: ReturnType<typeof setTimeout> | null = null
   let thinkingCueFired = false
 
-  /** 思考阶段起计时：超过 5s 还没开始播报就播 thinking.mp3。
-   *  LLM 生成 + TTS 合成/下载的等待期用户没有反馈会以为卡死；5s 避免误报正常慢回复。
-   *  每轮最多一次。 */
+  /** "还没出声"阶段起计时：超过 5s 还没开始播报就播 thinking.mp3。
+   *  覆盖整段等待：思考 + 文字流出 + TTS 合成/下载——用户看到文字刷出来但迟迟没声音，
+   *  中间这段最容易以为卡死。所以在 tts.start 才撤销计时，而非 llm.delta（文字一出就撤
+   *  会导致"文字等声音"那段完全没提示）。每轮最多一次。 */
   const THINKING_CUE_DELAY_MS = 5_000
   function armThinkingCue(): void {
     disarmThinkingCue()
     thinkingCueFired = false
     thinkingCueTimer = setTimeout(() => {
       thinkingCueTimer = null
-      // 只在还在思考（未开始播报/已完成）时播；每轮最多一次
-      if (phase.value === 'thinking' && !thinkingCueFired) {
+      // 未开始播报（thinking/replying）时才播；tts.start 后由 disarm 撤销
+      if ((phase.value === 'thinking' || phase.value === 'replying') && !thinkingCueFired && !isSpeaking.value) {
         thinkingCueFired = true
         void playPromptCue('thinking')
       }
@@ -564,9 +580,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           else reWake()
           break
         }
-        // 播报（TTS）还没结束：其它声音一律忽略，不显示、不发起新轮次
-        //（插话原文已随 asr.queued 进队列角标，入队后识别文字不再显示）
-        if (isSpeaking.value) break
+        // 播报（TTS）还没结束：其它声音不显示正文、不发起新轮次
+        //（插话原文已随 asr.queued 进队列角标）。但必须清掉监听草稿 liveText——
+        // 这句插话若因定稿太晚、网关没当队列项处理（pb 已 false），前端就既收不到 queued
+        // 又在这里丢弃 final，草稿会永远挂着清不掉（真机"一直在草稿区"）。
+        if (isSpeaking.value) {
+          liveText.value = ''
+          break
+        }
         // 定稿后这一句进入队列成为「当前项」，你说始终显示队列当前项（不显示监听草稿）。
         // 直接采信服务端的权威剩余数，避免拒收/超时等路径下本地计数漂移。
         queuePending.value = event.queueRemaining
@@ -604,7 +625,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         }
         reply.value += event.text
         if (phase.value !== 'speaking') phase.value = 'replying'
-        disarmThinkingCue()
+        // 不在这里撤销 thinking 提示：文字出来了但 TTS 还没开始播（合成/下载中）这段
+        // 也要计入"等待出声"，到 tts.start 才 disarm。
         break
       case 'llm.done':
         thinkingDone.value = true
@@ -619,6 +641,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 合法的下一句/下一轮总在 tts.end/stop 之后才来，此时 isSpeaking 已复位，不受影响。
         if (isSpeaking.value) break
         cancelPendingIdle()
+        // 真正开始出声了：撤销"等待出声"提示计时（思考+文字+TTS等待这段已结束）
+        disarmThinkingCue()
         // 不再 resetPlayback()：网关已等上一句播完才下发这一句，
         // 清空队列会把「上一句」的尾音掐掉，正是用户听到的中断。
         answerHasTts = true
@@ -1129,32 +1153,45 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     enabling = true
     try {
       gatewayPreparing.value = true
+      gatewayFailed.value = false
       errorMessage.value = ''
-      // 网关启动中先给一声提示，避免用户对着还没就绪的网关喊唤醒词没反应、以为坏了。
-      // 音频是打包内本地文件，断网/网关未起也能出声。playPromptCue 自带去重。
-      playPromptCue('gatewayPreparing')
       const ready = await waitForEmbeddedGateway()
-      gatewayPreparing.value = false
       if (!ready) {
-        // 等待网关启动超时＝确认连不上，才播报一次（带去重），不显示文字
+        // 网关启动失败：结束"启动中"态、标记失败（首页显示失败提示而非误报已就绪），
+        // 不播就绪提示；播一次 gateway-down。用户可点语音球重试（state=idle → enable）。
+        // 顺序要紧：先置失败标志，再结束启动态——否则 watch 到 preparing→false 时
+        // gatewayFailed 还是 false，会误显示"已就绪"。
+        gatewayFailed.value = true
+        gatewayPreparing.value = false
+        errorMessage.value = t('gateway.startFailedRetry')
         announceGatewayDown()
         return
       }
+      gatewayFailed.value = false
       // 网关进程就绪 ≠ WS 已连通。必须先确认 WS 真的连上，才允许进入「待唤醒」；
       // 连不上就当场播报并停在「未开启」，绝不进 standby 让用户以为可以点球/喊唤醒词。
       if (!transport.isConnected()) {
         try {
           await transport.connect('wake')
         } catch {
-          // 首次连不上：交给自动重连；连不上由「重连耗尽」统一播报，此处静默
+          // 首次连不上：标记失败（不显示"已就绪"），交给自动重连；连不上由「重连耗尽」统一播报
+          gatewayFailed.value = true
+          gatewayPreparing.value = false
           return
         }
       }
-      // connect 返回却仍未连通（如还在握手中）：同样不进 standby
-      if (!transport.isConnected()) return
+      // connect 返回却仍未连通（如还在握手中）：同样不进 standby，也非就绪
+      if (!transport.isConnected()) {
+        gatewayFailed.value = true
+        gatewayPreparing.value = false
+        return
+      }
       dispatch({ type: 'ENABLE' })
-      // 加载完成提示：引导用户现在可以唤醒，配合上面的"启动中"提示形成闭环
-      playPromptCue('gatewayReady')
+      // 真正就绪：结束"启动中"态，首页据此显示短暂的"已就绪"行内文字
+      gatewayPreparing.value = false
+      // 准备 + 就绪两条提示音用串行队列依次完整播完、互不打断（闭环）。
+      // 只在真正进入 standby 后才播——失败路径上面已 return，不会误报"已就绪"。
+      playPromptCueSequence(['gatewayPreparing', 'gatewayReady'])
     } finally {
       enabling = false
     }
@@ -1401,6 +1438,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     clearT1()
     clearT2()
     clearClosing()
+    if (doneToListeningTimer) { clearTimeout(doneToListeningTimer); doneToListeningTimer = null }
     cancelPendingIdle()
     leaveWake()
     // 撤销本实例的全部订阅，避免模块级单例 transport 在 HMR 重挂载时叠加重复监听
@@ -1437,6 +1475,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     liveText,
     errorMessage,
     gatewayPreparing,
+    gatewayFailed,
     wakeSupported,
     wakeProviderName,
     wsConnected,

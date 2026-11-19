@@ -1,9 +1,10 @@
 /**
  * 新闻播报意图的确定性识别：命中后绕开大模型，直接抓真实新闻视频抽音轨播放。
  *
- * 触发词：新闻 / 消息 / 头条 / 热点 / 快讯 / 资讯（及英文 news/headlines）。
+ * 触发词：新闻 / 消息 / 头条 / 热点 / 快讯 / 资讯 / 发生了什么（及英文 news/headlines）。
  * 「资讯」与新闻同义（用户确认「资讯也属新闻类」），「播放资讯」「科技资讯」都走新闻。
  * 「新闻/消息」是用户明确要加的关键词；「最新消息」里的「消息」也算新闻语境（不是即时通讯）。
+ * 「发生了什么」用户确认算新闻语境（「昨天发生了什么」泛播当日新闻，而非让大模型回答"没有此功能"）。
  *
  * 话题词：形如「科技新闻」「关于科技的新闻」「科技最新消息」取触发词前的片段作 keyword；
  * 「播放新闻 / 新闻 / 最新消息 / 今天的新闻」这类只泛播当日头条，keyword=null。
@@ -14,7 +15,7 @@
  */
 
 /** 触发词。不带 /g，避免 test() 的 lastIndex 状态问题。 */
-const NEWS_SIGNAL = /新闻|消息|头条|热点|快讯|资讯|news|headlines?/i
+const NEWS_SIGNAL = /新闻|消息|头条|热点|快讯|资讯|发生了什么|news|headlines?/i
 
 /** 其它内容强特征：命中则不是新闻意图，交回下游（不与音乐/影视/曲艺抢） */
 const OTHER_CONTENT = /歌曲|音乐|专辑|首歌|唱歌|评书|相声|有声书|电影|电视剧|动画片|综艺/
@@ -44,18 +45,37 @@ function stripFillers(raw: string): string {
 }
 
 /** 剥完噪声后只剩这些泛词即视为无话题（泛播） */
-const GENERIC_TOPIC = /^(新闻|消息|头条|热点|快讯|资讯|最新|今天|今日|最近|近期|一些|点|个|再|news|headlines?)$/i
+const GENERIC_TOPIC = /^(新闻|消息|头条|热点|快讯|资讯|最近|近期|一些|点|个|再|news|headlines?)$/i
+
+/**
+ * 相对日期词 → 具体日期搜索词（用户问「昨天/前天发生了什么」要查那天的，不是今天）。
+ * 返回 `M月D日`（如「11月18日」），B站新闻视频标题多带此格式，newsVideoSource 会再拼「 新闻」。
+ * 只处理昨天/昨日(-1)、前天(-2)——「今天」走泛播「今日新闻」（B站标题多用「今日新闻」，
+ * 搜具体日期反而更少），且「今天」已在 FILLER_WORDS 里被剥掉。用设备本地时区（用户在中国即 UTC+8）。
+ */
+function relativeDateKeyword(raw: string): string | null {
+  const map: Record<string, number> = { 昨天: -1, 昨日: -1, 前天: -2 }
+  const t = raw.trim()
+  if (!(t in map)) return null
+  const d = new Date()
+  d.setDate(d.getDate() + map[t])
+  return `${d.getMonth() + 1}月${d.getDate()}日`
+}
 
 /** 话题词提取：从「XX的新闻 / XX最新消息 / XX新闻」里取 XX。 */
 function extractKeyword(t: string): string | null {
   // 触发词前的最长片段（贪婪到最后一个触发词之前），如「关于科技的新闻」→「关于科技」
-  const m = t.match(/^(.+?)(?:的)?(?:最新消息|最新新闻|新闻|消息|头条|热点|快讯|资讯|news|headlines?)\s*[？?。!！]?$/i)
+  const m = t.match(/^(.+?)(?:的)?(?:最新消息|最新新闻|新闻|消息|头条|热点|快讯|资讯|发生了什么|news|headlines?)\s*[？?。!！]?$/i)
   // 没匹配到（如纯「新闻」）说明触发词即整句，无话题词
   if (!m) return null
   let raw = stripFillers(m[1])
   // 去掉首尾标点/空白
   raw = raw.replace(/^[，,。.、\s]+|[，,。.、\s]+$/g, '').trim()
-  if (!raw || GENERIC_TOPIC.test(raw)) return null
+  if (!raw) return null
+  // 「昨天/前天发生了什么」→ 查那天的日期新闻，不当泛播（必须在 GENERIC_TOPIC 之前）
+  const dateKw = relativeDateKeyword(raw)
+  if (dateKw) return dateKw
+  if (GENERIC_TOPIC.test(raw)) return null
   // 话题词不宜过长（防误把整句当话题）
   return raw.length <= 20 ? raw : null
 }

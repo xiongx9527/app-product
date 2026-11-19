@@ -1,8 +1,15 @@
 import type { TtsProvider } from './provider'
 import type { VendorParams } from '../config'
 
-/** 单次合成的硬超时：上游慢/挂起时主动 abort 断开、舍弃这帧音频，不拖死一轮播报。 */
-const TTS_TIMEOUT_MS = 8000
+/** 单次合成的硬超时：上游慢/挂起时主动 abort 断开、抛错走 tts-error 提示。
+ *  设备经 adb reverse 访问本机 9529，偶发网络抖动会让短句也超时（实测"比如放首歌、"
+ *  6字也 aborted）；8s 偏紧，放宽到 12s 减少误报，但仍小于 speakSentence 的帧间隔
+ *  15s，避免两处超时竞态导致重复提示。 */
+const TTS_TIMEOUT_MS = 12000
+/** TTS 单帧大小：9600B = 200ms @24k/16bit。整段 TTS（builtin/deepseek 一次返回完整
+ *  WAV）切成此尺寸逐帧下发——单帧 1.2MB（base64 1.6MB）经 weex 桥传输会超限/截断
+ *  导致播不出来（真机"今天天气怎么样"文字出了没声音的根因）。 */
+const TTS_FRAME_BYTES = 9600
 
 /**
  * 对接本地语音服务（openai-voice，OpenAI 兼容）的 TTS。
@@ -40,37 +47,34 @@ export class HttpVoiceTts implements TtsProvider {
         signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
       })
       if (!res.ok || !res.body) {
-        yield* this.silence(text)
-        return
+        // 失败必须显式抛错，让 speakSentence 的 catch 发 tts-error 本地 mp3 提示。
+        // 旧实现回退静音帧：网关收到"帧"就当成功，既不播声音也不播提示（用户"失败了没提示"）。
+        throw new Error(`[tts] 合成失败 HTTP ${res.status}`)
       }
       const contentType = res.headers.get('content-type') ?? ''
       const ab = new Uint8Array(await res.arrayBuffer())
       if (contentType.includes('application/json') || !isRiff(ab)) {
-        yield* this.silence(text)
-        return
+        throw new Error('[tts] 合成失败：响应非 WAV')
       }
       const pcm = extractWavData(ab)
-      yield pcm.length > 0 ? pcm : silenceBytes(text)
+      if (pcm.length === 0) throw new Error('[tts] 合成失败：WAV 无 data 段')
+      // 整段 TTS（builtin/deepseek 一次返回完整 WAV）必须切成小帧下发：
+      // 原生 playPcm(String b64) 每帧 Base64.decode 后写 AudioTrack，单帧 1.2MB（base64 1.6MB）
+      // 经 weex 桥传输会超限/截断 → 播不出来。切成 9600B(200ms@24k) 匹配流式播放。
+      for (let off = 0; off < pcm.length; off += TTS_FRAME_BYTES) {
+        yield pcm.subarray(off, Math.min(off + TTS_FRAME_BYTES, pcm.length))
+      }
     } catch (err) {
-      console.error('[tts] 调用本地语音服务失败，回退静音：', err)
-      yield* this.silence(text)
+      // 失败显式抛错（含 fetch 超时/网络错误）——speakSentence catch 会发 tts-error 提示音。
+      console.error('[tts] 调用本地语音服务失败：', err)
+      throw err
     }
-  }
-
-  private async *silence(text: string): AsyncIterable<Uint8Array> {
-    yield silenceBytes(text)
   }
 
   /** 统一附加鉴权头：有 apiKey 时带 Bearer，否则原样返回。 */
   private authHeaders(headers: Record<string, string>): Record<string, string> {
     return this.apiKey ? { ...headers, Authorization: `Bearer ${this.apiKey}` } : headers
   }
-}
-
-/** 静音帧长度：约按文本长度估，最短 0.1s（24kHz/16bit 单声道 = 48000 B/s）。 */
-function silenceBytes(text: string): Uint8Array {
-  const bytes = Math.max(4800, text.length * 4800)
-  return new Uint8Array(bytes)
 }
 
 function isRiff(bytes: Uint8Array): boolean {

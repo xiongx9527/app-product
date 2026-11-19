@@ -101,6 +101,7 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
+import threading
 
 import httpx
 import uvicorn
@@ -128,6 +129,24 @@ def _startup_log(msg: str = "", **_kwargs: Any) -> None:
 # 与网关契约保持一致：上行 16k，下行 24k；两边都是 16bit 单声道。
 SAMPLE_RATE = 16000
 TTS_SAMPLE_RATE = 24000
+
+# 内置 kokoro（kokoro-onnx，纯本地）模型与音色目录。
+# 用全精度 ONNX：int8 量化模型含 ConvInteger 算子，onnxruntime CPU 版不支持，加载会失败。
+# 模型由 install-voice 强制下载到 $VOICE_HOME/models/kokoro，离线可用，不依赖 ffmpeg。
+KOKORO_MODEL_FILE = "kokoro-v1.0.onnx"
+KOKORO_VOICES_FILE = "voices-v1.0.bin"
+KOKORO_DEFAULT_VOICE = "zf_xiaoxiao"  # 中文女声·温柔自然，对齐 edge 的 XiaoxiaoNeural 偏好
+# 中文（cmn）音色：kokoro 音色名与 edge-tts 完全不同体系，不能互换。
+KOKORO_VOICES = {
+    "zf_xiaobei": "女声·亲切自然",
+    "zf_xiaoni": "女声·软糯",
+    "zf_xiaoxiao": "女声·温柔自然（默认）",
+    "zf_xiaoyi": "女声·活泼",
+    "zm_yunjian": "男声·沉稳",
+    "zm_yunxi": "男声·年轻",
+    "zm_yunxia": "男声·柔和",
+    "zm_yunyang": "男声·浑厚",
+}
 # SenseVoice 前 ZCR 声学门控阈值。真机日志校准（2026-11-18）：
 #   真人说话 ZCR 0.086~0.144（5 条），吸鼻涕/咳嗽/噪声 0.309~0.439（8 条），空档很宽。
 #   取两组中点 0.22，离两侧都最远、最稳。
@@ -263,6 +282,12 @@ def _expand_path(value: str) -> str:
 def sensevoice_dir() -> str:
     default = os.path.join(VOICE_HOME, "models", "sensevoice")
     return _expand_path(config_value("SENSEVOICE_DIR", default))
+
+
+def kokoro_model_dir() -> str:
+    """内置 kokoro 模型目录（kokoro-v1.0.int8.onnx + voices-v1.0.bin）。"""
+    default = os.path.join(VOICE_HOME, "models", "kokoro")
+    return _expand_path(config_value("KOKORO_MODEL_DIR", default))
 
 
 def sensevoice_language() -> str:
@@ -1156,17 +1181,24 @@ def sensevoice_check() -> dict:
     return {"ok": True, "reason": "ok", "model_dir": model_dir, "detail": ""}
 
 
-async def tts_builtin_check() -> dict:
-    """真实合成一句，验证内置 TTS（edge-tts + ffmpeg）是否可用。
+async def tts_builtin_check(model: str | None = None) -> dict:
+    """真实合成一句，验证内置 TTS 是否可用：按 model 分派 edge-tts / kokoro。
 
     和线上 /voice/v1/audio/speech 走同一条本地分支；不拼地址、不自请求。
-    用 wav 对齐网关实际请求格式（覆盖 ffmpeg 转码这一环）。
-    只在管理面板 TTS「测试可用」时调用，启动阶段不执行。
+    用 wav 对齐网关实际请求格式。只在管理面板内置行点「测试可用」时调用，启动阶段不执行。
     """
-    text, fmt = "测试", "wav"
+    text = "测试"
+    selected = (model or "").strip() or _builtin_tts_default_model()
+    if selected not in BUILTIN_TTS_MODELS:
+        return {"ok": False, "reason": "unknown_model", "detail": f"未知内置模型 {selected}"}
     try:
-        mp3 = await synthesize_edge_mp3(text, resolve_voice(tts_voice()), tts_rate(1.0))
-        audio, _ = await asyncio.to_thread(transcode_mp3, mp3, fmt)
+        if selected == "kokoro":
+            audio = await asyncio.to_thread(
+                synthesize_kokoro_wav, text, KOKORO_DEFAULT_VOICE, 1.0
+            )
+        else:
+            mp3 = await synthesize_edge_mp3(text, resolve_voice(tts_voice()), tts_rate(1.0))
+            audio, _ = await asyncio.to_thread(transcode_mp3, mp3, "wav")
         ok = bool(audio)
         detail = "" if ok else "合成结果为空"
     except Exception as exc:  # noqa: BLE001
@@ -1250,6 +1282,59 @@ async def synthesize_edge_mp3(text: str, voice: str, rate: str) -> bytes:
         raise RuntimeError(f"edge-tts 合成超时（整体 {total:g}s）") from exc
 
 
+# kokoro 推理引擎惰性单例：114MB 模型只在第一次合成时加载，之后复用。
+# 加载走线程锁（合成本身在 asyncio.to_thread 里跑，可能多线程并发首调）。
+_KOKORO_ENGINE = None
+_KOKORO_INIT_LOCK = threading.Lock()
+
+
+def _get_kokoro_engine():
+    global _KOKORO_ENGINE
+    if _KOKORO_ENGINE is None:
+        with _KOKORO_INIT_LOCK:
+            if _KOKORO_ENGINE is None:
+                try:
+                    from kokoro_onnx import Kokoro
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "kokoro-onnx 未安装，请运行 install-voice 脚本安装内置 TTS 依赖"
+                    ) from exc
+                model_path = os.path.join(kokoro_model_dir(), KOKORO_MODEL_FILE)
+                voices_path = os.path.join(kokoro_model_dir(), KOKORO_VOICES_FILE)
+                if not os.path.isfile(model_path) or not os.path.isfile(voices_path):
+                    raise RuntimeError(
+                        f"kokoro 模型文件缺失：{model_path} / {voices_path}；请运行 install-voice 脚本"
+                    )
+                _KOKORO_ENGINE = Kokoro(model_path, voices_path)
+    return _KOKORO_ENGINE
+
+
+def synthesize_kokoro_wav(text: str, voice: str, speed: float = 1.0) -> bytes:
+    """本地 kokoro 合成，直接产出网关要的 24k / 16bit / mono WAV（免 ffmpeg / 免联网）。
+
+    kokoro-onnx 返回 float32 numpy 数组 + 采样率（通常 24000），这里转成 s16le 并包 WAV 头。
+    音色必须是 kokoro 中文目录（zf_/zm_ 前缀），不支持则回退默认中文音色。
+    """
+    import numpy as np
+
+    kokoro = _get_kokoro_engine()
+    selected = (voice or "").strip()
+    if selected not in KOKORO_VOICES:
+        selected = KOKORO_DEFAULT_VOICE
+    samples, sample_rate = kokoro.create(
+        text, voice=selected, speed=speed, lang="cmn"
+    )
+    audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(sample_rate or TTS_SAMPLE_RATE))
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
 def _looks_like_mp3(data: bytes) -> bool:
     """粗略判断字节是否已是 MP3（ID3 标签头或 MPEG 音频帧同步字）。"""
     if data[:3] == b"ID3":
@@ -1312,15 +1397,20 @@ def transcode_mp3(mp3: bytes, fmt: str):
 
 def voice_health() -> dict:
     # 不主动加载模型：健康检查应该秒回，第一次真正转写时再加载 SenseVoice。
-    # ASR 固定本地 SenseVoice、TTS 固定内置 edge-tts，二者都没有上游。
+    # ASR 固定本地 SenseVoice；TTS 内置可选 edge-tts（在线）/ kokoro（纯本地），按启用表默认模型选。
     return {
         "status": "ok",
         "auth_enabled": auth_enabled(),
         "stt_backend": "sensevoice",
         "stt_ready": sensevoice_ready(),
         "stt_upstream": None,
+        # tts_backend 是历史字段，固定 "edge"（兼容既有健康检查/测试）；具体内置引擎看 tts_default_model。
         "tts_backend": "edge",
         "tts_voice": tts_voice(),
+        "tts_models": sorted(BUILTIN_TTS_MODELS),
+        "tts_default_model": _builtin_tts_default_model(),
+        "tts_kokoro_ready": _kokoro_available(),
+        "tts_edge_ready": _edge_tts_available(),
         "tts_upstream": None,
         "ffmpeg": bool(ffmpeg_path()),
         "model_dir": sensevoice_dir(),
@@ -1378,7 +1468,7 @@ def voice_health_route():
 
 # 内置语音引擎的有效模型白名单：与 /voice/v1/models 目录同源，防两处漂移。
 # 请求里 model 为空/不传 = 用内置默认；传了必须是白名单里的值，传错直接 400（不静默忽略）。
-BUILTIN_TTS_MODELS = {"edge-tts"}
+BUILTIN_TTS_MODELS = {"edge-tts", "kokoro"}
 BUILTIN_STT_MODELS = {"sensevoice-small"}
 
 # STT / TTS 上游 provider 的默认上游地址（与转发分支里的兜底保持一致）。
@@ -1422,6 +1512,23 @@ def _edge_tts_available() -> bool:
         return ffmpeg_path() is not None
     except Exception:  # noqa: BLE001
         return False
+
+
+def _kokoro_available() -> bool:
+    """内置 kokoro 是否就绪：kokoro-onnx 能 import 且两个模型文件都在。"""
+    try:
+        import kokoro_onnx  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    model_dir = kokoro_model_dir()
+    return (os.path.isfile(os.path.join(model_dir, KOKORO_MODEL_FILE))
+            and os.path.isfile(os.path.join(model_dir, KOKORO_VOICES_FILE)))
+
+
+def _builtin_tts_default_model() -> str:
+    """内置 TTS 默认引擎：管理面板启用表的 builtin 默认模型（去 readonly 后可改），缺省 edge-tts。"""
+    model = (voice_db.default_speech_model("tts", "builtin") or "edge-tts").strip()
+    return model if model in BUILTIN_TTS_MODELS else "edge-tts"
 
 
 def _enabled_provider(p: str) -> str:
@@ -1473,7 +1580,8 @@ def _voice_provider_entries() -> list[dict]:
     tts_models = voice_db.enabled_models("tts", _enabled_provider(tts_provider)) or (
         [tts_model] if tts_model else []
     )
-    add("tts", "builtin", "edge-tts", "", _edge_tts_available(),
+    add("tts", "builtin", _builtin_tts_default_model(), "",
+        _edge_tts_available() or _kokoro_available(),
         sorted(BUILTIN_TTS_MODELS), "http")
     if tts_provider and tts_provider != "builtin":
         add("tts", tts_provider, tts_model, _host_of(tts_base), None,
@@ -1823,8 +1931,13 @@ def pcm16_to_wav(pcm: bytes, sample_rate: int = TTS_SAMPLE_RATE) -> bytes:
 
 
 def is_edge_voice(voice: str) -> bool:
-    """音色是否属于内置 edge-tts 目录（与 DashScope 音色体系不通用）。"""
+    """音色是否属于内置 edge-tts 目录（与 DashScope / kokoro 音色体系不通用）。"""
     return any(v.get("id") == voice for v in VOICE_CATALOG)
+
+
+def is_kokoro_voice(voice: str) -> bool:
+    """音色是否属于内置 kokoro 中文目录（zf_/zm_ 前缀，与 edge 音色不通用）。"""
+    return (voice or "").strip() in KOKORO_VOICES
 
 
 async def stt_upstream_test(model_override: str | None = None, provider: str = "") -> dict:
@@ -1978,6 +2091,7 @@ def audio_fmt(payload: bytes) -> str:
 async def _tts_synthesize(
     text: str, voice: str, rate: str, fmt: str,
     tts_provider: str, protocol: str, upstream_model: str, speed: float = 1.0,
+    builtin_model: str = "edge-tts",
 ) -> tuple[bytes, str]:
     """合成核心：根据 provider / protocol / model 调对应引擎，返回 (音频字节, media_type)。
 
@@ -2038,7 +2152,13 @@ async def _tts_synthesize(
         if fmt == "mp3":
             return raw, "audio/mpeg"
         return await asyncio.to_thread(transcode_mp3, raw, fmt)
-    # 内置：本地 edge-tts
+    # 内置：按 model 选引擎。edge-tts 走原在线链路（音色不变）；kokoro 走纯本地合成。
+    if builtin_model == "kokoro":
+        wav = await asyncio.to_thread(synthesize_kokoro_wav, text, voice, speed)
+        if fmt == "wav":
+            return wav, "audio/wav"
+        # kokoro 已产出 24k WAV；pcm/mp3 仍交给 ffmpeg 统一转码。
+        return await asyncio.to_thread(transcode_mp3, wav, fmt)
     mp3 = await synthesize_edge_mp3(text, voice, rate)
     if fmt == "mp3":
         return mp3, "audio/mpeg"
@@ -2129,20 +2249,30 @@ async def speech(body: SpeechBody):
     tts_provider = (body.provider or "").strip().lower() or (
         config_value("TTS_PROVIDER", "builtin") or "builtin"
     ).strip().lower()
-    # 上游模式（dashscope / deepseek）空音色保持为空，交给 _tts_synthesize 用该 provider 的默认音色；
-    # 只有内置模式才把空音色 resolve 成内置默认，避免内置默认音色触发上游的音色校验误报。
-    voice = resolve_voice(voice_req) if (voice_req or tts_provider == "builtin") else ""
+    tts_provider = (body.provider or "").strip().lower() or (
+        config_value("TTS_PROVIDER", "builtin") or "builtin"
+    ).strip().lower()
     upstream_model = ""
+    builtin_model = "edge-tts"
     if tts_provider == "builtin":
-        # 内置模式：model 可为空，但传了必须是有效模型——传错直接拒绝，不静默吞掉。
+        # 内置模式：model 为空 = 用面板启用表里的内置默认模型；传了必须是白名单值。
         requested = (body.model or "").strip()
-        if requested and requested not in BUILTIN_TTS_MODELS:
+        builtin_model = requested or _builtin_tts_default_model()
+        if builtin_model not in BUILTIN_TTS_MODELS:
             return error_response(
                 400,
-                f"内置 TTS 模型只有 {'/'.join(sorted(BUILTIN_TTS_MODELS))}，收到 {requested!r}；"
+                f"内置 TTS 模型只有 {'/'.join(sorted(BUILTIN_TTS_MODELS))}，收到 {builtin_model!r}；"
                 "如需其它模型请配置上游（TTS_PROVIDER）",
             )
+        if builtin_model == "kokoro":
+            # kokoro 音色与 edge 不通用；网关固定传 XiaoxiaoNeural，这里换回 kokoro 默认中文音色。
+            voice = voice_req if is_kokoro_voice(voice_req) else KOKORO_DEFAULT_VOICE
+        else:
+            voice = resolve_voice(voice_req)
     else:
+        # 上游模式：空音色保持为空，交给 _tts_synthesize 用该 provider 的默认音色，
+        # 避免内置默认音色触发上游的音色校验误报。
+        voice = resolve_voice(voice_req) if voice_req else ""
         # 上游模式：model 优先取请求参数，缺省回退 TTS_UPSTREAM_MODEL 配置
         upstream_model = (body.model or "").strip() or (
             config_value("TTS_UPSTREAM_MODEL") or ""
@@ -2159,7 +2289,7 @@ async def speech(body: SpeechBody):
         return error_response(400, "http-async 是录音文件异步转写协议，实时合成接口不支持")
     if tts_provider == "builtin" and protocol != "http":
         return error_response(400, "内置 TTS 为本地合成，只支持 http 协议")
-    cache_key = (tts_provider, protocol, upstream_model, text, voice, rate, fmt)
+    cache_key = (tts_provider, protocol, builtin_model, upstream_model, text, voice, rate, fmt)
     cached = tts_cache.get(cache_key)
     if cached is not None:
         media_type = {
@@ -2173,7 +2303,8 @@ async def speech(body: SpeechBody):
 
     try:
         audio, media_type = await _tts_synthesize(
-            text, voice, rate, fmt, tts_provider, protocol, upstream_model, body.speed
+            text, voice, rate, fmt, tts_provider, protocol, upstream_model, body.speed,
+            builtin_model=builtin_model,
         )
     except Exception as exc:  # noqa: BLE001
         # 这里不抛 500：网关遇到 4xx/5xx 会自己回退静音，会话不中断。
@@ -2218,13 +2349,21 @@ async def list_voices(provider: str = "", model: str = ""):
     if voices and (not mdl or not any(v["model"] == mdl for v in voices)):
         mdl = voices[0]["model"]
     if not voices:  # DB 尚未播种等极端情况：退回内置硬编码目录
-        voices = [
-            {"id": v["id"], "provider": "builtin", "model": "edge-tts",
-             "desc_zh": v.get("desc_zh", ""), "desc_en": v.get("desc_en", ""),
-             "is_default": v["id"] == tts_voice()}
-            for v in VOICE_CATALOG
-        ]
-        mdl = mdl or "edge-tts"
+        fallback_model = _builtin_tts_default_model()
+        if fallback_model == "kokoro":
+            voices = [
+                {"id": vid, "provider": "builtin", "model": "kokoro",
+                 "desc_zh": desc, "desc_en": desc, "is_default": vid == KOKORO_DEFAULT_VOICE}
+                for vid, desc in KOKORO_VOICES.items()
+            ]
+        else:
+            voices = [
+                {"id": v["id"], "provider": "builtin", "model": "edge-tts",
+                 "desc_zh": v.get("desc_zh", ""), "desc_en": v.get("desc_en", ""),
+                 "is_default": v["id"] == tts_voice()}
+                for v in VOICE_CATALOG
+            ]
+        mdl = mdl or fallback_model
     default_id = next((v["id"] for v in voices if v.get("is_default")), None)
     if not default_id and prov_key == "builtin":
         default_id = tts_voice()
@@ -2646,6 +2785,7 @@ async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload
     """TTS 子流程：收 continue-task(文本) + finish-task，合成后回二进制音频 + task-finished。"""
     tts_provider = _ws_task_provider(payload, "TTS_PROVIDER")
     upstream_model = ""
+    builtin_model = "edge-tts"
     if tts_provider == "deepseek":
         upstream_model = (model or "").strip() or _deepseek_default_model("tts")
     elif tts_provider != "builtin":
@@ -2655,13 +2795,15 @@ async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload
             return False
     else:
         # 内置模式只认内置模型；传了上游（尤其 ws）模型属于「模型与提供商对不上」，直接报错。
-        if (model or "").strip() and (model or "").strip() not in BUILTIN_TTS_MODELS:
+        requested = (model or "").strip()
+        if requested and requested not in BUILTIN_TTS_MODELS:
             await _ws_send_fail(
                 websocket, task_id,
                 f"模型 {model} 是上游模型，但当前 TTS_PROVIDER=builtin（内置模式）；"
                 f"请在测试页选择内置模型，或先配置上游提供商再测 ws。",
             )
             return False
+        builtin_model = requested or _builtin_tts_default_model()
     proto = "ws" if _model_uses_ws(upstream_model) else "http"
 
     text = ""
@@ -2689,10 +2831,15 @@ async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload
         return False
     voice_req = ((payload.get("parameters") or {}).get("voice") or "").strip()
     # 上游模式空音色保持为空，交给各 provider 用自己的默认音色（内置模式才 resolve 成内置默认）。
-    ds_voice = resolve_voice(voice_req) if (voice_req or tts_provider == "builtin") else voice_req
+    # kokoro 音色体系与 edge 不通，网关固定传的 XiaoxiaoNeural 要换回 kokoro 默认中文音色。
+    if tts_provider == "builtin" and builtin_model == "kokoro":
+        ds_voice = voice_req if is_kokoro_voice(voice_req) else KOKORO_DEFAULT_VOICE
+    else:
+        ds_voice = resolve_voice(voice_req) if (voice_req or tts_provider == "builtin") else voice_req
     try:
         audio, _mt = await _tts_synthesize(
-            text, ds_voice, tts_rate(1.0), "wav", tts_provider, proto, upstream_model
+            text, ds_voice, tts_rate(1.0), "wav", tts_provider, proto, upstream_model,
+            builtin_model=builtin_model,
         )
     except Exception as exc:  # noqa: BLE001
         await _ws_send_fail(websocket, task_id, f"TTS 失败: {exc}")

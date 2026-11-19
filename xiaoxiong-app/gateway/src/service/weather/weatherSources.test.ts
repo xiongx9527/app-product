@@ -68,6 +68,17 @@ describe('wttr 天气源', () => {
     const src = createWttrSource()
     expect(await src.fetch(1, 2, async () => ({ ok: false, json: async () => ({}) }))).toBeNull()
   })
+
+  it('fetchCity 按城市名拼 URL（不写死源、免 geocoding）', async () => {
+    const fetcher: WeatherFetcher = vi.fn(async () => ({ ok: true, json: async () => WTTR_SAMPLE }))
+    const src = createWttrSource()
+    const p = await src.fetchCity!('北京', fetcher)
+    expect(p?.current?.temperature_2m).toBe(15)
+    const url = (fetcher as ReturnType<typeof vi.fn>).mock.calls[0][0] as string
+    expect(url).toContain('wttr.in')
+    expect(url).toContain(encodeURIComponent('北京'))
+    expect(url).not.toMatch(/\d+\.\d+,\d+\.\d+/) // 不是经纬度形式
+  })
 })
 
 describe('open-meteo 备选源', () => {

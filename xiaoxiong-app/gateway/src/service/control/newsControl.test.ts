@@ -17,6 +17,7 @@ describe('detectNewsCommand', () => {
     '资讯',
     'NEWS',
     'headlines',
+    '发生了什么',
   ])('泛播命中：%s', (text) => {
     expect(detectNewsCommand(text)).toEqual({ keyword: null })
   })
@@ -32,8 +33,22 @@ describe('detectNewsCommand', () => {
     ['科技资讯', '科技'], // 「资讯」与新闻同义
     ['财经资讯', '财经'],
     ['再放个科技新闻', '科技'], // 「再」被剥掉，视为全新请求
+    ['科技界发生了什么', '科技界'], // 「发生了什么」也是新闻触发词
   ])('带话题命中：%s → %s', (text, keyword) => {
     expect(detectNewsCommand(text)).toEqual({ keyword })
+  })
+
+  // 相对日期「昨天/前天发生了什么」→ 转成那天的具体日期（M月D日），不是泛播今天；
+  // 「今天」走泛播今日新闻，不在此列
+  it.each([
+    ['昨天发生了什么', -1],
+    ['前天发生了什么', -2],
+    ['昨天的新闻', -1],
+  ])('相对日期命中：%s', (text, dayOffset) => {
+    const d = new Date()
+    d.setDate(d.getDate() + dayOffset)
+    const expected = `${d.getMonth() + 1}月${d.getDate()}日`
+    expect(detectNewsCommand(text)).toEqual({ keyword: expected })
   })
 
   // 反例：非新闻意图，交回下游

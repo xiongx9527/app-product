@@ -16,6 +16,14 @@
     "sort": 0
   },
   {
+    "kind": "tts",
+    "provider": "builtin",
+    "protocol": "http",
+    "model": "kokoro",
+    "default": false,
+    "sort": 1
+  },
+  {
     "kind": "stt",
     "provider": "dashscope",
     "protocol": "ws",

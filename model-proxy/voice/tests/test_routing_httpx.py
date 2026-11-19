@@ -3,8 +3,8 @@
 三层全真实：真实上游 mock（stdlib HTTP 服务）+ 真实 FastAPI/uvicorn 服务（跑本仓库代码）
 + 真实 httpx 客户端。验证协议翻译、按模型路由到分组、模型目录校验、TTS/STT 固定本地。
 
-架构：LLM 是唯一有上游池的能力；TTS 固定内置 edge-tts、ASR 固定内置
-SenseVoice（二者都无上游概念，ASR 非 WAV 直接 400）。
+架构：LLM 是唯一有上游池的能力；TTS 内置可选 edge-tts / kokoro（按内置默认模型选）、
+ASR 固定内置 SenseVoice（无上游概念，ASR 非 WAV 直接 400）。
 
 运行方式（需要 Python 3.10+）：
     cd model-proxy/voice
@@ -219,8 +219,8 @@ async def _main(base: str) -> None:
     _check("LLM /v1/models 并集",
            {"gpt-4o-mini", "claude-sonnet", "gemini-1.5-pro"} <= ids, f"ids={ids}")
 
-    # 6) TTS 固定内置 edge-tts：即使 conf 里残留 VOICE_UPSTREAM_BASE_URL 也必须忽略，
-    #    健康检查报告 edge / 无上游，模型目录只列本地 edge-tts，绝不转发到该地址。
+    # 6) TTS 走内置（edge-tts / kokoro）：即使 conf 里残留 VOICE_UPSTREAM_BASE_URL 也必须忽略，
+    #    健康检查报告 tts_backend=edge（历史字段）/ 无上游，模型目录至少列本地 edge-tts，绝不转发到该地址。
     async with httpx.AsyncClient() as c:
         rh = await c.get(f"{base}/voice/health")
         rm = await c.get(f"{base}/voice/v1/models")

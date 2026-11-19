@@ -37,7 +37,7 @@ async def _check_tts_provider_override():
             "text": json.dumps(next(steps)),
         }
 
-    async def fake_synthesize(text, voice, rate, fmt, provider, protocol, model, speed=1.0):
+    async def fake_synthesize(text, voice, rate, fmt, provider, protocol, model, speed=1.0, builtin_model="edge-tts"):
         calls.append((provider, protocol, model, voice))
         return b"RIFFfake", "audio/wav"
 

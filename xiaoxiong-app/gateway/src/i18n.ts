@@ -149,12 +149,17 @@ export interface Messages {
     context: (items: string) => string
     /** 语音「记住XX」命中后口播：key 话题，value 内容 */
     remembered: (key: string, value: string) => string
+    rememberedSimple: (value: string) => string
     /** 语音「忘了XX」命中后口播：topic 话题，n 删除条数 */
     forgot: (topic: string, n: number) => string
     /** 清空全部记忆后口播 */
     cleared: () => string
     /** 没匹配到任何记忆时口播 */
     nothingToForget: () => string
+    /** 检测到偏好后询问是否记入长期记忆 */
+    askRemember: () => string
+    /** 用户拒绝记录后的口播 */
+    notRemembered: () => string
   }
   /** 自动记忆（自动抽取 + 摘要）：抽取引擎与合并引擎的提示词，按 lang 本地化后再喂给模型 */
   memoryAuto: {
@@ -192,7 +197,9 @@ const zhCN: Messages = {
     '直接调用工具或给一句最简短的回复即可。全程使用简体中文，不要中英混排。' +
     '【严禁输出工具名】永远不要把工具名或英文标识符（如 play_music、stop_music、get_weather 等）' +
     '写进你的回答，它们不是给用户看的内容；需要执行操作时只调用工具本身，或在无法调用时' +
-    '用一句简短中文说明，绝不把这些英文词吐出来。',
+    '用一句简短中文说明，绝不把这些英文词吐出来。' +
+    '【偏好表达】当用户说「我喜欢/爱/习惯X」这类偏好时，只做自然聊天式回应（比如聊聊这个话题），' +
+    '绝不要说「记住了/记住啦/已记住/我会记住」之类承诺记忆的话——是否记录由单独的确认流程负责，你不要抢先说。',
   nowPlayingContext: (title, artist, contentType) => {
     const kind = contentType ? contentType : '内容'
     return (
@@ -323,9 +330,13 @@ const zhCN: Messages = {
           items
         : '',
     remembered: (key, value) => `已记住：${key} —— ${value}。`,
+    /** 偏好确认后口播：只念总结后的内容，不要 key/value 拼接（否则内容重复念两遍） */
+    rememberedSimple: (value) => `已记住：${value}。`,
     forgot: (topic, n) => `已忘掉关于「${topic}」的 ${n} 条记忆。`,
     cleared: () => '已清空关于你的全部记忆。',
     nothingToForget: () => '没找到匹配的，没什么可忘的。',
+    askRemember: () => '要我帮你记下来吗？',
+    notRemembered: () => '好，那就不记了。',
   },
   memoryAuto: {
     extractSystem: () =>
@@ -367,7 +378,9 @@ const en: Messages = {
     '(**bold**, # headings, list bullets, tables, code blocks, etc.). ' +
     'Do not add filler or apologies before or after calling a tool (especially music tools) — ' +
     'no "Sure", "Just a moment", "Sorry, ...", "Let me see", "Skipping...", etc. ' +
-    'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing.',
+    'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing. ' +
+    '[Preferences] When the user says "I like / love / prefer X", just chat naturally about it. ' +
+    'Never say "I\'ll remember / noted / got it saved" — a separate confirmation flow handles memory, do not claim it yourself.',
   nowPlayingContext: (title, artist, contentType) => {
     const kind = contentType ? contentType : 'content'
     return (

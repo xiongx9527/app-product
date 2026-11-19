@@ -1,4 +1,4 @@
-import type { WeatherFetcher, WeatherPayload, WeatherSource } from './types'
+import type { WeatherFetcher, WeatherPayload, WeatherSource } from '../types'
 
 /**
  * 默认天气源：wttr.in。
@@ -134,6 +134,13 @@ export function createWttrSource(): WeatherSource {
     name: 'wttr.in',
     async fetch(lat, lng, fetcher: WeatherFetcher): Promise<WeatherPayload | null> {
       const url = `https://wttr.in/${lat.toFixed(4)},${lng.toFixed(4)}?format=j1`
+      const res = await fetcher(url)
+      if (!res.ok) return null
+      return parseWttrWeather(await res.json())
+    },
+    // 指定城市：wttr.in 直接吃城市名（中文/拼音都行），免费无需 geocoding。
+    async fetchCity(city, fetcher: WeatherFetcher): Promise<WeatherPayload | null> {
+      const url = `https://wttr.in/${encodeURIComponent(city.trim())}?format=j1`
       const res = await fetcher(url)
       if (!res.ok) return null
       return parseWttrWeather(await res.json())

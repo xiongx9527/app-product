@@ -1,10 +1,10 @@
-/** 天气数据源域：可换源（默认 wttr.in，备选 open-meteo）。 */
+/** 天气数据源域：可换源（默认 wttr.in，备选 open-meteo）。各源按子目录存放。 */
 import type { WeatherSource } from './types'
-import { createWttrSource } from './wttrSource'
+import { createWttrSource } from './wttr/wttrSource'
 
 export type { WeatherPayload, WeatherFetcher, WeatherSource } from './types'
-export { createWttrSource, parseWttrWeather } from './wttrSource'
-export { createOpenMeteoSource } from './openMeteoSource'
+export { createWttrSource, parseWttrWeather } from './wttr/wttrSource'
+export { createOpenMeteoSource } from './openMeteo/openMeteoSource'
 
 /**
  * 默认天气源工厂——换源的唯一切换点。

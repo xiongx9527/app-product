@@ -1,4 +1,4 @@
-import type { WeatherFetcher, WeatherPayload, WeatherSource } from './types'
+import type { WeatherFetcher, WeatherPayload, WeatherSource } from '../types'
 
 /**
  * 备选天气源：Open-Meteo（免费、无需 key、数据即 WMO 码 + m/s，无需换算）。

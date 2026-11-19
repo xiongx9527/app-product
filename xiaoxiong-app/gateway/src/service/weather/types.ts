@@ -40,4 +40,9 @@ export interface WeatherSource {
   /** 数据源标识，仅用于日志/调试，不向用户暴露。 */
   name: string
   fetch(lat: number, lng: number, fetcher: WeatherFetcher): Promise<WeatherPayload | null>
+  /**
+   * 按城市名取天气（可选；支持指定城市查询的源实现）。
+   * 如 wttr.in 直接吃城市名，免费无需 geocoding。不支持的源可省略，工具层回退定位。
+   */
+  fetchCity?(city: string, fetcher: WeatherFetcher): Promise<WeatherPayload | null>
 }

@@ -1,3 +1,5 @@
+import { isAffirmative } from './memoryPrompt'
+
 /**
  * 记忆类直接指令（绕过 LLM，确定性命中）：语音「忘了XX / 忘记XX / 别记XX / 清空记忆」。
  * 与音乐直连同理——意图明确、不需要模型判断，直接落地更可靠，也不会被模型幻觉成「说忘了却没忘」。
@@ -59,6 +61,10 @@ const CLEAR_PATTERNS: RegExp[] = [
 export function detectMemoryCommand(text: string): MemoryCommand | null {
   const t = (text ?? '').trim()
   if (!t) return null
+  // 纯确认词（「记一下吧」「嗯，记一下」「记下吧」…）是对「要不要记」的回答，
+  // 不是「记住XX」指令——否则会把「吧」当记忆内容存下（用户 2026-11-19 实锤）。
+  // 这些由 tryMemoryConfirm 的肯定流程消费，这里直接放行不给 REMEMBER_PATTERNS。
+  if (isAffirmative(t)) return null
   for (const p of CLEAR_PATTERNS) {
     if (p.test(t)) return { action: 'clear' }
   }

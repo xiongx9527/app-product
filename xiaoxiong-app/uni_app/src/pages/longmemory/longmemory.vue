@@ -58,27 +58,13 @@ const { goBack } = useSubPageBack()
 
     <view class="head">
       <text v-if="total" class="count">{{ t('settings.memory.total', { n: total }) }}</text>
-      <view
-        v-if="items.length"
-        class="act clear"
-        @tap="onClear"
-        :aria-label="t('settings.memory.clearAll')"
-      >
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M19 6.5 17.5 8" />
-          <path d="M13 2.5 11.5 4" />
-          <path d="M21 11.5 19.5 13" />
-          <path d="M13 7.5 11.5 9" />
-          <path d="M15.5 9.5 14 11" />
-          <path d="M19 14.5 17.5 16" />
-          <path d="M15.5 18.5 14 20" />
-          <path d="M4 21 13.5 11.5" />
-          <path d="M4 21 5.5 19.5" />
-        </svg>
-      </view>
+      <!-- App 端内联 <svg> 不渲染 → 用文字按钮 -->
+      <text v-if="items.length" class="clear-text" @tap="onClear">{{ t('settings.memory.clearAll') }}</text>
     </view>
 
+    <!-- 没有记忆时不显示搜索框 -->
     <input
+      v-if="items.length || query"
       class="search"
       type="text"
       :value="query"
@@ -98,14 +84,9 @@ const { goBack } = useSubPageBack()
           <text class="time">{{ t('settings.memory.updated') }} {{ formatTime(item.updatedAt) }}</text>
         </view>
       </view>
+      <!-- App 端 template 里的内联 <svg> 不渲染（uni-app 限制，H5 才行）→ 用文字按钮保证可见可点 -->
       <view class="act del" @tap="onDelete(item)" :aria-label="t('settings.memory.delete')">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="3 6 5 6 21 6" />
-          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-          <line x1="10" y1="11" x2="10" y2="17" />
-          <line x1="14" y1="11" x2="14" y2="17" />
-          <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-        </svg>
+        <text class="del-text">{{ t('settings.memory.delete') }}</text>
       </view>
     </view>
 
@@ -147,8 +128,9 @@ const { goBack } = useSubPageBack()
   padding: 1px 8px;
 }
 
-.act.clear {
+.clear-text {
   margin-left: auto;
+  font-size: 12px;
   color: #ff8a8a;
 }
 
@@ -226,13 +208,14 @@ const { goBack } = useSubPageBack()
   opacity: 0.4;
 }
 
-/* 列表项右侧删除：垃圾桶图标（替代原来的「删除」文字按钮） */
+/* 列表项右侧删除按钮：App 端内联 svg 不渲染，改用文字按钮 */
 .act {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  min-width: 44px;
+  height: 30px;
+  padding: 0 8px;
   flex-shrink: 0;
 }
 
@@ -240,9 +223,9 @@ const { goBack } = useSubPageBack()
   color: #ff8a8a;
 }
 
-.act .ico {
-  width: 18px;
-  height: 18px;
+.del-text {
+  font-size: 12px;
+  color: #ff8a8a;
 }
 
 .pager {

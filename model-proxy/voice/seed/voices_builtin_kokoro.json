@@ -1,0 +1,47 @@
+{
+  "provider": "builtin",
+  "model": "kokoro",
+  "default": "zf_xiaoxiao",
+  "voices": [
+    {
+      "id": "zf_xiaobei",
+      "desc_zh": "女声·亲切自然",
+      "desc_en": "Female · warm and natural"
+    },
+    {
+      "id": "zf_xiaoni",
+      "desc_zh": "女声·软糯",
+      "desc_en": "Female · soft and sweet"
+    },
+    {
+      "id": "zf_xiaoxiao",
+      "desc_zh": "女声·温柔自然（默认）",
+      "desc_en": "Female · gentle and natural (default)"
+    },
+    {
+      "id": "zf_xiaoyi",
+      "desc_zh": "女声·活泼",
+      "desc_en": "Female · lively"
+    },
+    {
+      "id": "zm_yunjian",
+      "desc_zh": "男声·沉稳",
+      "desc_en": "Male · calm and steady"
+    },
+    {
+      "id": "zm_yunxi",
+      "desc_zh": "男声·年轻",
+      "desc_en": "Male · young"
+    },
+    {
+      "id": "zm_yunxia",
+      "desc_zh": "男声·柔和",
+      "desc_en": "Male · gentle"
+    },
+    {
+      "id": "zm_yunyang",
+      "desc_zh": "男声·浑厚",
+      "desc_en": "Male · deep and resonant"
+    }
+  ]
+}

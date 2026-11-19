@@ -39,6 +39,7 @@ const {
   liveText,
   errorMessage,
   gatewayPreparing,
+  gatewayFailed,
   wake,
   enable,
   interrupt,
@@ -380,8 +381,9 @@ let justReadyTimer: ReturnType<typeof setTimeout> | null = null
 watch(gatewayPreparing, (preparing, wasPreparing) => {
   if (justReadyTimer) { clearTimeout(justReadyTimer); justReadyTimer = null }
   justReady.value = false
-  // true→false 且不是初始（wasPreparing 为真）才算"加载完成"
-  if (wasPreparing && !preparing) {
+  // true→false 且不是初始（wasPreparing 为真）、且不是启动失败，才算"加载完成"
+  // 失败时由 errorMessage 显示"网关启动失败，点一下中间重试"，不能显示"已就绪"
+  if (wasPreparing && !preparing && !gatewayFailed.value) {
     justReady.value = true
     justReadyTimer = setTimeout(() => { justReady.value = false; justReadyTimer = null }, 2500)
   }
@@ -484,7 +486,11 @@ function onOrbTap(): void {
         </view>
       </view>
       <text class="hint">{{ hint }}</text>
-      <text class="phase" :class="phase">{{ phaseLabel }}</text>
+      <!-- 网关启动中 / 刚就绪的"已就绪"提示期内都不显示"待唤醒"胶囊，避免误导用户以为能喊唤醒词了：
+           - state !== 'idle'：只有 ENABLE 成功后才脱离 idle（冷启动首帧还停在 idle）。
+           - !gatewayPreparing / !gatewayFailed：启动中、启动失败都不显示。
+           - !justReady：刚就绪那 2.5s 正显示"网关已就绪"提示，此时也不挂胶囊，等提示结束再显示。 -->
+      <text v-if="state !== 'idle' && !gatewayPreparing && !gatewayFailed && !justReady" class="phase" :class="phase">{{ phaseLabel }}</text>
       <text v-if="liveText" class="live-text">{{ liveText }}</text>
       <!-- 网关启动是正常过程，不显示「网关启动中」：启动阶段静默等待，确认连不上才播报 -->
       <text v-if="errorMessage" class="error">{{ errorMessage }}</text>

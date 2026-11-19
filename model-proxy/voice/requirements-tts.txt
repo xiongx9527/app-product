@@ -1,2 +1,4 @@
 -r requirements-base.txt
 edge-tts>=6.1,<8
+# 内置本地 TTS：kokoro-onnx（离线可用，不依赖 edge 联网/ffmpeg）。模型由 install-voice 下载。
+kokoro-onnx>=0.6,<1

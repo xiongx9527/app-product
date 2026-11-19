@@ -18,7 +18,7 @@ const PRODUCT_WORDS: readonly string[] = [
   '电磁炉', '油烟机', '洗碗机', '净水器', '净化器', '加湿器', '除湿机', '扫地机器人',
   '吸尘器', '电风扇', '吹风机', '剃须刀', '电动牙刷', '投影仪', '音响', '音箱',
   // 数码
-  '手机', '平板', '笔记本电脑', '笔记本', '电脑', '显示器', '键盘', '鼠标', '耳机',
+  '手机', '平板电脑', '平板', '笔记本电脑', '笔记本', '电脑', '显示器', '键盘', '鼠标', '耳机',
   '相机', '摄像机', '智能手表', '手表', '路由器', '充电宝', '硬盘', '固态硬盘', 'U盘',
   '显卡', '打印机', '扫描仪', '游戏机', '无人机',
   // 家居 / 家具
@@ -73,10 +73,39 @@ export function detectProductQuery(text: string): ProductQuery | null {
   for (const w of PRODUCT_WORDS) {
     if (t.includes(w) && (hit === null || w.length > hit.length)) hit = w
   }
-  if (hit) return { keyword: hit }
+  if (hit) {
+    // 品类词前的限定词（品牌/型号）要一起保留：「华为手机」不能只留「手机」，
+    // 否则搜出 iPhone/小米（用户 2026-11-19 实锤「推荐华为手机却出 iPhone」）。
+    const idx = t.indexOf(hit)
+    const before = idx > 0 ? stripLeading(t.slice(0, idx)) : ''
+    // 只并入短限定词（≤8字），避免把整句口语塞进关键词；品牌/型号一般很短
+    const qualifier = before.replace(/[，,。.、\s]+$/g, '')
+    const keyword = qualifier && qualifier.length <= 8 ? `${qualifier}${hit}` : hit
+    return { keyword }
+  }
 
   for (const w of TRADE_WORDS) {
     if (t.includes(w)) return { keyword: null }
   }
   return null
+}
+
+/** 剥掉品类词前的口语前缀（帮我/推荐/来/想买/个/款/一台…），留下品牌/型号限定词。 */
+const LEADING_FILLERS = [
+  '帮我', '请帮我', '请', '麻烦', '给我', '推荐一下', '推荐', '来一下', '来', '想买', '想入手',
+  '买一个', '买个', '买一台', '买一部', '买', '搜一下', '搜', '查一下', '查询', '查',
+  '有没有', '有什么', '有啥', '看一下', '看看', '要', '来个', '来一台', '来一部', '来一款',
+  '最新款', '新款', '最新', '这个', '那个', '一款', '一台', '一部', '一下',
+  '一', '个', '款', '台', '部', '些', '下', '的', '好', '不错',
+]
+function stripLeading(s: string): string {
+  let r = s.trim()
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const w of LEADING_FILLERS) {
+      if (r.startsWith(w)) { r = r.slice(w.length).trim(); changed = true }
+    }
+  }
+  return r
 }

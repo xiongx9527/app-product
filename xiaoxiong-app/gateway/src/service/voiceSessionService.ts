@@ -36,7 +36,8 @@ import { detectPlayModeCommand } from './control/playModeControl'
 import { detectTimeCommandKind } from './control/timeControl'
 import { detectAuspiciousQuery, type AuspiciousQuery } from './control/auspiciousControl'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
-import { detectWeatherCommand } from './control/weatherControl'
+import { detectWeatherCommand, extractWeatherCity } from './control/weatherControl'
+import { detectPreference, isAffirmative, isNegative, classifyPreference, mergeMemoryValue } from './control/memoryPrompt'
 import { detectProductQuery } from './control/productCatalog'
 import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
 import { detectBaikeCommand } from './control/baikeControl'
@@ -320,6 +321,13 @@ export class VoiceSessionService {
    * 商品数据只经 media.detail 下发，绝不进 session.start.voice.params 共用通道。
    */
   private pendingDeals: { items: Deal[]; query: string } | null = null
+  /**
+   * 待确认的长期记忆：检测到用户表达偏好（喜欢/爱/习惯/爱好/倾向）时暂存。
+   * asked=false=还没问过（先正常回答用户），runTurn 播完回答后追问「要记吗」并置 true；
+   * 之后用户答肯定/否定才处理。绝不因超时清除（用户「不能失忆/结合上下文」）——
+   * 只在明确肯定/否定或会话 cancel/end 时清，保证隔十几秒的「好的」也能对上上下文。
+   */
+  private pendingMemory: { value: string; asked: boolean } | null = null
   /** 上一轮「换一首」没找到同类型的歌，正等用户确认是否换其它风格（不直接乱播） */
   private pendingNextFallback = false
   private mode: 'wake' | 'dialog' = 'dialog'
@@ -359,6 +367,10 @@ export class VoiceSessionService {
   private halfDuplex = false
   /** barge-in duck：播报期检测真人开口时压低 TTS；避免重复下发，记住当前 duck 态。 */
   private ducked = false
+  /** 本次 utterance 期间是否在播报期检测到真人开口。播报期插话定稿常拖到播报结束后
+   *  （pb 已 false），单凭 playbackPending 会漏判、把插话当普通对话而非队列项。此标志
+   *  在 setDuck(true) 且 playbackPending 时置位，定稿时读取并清除。 */
+  private bargeInDuringPlayback = false
   /** duck 后多久没再有人声就恢复音量（用户说完一句的尾音余量）。 */
   private duckReleaseTimer: ReturnType<typeof setTimeout> | null = null
   /** 当前轮还没播完时识别到的用户插话，播完后依次交给大模型。 */
@@ -1024,7 +1036,7 @@ export class VoiceSessionService {
       return true
     }
     if (detectWeatherCommand(text)) {
-      await this.runWeatherCommand()
+      await this.runWeatherCommand(extractWeatherCity(text) ?? undefined)
       return true
     }
     const memCmd = detectMemoryCommand(text)
@@ -1213,7 +1225,7 @@ export class VoiceSessionService {
   }
 
   /** 天气直连：复用天气数据源（懒加载位置），不进 LLM。超时/失败给友好兜底。 */
-  private async runWeatherCommand(): Promise<void> {
+  private async runWeatherCommand(city?: string): Promise<void> {
     const query =
       this.deps.weatherQuery ??
       (async (): Promise<string> => {
@@ -1223,7 +1235,8 @@ export class VoiceSessionService {
           undefined,
           () => this.requestClientLocation(),
         )
-        return tool.call()
+        // 指定城市走 source.fetchCity（抽象接口，可换源）；无城市名则查设备定位
+        return tool.call(city ? { city } : undefined)
       })
     try {
       await this.speakReply(await query())
@@ -1682,6 +1695,84 @@ export class VoiceSessionService {
     await this.speakReply(n > 0 ? m.forgot(cmd.topic, n) : m.nothingToForget())
   }
 
+  /**
+   * 长期记忆「问一句再记」：只在「已经问过要不要记」（pending.asked=true，即有上下文）时，
+   * 才把用户的肯定/否定当成对记录意图的回答；否则不碰，让句子走正常对话。
+   * 绝不因超时清 pending（用户「不能失忆/结合上下文」）——隔十几秒的「好的」也要能对上。
+   * 返回 true 表示这句话已被确认流程消费（调用方 return）。
+   */
+  private async tryMemoryConfirm(text: string): Promise<boolean> {
+    if (!this.deviceId) return false
+    const pending = this.pendingMemory
+    if (!pending || !pending.asked) return false
+    // 到这里说明上一轮问过「要记吗」，这句是对它的回答（有上下文）
+    const emitFinal = () => this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+    if (isAffirmative(text)) {
+      this.pendingMemory = null
+      emitFinal()
+      // 分类总结：内置常见类别优先（快、确定、不耗 LLM，苹果→水果偏好）；
+      // 内置搞不定（返回通用「偏好」）才调 LLM 抽取引擎做智能分类；都失败则原样存，绝不丢。
+      let key = classifyPreference(pending.value)
+      let value = pending.value
+      if (key === '偏好') {
+        const agent = this.agent
+        const store = this.memoryStore
+        if (agent && store) {
+          try {
+            const existing = await store.list()
+            const extracted = (await agent.extractMemories([pending.value], existing)) ?? []
+            if (extracted.length > 0) { key = extracted[0].key; value = extracted[0].value }
+          } catch { /* LLM 抽取失败：用内置通用 key 原样存 */ }
+        }
+      }
+      // 相似记忆合并更新：同类 key 的新内容与已有内容合并（去重），不是覆盖
+      let merged = value
+      const store2 = this.memoryStore
+      if (store2) {
+        try {
+          const existingList = await store2.list()
+          const same = existingList.find((e) => e.key === key)
+          merged = mergeMemoryValue(same?.value, value)
+        } catch { /* 读失败就用新值直存 */ }
+      }
+      await this.deps.data.saveMemory(this.deviceId, key, merged)
+      await this.speakReply(messages(this.lang).memory.rememberedSimple(merged))
+      return true
+    }
+    if (isNegative(text)) {
+      this.pendingMemory = null
+      emitFinal()
+      await this.speakReply(messages(this.lang).memory.notRemembered())
+      return true
+    }
+    // 既非肯定也非否定：保留 pending（不失忆），不消费这句，让 LLM 正常回答
+    return false
+  }
+
+  /**
+   * 检测偏好句：暂存为待确认（asked=false），不打断、不口播提问——让 LLM 先正常回答用户。
+   * 追问「要不要记」由 maybeAskMemoryConfirm 在回答播完后进行。
+   * 返回 true 表示这句是偏好句（但本方法不消费它，调用方照常处理）。
+   */
+  private detectAndStagePreference(text: string): boolean {
+    if (!this.deviceId || !this.memoryStore || this.pendingMemory) return false
+    const pref = detectPreference(text)
+    if (!pref) return false
+    this.pendingMemory = { value: pref, asked: false }
+    return true
+  }
+
+  /**
+   * 在 runTurn 播完一句后调用：若刚才是偏好句（pending 存在且还没问过），此时才追问
+   * 「要我帮你记下来吗？」，并置 asked=true 建立上下文——用户之后的「好的」才认作确认。
+   */
+  private async maybeAskMemoryConfirm(): Promise<void> {
+    const pending = this.pendingMemory
+    if (!pending || pending.asked) return
+    pending.asked = true
+    await this.speakReply(messages(this.lang).memory.askRemember())
+  }
+
   /** 记录本轮用户原话（仅真实对话轮次），供抽取引擎作为最近上下文；最多保留最近若干句。 */
   private pushUserTurn(text: string): void {
     const t = (text ?? '').trim()
@@ -1922,9 +2013,13 @@ export class VoiceSessionService {
         })
         .catch(() => undefined)
     }
-    // 只有真正的人声帧才重置句末计时：静音帧持续到达也会让计时器自然到期
-    // duck 期间强喂的人声帧也算（否则识别结果永不 finalize）
-    if (vad.voiced || forceFeed) this.armEndpoint()
+    // 只有「AEC 消除回声后的真实人声」才重置句末计时：静音帧持续到达也会让计时器自然到期。
+    // 播报期 forceFeed 用原始帧能量（含 TTS 回声）判断，只负责把帧强喂给 ASR 保识别率，
+    // 绝不能用它重置 endpoint——TTS 一直播时回声让 frameRms 恒 >0.02、forceFeed 恒真，
+    // endpoint 被每帧 clear 重设、永远凑不满静音窗口 → 定稿拖到播报结束、期间多次插话被
+    // 合并成一句（用户 2026-11-19 真机实锤：「播完才进队列」「插话和之前的合并」）。
+    // 空闲期没有回声问题，forceFeed 仍可作为兜底重置（理论上空闲期 forceFeed 恒 false）。
+    if (vad.voiced || (!this.playbackPending && forceFeed)) this.armEndpoint()
   }
 
   /** 半双工状态只在切换时下发一次，避免每帧都刷事件。 */
@@ -1964,18 +2059,23 @@ export class VoiceSessionService {
   private setDuck(duck: boolean): void {
     if (duck === this.ducked) return
     this.ducked = duck
+    // 播报期真人开口：记住这句是"插话"，供定稿时判断入队（即使那时光播报已结束）
+    if (duck && this.playbackPending) this.bargeInDuringPlayback = true
     bargeDiag(`DUCK duck=${duck}`)
     this.deps.send({ type: 'audio.duck', duck })
   }
 
   private armEndpoint(): void {
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
-    // 播报期插话用更短的句末等待：默认 2500ms 是为「说话中途思考停顿」留的余量，
-    // 但播报时用户说的是「停一下」这类短指令，等 2.5 秒才定稿体感就是「插话没反应」。
-    // 播报期压到 1 秒，说完马上定稿入队。
-    const wait = this.playbackPending
-      ? Math.min(this.deps.asrEndpointMs, 1000)
-      : this.deps.asrEndpointMs
+    // 句末静音等待统一用 asrEndpointMs（默认 2500ms）。
+    // 曾经播报期压到 1000ms 是为对抗「播完才进队列」的妥协，但那个真因其实是
+    // finalizeUtterance 里直连命令 await 播报占死链（已修），与 endpoint 时长无关；
+    // 而 1000ms 太短——中文说话中途停顿常 >1s，导致「还没说完就定稿」「插话被切成多句」
+    // （用户 2026-11-19 反馈）。真因修复后入队不再被阻塞，这里放宽到和空闲一致即可。
+    // 绝不加「开口后 N 秒强制定稿」硬上限——长句 >N 秒会被截断。真人说话的 vad.voiced
+    // 会自然续期，说完（静音）后 wait 到期即定稿；回声续期由 armEndpoint 触发条件解决
+    // （播报期只认 AEC 后真实人声，见 handleBinary）。
+    const wait = this.deps.asrEndpointMs
     this.endpointTimer = setTimeout(() => {
       // 串行而非丢弃：上一句还没交给大模型时，下一句也必须在链里排队等
       this.finalizeChain = this.finalizeChain
@@ -2039,6 +2139,9 @@ export class VoiceSessionService {
       this.notifyAsrFailed()
       return
     }
+    // 取出并清除"播报期插话"标志：定稿后无论走哪条分支都不该污染下一句
+    const bargeIn = this.bargeInDuringPlayback
+    this.bargeInDuringPlayback = false
     if (!this.active || this.cancelled) return
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
     // 不进模型也不进队列，避免凭空多出一轮回答和 TTS。
@@ -2072,6 +2175,15 @@ export class VoiceSessionService {
       return
     }
 
+    // ── 长期记忆「问一句再记」确认流程（用户 2026-11-19 要求）──
+    // 只在空闲真实对话轮次处理（播报期插话的「好/嗯」会排队，由 runTurn 消费时再确认）。
+    // 1) 已问过（asked=true）时，肯定/否定才消费这句；2) 新偏好句只暂存、不消费——
+    // 让 LLM 先正常回答，追问放在 runTurn 播完回答后（maybeAskMemoryConfirm）。
+    if (!this.playbackPending && !this.processing) {
+      if (await this.tryMemoryConfirm(text)) return
+      this.detectAndStagePreference(text)
+    }
+
     // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。
     // 必须在下面的回声比对之前：用户说的「第二首」「稻香」正是刚口播过的词，
     // 否则会被 resemblesSpoken 当成播报回声丢掉，导致永远选不中。
@@ -2100,7 +2212,9 @@ export class VoiceSessionService {
     // 命中则客户端发 session.skip_current 跳当前句（招呼由客户端本地播），网关据 dropText
     // 把这句唤醒词从队列移除。助手自己刚念过的原话（回声）静默丢弃，且此分支不触发
     // 回声兜底静音，否则会连用户想用来打断的唤醒词一起掐掉。
-    if (this.playbackPending) {
+    // 入队条件：播报进行中，或"这句是播报期开的口"（定稿可能拖到播报结束后、pb 已 false）。
+    // bargeIn 在 setDuck(true) 且播报期时置位，定稿时已取出并清字段。
+    if (this.playbackPending || bargeIn) {
       if (Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)) return
       this.enqueueDuringBusy(text)
       return
@@ -2129,11 +2243,16 @@ export class VoiceSessionService {
 
     // 空闲：音乐/音量/记忆等意图明确的指令直连拦截，确定性落地，绕开大模型
     // （避免模型幻觉「说播放却没播放 / 说调音量却没调」）。没有音乐源时不拦截音乐类。
-    // 这里统一下发一次 asr.final（「我说」卡片数据源），命中命令则由拦截内部消费，
-    // 未命中则继续交给大模型正常应答。
+    // 这里统一下发一次 asr.final（「我说」卡片数据源）。
+    //
+    // ⚠️ 绝不在这里 `await handleDirectCommand(text)`：天气/时间/百科等直连命令内部
+    // `await speakReply`，而 speakReply 在 processing=false 时会 `await playback` 死等
+    // 整段播报（几十秒）→ finalizeUtterance 卡住 → finalizeChain 一直 busy → 播报期所有
+    // 插话定稿排队饿死，直到播报播完才集中定稿＝「播完才进队列」（2026-11-19 埋点铁证）。
+    // 改为首句也统一走 runTurn：runTurn 内 processing=true，speakReply 走「不 await playback」
+    // 分支，播放等待由 runTurn 自己的 await playback 统一管理；runTurn 内也会再拦一次直连
+    // 命令（幂等，见 runTurn 里的注释）。这样 finalizeChain 在下发后立刻释放，插话能及时定稿。
     this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-    if (await this.handleDirectCommand(text)) return
-
     void this.runTurn(text)
   }
 
@@ -2162,6 +2281,27 @@ export class VoiceSessionService {
       size: MAX_QUEUE,
       message: messages(this.lang).queue.accepted(this.queue.length, MAX_QUEUE),
     })
+    // 插话定稿若恰好落在 runTurn 退出之后（此刻 while 已因「shift 到空」break、
+    // processing=false、finally 兜底也已执行完），队列项就没人消费——必须主动 kick。
+    this.kickQueueWhenIdle()
+  }
+
+  /**
+   * 无 runTurn 在跑时主动 kick 一轮消费队首。播报期插话「定稿晚于播报结束」时，队列会在
+   * runTurn 退出后才被填入，runTurn 的 while 与 finally 兜底都赶不上——必须在这里补一刀。
+   * 入队路径与 runTurn finally 的兜底共用本入口：processing 检查放在 shift 之前，谁先把
+   * processing 置真谁负责消费，另一个直接返回，杜绝「两路 kick 各 shift 一句、其中一句
+   * 因 processing 已真被 runTurn 开头 return 丢弃」的竞态。
+   */
+  private kickQueueWhenIdle(): void {
+    if (!this.active || this.cancelled || this.processing || this.queue.length === 0) return
+    const next = this.queue.shift()
+    if (!next) return
+    bargeDiag(`QUEUE-KICK runTurn text="${next}" remain=${this.queue.length}`)
+    // 这条路径不经过 runTurn 的 while 顶部（那句 asr.final 在 runTurn 外部），
+    // 这里补发让「你说」卡片切到这句插话，与正常 shift 路径一致。
+    this.deps.send({ type: 'asr.final', text: next, queueRemaining: this.queue.length })
+    void this.runTurn(next)
   }
 
   /**
@@ -2191,9 +2331,15 @@ export class VoiceSessionService {
         let directHandled = false
         try {
           this.deps.data.insertCommandLog(this.deviceId, current, 'pending')
-          // 排队回放的句子也要走直连拦截（音乐/音量/记忆），不能丢给大模型自动播放；
-          // 首句已由 finalizeUtterance 拦过，这里再拦一次是幂等的（非指令会返回 false）。
-          directHandled = await this.handleDirectCommand(current)
+          // 排队回放的句子先过记忆确认：播报期问「要不要记」后用户的「好」会排队到这里，
+          // 此时才真正落库（finalizeUtterance 里 pb=true 不处理确认）。
+          if (await this.tryMemoryConfirm(current)) {
+            directHandled = true
+          } else {
+            // 排队回放的句子也要走直连拦截（音乐/音量/记忆），不能丢给大模型自动播放；
+            // 首句已由 finalizeUtterance 拦过，这里再拦一次是幂等的（非指令会返回 false）。
+            directHandled = await this.handleDirectCommand(current)
+          }
           if (!directHandled) ttsStarted = await this.runAgent(current, turn)
         } catch (err) {
           this.sendError('LLM_ERROR', (err as Error).message)
@@ -2205,6 +2351,10 @@ export class VoiceSessionService {
           this.tightenPlaybackTimeout()
           await playback
         } else this.cancelPlaybackWait()
+        if (this.turn !== turn || this.cancelled) break
+        // 偏好句已正常回答并播完，现在才追问「要不要记」（先回答后问，用户要求），
+        // 并置 pending.asked=true 建立上下文——用户随后的「好的」才认作确认。
+        await this.maybeAskMemoryConfirm()
         if (this.turn !== turn || this.cancelled) break
         // 真实对话轮次（非直连命令）结束后，异步抽取并沉淀长期记忆；直连命令（音乐/音量/记忆等）
         // 不进抽取，避免把「放首歌」「清空记忆」这类指令本身当成偏好记下来。
@@ -2225,13 +2375,10 @@ export class VoiceSessionService {
       // 队列卡死兜底（真机铁证：skip/break/await playback 提前退出后，队列还剩句子却无人消费，
       // 界面停在「已完成」但队列有内容不动）：会话仍 active、未被取消、且队列非空时，
       // 主动 kick 一轮消费队首。用 setTimeout(0) 异步调度，避免在本轮 finally 内重入。
+      // 与 enqueueDuringBusy 的补刀共用 kickQueueWhenIdle（processing 检查在 shift 之前），
+      // 两路不会重复消费、也不会把 shift 出的句子丢给一个正在跑的 runTurn。
       if (this.active && !this.cancelled && this.queue.length > 0) {
-        setTimeout(() => {
-          if (this.active && !this.cancelled && !this.processing && this.queue.length > 0) {
-            const next = this.queue.shift()
-            if (next) void this.runTurn(next)
-          }
-        }, 0)
+        setTimeout(() => this.kickQueueWhenIdle(), 0)
       }
     }
   }
@@ -2638,6 +2785,7 @@ export class VoiceSessionService {
 
   private cancel(): void {
     // 手动打断：作废当前轮、清空排队，在途回调靠 turn 号退出
+    if (this.pendingMemory) this.pendingMemory = null
     const wasSpeaking = this.speaking
     this.turn += 1
     this.cancelled = true
@@ -2703,6 +2851,7 @@ export class VoiceSessionService {
   }
 
   private end(): void {
+    if (this.pendingMemory) this.pendingMemory = null
     this.active = false
     this.cancelled = true
     this.turn += 1

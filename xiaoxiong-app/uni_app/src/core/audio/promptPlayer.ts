@@ -89,9 +89,10 @@ const CUE_MUTE_MS: Record<PromptCue, number> = {
   asrError: 3400,
   thinking: 2300,
   queueFull: 3100,
-  // gateway-preparing ≈2.6s / gateway-ready ≈3.3s / llm-error ≈3.1s / tts-error ≈3.0s，留尾音余量
+  // gateway-preparing ≈2.6s / gateway-ready ≈1.7s，留尾音余量
+  // llm-error ≈3.1s / tts-error ≈3.0s
   gatewayPreparing: 2900,
-  gatewayReady: 3600,
+  gatewayReady: 2000,
   llmError: 3500,
   ttsError: 3400,
 }

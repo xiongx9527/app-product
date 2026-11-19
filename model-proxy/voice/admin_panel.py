@@ -747,10 +747,10 @@ const I18N = {
     "test.tabLlm": "对话 LLM",
     "test.tabEmbed": "向量嵌入 Embed",
     "test.tabTts": "语音合成 TTS",
-    "tts.builtinNote": "当前 TTS 固定走内置 edge-tts，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。",
-    "tts.builtinSynth": "内置合成（edge-tts 在线）",
-    "tts.ffmpeg": "ffmpeg：wav 输出需安装（install-voice）",
-    "tts.needNetwork": "需联网，无需本地模型",
+    "tts.builtinNote": "内置 TTS 可选 edge-tts（在线）或 kokoro（纯本地）；勾选/设默认后保存即生效，点「测试可用」按需验证。",
+    "tts.builtinSynth": "内置合成（edge-tts 在线 / kokoro 本地）",
+    "tts.ffmpeg": "ffmpeg：edge-tts 的 wav 输出需安装；kokoro 不需要",
+    "tts.needNetwork": "edge-tts 需联网；kokoro 纯本地，模型随安装脚本下载",
     "tts.ok": "可用：合成成功",
     "tts.synthTitle": "真实合成一句验证内置 TTS 是否可用",
     "tts.synthcing": "正在按配置合成一句…",
@@ -972,10 +972,10 @@ const I18N = {
     "test.tabLlm": "Chat LLM",
     "test.tabEmbed": "Embeddings",
     "test.tabTts": "Speech Synthesis TTS",
-    "tts.builtinNote": "TTS is fixed to built-in edge-tts; whether it works depends on the runtime (click \"Test availability\" to verify on demand); external upstreams will be added per vendor later.",
-    "tts.builtinSynth": "Built-in synthesis (edge-tts online)",
-    "tts.ffmpeg": "ffmpeg: needed for wav output (install-voice)",
-    "tts.needNetwork": "Internet required; no local model",
+    "tts.builtinNote": "Built-in TTS offers edge-tts (online) or kokoro (fully local); pick a default and save to apply, use \"Test availability\" to verify on demand.",
+    "tts.builtinSynth": "Built-in synthesis (edge-tts online / kokoro local)",
+    "tts.ffmpeg": "ffmpeg: needed for edge-tts wav output; kokoro does not need it",
+    "tts.needNetwork": "edge-tts needs internet; kokoro is fully local (model downloaded by install-voice)",
     "tts.ok": "Available: synthesis succeeded",
     "tts.synthTitle": "Synthesize one sentence to verify built-in TTS",
     "tts.synthcing": "Synthesizing one sentence per config…",
@@ -1861,6 +1861,7 @@ async function saveProvConfig(kind){
   const stat = document.getElementById(kind === 'stt' ? 'cfgStat_asr' : 'cfgStat_tts');
   const cap = kind.toUpperCase();
   const e = provEdit[kind];
+  const bi = provEdit[kind + 'Builtin'];   // 内置引擎（edge-tts / kokoro）子表
   const sel = kind === 'stt' ? asrProvider : ttsProvider;   // 'builtin' | 'custom' | 'deepseek'
   const prov = sel === 'custom' ? 'dashscope' : (sel === 'deepseek' ? 'deepseek' : 'builtin');
   const patch = {};
@@ -1886,6 +1887,12 @@ async function saveProvConfig(kind){
     const picked = pickedOf(e);
     patch[cap + '_UPSTREAM_MODELS'] = JSON.stringify(picked);
     patch[cap + '_UPSTREAM_MODEL'] = defOf(e, picked);
+  }
+  // 内置引擎子表同样落库：服务端 builtin 模式据此选默认模型（edge-tts / kokoro）。
+  if (bi) {
+    const picked = pickedOf(bi);
+    patch[cap + '_BUILTIN_MODELS'] = JSON.stringify(picked);
+    patch[cap + '_BUILTIN_MODEL'] = defOf(bi, picked);
   }
   const dsk = provEdit[kind + 'Deepseek'];
   if (dsk.key !== undefined) patch[cap + '_DEEPSEEK_API_KEY'] = dsk.key;   // undefined=未取到，不下发；''=清空
@@ -2058,12 +2065,12 @@ const ASR_BUILTIN = 'builtin';
 let asrProvider = 'builtin';   // 表格当前选中的提供商（radio 状态；保存时落库 STT_PROVIDER）
 let ttsProvider = 'builtin';
 // 上游配置的编辑暂存：初始值来自 cfgOrig（loadConfig 回填）；Key 不回显，留空=不修改。
-// builtin 槽是固定白名单（只读子表，结构上与上游行统一，不落库）。
+// builtin 槽与上游同构：edge-tts / kokoro 可勾选/设默认，保存落启用表（builtin 分组）。
 let provEdit = {
   stt: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
   tts: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
   sttBuiltin: { cands: ['sensevoice-small'], sel: new Set(['sensevoice-small']), def: 'sensevoice-small' },
-  ttsBuiltin: { cands: ['edge-tts'], sel: new Set(['edge-tts']), def: 'edge-tts' },
+  ttsBuiltin: { cands: ['edge-tts', 'kokoro'], sel: new Set(['edge-tts']), def: 'edge-tts' },
   // DeepSeek 官方语音（地址固定、只填 api-key；ASR/TTS 各自一把 Key）
   sttDeepseek: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
   ttsDeepseek: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
@@ -2107,7 +2114,7 @@ function paintAsrTable(){
   let html='<table class="cfg-table"><thead><tr>'
     + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.model')+'</th>'
     + '</tr></thead><tbody>';
-  // 内置：唯一可用提供商，「默认」单选默认勾选；模型子表与上游行同构（白名单只读：不可加/不可取消）。
+  // 内置：唯一可用提供商，「默认」单选默认勾选；模型子表与上游行同构（勾选/默认可编辑）。
   html += `<tr class="asr-builtin" data-builtin="1">
     <td class="row-act"><input type="radio" name="asrDefault" value="builtin" ${asrProvider==='builtin'?'checked':''} title="${t('llm.defaultProvider')}" /></td>
     <td class="prov-cell"><b>${t(ASR_BUILTIN)}</b></td>
@@ -2115,7 +2122,7 @@ function paintAsrTable(){
       <span class="muted">${t('asr.builtinModel')}</span>
       <div class="env-req">${t('asr.modelFile')}</div>
     </td>
-    <td class="model-cell">${buildUpstreamModelPick('sttBuiltin', true)}</td>
+    <td class="model-cell">${buildUpstreamModelPick('sttBuiltin')}</td>
   </tr>`;
   // 阿里云 DashScope（dashscope 上游）：radio 可选；协议固定 http（OpenAI 兼容）；
   // 模型多选 + 默认单选（与 LLM 同款）；地址/Key 点单元格弹框编辑（Key 不回显），未配置时如实提示。
@@ -2147,6 +2154,7 @@ function paintAsrTable(){
     const [k, pv] = dv.split(':');
     c.onclick = () => openProvModal(k, pv || 'dashscope');
   });
+  bindUpstreamModelPick('sttBuiltin');
   bindUpstreamModelPick('stt');
   bindUpstreamModelPick('sttDeepseek');
   wrap.querySelectorAll('input[name=asrDefault]').forEach(r=> r.onchange=()=>{ asrProvider=r.value; paintAsrTable(); });
@@ -2295,8 +2303,8 @@ function paintTtsTable(){
   let html='<table class="cfg-table"><thead><tr>'
     + '<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th><th>'+t('common.deps')+'</th><th>'+t('common.model')+'</th>'
     + '</tr></thead><tbody>';
-  // 内置：唯一可用提供商，「默认」单选默认勾选；引擎固定 edge-tts（上游是微软 WS，非 HTTP，如实显示「内置」）。
-  // 内置：引擎固定 edge-tts（上游是微软 WS，非 HTTP，如实显示「内置」协议口径 http）；模型子表白名单只读。
+  // 内置：edge-tts（在线）/ kokoro（纯本地）可勾选、可设默认；模型子表与上游行同构。
+  // 两引擎音色体系不同：edge 需 ffmpeg 转码，kokoro 直接产 24k WAV 免 ffmpeg。
   html += `<tr class="tts-builtin" data-builtin="1">
     <td class="row-act"><input type="radio" name="ttsDefault" value="builtin" ${ttsProvider==='builtin'?'checked':''} title="${t('llm.defaultProvider')}" /></td>
     <td class="prov-cell"><b>${t('builtin')}</b></td>
@@ -2305,7 +2313,7 @@ function paintTtsTable(){
       <div class="env-req">${t('tts.needNetwork')}</div>
       <div class="env-req">${t('tts.ffmpeg')}</div>
     </td>
-    <td class="model-cell">${buildUpstreamModelPick('ttsBuiltin', true)}</td>
+    <td class="model-cell">${buildUpstreamModelPick('ttsBuiltin')}</td>
   </tr>`;
   // 阿里云 DashScope（dashscope 上游）：与 ASR 同构——模型多选 + 默认、地址/Key 弹框编辑、真调测试。
   const ttsCfg = hasProvKey('TTS_UPSTREAM_API_KEY', provEdit.tts)
@@ -2328,7 +2336,8 @@ function paintTtsTable(){
   </tr>`;
   html += '</tbody></table>';
   wrap.className=''; wrap.innerHTML=html;
-  const bt=wrap.querySelector('.tts-builtin-test'); if(bt) bt.onclick=testTtsBuiltin;
+  // 模型级测试按钮逐个绑定，并把 data-builtin-model（edge-tts / kokoro）传给检测函数
+  wrap.querySelectorAll('.tts-builtin-test').forEach(b => b.onclick = () => testTtsBuiltin(b.dataset.builtinModel));
   // 模型级测试按钮与 ASR 同构：类名是 .up-test（buildUpstreamModelPick 渲染），逐个绑定
   wrap.querySelectorAll('.up-test').forEach(b=> b.onclick=()=>testTtsUpstream(b.dataset.m, b.dataset.provider));
   wrap.querySelectorAll('.prov-edit-cell').forEach(c=>{
@@ -2341,19 +2350,19 @@ function paintTtsTable(){
   wrap.querySelectorAll('input[name=ttsDefault]').forEach(r=> r.onchange=()=>{ ttsProvider=r.value; paintTtsTable(); });
 }
 
-// TTS 内置按需检测：真实合成一句，验证 edge-tts 与 ffmpeg 链路，启动阶段不做。
-// 结果只翻「状态」列徽标，不写额外文字。
-async function testTtsBuiltin(){
+// TTS 内置按需检测：按 model（edge-tts / kokoro）真实合成一句，启动阶段不做。
+// 结果只翻对应模型「状态」列徽标，不写额外文字。
+async function testTtsBuiltin(model){
   const wrap=document.getElementById('ttsTableWrap');
-  const btn=wrap && wrap.querySelector('.tts-builtin-test');
+  const btn=wrap && wrap.querySelector(`.tts-builtin-test[data-builtin-model="${model||''}"]`);
   if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
+  const setAv=(av)=>{ if(model){ (provEdit.ttsBuiltin.avail=provEdit.ttsBuiltin.avail||{})[model]=av; } };
   try{
-    const r=await fetch('/admin/api/tts-builtin-test',{method:'POST',credentials:'same-origin'});
+    const r=await fetch('/admin/api/tts-builtin-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:model||''})});
     const d=await r.json().catch(()=>({}));
-    const av = d.ok ? 'ok' : 'err';
-    (provEdit.ttsBuiltin.cands||[]).forEach(m => { (provEdit.ttsBuiltin.avail=provEdit.ttsBuiltin.avail||{})[m] = av; });
+    setAv(d.ok ? 'ok' : 'err');
   }catch(e){
-    (provEdit.ttsBuiltin.cands||[]).forEach(m => { (provEdit.ttsBuiltin.avail=provEdit.ttsBuiltin.avail||{})[m] = 'err'; });
+    setAv('err');
   }
   paintTtsTable();
 }
@@ -2945,14 +2954,15 @@ async function renderDashboard(){
       ((list.find(v=>v.is_default)||list[0]||{}).id);
     fillVoices(def, list);
   }
-  // 拉取三个提供商的音色（接口不可用时回退兜底目录），按当前提供商/模型过滤后展示。
+  // 拉取三个提供商 + 内置 kokoro 的音色（接口不可用时回退兜底目录），按当前提供商/模型过滤后展示。
   Promise.all([
     fetch('/voice/v1/audio/voices?provider=builtin',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
+    fetch('/voice/v1/audio/voices?provider=builtin&model=kokoro',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
     fetch('/voice/v1/audio/voices?provider=dashscope',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
     fetch('/voice/v1/audio/voices?provider=deepseek',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
-  ]).then(([b,d,ds])=>{
+  ]).then(([b,k,d,ds])=>{
     let all=[];
-    [b,d,ds].forEach(data=>{
+    [b,k,d,ds].forEach(data=>{
       if(!data || !Array.isArray(data.voices)) return;
       all=all.concat(data.voices);
       const key=(data.provider||'')+'|'+(data.model||'');
@@ -3251,7 +3261,12 @@ async function renderDashboard(){
   // 模型只列配置里勾选保存的（provEdit[kind].cands）；不选 = 用该提供商的默认模型。
   // 协议下拉的选项一定是从模型集合的协议字段里总结出来的，选中后只列该协议的模型；
   // 协议选「全部」时，实际下发的协议由所选模型（或默认模型）自动确定。
-  const VOICE_TEST_BUILTIN = {asr: 'sensevoice-small', tts: 'edge-tts'};
+  // 内置可选模型取自可编辑的内置子表（edge-tts / kokoro），与配置页保持一致。
+  const voiceTestBuiltinModels = (kind)=>{
+    const e = provEdit[(kind==='asr' ? 'stt' : 'tts') + 'Builtin'];
+    const arr = (e && Array.isArray(e.cands)) ? e.cands.filter(Boolean) : [];
+    return arr.length ? arr : [kind==='asr' ? 'sensevoice-small' : 'edge-tts'];
+  };
   const voiceTestEdit = (kind)=> kind==='asr' ? provEdit.stt : provEdit.tts;
   const voiceTestDeepseekEdit = (kind)=> kind==='asr' ? provEdit.sttDeepseek : provEdit.ttsDeepseek;
   // 实际生效的提供商：显式选了就用它；「默认路由」按 DB 里的默认提供商。
@@ -3263,18 +3278,18 @@ async function renderDashboard(){
   const voiceTestModels = (kind, p)=>{
     // 「默认路由」时列全部已勾选模型：模型自带协议/提供商信息，允许只按模型测试。
     if(!p){
-      const out=[VOICE_TEST_BUILTIN[kind]];
+      const out=voiceTestBuiltinModels(kind);
       [voiceTestEdit(kind), voiceTestDeepseekEdit(kind)].forEach(e=>{
         if(e && Array.isArray(e.cands)) e.cands.forEach(m=>{ if(m && !out.includes(m)) out.push(m); });
       });
       return out;
     }
-    if(voiceTestRealProvider(kind,p)==='builtin') return [VOICE_TEST_BUILTIN[kind]];
+    if(voiceTestRealProvider(kind,p)==='builtin') return voiceTestBuiltinModels(kind);
     const e=p==='deepseek' ? voiceTestDeepseekEdit(kind) : voiceTestEdit(kind);
     return (e && Array.isArray(e.cands)) ? e.cands.slice() : [];
   };
   const voiceTestDefaultModel = (kind, p)=>{
-    if(voiceTestRealProvider(kind,p)==='builtin') return VOICE_TEST_BUILTIN[kind];
+    if(voiceTestRealProvider(kind,p)==='builtin') return voiceTestBuiltinModels(kind)[0] || '';
     const e=p==='deepseek' ? voiceTestDeepseekEdit(kind) : voiceTestEdit(kind);
     return (e && e.def) || '';
   };
@@ -3542,6 +3557,10 @@ def register_admin_routes(
         # - enabled_speech_models 是「实际启用」的勾选数据，按 (kind, provider) 整体替换：
         #   取消勾选即删除，默认模型随勾选一起记录。
         for _provider, _pairs in (
+            ("builtin", (
+                ("stt", "STT_BUILTIN_MODELS", "STT_BUILTIN_MODEL"),
+                ("tts", "TTS_BUILTIN_MODELS", "TTS_BUILTIN_MODEL"),
+            )),
             ("dashscope", (
                 ("stt", "STT_UPSTREAM_MODELS", "STT_UPSTREAM_MODEL"),
                 ("tts", "TTS_UPSTREAM_MODELS", "TTS_UPSTREAM_MODEL"),
@@ -3886,16 +3905,22 @@ def register_admin_routes(
         return await _TTS_UPSTREAM_TEST(model, provider)
 
     @app.post("/admin/api/tts-builtin-test", dependencies=[Depends(require_admin)])
-    async def admin_tts_builtin_test():
-        """按需真实检测内置 TTS（edge-tts + ffmpeg）是否可用：合成一句短语。
+    async def admin_tts_builtin_test(request: Request):
+        """按需真实检测内置 TTS（edge-tts / kokoro）是否可用：按请求里的 model 合成一句。
 
-        启动阶段不做：edge-tts 走微软在线服务，联网合成有耗时，且用户可能改用外部上游。
-        检测函数是 async，直接 await，不必再丢线程。
+        启动阶段不做。检测函数与线上 /voice/v1/audio/speech 走同一条本地分支。
         """
+        model = ""
+        try:
+            _body = await request.json()
+            if isinstance(_body, dict):
+                model = str(_body.get("model") or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
         if _TTS_BUILTIN_CHECK is None:
             return {"ok": False, "reason": "not_wired", "detail": "检测能力未注入"}
         try:
-            return await _TTS_BUILTIN_CHECK()
+            return await _TTS_BUILTIN_CHECK(model)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "exception", "detail": str(exc)}
 

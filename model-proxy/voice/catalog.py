@@ -12,7 +12,8 @@ from typing import Any
 
 SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed")
 
-VOICE_FILES = ("voices_builtin.json", "voices_dashscope.json", "voices_deepseek.json")
+VOICE_FILES = ("voices_builtin.json", "voices_builtin_kokoro.json",
+               "voices_dashscope.json", "voices_deepseek.json")
 MODEL_FILE = "speech_models.json"
 
 
@@ -28,9 +29,15 @@ def load_voices(provider: str | None = None) -> list[dict[str, Any]]:
     每行：{id, provider, model, desc_zh, desc_en, sort, is_default}
     """
     rows: list[dict[str, Any]] = []
+    builtin_seq = 0
     for name in VOICE_FILES:
         spec = _read_json(name)
         prov = (spec.get("provider") or "").strip()
+        is_builtin = prov == "builtin"
+        # builtin 有两个模型（edge-tts / kokoro）：按文件顺序给 sort 留段，避免两组都从 0 开始。
+        base_sort = (100 * builtin_seq) if is_builtin else 1000
+        if is_builtin:
+            builtin_seq += 1
         if not prov:
             continue
         if provider and prov != provider:
@@ -47,7 +54,7 @@ def load_voices(provider: str | None = None) -> list[dict[str, Any]]:
                 "model": model,
                 "desc_zh": (v.get("desc_zh") or "").strip(),
                 "desc_en": (v.get("desc_en") or "").strip(),
-                "sort": i if prov == "builtin" else 1000 + i,
+                "sort": base_sort + i,
                 "is_default": bool(default_id and vid == default_id),
             })
     return rows

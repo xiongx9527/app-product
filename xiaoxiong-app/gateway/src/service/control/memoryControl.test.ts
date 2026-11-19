@@ -34,4 +34,15 @@ describe('detectMemoryCommand：忘了XX / 清空记忆', () => {
   it('普通闲聊不命中', () => {
     expect(detectMemoryCommand('今天天气怎么样')).toBeNull()
   })
+
+  it('纯确认词（记一下吧/记下吧/嗯记一下）不当「记住XX」，避免把「吧」存进记忆', () => {
+    expect(detectMemoryCommand('记下吧')).toBeNull()
+    expect(detectMemoryCommand('记一下吧')).toBeNull()
+    expect(detectMemoryCommand('嗯，记一下吧')).toBeNull()
+  })
+
+  it('真正带内容的「记住XX」仍命中', () => {
+    expect(detectMemoryCommand('记住我喜欢吃苹果')).toMatchObject({ action: 'remember' })
+    expect(detectMemoryCommand('记一下我喜欢打篮球')).toMatchObject({ action: 'remember' })
+  })
 })
