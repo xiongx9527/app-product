@@ -12,10 +12,13 @@ import type { Lang, ServerEvent } from '../../protocol'
 import type { DataService } from '../dataService'
 import type { MemoryStore } from '../tools'
 import type { AgentService } from '../agentService'
+import type { MediaPlaybackCapability } from '../media/MediaPlaybackCapability'
 
 /** 网关在每轮会话 start 时构造、注入给 skill 的运行时能力。 */
 export interface SkillContext {
   lang: Lang
+  /** 会话时区（时间 skill 用），来自 session.start.timezone，缺省东八区。 */
+  timezone: string
   deviceId: string | null
   data: DataService
   memoryStore: MemoryStore | undefined
@@ -26,6 +29,14 @@ export interface SkillContext {
   speak: (text: string) => Promise<void>
   /** 当前排队剩余句数，用于 asr.final 的 queueRemaining 字段。 */
   queueRemaining: () => number
+
+  /**
+   * 系统能力：媒体播放（预热/短链/下发/状态机），纯机制、不含业务、不含数据源。
+   * skill 只把定好的 MediaAsset 交给它播放，不直接发 media.* 事件。
+   * 数据源的定义/默认实现放在各 skill 自己的目录内、可注入替换——换源只换注入的实现，
+   * skill 代码零改动；源相关的东西不进这个全局契约文件。
+   */
+  media?: MediaPlaybackCapability
 }
 
 /** 一句定稿后 skill 的处理结果。 */
@@ -40,8 +51,20 @@ export interface AgentReplyResult {
   appendTts?: string
 }
 
+/** 一句直连意图的处理结果。 */
+export interface DirectCommandResult {
+  /** true = 这句已被本 skill 当作直连意图消费，网关不再走后续 skill / LLM。 */
+  consumed?: boolean
+}
+
 /** 每会话一个实例；状态放闭包里，天然按会话隔离。 */
 export interface Skill {
+  /**
+   * 直连意图处理（绕开 LLM）：按网关固定顺序调用，先识别再执行。
+   * 业务规则（detect+run+源适配）都在本 skill 内；返回 consumed=true 表示已处理。
+   * 顺序由网关的 DIRECT_SKILL_ORDER 固定，不由 enabled 配置决定（防配错回归）。
+   */
+  onDirectCommand?(text: string): Promise<DirectCommandResult | void>
   /** 一句定稿时调用（空闲定稿 + 队列回放都调），做确认/暂存。 */
   onFinalize?(text: string): Promise<FinalizeResult | void>
   /** LLM 流式回复收尾时调用（同步），可返回拼进同一 TTS 链的追问。 */
@@ -58,6 +81,13 @@ export interface SkillModule {
   id: string
   /** 可读名称（配置清单 / 日志展示，便于看懂每个 skill 是干嘛的）。 */
   name: string
+  /**
+   * 直连意图匹配优先级（数字越小越先）。
+   * 网关按 priority 升序调度 onDirectCommand——先识别的先消费，命中即短路。
+   * 顺序由 skill 自己声明（不是网关硬编码数组），新增/调整 skill 不用改编排层。
+   * 约定间隔 10（10/20/30…）便于插入新 skill。用途不同的 skill 不要给相同值。
+   */
+  priority: number
   /**
    * 能力描述（按语言）——自动作为提示词片段注入 systemPrompt，
    * 让 LLM 知道本助手挂载了哪些 skill 能力（与 tools 的 description 同思路）。

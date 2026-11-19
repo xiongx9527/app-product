@@ -119,6 +119,8 @@ function createPreferenceSkill(ctx: SkillContext): Skill {
 export const preferenceSkill: SkillModule = {
   id: 'preference',
   name: '偏好记忆确认',
+  // 偏好确认走 onFinalize，不参与 onDirectCommand 的优先级竞争；给个靠后的占位值。
+  priority: 900,
   // skill 提示词：只描述「你拥有这个能力」，不写「遇到喜欢就反问」这类硬规则——
   // 具体追问时机与确认判定由生命周期钩子确定性处理，提示词不掺业务分支。
   description: (lang) =>

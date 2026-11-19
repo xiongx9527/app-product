@@ -33,7 +33,7 @@ import { detectMemoryCommand } from './control/memoryControl'
 import { pickDeals, preferenceKeywords } from './memory'
 import { detectSubtitleCommand } from './control/subtitleControl'
 import { detectPlayModeCommand } from './control/playModeControl'
-import { detectTimeCommandKind } from './control/timeControl'
+import { isTimeQuery } from './skills/time_skill'
 import { detectAuspiciousQuery, type AuspiciousQuery } from './control/auspiciousControl'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
 import { detectWeatherCommand, extractWeatherCity } from './control/weatherControl'
@@ -1032,12 +1032,10 @@ export class VoiceSessionService {
       await this.runAuspiciousCommand(auspicious)
       return true
     }
-    // 时间/日期/天气：答案确定或来自独立数据源，绕开慢大模型直接口播，不让用户干等。
-    const timeKind = detectTimeCommandKind(text)
-    if (timeKind) {
-      await this.runTimeCommand(timeKind)
-      return true
-    }
+    // 时间/日期：业务已迁进 time_skill（priority=20），按 skill 优先级调度。
+    // 目前只有 time_skill 挂 onDirectCommand，等价原来的 detectTimeCommandKind 分支；
+    // 后续 control 逐个迁进来后，这里会成为统一的 skill 调度点。
+    if (await this.dispatchDirectCommand(text)) return true
     if (detectWeatherCommand(text)) {
       await this.runWeatherCommand(extractWeatherCity(text) ?? undefined)
       return true
@@ -1179,53 +1177,6 @@ export class VoiceSessionService {
     )
   }
 
-  private async runTimeCommand(kind: 'time' | 'date' | 'both'): Promise<void> {
-    const m = messages(this.lang)
-    const now = new Date()
-    const timeParts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: this.timezone,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).formatToParts(now)
-    const h = Number(timeParts.find((p) => p.type === 'hour')?.value ?? 0)
-    const min = Number(timeParts.find((p) => p.type === 'minute')?.value ?? 0)
-    if (kind === 'time') {
-      await this.speakReply(m.clock.now(h, min))
-      return
-    }
-    // 历法表述固定中文，且绝不依赖 Intl 的中文 locale：设备端 NodeMobile 是 small-ICU，
-    // Intl.DateTimeFormat('zh-CN') 会静默 fallback 成英文（报出 November 16, 2026）。
-    // 故数字统一用 en-GB 拿（数字格式无 locale 问题），中文「年月日/星期」自己拼、星期用固定映射表。
-    const allParts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: this.timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      weekday: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).formatToParts(now)
-    const pick = (type: string) => allParts.find((p) => p.type === type)?.value ?? ''
-    const y = Number(pick('year'))
-    const mo = Number(pick('month'))
-    const d = Number(pick('day'))
-    // en-GB weekday short（Sun/Mon/...）→ 中文星期；映射表稳定，不依赖 ICU
-    const WEEKDAY_ZH: Record<string, string> = {
-      Sun: '星期日', Mon: '星期一', Tue: '星期二', Wed: '星期三',
-      Thu: '星期四', Fri: '星期五', Sat: '星期六',
-    }
-    const weekday = WEEKDAY_ZH[pick('weekday')] ?? ''
-    const dateBody = `${y}年${mo}月${d}日`
-    // 农历取自 lunar-javascript 算法库（权威农历数据，非编造）；闰月带「闰」字。
-    // 用会话时区格式化出的 Y/M/D 构造（Solar.fromYmd），避免 Solar.fromDate 依赖进程本地时区。
-    const lunar = Solar.fromYmd(y, mo, d).getLunar()
-    const leap = lunar.getMonth() < 0 ? '闰' : ''
-    const lunarText = `农历${leap}${lunar.getMonthInChinese()}月${lunar.getDayInChinese()}`
-    const dateText = m.clock.date(dateBody, weekday, lunarText)
-    await this.speakReply(kind === 'date' ? dateText : `${dateText}${m.clock.now(h, min)}`)
-  }
 
   /** 天气直连：复用天气数据源（懒加载位置），不进 LLM。超时/失败给友好兜底。 */
   private async runWeatherCommand(city?: string): Promise<void> {
@@ -1711,6 +1662,7 @@ export class VoiceSessionService {
     const self = this
     const ctx: SkillContext = {
       get lang() { return self.lang },
+      get timezone() { return self.timezone },
       get deviceId() { return self.deviceId },
       get data() { return self.deps.data },
       get memoryStore() { return self.memoryStore },
@@ -1721,6 +1673,24 @@ export class VoiceSessionService {
     }
     this.skills = modules.map((m) => m.create(ctx))
     this.skillPromptAddon = skillPromptAddon(modules, self.lang)
+  }
+
+  /**
+   * 直连意图调度：按 skill 的 priority 升序（ensureSkills 已排序）依次询问 onDirectCommand，
+   * 任一 skill 返回 consumed=true 即短路，不再走后续 skill / LLM。
+   * 业务规则全在各 skill 内；这里只做调度，不含任何意图识别或执行逻辑。
+   * 单个 skill 抛错吞掉、继续下一个，不拖垮会话（同 MCP 的失败跳过）。
+   */
+  private async dispatchDirectCommand(text: string): Promise<boolean> {
+    for (const skill of this.skills) {
+      try {
+        const r = await skill.onDirectCommand?.(text)
+        if (r?.consumed) return true
+      } catch (err) {
+        console.warn('[skills] onDirectCommand 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+    return false
   }
 
   /**
@@ -2117,7 +2087,7 @@ export class VoiceSessionService {
     if (
       detectMusicCommand(t) || detectPoemCommand(t) || detectBaikeCommand(t) ||
       detectVolumeCommand(t) || detectSubtitleCommand(t) || detectMemoryCommand(t) ||
-      detectTimeCommandKind(t) || detectWeatherCommand(t) || detectNewsCommand(t) ||
+      isTimeQuery(t) || detectWeatherCommand(t) || detectNewsCommand(t) ||
       detectProductQuery(t) || detectDealsCommand(t) || detectPlayModeCommand(t)
     ) return false
     // 纯数字选号：只有在「刚给过候选列表/编号列表」的上下文里才是有效输入；

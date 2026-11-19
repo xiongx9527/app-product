@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { SKILL_MODULES } from './registry'
+import { SKILL_MODULES_BY_PRIORITY } from './registry'
 import type { SkillModule } from './types'
 
 const CONFIG_FILE = 'skills.json'
@@ -42,19 +42,22 @@ function readConfig(): SkillsConfig | null {
   return null
 }
 
-/** 返回本次会话要启用的 skill 模块列表（按配置顺序）。 */
+/**
+ * 返回本次会话要启用的 skill 模块列表。
+ * enabled 配置只决定「开关」（哪些启用），不决定顺序——最终顺序一律按各 skill 声明的
+ * priority 升序，这样新增/调整 skill 的匹配优先级不用改编排层，也不会被配置写错顺序坑到。
+ */
 export function loadSkillModules(): SkillModule[] {
   const config = readConfig()
   const enabled = config?.enabled
   if (!Array.isArray(enabled) || enabled.length === 0) {
-    // 缺省启用全部已登记模块
-    return Object.values(SKILL_MODULES)
+    return SKILL_MODULES_BY_PRIORITY
   }
-  const out: SkillModule[] = []
+  const enabledSet = new Set(enabled)
   for (const id of enabled) {
-    const mod = SKILL_MODULES[id]
-    if (mod) out.push(mod)
-    else console.warn(`[skills] 配置启用了未登记的 skill: ${id}，已跳过`)
+    if (!SKILL_MODULES_BY_PRIORITY.some((m) => m.id === id)) {
+      console.warn(`[skills] 配置启用了未登记的 skill: ${id}，已跳过`)
+    }
   }
-  return out
+  return SKILL_MODULES_BY_PRIORITY.filter((m) => enabledSet.has(m.id))
 }

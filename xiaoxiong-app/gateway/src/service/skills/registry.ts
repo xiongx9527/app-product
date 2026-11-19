@@ -13,3 +13,12 @@ export { SKILL_MODULES } from './registry.generated'
 export function getSkillModule(id: string): SkillModule | undefined {
   return SKILL_MODULES[id]
 }
+
+/**
+ * 全部已登记 skill，按 priority 升序（数字越小越先匹配）。
+ * 网关的直连意图调度按这个顺序遍历，先识别者先消费——顺序由各 skill 自己声明，
+ * 新增/调整优先级不用改编排层。配置 enabled 只决定开关，不改变这里的顺序。
+ */
+export const SKILL_MODULES_BY_PRIORITY: SkillModule[] = Object.values(SKILL_MODULES)
+  .slice()
+  .sort((a, b) => a.priority - b.priority)

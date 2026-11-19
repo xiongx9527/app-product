@@ -1,4 +1,7 @@
 import type { Lang, ServerErrorCode } from './protocol'
+// skill 自带文案：网关 i18n 只做汇总，文案本体跟 skill 走（避免 skill↔i18n 循环依赖：
+// 这些片段文件是纯数据、不 import 本文件；skill 通过 messages().clock 取用）。
+import { clockI18n, type ClockI18n } from './service/skills/time_skill/i18n'
 
 /**
  * 后端文案目录（国际化）。网关下发给客户端的所有可见文案都按 `lang` 从这里取，
@@ -14,12 +17,8 @@ export interface Messages {
     accepted: (position: number, size: number) => string
     full: () => string
   }
-  /** 时间/日期直连口播：入参是按会话时区算好的时/分与日期主体/星期/农历（均为中文格式，历法表述不随语言英化），按 lang 生成自然语言，不进大模型 */
-  clock: {
-    now: (h: number, m: number) => string
-    /** 问日期（星期几 / 几月几号）：dateBody=「2026年11月16日」weekday=「星期一」lunar=「农历十月初八」，固定中文，不随 lang 变英文 */
-    date: (dateBody: string, weekday: string, lunar: string) => string
-  }
+  /** 时间/日期文案由 time_skill 自带（skills/time_skill/i18n.ts），经下方 catalogs 汇总进来 */
+  clock: ClockI18n
   /** 择吉日直连口播：日期/宜忌串为固定中文（黄历数据 + lunar 算法产出），按 lang 拼句，不进大模型 */
   auspicious: {
     /** 带事项：activity 为口语事项（搬家/嫁娶），days 为「X月X日（星期X，农历X月X）」逗号串 */
@@ -185,6 +184,8 @@ function sourceDisplayName(kind: string, lang: string): string {
 }
 
 const zhCN: Messages = {
+  // skill 自带文案汇总（clock 来自 time_skill）
+  clock: clockI18n['zh-CN'],
   systemPrompt:
     '你是「小熊」语音助手，住在用户的设备里。用简体中文、简短自然地回答，每次回复控制在 100 字以内，避免长篇大论（省流量、播报更快）。' +
     '注意：这条字数限制只约束你自己组织的回答；调用工具返回的百科摘要、商品列表、歌词等内容照常完整给出，不要自行截断或复述。' +
@@ -216,10 +217,6 @@ const zhCN: Messages = {
   queue: {
     accepted: (position, size) => `已排到第 ${position} 句（共 ${size} 句），当前回答播完就处理`,
     full: () => '你说的太多了，我记不住。',
-  },
-  clock: {
-    now: (h, m) => (m ? `现在是${h}点${m}分。` : `现在是${h}点整。`),
-    date: (dateBody, weekday, lunar) => `今天是${dateBody}，${weekday}，${lunar}。`,
   },
   auspicious: {
     found: (activity, days) => `帮你翻了黄历，最近的宜${activity}吉日：${days}。`,
@@ -363,6 +360,8 @@ const zhCN: Messages = {
  */
 const en: Messages = {
   ...zhCN,
+  // skill 自带文案：英文覆盖（clock 来自 time_skill）
+  clock: clockI18n.en,
   systemPrompt:
     'You are «XiongXiong», a voice assistant living inside the user\'s device. ' +
     'Reply concisely and naturally in English, keeping each reply within 100 characters to save data and speak faster. ' +
@@ -484,11 +483,6 @@ const en: Messages = {
     playing: (title) => `Now reading the encyclopedia entry for: ${title}.`,
   },
   sources: { smzdm: 'SMZDM' },
-  clock: {
-    now: (h, m) => (m ? `It's ${h}:${String(m).padStart(2, '0')}.` : `It's ${h} o'clock.`),
-    // 历法表述（阳历日期/星期/农历）固定中文——英文月份/星期表述不自然，用户明确要求不要英化
-    date: (dateBody, weekday, lunar) => `Today is ${dateBody} ${weekday} (${lunar}).`,
-  },
   auspicious: {
     // 日期/宜忌串为固定中文（历法表述不随语言英化，与日期直连同口径）
     found: (activity, days) => `Checked the almanac. Upcoming auspicious days for ${activity}: ${days}.`,
