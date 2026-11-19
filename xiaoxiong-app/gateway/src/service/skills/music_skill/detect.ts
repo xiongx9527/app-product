@@ -3,6 +3,9 @@
  * 只识别高置信度的控制词，避免与普通对话冲突（如「我想听你说」不会误触发）。
  */
 
+// 通用媒体意图（循环遍数/「再」上下文）归系统能力层 media/mediaIntent，这里 re-export 兼容既有引用。
+export { parseLoopCount, hasAgainMarker } from '../../media/mediaIntent'
+
 export type MusicAction = 'play' | 'next' | 'pause' | 'resume' | 'stop' | 'recommend' | 'loop' | 'replay'
 
 /**
@@ -52,28 +55,6 @@ const ACTION_PATTERNS: Array<{ action: MusicAction; re: RegExp }> = [
 ]
 
 /**
- * 从口语里解析显式「循环 N 遍」的遍数；返回 1 表示「未指定遍数，交回设置里的默认循环次数」。
- *  - 「循环播放3遍」→ 3；超上限按上限收敛，避免极端值拖垮播放。
- *  - 「再放一遍 / 再来一次」是明确「多播一次」的口语 → 固定 2。
- *  - 不带遍数的「循环播放 / 单曲循环 / 重复播放」→ 1，由上层落到设置里的「默认循环次数」
- *    （缺省 3），绝不在这里写死 2 把用户的 3 遍设置盖掉。
- *  - 普通点歌「放首歌」→ 1（不循环）。
- */
-export function parseLoopCount(text: string, max = 99): number {
-  const t = (text || '').trim()
-  if (!t) return 1
-  const m = t.match(/(\d+)\s*遍/)
-  if (m) {
-    const n = Number(m[1])
-    if (Number.isFinite(n) && n >= 1) return Math.min(Math.floor(n), max)
-    return 1
-  }
-  // 只有「再放一遍」这种明确「多一次」的口语固定为 2，其余不带遍数的循环词交回设置默认。
-  if (/再(放|来|播).*(一遍|一次)/.test(t)) return 2
-  return 1
-}
-
-/**
  * 纯口语「换个 / 换一个 / 换一段 / 再来一段 / 下一段」= 换内容。
  * 整句锚定，避免「换个方法」「换一个灯泡」这类普通对话被误判；
  * 这些说法此前会被 looksLikeBareMusicQuery 当成裸歌名去点歌（弹候选列表 / 报「没找到这首歌」）。
@@ -96,12 +77,3 @@ export function detectMusicCommand(text: string): MusicAction | null {
   return null
 }
 
-/**
- * 是否含「再」——用户的「再说一次 / 再放一首 / 再听」里的「再」表示「另来一次」，
- * 应当关掉跨轮上下文：点歌时不再按当前正在播放的歌手自动选版本，而是当作全新请求
- * （列候选 / 重新检索），避免「再放稻香」被当成「还是周杰伦的稻香」直接播。
- * 这是个通用原则：凡带「再」的请求都不依赖上一轮的歌手/歌名上下文。
- */
-export function hasAgainMarker(text: string): boolean {
-  return /再/.test(text || '')
-}

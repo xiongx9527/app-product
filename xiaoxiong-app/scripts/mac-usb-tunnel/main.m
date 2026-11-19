@@ -35,7 +35,8 @@ static const uint32_t kMaxFrame = 1024 * 1024;
 
 // 全局：mux 通道（USB）与 connId→本地 socket 映射
 static dispatch_io_t gMuxChannel = NULL;
-static dispatch_queue_t gMuxQueue = NULL;       // mux 读写共用串行队列（114 帧实证版本）
+static dispatch_queue_t gMuxQueue = NULL;       // 写队列
+static dispatch_queue_t gMuxReadQueue = NULL;   // 读队列（114 帧实证成功版=读写分离）
 static NSMutableDictionary<NSNumber *, NSNumber *> *gConns = nil; // connId -> socket fd
 static NSLock *gConnsLock = nil;
 static uint32_t gNextId = 1;
@@ -139,6 +140,26 @@ static int openLocalConn(uint32_t connId) {
   return fd;
 }
 
+// 持续从 mux 通道读：114 帧实证成功版（1052623）用有限长度 64KB + done 后递归。
+// 曾误改成 SIZE_MAX 单队列，反而收不到帧——已按实证版本恢复。
+static void handleMuxData(NSData *chunk); // 前向声明
+static void pumpMuxRead(dispatch_io_t channel);
+static void pumpMuxRead(dispatch_io_t channel) {
+  if (!channel) return;
+  dispatch_io_read(channel, 0, 64 * 1024, gMuxReadQueue, ^(bool done, dispatch_data_t data, int error) {
+    if (data) {
+      const uint8_t *p = NULL; size_t n = 0;
+      dispatch_data_t flat = dispatch_data_create_map(data, (const void **)&p, &n);
+      if (flat && p && n) {
+        logLine(@"mux 读 %zu 字节", n);
+        handleMuxData([NSData dataWithBytes:p length:n]);
+      }
+    }
+    if (error) logLine(@"mux 读错误 err=%d", error);
+    if (done && !error) pumpMuxRead(channel);
+  });
+}
+
 // mux 收帧处理
 static void handleMuxData(NSData *chunk) {
   if (!gMuxBuf) gMuxBuf = [NSMutableData data];
@@ -210,7 +231,8 @@ static void connectDevice(NSNumber *deviceID) {
       if (gLastConnectFailed) logLine(@"设备隧道已就绪，连接建立");
       gLastConnectFailed = NO;
       gMuxChannel = channel;
-      gMuxQueue = dispatch_queue_create("mux.rw", DISPATCH_QUEUE_SERIAL);
+      gMuxQueue = dispatch_queue_create("mux.write", DISPATCH_QUEUE_SERIAL);
+      gMuxReadQueue = dispatch_queue_create("mux.read", DISPATCH_QUEUE_SERIAL);
       [gConnsLock lock];
       [gConns removeAllObjects];
       [gConnsLock unlock];
@@ -222,25 +244,9 @@ static void connectDevice(NSNumber *deviceID) {
       dispatch_io_write(channel, 0, hs, gMuxQueue, ^(bool done, dispatch_data_t _u, int e) {
         if (e) logLine(@"握手写失败 err=%d", e);
       });
-      // 回退到 114 帧实证成功版本：单队列 gMuxQueue + SIZE_MAX 读。
-      // 曾改成"读写分离队列 + 64KB 有限长度 + 递归读"，那是纸上谈兵，反而把能工作的版本改坏。
-      dispatch_io_read(channel, 0, SIZE_MAX, gMuxQueue, ^(bool done, dispatch_data_t data, int error) {
-        if (data) {
-          const uint8_t *p = NULL; size_t n = 0;
-          dispatch_data_t flat = dispatch_data_create_map(data, (const void **)&p, &n);
-          if (flat && p && n) handleMuxData([NSData dataWithBytes:p length:n]);
-        }
-        if (error) logLine(@"mux 读错误 err=%d", error);
-        if (done) {
-          logLine(@"mux 通道关闭");
-          [gConnsLock lock];
-          NSArray *fds = [gConns allValues];
-          [gConns removeAllObjects];
-          [gConnsLock unlock];
-          for (NSNumber *f in fds) close(f.intValue);
-          gMuxChannel = NULL;
-        }
-      });
+      // 114 帧实证成功版本（1052623）：有限长度 64KB + done 后递归读 + 读写分离队列。
+      pumpMuxRead(channel);
+      // 通道断开的清理在 onEnd 回调里做。
     }
     onEnd:^(NSError *error) {
       // 无 mux 通道说明这次是"等待设备隧道"的失败尝试，不刷屏（定时重连每 2s 一次）；
