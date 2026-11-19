@@ -133,6 +133,8 @@ function createHarness(
     /** 覆盖 resolveVoice：默认忽略 voice 返回空配置；需要验证「切来源重建 agent」时注入，
      *  按 voice.provider 返回不同的 llm 配置指纹，使重武装能识别来源变化。 */
     resolveVoice?: (voice?: unknown) => ResolvedCapabilities,
+    /** 注入启用的 skill 模块（默认空，隔离各用例）；验证偏好追问流程时注入 preferenceSkill。 */
+    skillModules?: VoiceSessionDeps['skillModules'],
   } = {}
 ): Harness {
   const ttsFrames = opts.ttsFrames ?? []
@@ -289,6 +291,7 @@ function createHarness(
     deviceId: opts.deviceId === undefined ? 'test-device' : opts.deviceId,
     // 默认「全部就绪」，避免每个用例都下发 client.cue；需要验证不可用时由调用方注入 capabilityProbe
     capabilityProbe: opts.capabilityProbe,
+    skillModules: opts.skillModules,
   }
   service = new VoiceSessionService(deps)
   return {
@@ -3357,5 +3360,35 @@ describe('VAD 幻觉二级判断（短语音 + 无有效意图 → 丢弃）', (
   it('多字句一律放行（哪怕 VAD 判很短）', () => {
     expect(judge('我要听歌', 0.2)).toBe(false)
     expect(judge('今天天气', 0.3)).toBe(false)
+  })
+})
+
+describe('skill 接入：偏好追问流程（迁移后行为不变）', () => {
+  it('偏好句→同链追问→肯定→落库，整条链路经 preference skill 生效', async () => {
+    const { preferenceSkill } = await import('./skills/preference')
+    const h = createHarness({
+      skillModules: [preferenceSkill],
+      finalizeTexts: ['我喜欢打乒乓球', '要记下来'],
+    })
+    await startDialog(h.service)
+
+    // 第一句：偏好句。LLM 先正常回答，skill 在收尾把「要不要记」拼进同一 TTS 链。
+    await speakUtterance(h)
+    await sleep(200)
+    console.log('DBG calls=',h.agentCalls(),'events=',JSON.stringify(h.events.map((e:any)=>e.type+':'+String(e.text??''))))
+    expect(h.agentCalls()).toBe(1)
+    const deltas = h.events.filter((e) => e.type === 'llm.delta').map((e) => (e as { text: string }).text)
+    expect(deltas.some((t) => t.includes('记'))).toBe(true) // 同链追问已拼进去
+    h.finishReply()
+    h.playbackDone()
+    await sleep(60)
+
+    // 第二句：肯定确认。intent 被 skill 消费，不调 LLM，落库并口播确认。
+    await speakUtterance(h)
+    await sleep(60)
+    expect(h.agentCalls()).toBe(1) // 没有新增 LLM 调用（被 skill 消费）
+    expect(h.savedMemories().length).toBe(1)
+    expect(h.savedMemories()[0].key).toBe('运动偏好')
+    expect(h.savedMemories()[0].value).toContain('乒乓球')
   })
 })

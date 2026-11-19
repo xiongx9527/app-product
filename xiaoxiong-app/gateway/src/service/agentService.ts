@@ -77,7 +77,9 @@ export async function createAgentService(
   /** MCP 服务器列表：客户端设置页下发，网关据此连上并把其工具注册进助手工具箱。 */
   mcpServers: McpServerConfig[] = [],
   /** 通用自动学习引擎：有则注册 learn_correction 工具并包装所有工具（agent 只依赖此抽象）。 */
-  autoLearnEngine?: AutoLearnEngine
+  autoLearnEngine?: AutoLearnEngine,
+  /** skill 注入的提示词片段：拼进 baseSysPrompt（必须在 refreshNowPlaying 之前），缺省空。 */
+  promptAddon: string = ''
 ): Promise<AgentService> {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
@@ -87,7 +89,10 @@ export async function createAgentService(
   const m = messages(lang)
   // 把该设备已记住的内容拼进系统提示（memoryContext 由会话层按 deviceId 加载并格式化），
   // 让助手在唤醒后自然参考用户习惯，而不是每次都从零开始问。无记忆时为空串，不影响原提示。
-  const baseSysPrompt = m.systemPrompt + (memoryContext ?? '')
+  // skill 提示词片段拼进 baseSysPrompt：refreshNowPlaying 每轮都从它重建 _sysPrompt，
+  // 若只在构造时另加会被抹掉。片段之间用换行分隔，空片段不产生多余空白。
+  const addon = promptAddon.trim()
+  const baseSysPrompt = m.systemPrompt + (addon ? `\n${addon}` : '') + (memoryContext ?? '')
   // 工具箱先同步建好（保持 createToolkit 同步签名，4 个工具单测直接调用它）；
   // MCP 连接是异步的，必须在 Agent 构造之前 await 完，否则工具在首轮对话里尚未就绪。
   const toolkit = createToolkit(lang, config.timeZone, locationProvider, getMusicSource, emit, memoryStore, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, undefined, autoMemory ?? false, undefined, undefined, autoLearnEngine)

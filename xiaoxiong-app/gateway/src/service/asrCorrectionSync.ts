@@ -11,7 +11,7 @@ import { appendFileSync } from 'node:fs'
 import type { DataService } from './dataService'
 import { loadAsrCorrections } from './voiceSessionService'
 import { toPinyin } from './asr/asrCorrector'
-import { createAutoLearnEngine, longestSharedSubstring, normalizePronunciation, type AutoLearnContext, type AutoLearnEngine, type AutoLearnRule } from './autoLearn'
+import { createAutoLearnEngine, longestSharedSubstring, normalizePronunciation, isProperNounTarget, type AutoLearnContext, type AutoLearnEngine, type AutoLearnRule } from './autoLearn'
 
 /** 与 voiceSessionService 的 bargeDiag 同款落盘：记录自动学习命中及来源。 */
 function autoLearnDiag(line: string): void {
@@ -76,20 +76,27 @@ export function createCorrectionSyncer(
       if (!wc || !cc || wc === cc) return false
       // 只认纯中文：英文名/带数字的歌名等不学，避免污染词表
       if (!/^[\u4e00-\u9fff]+$/.test(wc) || !/^[\u4e00-\u9fff]+$/.test(cc)) return false
+      // from/to 字数必须一样（用户 2026-11-19 规则）：字数不同不是同音纠错，是删字/加字
+      if (wc.length !== cc.length) return false
       // 发音归一化后同音才学。归一化规则表见 autoLearn.ts 的 PRON_NORMALIZERS，
       // 平翘舌等混淆可继续往表里加，不用改这里。
       const wp = toPinyin(wc), cp = toPinyin(cc)
       if (!wp || !cp || normalizePronunciation(wp) !== normalizePronunciation(cp)) return false
       // 公共子串≥2：同音但字面毫无关联的两个词不学（挡"神父→神赋"这种只有"神"1字的子串误学）
       if (longestSharedSubstring(wc, cc) < 2) return false
+      // 正确词和错词都必须是专有名词形态（人名/地名/作品名/诗词名/歌名/品牌），
+      // 不能是动宾/形容词短语（用户 2026-11-19 规则）：
+      // 挡「乒乓球→乒乓球好」（正确词带形容词尾巴）、「打乒乓→乒乓球」（错词是动词短语，
+      // 纠了会吃掉「打」字破坏原意）。真正的同音错字两边都是名词（李存序→李存勖）。
+      if (!isProperNounTarget(cc) || !isProperNounTarget(wc)) return false
       return syncer.learn(cc, cp, wc, wp)
     },
   })
   // 第二条规则：数据源纠错（诗词/百科直连，或工具返回里带明确锚点的规范词）。
-  // 数据源把识别词纠成规范词（如"贝洛神父"→"洛神赋"，删噪声字"贝"+改"父→赋"，非严格同音），
-  // 其返回结果是可信信号，直接学。
-  // 护栏：direct（直连 keyword→规范标题）或 tool+anchored（工具返回里《》/「播放：」锚点提取的词）；
-  // 纯中文、长度 2–8、长度差≤2、有≥2字公共子串（防无关词误学）。
+  // 数据源把识别词纠成规范词，其返回结果是可信信号。
+  // 护栏（2026-11-19 收紧）：direct 或 tool/llm+anchored；纯中文、长度 2–6、
+  // from/to 字数必须相等、有≥2字公共子串，且正确词是专有名词（人名/地名/作品/诗词/歌名/品牌）。
+  // 字数不等（如旧例"贝洛神父"→"洛神赋"删了字）不再学——用户要求字数一致才纠。
   engine.register({
     name: 'source-correction',
     async handle(from, to, ctx) {
@@ -98,10 +105,14 @@ export function createCorrectionSyncer(
       const wc = clean((from ?? '').trim()), cc = clean((to ?? '').trim())
       if (!wc || !cc || wc === cc) return false
       if (!/^[\u4e00-\u9fff]+$/.test(wc) || !/^[\u4e00-\u9fff]+$/.test(cc)) return false
-      if (wc.length < 2 || wc.length > 8 || cc.length < 2 || cc.length > 8) return false
-      if (Math.abs(wc.length - cc.length) > 2) return false
+      if (wc.length < 2 || wc.length > 6 || cc.length < 2 || cc.length > 6) return false
+      // from/to 字数必须一样（用户 2026-11-19 规则）：字数不同不是同音纠错，不学
+      if (wc.length !== cc.length) return false
       // 公共子串≥2字：确认是同一个词的不同写法，不是两个无关词
       if (longestSharedSubstring(wc, cc) < 2) return false
+      // 正确词和错词都必须是专有名词形态（挡「打乒乓→乒乓球」把动词短语纠成名词、
+      // 「我喜乒乓→乒乓球好」这种污染词表的垃圾学习；真同音错字两边都是名词）
+      if (!isProperNounTarget(cc) || !isProperNounTarget(wc)) return false
       return syncer.learn(cc, toPinyin(cc), wc, toPinyin(wc))
     },
   })

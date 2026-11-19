@@ -205,6 +205,17 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 根本看不到识别出的文字。入队后保留约 1 秒让用户看清，再清掉交给排队角标。
    */
   let queuedClearTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 定稿后延迟清空草稿：partial 滚动识别常慢于语速，草稿停在「我喜欢打乒」半截字；
+   * 网关定稿时会先补发一次完整文本的 asr.partial，这里让补全的草稿停留约 0.8 秒再清，
+   * 用户能看清完整一句，再切到「我说」框正文。新一句 partial 到来时取消这个 timer。
+   */
+  let finalClearTimer: ReturnType<typeof setTimeout> | null = null
+  // 定稿补全后停留时长：让用户看清完整一句（草稿从半截补全），再切到「我说」框正文。
+  const FINAL_DRAFT_HOLD_MS = 1000
+  function cancelFinalClear(): void {
+    if (finalClearTimer) { clearTimeout(finalClearTimer); finalClearTimer = null }
+  }
   function cancelQueuedClear(): void {
     if (queuedClearTimer) { clearTimeout(queuedClearTimer); queuedClearTimer = null }
   }
@@ -514,8 +525,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           // 只看时间窗口会把下一句说话当下的 partial 一起挡掉（真机复现），故改成按文本判断：
           // 只有与刚入队原文一致/互为前缀的尾音才挡，新句文本不同立即显示。
           if (Date.now() < queuedHideUntil && isTailOfQueued(event.text)) break
-          // 真正的新文字（非尾音）：取消上一句入队的延迟清空，避免刚显示的文字被误清
+          // 真正的新文字（非尾音）：取消上一句入队/定稿的延迟清空，避免刚显示的文字被误清
           cancelQueuedClear()
+          cancelFinalClear()
           liveText.value = event.text
           if (!assistantBusy && !queuePending.value && !isSpeaking.value && phase.value !== 'listening') {
             phase.value = 'listening'
@@ -596,8 +608,17 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         queuedText = ''
         cancelQueuedClear()
         transcript.value = event.text
-        // 清掉监听草稿与队列溢出提示；这句轮到被处理，溢出横幅自然失效
-        liveText.value = ''
+        // 定稿时把草稿补全为完整文本并停留约 0.8 秒再清——partial 滚动识别常慢于语速，
+        // 草稿会停在「我喜欢打乒」半截字，用户看不全。这 0.8 秒草稿显示完整句（与「我说」
+        // 框短暂并存），让用户看清整句后草稿再消失。期间若用户开口说下一句，新 partial
+        // 会取消这个 timer，不会误清新草稿。
+        cancelFinalClear()
+        liveText.value = event.text
+        finalClearTimer = setTimeout(() => {
+          if (liveText.value === event.text) liveText.value = ''
+          finalClearTimer = null
+        }, FINAL_DRAFT_HOLD_MS)
+        // 队列溢出提示这句轮到被处理，横幅自然失效
         queueFullMsg.value = ''
         // 新一轮说话：清掉上一轮的回答与思考，等模型重新流式输出
         reply.value = ''
@@ -1155,6 +1176,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       gatewayPreparing.value = true
       gatewayFailed.value = false
       errorMessage.value = ''
+      // 「准备中」提示音在调 health/建连之前就播：真机 health 首次探测可达 10s+，
+      // 等就绪再播「准备中」就晚了（用户反馈接口都调完了才响）。让它先响、正常播完。
+      playPromptCue('gatewayPreparing')
       const ready = await waitForEmbeddedGateway()
       if (!ready) {
         // 网关启动失败：结束"启动中"态、标记失败（首页显示失败提示而非误报已就绪），
@@ -1189,9 +1213,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       dispatch({ type: 'ENABLE' })
       // 真正就绪：结束"启动中"态，首页据此显示短暂的"已就绪"行内文字
       gatewayPreparing.value = false
-      // 准备 + 就绪两条提示音用串行队列依次完整播完、互不打断（闭环）。
-      // 只在真正进入 standby 后才播——失败路径上面已 return，不会误报"已就绪"。
-      playPromptCueSequence(['gatewayPreparing', 'gatewayReady'])
+      // 「准备中」已在等待之前播过（见上），这里只补「就绪」。若准备中还在播，
+      // 用串行队列等它播完再播就绪，保证两条都不被打断、按序完整。失败路径上面已 return。
+      playPromptCueSequence(['gatewayReady'])
     } finally {
       enabling = false
     }
@@ -1439,6 +1463,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     clearT2()
     clearClosing()
     if (doneToListeningTimer) { clearTimeout(doneToListeningTimer); doneToListeningTimer = null }
+    cancelFinalClear()
     cancelPendingIdle()
     leaveWake()
     // 撤销本实例的全部订阅，避免模块级单例 transport 在 HMR 重挂载时叠加重复监听

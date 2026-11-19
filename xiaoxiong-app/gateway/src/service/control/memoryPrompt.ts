@@ -33,6 +33,12 @@ export function detectPreference(text: string): string | null {
  */
 const AFFIRM_WORDS = /^(好|好的|好啊|好呀|行|行啊|可以|可以啊|要|要的|嗯|嗯嗯|对|对的|是的|是|当然|当然可以|没问题|成|成啊|OK|ok|okay|yes|yeah|记|记吧|记下|记下吧|记下来|记住|记一下|记一下吧|记吧|帮我记|那就记|那就记下来|那记一下|同意|随你|你记吧|你记)$/i
 const NEGATE_WORDS = /^(不|不用|不要|别|算了|不必|不了|不需要|不要记|不记|取消|放弃|no|nope|再说说|再说|以后再说)$/i
+/**
+ * 句尾明确的「要记」短语：用户回答反问时顺带说「打球，要记下来」也能识别出肯定。
+ * 必须在句尾（后面只剩语气词/标点）——「记住我喜欢吃苹果」短语后还有实质内容，那是
+ * 「记住XX」指令不是确认，不能命中，否则 detectMemoryCommand 会把指令当确认放行掉。
+ */
+const REMEMBER_PHRASE = /(要记下来|要记一下|记下来|记一下|记住|帮我记|那就记下来|那就记一下|记下)[吧呀呢啊哦嘛了，,。！!？?\s]*$/i
 
 /** 规范化口语肯定：去句首语气词+逗号、去句尾语气词，再匹配。
  *  如「嗯，记一下吧。」→「记一下」；「好的，记吧」→「记吧」。 */
@@ -50,7 +56,13 @@ export function isAffirmative(text: string): boolean {
   const t = normalizeAffirm(text)
   if (!t) return false
   if (NEGATE_WORDS.test(t)) return false
-  return AFFIRM_WORDS.test(t)
+  if (AFFIRM_WORDS.test(t)) return true
+  // 混合句：回答了反问 + 明确说要记（「打球，要记下来」）。含记忆短语且短语前无否定即算肯定。
+  // 「不用记下来 / 别记 / 不要记」不算——紧挨短语的「不/别/不用」优先否掉。
+  const hit = REMEMBER_PHRASE.exec(t)
+  if (!hit) return false
+  const before = t.slice(0, hit.index)
+  return !/(不|别|不用|没有|没)$/.test(before)
 }
 
 /** 否定意图（明确拒绝记录），用于收起提示并回一句。 */

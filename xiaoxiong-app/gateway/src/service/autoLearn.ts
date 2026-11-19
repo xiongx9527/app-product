@@ -94,6 +94,29 @@ export function longestSharedSubstring(a: string, b: string): number {
   return best
 }
 
+/**
+ * 判断纠错「目标词」是否为专有名词（名词/人名/地名/景区/国家/品牌）。
+ * 用户明确规则（2026-11-19）：纠错的正确词必须是名词/人名/地名（地区名、国家、风景区等），
+ * 绝不能是「乒乓球好」「苹果好」「记下了」这类动宾/形容词/带虚词的短语——那些会污染纠错词表
+ * （真机「我喜欢打乒乓球」被纠成「我喜乒乓球挺球」就是这么来的）。
+ * 用排除法：含常见形容词/动词/助词/代词的词，一律不当纠错目标。
+ */
+// 专有名词长度：2–6 字（1 字太泛、>6 多半是短语/整句），用户 2026-11-19 要求限制字数（8 太长）。
+const NOUN_MIN = 2
+const NOUN_MAX = 6
+// 词首/词尾的动词、代词、助词、程度词：出现在这两处几乎必然不是专有名词
+// （「我喜乒乓」首「我」、「喜欢吃」尾「吃」、「想吃饭」首「想」、「乒乓球好」尾「好」）。
+// 不查词中，避免误伤含这些字的真实名词（如「好吃街」的「吃」在词中——但词首「好」……见下）。
+const NON_NOUN_HEAD = /^(我|你|他|她|它|我们|这|那|想|要|爱|喜欢|吃|打|看|玩|买|去|做|在|有|是|能|会|给|被|把|就|都|也|还|又|很|太|最|更)/
+const NON_NOUN_TAIL = /(好|棒|帅|美|厉害|不错|优秀|漂亮|好看|好吃|好听|了|的|着|过|吗|呢|吧|啊|呀|哦|很|太|更|最|吃|看|买|玩|去|做|喜欢|爱|想|可以|不行|一样|一些|某些)$/
+export function isProperNounTarget(word: string): boolean {
+  const w = (word ?? '').trim()
+  if (w.length < NOUN_MIN || w.length > NOUN_MAX) return false
+  if (NON_NOUN_HEAD.test(w)) return false
+  if (NON_NOUN_TAIL.test(w)) return false
+  return true
+}
+
 const STOP = new Set(['好的', '用户', '助手', '小熊', '播放', '正在', '为你', '为你播放', '没有', '找到', '可以', '什么', '这个', '那个', '一下', '现在', '今天', '明天', '昨天', '背若', '背洛'])
 /**
  * 提取文本里的中文词候选：对每段连续中文做 2–4 字滑动窗口（覆盖大多数专有名词长度），
@@ -161,11 +184,12 @@ export function createAutoLearnEngine(logger?: AutoLearnLogger): AutoLearnEngine
           }
         }
       }
-      // to：锚点提取（《》/播放：）优先，再补 LLM 回复里的词（长词优先）
-      const tos = [
-        ...extractAnchoredWords(toText ?? ''),
-        ...extractChineseWords(toText ?? '').sort((a, b) => b.length - a.length),
-      ]
+      // to：只认「锚点」提取的规范词（《》书名号、"播放：xxx"）——这是 LLM 回复里
+      // 明确标点出的专有名词/作品名，可信。绝不再把 LLM 回复的全文词也加进来穷举：
+      // 那会把用户随口说的「我喜欢打乒乓球」的每个滑窗 × LLM 回答里的任意同音词，
+      // 学成一堆「找点乒乓→放乒乓球→乒乓球比」的链式垃圾规则（2026-11-19 实锤）。
+      // 没有锚点就不学——LLM 普通回答本来就没有该书号，不该产生纠错词。
+      const tos = extractAnchoredWords(toText ?? '')
       for (const f of [...froms].sort((a, b) => b.length - a.length)) {
         for (const t of tos) {
           if (t === f) continue

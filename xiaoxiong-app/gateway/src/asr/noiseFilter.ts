@@ -191,12 +191,42 @@ function normalize(text: string): string {
  *  - 中英混排、无句末标点、尾巴是全新内容（不是重复）都保持原文。
  */
 /**
+ * 唤醒词 / 高频短指令词：重复段里含这些词时，是用户真实指令被 ASR 原样说了两遍，
+ * 绝不能折叠——否则「小熊，小熊」被折成「小熊，」前端就匹配不到唤醒词，直接唤不醒。
+ * 与前端 uni_app/src/core/wake/types.ts 的 DEFAULT_WAKE_WORDS 保持一致（网关是独立
+ * bundle，无法 import 前端常量）。只列短词：长句重复（"我喜欢打乒乓球"×2）不含这些
+ * 词，照常折叠。
+ */
+const PROTECTED_COMMAND_WORDS: readonly string[] = [
+  // 唤醒词（"小熊"已覆盖 小熊小熊 / 小熊熊 / 小小熊）
+  '小熊',
+  // 高频短控制指令
+  '播放', '暂停', '停止', '关闭', '开启', '打开', '取消', '确定', '继续',
+  '下一首', '上一首', '下一集', '上一集', '搜索', '切换', '退出', '重播',
+  '跳过', '音量', '字幕', '记一下', '清空',
+]
+
+/** 重复段是否含唤醒词/指令词——含则放过（不折叠），保护真实指令。 */
+function containsCommandWord(core: string): boolean {
+  return PROTECTED_COMMAND_WORDS.some((w) => core.includes(w))
+}
+
+/**
  * 折叠「A+A」式整词组重复（SenseVoice 句尾重复的另一形态，无标点）。
  * 实机：朗诵滕王阁序 → "朗诵滕王阁序滕王阁序"（"滕王阁序"重复两遍），导致作品名查不到。
  * 只处理完全一致的重复段（每段≥2字），保守避免误伤正常表达（如"追追追""走走停停"）。
  */
 function collapseRepeatedPhrase(text: string): string {
-  const core = text.trim().replace(/[。．.！!？?，,、\s]+$/u, '')
+  const trimmed = text.trim()
+  const core = trimmed.replace(/[。．.！!？?，,、\s]+$/u, '')
+  // 整句连说两遍（用户把一句话说了两遍，ASR 原样输出）：无标点 A+A，每段≥4字才折叠。
+  // "我喜欢打乒乓球我喜欢打乒乓球"→"我喜欢打乒乓球"。每段≥4字保证不碰唤醒词
+  // 「小熊小熊」(2字)、「搜索搜索」「取消取消」(2字)、「走走停停」(非A+A) 等真实输入。
+  const n = core.length
+  // 整句 A+A 折叠；含唤醒词/指令词的重复放过（如用户连喊多声唤醒词），保护真实指令。
+  if (n >= 8 && n % 2 === 0 && core.slice(0, n / 2) === core.slice(n / 2) && !containsCommandWord(core)) {
+    return core.slice(0, n / 2) + trimmed.slice(core.length)
+  }
   // 只在带朗读动词时折叠：诗词/古文重复（"朗诵滕王阁序滕王阁序"）总带"朗诵/背诵"。
   // 绝不能对纯"A+A"折叠——"小熊小熊"(唤醒词)、"搜索搜索"、"取消取消"都是真实用户输入，
   // 折叠会破坏唤醒词（实测导致 asr.queued 收不到"小熊小熊"、唤醒失效）。
@@ -210,11 +240,43 @@ function collapseRepeatedPhrase(text: string): string {
   return text
 }
 
+/**
+ * 折叠「用标点隔开的相邻重复句」：用户把一句话说了两遍，ASR 原样输出
+ * （"人太多了，人太多了。"→"人太多了。"、"昨天，昨天发生了什么"→"昨天发生了什么"）。
+ * 只在相邻片段「去掉标点后完全相同」时去重，不碰字级叠字/唤醒词/真实 A+A 表达。
+ */
+function collapseRepeatedClauses(text: string): string {
+  // 按句末/逗号切分，保留分隔符。每段去空白后比较核心（再去掉尾部标点）
+  const parts = text.split(/([，,。．.！!？?、\s]+)/)
+  // parts 偶数下标是文字段、奇数下标是分隔符段
+  const out: string[] = []
+  let prevCore = ''
+  for (let i = 0; i < parts.length; i += 2) {
+    const seg = parts[i] ?? ''
+    const sep = parts[i + 1] ?? ''
+    const core = seg.replace(/^[，,。．.！!？?、\s]+|[，,。．.！!？?、\s]+$/g, '')
+    // 相邻文字段核心完全相同、且≥2字（仅排除单字重复如"好。好"，不是靠字数判断是不是
+    // 唤醒词）才折叠；重复段含唤醒词/指令词时是用户真实指令说两遍，放过不折叠——
+    // 「小熊，小熊」折成「小熊，」会让前端匹配不到唤醒词（真机唤不醒）。
+    // "人太多了，人太多了"不含指令词，正常折叠。
+    if (core.length >= 2 && core === prevCore && !containsCommandWord(core)) {
+      // 相邻文字段核心完全相同：跳过这一段（含其后的分隔符），保留前一段的分隔符
+      continue
+    }
+    out.push(seg, sep)
+    if (core) prevCore = core
+  }
+  const result = out.join('')
+  return result || text
+}
+
 export function stripTrailingEcho(text: string): string {
   if (!text) return text
-  // 先折叠无标点的整词组重复（"滕王阁序滕王阁序"），再走下面有标点的尾巴重复逻辑。
-  const collapsed = collapseRepeatedPhrase(text)
-  if (collapsed !== text) return collapsed
+  // ① 折叠无标点的整词组重复（"滕王阁序滕王阁序"）② 折叠标点隔开的重复句（"人太多了，人太多了"）
+  const collapsedPhrase = collapseRepeatedPhrase(text)
+  if (collapsedPhrase !== text) return collapsedPhrase
+  const collapsedClauses = collapseRepeatedClauses(text)
+  if (collapsedClauses !== text) return collapsedClauses
   // SenseVoice 习惯给整句补一个收尾句号（「…天气。」）。先把这个收尾标点摘掉再分析，
   // 否则「最后一个标点」会落到收尾句号上、尾巴变空，永远删不掉重复词。
   const trimmed = text.trim().replace(/[。．.！!？?，,、\s]+$/u, '')

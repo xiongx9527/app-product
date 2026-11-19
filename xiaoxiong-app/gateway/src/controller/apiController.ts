@@ -5,6 +5,19 @@ import { listVoiceModels } from '../service/voiceModels'
 import { openApiSpec } from '../openapi'
 import { pinyin } from 'pinyin-pro'
 import { loadAsrCorrections } from '../service/voiceSessionService'
+import { isProperNounTarget } from '../service/autoLearn'
+
+/** 管理端加纠错词校验（与自动学习同口径，2026-11-19）：正确词须是专有名词、from/to 字数相等、2–6 字。 */
+function validateCorrectionItem(correct: string, wrong: string): string | null {
+  const c = correct.trim(), w = wrong.trim()
+  if (c === w) return '正确词和错词不能一样'
+  if (!/^[\u4e00-\u9fff]+$/.test(c) || !/^[\u4e00-\u9fff]+$/.test(w)) return '正确词和错词都必须是纯中文'
+  if (c.length < 2 || c.length > 6 || w.length < 2 || w.length > 6) return '正确词和错词都必须是 2–6 字'
+  if (c.length !== w.length) return '正确词和错词字数必须一样'
+  if (!isProperNounTarget(c)) return '正确词必须是专有名词（人名/地名/作品名/诗词名/歌名/品牌），不能是短语'
+  if (!isProperNounTarget(w)) return '错词也必须是专有名词形态（如「李存序」），不能是「打乒乓」这类动词短语'
+  return null
+}
 
 export interface ApiRequest {
   method: string
@@ -129,9 +142,19 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
         return { status: 400, body: { error: '需提供 correct→wrong 项（单条或 items 数组）' } }
       }
       const toPy = (w: string) => pinyin(w, { toneType: 'none', type: 'array' }).join(' ')
+      // 管理端也按新规则校验（用户 2026-11-19）：非法项跳过并汇总原因，不让垃圾词进词表
+      const rejected: Array<{ correct: string; wrong: string; reason: string }> = []
+      const valid = items.filter((x) => {
+        const err = validateCorrectionItem(x.correct!, x.wrong!)
+        if (err) rejected.push({ correct: x.correct!.trim(), wrong: x.wrong!.trim(), reason: err })
+        return !err
+      })
+      if (!valid.length) {
+        return { status: 400, body: { error: '所有纠错项都不符合规则', rejected } }
+      }
       try {
         const mainIds = new Map<string, number>()
-        for (const x of items) {
+        for (const x of valid) {
           const correct = x.correct!.trim()
           const wrong = x.wrong!.trim()
           let id = mainIds.get(correct)
@@ -144,12 +167,22 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
           })
         }
         await refreshCorrector()
-        return { status: 200, body: { ok: true, count: items.length } }
+        return { status: 200, body: { ok: true, count: valid.length, rejected } }
       } catch (err) {
         return { status: 500, body: { error: (err as Error).message } }
       }
     }
     if (pathname === '/api/admin/asr-corrections' && method === 'DELETE') {
+      // all=1：物理清空整张纠错词表（开发调试清污染数据用，seed 合法词会在下次 init 重建）
+      if (query.get('all') === '1') {
+        try {
+          const deleted = await data.clearAsrCorrections()
+          await refreshCorrector()
+          return { status: 200, body: { ok: true, ...deleted } }
+        } catch (err) {
+          return { status: 500, body: { error: (err as Error).message } }
+        }
+      }
       const correct = query.get('correct')
       const wrong = query.get('wrong')
       if (!correct) return { status: 400, body: { error: 'correct 必填' } }

@@ -121,6 +121,11 @@ describe('stripTrailingEcho（去掉 SenseVoice 句尾多吐的重复词）', ()
     expect(stripTrailingEcho('朗诵岳阳楼记岳阳楼记')).toBe('朗诵岳阳楼记')
   })
 
+  it('用户把整句连说两遍（无标点 A+A，每段≥4字）折叠成一遍', () => {
+    expect(stripTrailingEcho('我喜欢打乒乓球我喜欢打乒乓球')).toBe('我喜欢打乒乓球')
+    expect(stripTrailingEcho('我想去买菜我想去买菜')).toBe('我想去买菜')
+  })
+
   it('词组折叠绝不误伤唤醒词/真实 A+A 表达', () => {
     // 唤醒词和真实重复表达没有朗读动词，必须原样保留（否则唤醒失效）
     expect(stripTrailingEcho('小熊小熊')).toBe('小熊小熊')
@@ -130,6 +135,16 @@ describe('stripTrailingEcho（去掉 SenseVoice 句尾多吐的重复词）', ()
     expect(stripTrailingEcho('走吧？走')).toBe('走吧？走')
     expect(stripTrailingEcho('去北京？上海也行。')).toBe('去北京？上海也行。')
     expect(stripTrailingEcho('朗诵滕王阁序')).toBe('朗诵滕王阁序')
+  })
+
+  it('标点分隔的重复不折叠唤醒词/指令词（含则放过），普通重复句照常折叠', () => {
+    // 真机回归：喊「小熊，小熊」曾被折成「小熊，」→ 前端匹配不到唤醒词、唤不醒
+    expect(stripTrailingEcho('小熊，小熊。')).toBe('小熊，小熊。')
+    expect(stripTrailingEcho('搜索，搜索。')).toBe('搜索，搜索。')
+    expect(stripTrailingEcho('取消，取消。')).toBe('取消，取消。')
+    expect(stripTrailingEcho('小熊小熊小熊小熊')).toBe('小熊小熊小熊小熊')
+    // 不含指令词的重复句仍折叠
+    expect(stripTrailingEcho('人太多了，人太多了。')).toBe('人太多了，')
   })
 
   it('尾部是全新内容（不是重复）时保留', () => {

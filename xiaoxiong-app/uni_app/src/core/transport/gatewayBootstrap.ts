@@ -150,12 +150,50 @@ function delay(ms: number): Promise<void> {
 }
 
 /**
- * 直接探测网关 HTTP 端口可达性（ws://127.0.0.1:8787/ws → http://127.0.0.1:8787/）。
- * 真机实测 plus.io 各 root 均读不到原生写出的 gateway.url（getFilesDir 无对应 root），
- * 故就绪判定不能只依赖文件：任何 HTTP 响应（含 404）都证明网关已在监听。
+ * /api/health 的最小结构（只取就绪判断需要的字段，不耦合完整 HealthReport）。
+ * 网关 /api/health 返回 { ok: true, providers: { asr/llm/tts/network } }。
+ */
+interface GatewayHealthShape {
+  ok?: boolean
+  providers?: {
+    asr?: { configured?: boolean; reachable?: boolean }
+    llm?: { configured?: boolean; reachable?: boolean }
+    tts?: { configured?: boolean; reachable?: boolean }
+    network?: { reachable?: boolean }
+  }
+}
+
+/**
+ * health 全部 ok 才就绪（与 useHealth.toHealthItems 的 'ok' 口径一致）：
+ * asr/llm/tts 需 configured && reachable，network 需 reachable，顶层 ok 为 true。
+ * stub（未接入）、不可达、外网不通都算未就绪。
+ */
+export function isGatewayHealthAllOk(raw: unknown): boolean {
+  let data = raw
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data)
+    } catch {
+      return false
+    }
+  }
+  if (!data || typeof data !== 'object') return false
+  const d = data as GatewayHealthShape
+  if (d.ok !== true) return false
+  const p = d.providers
+  if (!p) return false
+  const capOk = (c?: { configured?: boolean; reachable?: boolean }) =>
+    !!c && c.configured === true && c.reachable === true
+  return capOk(p.asr) && capOk(p.llm) && capOk(p.tts) && p.network?.reachable === true
+}
+
+/**
+ * 探网关 /api/health：只有返回成功且 asr/llm/tts/network 全部 ok 才算就绪。
+ * 不再用「根路径任何响应（含 404）即就绪」——那会在网关进程刚监听、能力还没就绪时
+ * 误报就绪，用户对着没真正准备好的网关喊唤醒自然唤不醒。
  * 用 uni.request（原生网络栈，无 webview CORS/明文限制），无 uni 环境返回 false。
  */
-function probeGatewayHttp(httpUrl: string, timeoutMs = 1000): Promise<boolean> {
+function probeGatewayHealth(httpBase: string, timeoutMs = 15000): Promise<boolean> {
   return new Promise((resolve) => {
     try {
       const u = (uni as unknown as {
@@ -163,16 +201,16 @@ function probeGatewayHttp(httpUrl: string, timeoutMs = 1000): Promise<boolean> {
           url: string
           method: string
           timeout?: number
-          success?: () => void
+          success?: (res: { data?: unknown }) => void
           fail?: () => void
         }) => void
       } | undefined)?.request
       if (typeof u !== 'function') return resolve(false)
       u({
-        url: httpUrl,
+        url: `${httpBase.replace(/\/$/, '')}/api/health`,
         method: 'GET',
         timeout: timeoutMs,
-        success: () => resolve(true),
+        success: (res) => resolve(isGatewayHealthAllOk(res?.data)),
         fail: () => resolve(false),
       })
     } catch {
@@ -187,32 +225,33 @@ function wsToHttpBase(wsUrl: string): string {
 }
 
 export interface WaitGatewayOptions {
-  /** 最长等待内嵌网关就绪的时间，默认 15s。 */
+  /** 最长等待内嵌网关就绪的时间，默认 45s（health 首次真探上游可达 10s+）。 */
   timeoutMs?: number
   /** 轮询间隔，默认 300ms。 */
   pollMs?: number
 }
 
 /**
- * 等待内嵌网关就绪：原生 :gateway 进程启动后才会写出 gateway.url，
- * enable() 前先等它就绪，避免连到默认回退地址而连不上、又静默失败。
+ * 等待内嵌网关就绪：enable() 前先等它真正就绪，避免连到还没准备好的网关而静默失败。
  * - 非内嵌（H5 / 外部网关）：直接 resolve(true)，就绪由真实建连判断。
- * - 内嵌：轮询 gateway.url，命中即 true；超时（默认 15s）返回 false，
+ * - 内嵌：拿网关地址（plus.io 的 gateway.url，读不到用回退地址）后轮询
+ *   /api/health，asr/llm/tts/network 全部 ok 才算就绪；超时（默认 15s）返回 false，
  *   由调用方显示 i18n 提示、不静默。
+ * 真机实测 plus.io 各 root 均读不到 gateway.url（getFilesDir 无对应 root），所以
+ * health 探测才是就绪的权威判据，不再用「HTTP 任何响应即就绪」的宽松口径。
  */
 export async function waitForEmbeddedGateway(
   options: WaitGatewayOptions = {},
 ): Promise<boolean> {
   if (!isEmbeddedGateway()) return true
-  const timeoutMs = options.timeoutMs ?? 15000
+  const timeoutMs = options.timeoutMs ?? 45000
   const pollMs = Math.max(50, options.pollMs ?? 300)
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    // 通道①：原生写出的 gateway.url（plus.io 读得到时优先用真实地址）
-    if (await readEmbeddedGatewayUrl()) return true
-    // 通道②：直接探 HTTP 端口（固定端口部署下文件通道不可用，可达性即就绪）
-    const fallback = fallbackWsUrl()
-    if (fallback && (await probeGatewayHttp(wsToHttpBase(fallback)))) return true
+    // 网关地址：原生写出的 gateway.url 优先，读不到用回退地址（固定端口部署）
+    const url = (await readEmbeddedGatewayUrl()) ?? fallbackWsUrl()
+    // 就绪权威判据：/api/health 全部 ok
+    if (url && (await probeGatewayHealth(wsToHttpBase(url)))) return true
     await delay(pollMs)
   }
   return false

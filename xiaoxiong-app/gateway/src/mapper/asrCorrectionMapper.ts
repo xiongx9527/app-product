@@ -45,6 +45,16 @@ export function asrCorrectionMapper(db: AppDb) {
     return rows[0] ?? null
   }
   return {
+    /**
+     * 物理清空纠错词表（开发调试用：被自动学习污染的垃圾规则需要真正删掉，
+     * 软删除 enabled=0 会一直留在库里）。先删子表再删主表，避免外键约束。
+     */
+    async clearAll(): Promise<{ variants: number; mains: number }> {
+      const v = await db.delete(asrCorrectionVariants).returning({ id: asrCorrectionVariants.id })
+      const m = await db.delete(asrCorrections).returning({ id: asrCorrections.id })
+      return { variants: v.length, mains: m.length }
+    },
+
     /** 纠正器加载：联表取启用项。 */
     async listFlat(): Promise<FlatCorrection[]> {
       const rows = await db

@@ -15,6 +15,8 @@ export interface VoiceControllerDeps {
   config: GatewayConfig
   data: DataService
   correctionSyncer?: CorrectionSyncer
+  /** 本次网关启用的 skill 模块（按配置加载），交给每个会话 create 实例。 */
+  skillModules?: import('../service/skills/types').SkillModule[]
 }
 
 /** 从 WS 握手请求里取 deviceId（客户端随连接 URL query 上报）；缺省空表示旧客户端。 */
@@ -111,7 +113,7 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       resolveVoice: (voice) => resolveCapabilityConfig(voice, config),
       createAsr,
       createTts,
-      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, getNowPlaying, autoMemory, mcpServers, autoLearnEngine) =>
+      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, getNowPlaying, autoMemory, mcpServers, autoLearnEngine, promptAddon) =>
         createAgentService(
           { llm, timeZone: timezone },
           lang,
@@ -129,10 +131,12 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
           getNowPlaying,
           autoMemory,
           mcpServers,
-          autoLearnEngine
+          autoLearnEngine,
+          promptAddon
         ),
       data,
       correctionSyncer: deps.correctionSyncer,
+      skillModules: deps.skillModules,
       send,
       sendAudio,
       asrEndpointMs: config.asr.endpointMs,

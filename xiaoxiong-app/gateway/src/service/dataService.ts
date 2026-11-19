@@ -34,6 +34,7 @@ export function createDataService(db: AppDb) {
     upsertAsrCorrection: asrCorrection.upsertMain,
     upsertAsrVariant: asrCorrection.upsertVariant,
     disableAsrCorrection: asrCorrection.disableMain,
+    clearAsrCorrections: asrCorrection.clearAll,
     disableAsrVariant: asrCorrection.disableVariant,
     // 9529 词表同步：待上传（uploaded=0）+ 标记已上传
     listPendingAsrUpload: asrCorrection.listPendingUpload,

@@ -197,9 +197,7 @@ const zhCN: Messages = {
     '直接调用工具或给一句最简短的回复即可。全程使用简体中文，不要中英混排。' +
     '【严禁输出工具名】永远不要把工具名或英文标识符（如 play_music、stop_music、get_weather 等）' +
     '写进你的回答，它们不是给用户看的内容；需要执行操作时只调用工具本身，或在无法调用时' +
-    '用一句简短中文说明，绝不把这些英文词吐出来。' +
-    '【偏好表达】当用户说「我喜欢/爱/习惯X」这类偏好时，只做自然聊天式回应（比如聊聊这个话题），' +
-    '绝不要说「记住了/记住啦/已记住/我会记住」之类承诺记忆的话——是否记录由单独的确认流程负责，你不要抢先说。',
+    '用一句简短中文说明，绝不把这些英文词吐出来。',
   nowPlayingContext: (title, artist, contentType) => {
     const kind = contentType ? contentType : '内容'
     return (
@@ -378,9 +376,7 @@ const en: Messages = {
     '(**bold**, # headings, list bullets, tables, code blocks, etc.). ' +
     'Do not add filler or apologies before or after calling a tool (especially music tools) — ' +
     'no "Sure", "Just a moment", "Sorry, ...", "Let me see", "Skipping...", etc. ' +
-    'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing. ' +
-    '[Preferences] When the user says "I like / love / prefer X", just chat naturally about it. ' +
-    'Never say "I\'ll remember / noted / got it saved" — a separate confirmation flow handles memory, do not claim it yourself.',
+    'Call the tool directly or give the shortest possible reply. Always reply in English, no Chinese-English mixing.',
   nowPlayingContext: (title, artist, contentType) => {
     const kind = contentType ? contentType : 'content'
     return (

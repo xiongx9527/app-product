@@ -4,7 +4,33 @@ import {
   getGatewayWsUrl,
   readEmbeddedGatewayUrl,
   waitForEmbeddedGateway,
+  isGatewayHealthAllOk,
 } from './gatewayBootstrap'
+
+/** 全部能力 ok 的 /api/health 响应体（与网关 server.ts 返回结构一致）。 */
+const HEALTH_OK = {
+  ok: true,
+  providers: {
+    asr: { provider: 'builtin', configured: true, reachable: true, message: '' },
+    llm: { provider: 'builtin', configured: true, reachable: true, message: '' },
+    tts: { provider: 'builtin', configured: true, reachable: true, message: '' },
+    network: { reachable: true, message: '' },
+  },
+}
+
+/** mock uni.request：/api/health 返回给定响应体，其余请求 fail。 */
+function mockUniRequest(health: unknown): void {
+  ;(globalThis as unknown as { uni?: unknown }).uni = {
+    request: (o: {
+      url: string
+      success?: (res: { data?: unknown }) => void
+      fail?: () => void
+    }) => {
+      if (o.url.includes('/api/health')) queueMicrotask(() => o.success?.({ data: health }))
+      else queueMicrotask(() => o.fail?.())
+    },
+  }
+}
 
 /**
  * 用最小化的假 plus.io 驱动 gatewayBootstrap：仅覆盖本模块用到的
@@ -202,9 +228,31 @@ describe('readEmbeddedGatewayUrl（不回退，供就绪轮询）', () => {
   })
 })
 
+describe('isGatewayHealthAllOk（/api/health 全部 ok 才就绪）', () => {
+  it('全部能力 ok → true', () => {
+    expect(isGatewayHealthAllOk(HEALTH_OK)).toBe(true)
+    expect(isGatewayHealthAllOk(JSON.stringify(HEALTH_OK))).toBe(true)
+  })
+  it('任一项未就绪 → false', () => {
+    const bad = (patch: Record<string, unknown>) =>
+      isGatewayHealthAllOk({ ...HEALTH_OK, providers: { ...HEALTH_OK.providers, ...patch } })
+    expect(bad({ asr: { configured: true, reachable: false, message: '' } })).toBe(false)
+    expect(bad({ llm: { configured: false, reachable: false, message: '' } })).toBe(false)
+    expect(bad({ tts: { configured: true, reachable: false, message: '' } })).toBe(false)
+    expect(bad({ network: { reachable: false, message: '' } })).toBe(false)
+  })
+  it('顶层 ok / 结构异常 → false', () => {
+    expect(isGatewayHealthAllOk({ ...HEALTH_OK, ok: false })).toBe(false)
+    expect(isGatewayHealthAllOk(null)).toBe(false)
+    expect(isGatewayHealthAllOk('not json')).toBe(false)
+    expect(isGatewayHealthAllOk({ ok: true })).toBe(false)
+  })
+})
+
 describe('waitForEmbeddedGateway（enable 前等待就绪）', () => {
   afterEach(() => {
     delete (globalThis as unknown as { plus?: unknown }).plus
+    delete (globalThis as unknown as { uni?: unknown }).uni
   })
 
   it('非内嵌环境：立即返回 true（就绪由真实建连判断）', async () => {
@@ -212,17 +260,19 @@ describe('waitForEmbeddedGateway（enable 前等待就绪）', () => {
     expect(await waitForEmbeddedGateway({ timeoutMs: 50, pollMs: 10 })).toBe(true)
   })
 
-  it('内嵌且 gateway.url 已存在：立即返回 true', async () => {
+  it('内嵌且 /api/health 全部 ok：立即返回 true', async () => {
     ;(globalThis as unknown as { plus?: unknown }).plus = buildPlus({
       fileContents: 'ws://127.0.0.1:4321/ws',
     })
+    mockUniRequest(HEALTH_OK)
     expect(await waitForEmbeddedGateway({ timeoutMs: 200, pollMs: 10 })).toBe(true)
   })
 
-  it('内嵌但始终读不到 gateway.url：超时返回 false（不静默）', async () => {
-    ;(globalThis as unknown as { plus?: unknown }).plus = buildPlus({
-      fileContents: null,
-      perRoot: { 1: false, 2: false, 3: false, 4: false },
+  it('内嵌但 /api/health 有项未 ok：超时返回 false（不静默）', async () => {
+    ;(globalThis as unknown as { plus?: unknown }).plus = buildPlus({ fileContents: null })
+    mockUniRequest({
+      ...HEALTH_OK,
+      providers: { ...HEALTH_OK.providers, llm: { configured: true, reachable: false, message: '' } },
     })
     const start = Date.now()
     const ready = await waitForEmbeddedGateway({ timeoutMs: 60, pollMs: 10 })

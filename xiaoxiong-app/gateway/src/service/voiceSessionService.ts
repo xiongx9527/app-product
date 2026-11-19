@@ -37,7 +37,6 @@ import { detectTimeCommandKind } from './control/timeControl'
 import { detectAuspiciousQuery, type AuspiciousQuery } from './control/auspiciousControl'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
 import { detectWeatherCommand, extractWeatherCity } from './control/weatherControl'
-import { detectPreference, isAffirmative, isNegative, classifyPreference, mergeMemoryValue } from './control/memoryPrompt'
 import { detectProductQuery } from './control/productCatalog'
 import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
 import { detectBaikeCommand } from './control/baikeControl'
@@ -55,6 +54,7 @@ import { ABS_FLOOR_RMS } from '../vad/energyVad'
 import { AsrCorrector, type CorrectionEntry } from './asr/asrCorrector'
 import type { CorrectionSyncer } from './asrCorrectionSync'
 import type { AutoLearnEngine } from './autoLearn'
+import { skillPromptAddon, type Skill, type SkillContext } from './skills/types'
 import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
@@ -137,8 +137,11 @@ export interface VoiceSessionDeps {
     getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null,
     autoMemory?: boolean,
     mcpServers?: McpServerConfig[],
-    autoLearnEngine?: AutoLearnEngine
+    autoLearnEngine?: AutoLearnEngine,
+    promptAddon?: string
   ) => AgentService | Promise<AgentService>
+  /** 本次会话启用的 skill 模块；由网关按配置加载，会话 start 时各 create 一个实例。 */
+  skillModules?: import('./skills/types').SkillModule[]
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
   createAsr: (cfg: AsrConfig) => AsrProvider
   createTts: (cfg: TtsConfig) => TtsProvider
@@ -322,12 +325,12 @@ export class VoiceSessionService {
    */
   private pendingDeals: { items: Deal[]; query: string } | null = null
   /**
-   * 待确认的长期记忆：检测到用户表达偏好（喜欢/爱/习惯/爱好/倾向）时暂存。
-   * asked=false=还没问过（先正常回答用户），runTurn 播完回答后追问「要记吗」并置 true；
-   * 之后用户答肯定/否定才处理。绝不因超时清除（用户「不能失忆/结合上下文」）——
-   * 只在明确肯定/否定或会话 cancel/end 时清，保证隔十几秒的「好的」也能对上上下文。
+   * 本次会话的 skill 实例（由 deps.skillModules 各 create 一个）。偏好追问等业务规则
+   * 已迁进 skill，状态在实例闭包里；网关只在对应时机按序调用生命周期钩子。
    */
-  private pendingMemory: { value: string; asked: boolean } | null = null
+  private skills: Skill[] = []
+  /** 所有启用 skill 的提示词片段拼接结果（构造 agent 时一次算好，传给 agentFactory）。 */
+  private skillPromptAddon = ''
   /** 上一轮「换一首」没找到同类型的歌，正等用户确认是否换其它风格（不直接乱播） */
   private pendingNextFallback = false
   private mode: 'wake' | 'dialog' = 'dialog'
@@ -1696,81 +1699,80 @@ export class VoiceSessionService {
   }
 
   /**
-   * 长期记忆「问一句再记」：只在「已经问过要不要记」（pending.asked=true，即有上下文）时，
-   * 才把用户的肯定/否定当成对记录意图的回答；否则不碰，让句子走正常对话。
-   * 绝不因超时清 pending（用户「不能失忆/结合上下文」）——隔十几秒的「好的」也要能对上。
-   * 返回 true 表示这句话已被确认流程消费（调用方 return）。
+   * 首次 start 时构造 skill 实例（含提示词片段）。ctx 用 getter 读会话的当前值——
+   * skill 生命周期可能跨重武装（agent/memoryStore 会变），getter 保证它总拿到最新的。
+   * 已在 onSessionReset('cancel'/'end') 里清状态，但实例本身保留（重武装不丢跨轮上下文，
+   * 与旧的 pendingMemory 语义一致）。
    */
-  private async tryMemoryConfirm(text: string): Promise<boolean> {
-    if (!this.deviceId) return false
-    const pending = this.pendingMemory
-    if (!pending || !pending.asked) return false
-    // 到这里说明上一轮问过「要记吗」，这句是对它的回答（有上下文）
-    const emitFinal = () => this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-    if (isAffirmative(text)) {
-      this.pendingMemory = null
-      emitFinal()
-      // 分类总结：内置常见类别优先（快、确定、不耗 LLM，苹果→水果偏好）；
-      // 内置搞不定（返回通用「偏好」）才调 LLM 抽取引擎做智能分类；都失败则原样存，绝不丢。
-      let key = classifyPreference(pending.value)
-      let value = pending.value
-      if (key === '偏好') {
-        const agent = this.agent
-        const store = this.memoryStore
-        if (agent && store) {
-          try {
-            const existing = await store.list()
-            const extracted = (await agent.extractMemories([pending.value], existing)) ?? []
-            if (extracted.length > 0) { key = extracted[0].key; value = extracted[0].value }
-          } catch { /* LLM 抽取失败：用内置通用 key 原样存 */ }
-        }
-      }
-      // 相似记忆合并更新：同类 key 的新内容与已有内容合并（去重），不是覆盖
-      let merged = value
-      const store2 = this.memoryStore
-      if (store2) {
-        try {
-          const existingList = await store2.list()
-          const same = existingList.find((e) => e.key === key)
-          merged = mergeMemoryValue(same?.value, value)
-        } catch { /* 读失败就用新值直存 */ }
-      }
-      await this.deps.data.saveMemory(this.deviceId, key, merged)
-      await this.speakReply(messages(this.lang).memory.rememberedSimple(merged))
-      return true
+  private ensureSkills(): void {
+    if (this.skills.length > 0) return
+    const modules = this.deps.skillModules ?? []
+    if (modules.length === 0) return
+    const self = this
+    const ctx: SkillContext = {
+      get lang() { return self.lang },
+      get deviceId() { return self.deviceId },
+      get data() { return self.deps.data },
+      get memoryStore() { return self.memoryStore },
+      get agent() { return self.agent },
+      send: (e) => self.deps.send(e),
+      speak: (t) => self.speakReply(t),
+      queueRemaining: () => self.queue.length,
     }
-    if (isNegative(text)) {
-      this.pendingMemory = null
-      emitFinal()
-      await this.speakReply(messages(this.lang).memory.notRemembered())
-      return true
+    this.skills = modules.map((m) => m.create(ctx))
+    this.skillPromptAddon = skillPromptAddon(modules, self.lang)
+  }
+
+  /**
+   * 一句定稿时按序调用所有 skill 的 onFinalize。任一 skill 返回 consumed=true 即表示这句
+   * 被它消费，网关不再走后续直连命令 / LLM。单个 skill 抛错吞掉，不拖垮会话（同 MCP）。
+   */
+  private async dispatchFinalize(text: string): Promise<boolean> {
+    for (const skill of this.skills) {
+      try {
+        const r = await skill.onFinalize?.(text)
+        if (r?.consumed) return true
+      } catch (err) {
+        console.warn('[skills] onFinalize 抛错，已跳过:', (err as Error)?.message)
+      }
     }
-    // 既非肯定也非否定：保留 pending（不失忆），不消费这句，让 LLM 正常回答
     return false
   }
 
-  /**
-   * 检测偏好句：暂存为待确认（asked=false），不打断、不口播提问——让 LLM 先正常回答用户。
-   * 追问「要不要记」由 maybeAskMemoryConfirm 在回答播完后进行。
-   * 返回 true 表示这句是偏好句（但本方法不消费它，调用方照常处理）。
-   */
-  private detectAndStagePreference(text: string): boolean {
-    if (!this.deviceId || !this.memoryStore || this.pendingMemory) return false
-    const pref = detectPreference(text)
-    if (!pref) return false
-    this.pendingMemory = { value: pref, asked: false }
-    return true
+  /** LLM 文本收尾时收集所有 skill 要追加的追问，按顺序拼成一段（同 TTS 链、无停顿）。 */
+  private dispatchAgentReply(text: string, full: string): string {
+    const parts: string[] = []
+    for (const skill of this.skills) {
+      try {
+        const t = skill.onAgentReply?.(text, full)?.appendTts
+        if (t) parts.push(t)
+      } catch (err) {
+        console.warn('[skills] onAgentReply 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+    return parts.join('')
   }
 
-  /**
-   * 在 runTurn 播完一句后调用：若刚才是偏好句（pending 存在且还没问过），此时才追问
-   * 「要我帮你记下来吗？」，并置 asked=true 建立上下文——用户之后的「好的」才认作确认。
-   */
-  private async maybeAskMemoryConfirm(): Promise<void> {
-    const pending = this.pendingMemory
-    if (!pending || pending.asked) return
-    pending.asked = true
-    await this.speakReply(messages(this.lang).memory.askRemember())
+  /** 一句播完后按序调用所有 skill 的 onAfterSpeak（兜底追问）。 */
+  private async dispatchAfterSpeak(text: string): Promise<void> {
+    for (const skill of this.skills) {
+      try {
+        await skill.onAfterSpeak?.(text)
+      } catch (err) {
+        console.warn('[skills] onAfterSpeak 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+  }
+
+  /** 会话取消/结束/重武装时通知所有 skill 清状态。 */
+  private dispatchSessionReset(reason: 'cancel' | 'end' | 'start'): void {
+    for (const skill of this.skills) {
+      try {
+        skill.onSessionReset?.(reason)
+      } catch (err) {
+        console.warn('[skills] onSessionReset 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
   }
 
   /** 记录本轮用户原话（仅真实对话轮次），供抽取引擎作为最近上下文；最多保留最近若干句。 */
@@ -2090,6 +2092,7 @@ export class VoiceSessionService {
   /** ASR 上游出错/超时的兜底提示：下发 asr-error 提示音（客户端本地播「没听清，再说一遍」）。 */
   private notifyAsrFailed(): void {
     const now = Date.now()
+    bargeDiag(`ASR-FAIL-CUE throttled=${now - this.lastAsrFailNoticeAt < 30_000} pb=${this.playbackPending} proc=${this.processing} queue=${this.queue.length}`)
     if (now - this.lastAsrFailNoticeAt < 30_000) return
     this.lastAsrFailNoticeAt = now
     this.deps.send({ type: 'client.cue', cue: 'asr-error' })
@@ -2175,13 +2178,11 @@ export class VoiceSessionService {
       return
     }
 
-    // ── 长期记忆「问一句再记」确认流程（用户 2026-11-19 要求）──
+    // ── skill 定稿钩子（偏好追问等规则已迁进 skill）──
     // 只在空闲真实对话轮次处理（播报期插话的「好/嗯」会排队，由 runTurn 消费时再确认）。
-    // 1) 已问过（asked=true）时，肯定/否定才消费这句；2) 新偏好句只暂存、不消费——
-    // 让 LLM 先正常回答，追问放在 runTurn 播完回答后（maybeAskMemoryConfirm）。
+    // 任一 skill 的 onFinalize 消费了这句就直接 return，不再走直连命令 / LLM。
     if (!this.playbackPending && !this.processing) {
-      if (await this.tryMemoryConfirm(text)) return
-      this.detectAndStagePreference(text)
+      if (await this.dispatchFinalize(text)) return
     }
 
     // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。
@@ -2331,9 +2332,10 @@ export class VoiceSessionService {
         let directHandled = false
         try {
           this.deps.data.insertCommandLog(this.deviceId, current, 'pending')
-          // 排队回放的句子先过记忆确认：播报期问「要不要记」后用户的「好」会排队到这里，
-          // 此时才真正落库（finalizeUtterance 里 pb=true 不处理确认）。
-          if (await this.tryMemoryConfirm(current)) {
+          // 排队回放的句子先过 skill 定稿钩子：播报期问「要不要记」后用户的「好」排到这里，
+          // 由 preference skill 此时才真正落库（finalizeUtterance 里 pb=true 不处理确认）；
+          // 播报期插话的偏好句也在这里补 stage，runAgent 才能把追问拼进同一段 TTS。
+          if (await this.dispatchFinalize(current)) {
             directHandled = true
           } else {
             // 排队回放的句子也要走直连拦截（音乐/音量/记忆），不能丢给大模型自动播放；
@@ -2352,9 +2354,9 @@ export class VoiceSessionService {
           await playback
         } else this.cancelPlaybackWait()
         if (this.turn !== turn || this.cancelled) break
-        // 偏好句已正常回答并播完，现在才追问「要不要记」（先回答后问，用户要求），
-        // 并置 pending.asked=true 建立上下文——用户随后的「好的」才认作确认。
-        await this.maybeAskMemoryConfirm()
+        // 一句播完后的 skill 兜底钩子（preference skill 在这里兜底追问「要不要记」；
+        // 主路径是同链追问 onAgentReply，这里 asked 已 true 时自然 no-op）。
+        await this.dispatchAfterSpeak(current)
         if (this.turn !== turn || this.cancelled) break
         // 真实对话轮次（非直连命令）结束后，异步抽取并沉淀长期记忆；直连命令（音乐/音量/记忆等）
         // 不进抽取，避免把「放首歌」「清空记忆」这类指令本身当成偏好记下来。
@@ -2513,6 +2515,15 @@ export class VoiceSessionService {
       }
       enqueue(buffer)
       buffer = ''
+      // skill 追问：把「要我帮你记下来吗？」等拼进同一条 TTS 链，和回答连续播——
+      // 不再等播完回执后单独 speakReply（那样中间有 tts.end→tts.start 停顿，
+      // 用户体感「播报停了、突然冒出一段」）。preference skill 的 onAgentReply 在这里
+      // 置 asked=true 建立确认上下文。
+      const appendTts = this.dispatchAgentReply(text, full)
+      if (appendTts) {
+        this.deps.send({ type: 'llm.delta', text: appendTts })
+        enqueue(appendTts)
+      }
       this.deps.send({ type: 'llm.done' })
       this.deps.data.insertCommandLog(this.deviceId, text, full.slice(0, 200))
       await ttsChain
@@ -2672,6 +2683,8 @@ export class VoiceSessionService {
     this.mode = mode
     this.active = true
     this.lastVoice = voice
+    // 构造 skill 实例与提示词片段（首次 start；重武装复用，状态由 cancel/end 清）。
+    this.ensureSkills()
     // 按客户端设置展开三套能力配置并构建实例：地址 / 密钥 / 参数一律来自设置，
     // 不再读网关硬编码。每次 start 重建（重武装也重建，状态由 reset 清空，跨轮记忆不丢）。
     const resolved = this.deps.resolveVoice(voice)
@@ -2727,7 +2740,8 @@ export class VoiceSessionService {
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
             this.autoMemory,
             this.mcpServers,
-            this.deps.correctionSyncer?.engine
+            this.deps.correctionSyncer?.engine,
+            this.skillPromptAddon
           )
       this.lastLlmKey = llmKey
       return
@@ -2777,7 +2791,8 @@ export class VoiceSessionService {
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
             this.autoMemory,
             this.mcpServers,
-            this.deps.correctionSyncer?.engine
+            this.deps.correctionSyncer?.engine,
+            this.skillPromptAddon
           )
     this.lastLlmKey = llmKey
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
@@ -2785,7 +2800,7 @@ export class VoiceSessionService {
 
   private cancel(): void {
     // 手动打断：作废当前轮、清空排队，在途回调靠 turn 号退出
-    if (this.pendingMemory) this.pendingMemory = null
+    this.dispatchSessionReset('cancel')
     const wasSpeaking = this.speaking
     this.turn += 1
     this.cancelled = true
@@ -2851,7 +2866,7 @@ export class VoiceSessionService {
   }
 
   private end(): void {
-    if (this.pendingMemory) this.pendingMemory = null
+    this.dispatchSessionReset('end')
     this.active = false
     this.cancelled = true
     this.turn += 1

@@ -1,5 +1,27 @@
 import { describe, it, expect } from 'vitest'
-import { createAutoLearnEngine, normalizePronunciation, longestSharedSubstring, extractAnchoredWords, PRON_NORMALIZERS, type AutoLearnRule, type AutoLearnContext } from './autoLearn'
+import { createAutoLearnEngine, normalizePronunciation, longestSharedSubstring, extractAnchoredWords, isProperNounTarget, PRON_NORMALIZERS, type AutoLearnRule, type AutoLearnContext } from './autoLearn'
+
+describe('isProperNounTarget（纠错目标必须是专有名词）', () => {
+  it.each([
+    '李存勖', '滕王阁序', '洛神赋', '西湖', '杭州', '中国', '西湖风景区',
+    '周杰伦', '稻香', '夜曲', '华为', '苹果', '好吃街', '美丽乡村',
+  ])('专有名词允许：%s', (w) => {
+    expect(isProperNounTarget(w)).toBe(true)
+  })
+
+  it.each([
+    '乒乓球好', '苹果好', '记下了', '我喜乒乓', '很好', '太棒了', '想吃饭', '打乒乓', '打羽毛',
+    '可以吗', '不错呀', '喜欢吃', '要看的',
+    '北', '西湖风景名胜区', // 字数越界：1字太泛、7字太长
+  ])('非专有名词拒绝：%s', (w) => {
+    expect(isProperNounTarget(w)).toBe(false)
+  })
+
+  it('字数边界：2字和6字允许', () => {
+    expect(isProperNounTarget('西湖')).toBe(true)
+    expect(isProperNounTarget('西湖风景区')).toBe(true) // 5字
+  })
+})
 
 describe('autoLearn 通用自动学习引擎', () => {
   it('规则链：先注册的规则命中即止，后注册的不执行', async () => {

@@ -11,6 +11,7 @@ import { createDocsController } from './controller/docsController'
 import { handleMusicStream, handleAdtsByKey, getMusicDiagnostics } from './controller/musicStreamController'
 import { handleMediaByKey } from './service/mediaCache'
 import { createVoiceConnection } from './controller/voiceController'
+import { loadSkillModules } from './service/skills/loader'
 import { buildHealth } from './service/health'
 import type { VoiceConfig } from './voiceConfig'
 import { encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
@@ -41,6 +42,9 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
     .then((rows) => loadAsrCorrections(rows))
     .catch((e) => console.error('[asr-correction] 加载本地词表失败：', e))
   const correctionSyncer = createCorrectionSyncer(data, config.voiceBuiltinUrl)
+
+  // Skill：按 GATEWAY_HOME/skills.json 配置加载启用的模块（缺省全部），每个会话各自 create 实例。
+  const skillModules = loadSkillModules()
 
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
@@ -182,7 +186,7 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
 
   const wss = new WebSocketServer({ server: httpServer, path: config.ws.path })
   wss.on('connection', (ws, req) => {
-    createVoiceConnection(ws, req, { config, data, correctionSyncer })
+    createVoiceConnection(ws, req, { config, data, correctionSyncer, skillModules })
   })
 
   return {
