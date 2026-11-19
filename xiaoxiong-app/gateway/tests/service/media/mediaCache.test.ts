@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { cacheExternalAudio, handleMediaByKey, type MediaFetcher } from '../../src/service/mediaCache'
+import { cacheExternalAudio, handleMediaByKey, type MediaFetcher } from '../../../src/service/media/mediaCache'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 describe('mediaCache（外部音频本地短链）', () => {

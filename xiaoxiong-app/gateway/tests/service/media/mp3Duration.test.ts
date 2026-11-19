@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mp3DurationSec } from '../../src/service/mp3Duration'
+import { mp3DurationSec } from '../../../src/service/media/mp3Duration'
 
 /** 造一帧：给定 4 字节帧头，按指定长度补零。 */
 function frame(header: number[], length: number): Buffer {
