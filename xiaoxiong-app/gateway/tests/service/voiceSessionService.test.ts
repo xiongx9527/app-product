@@ -3,6 +3,7 @@ import { VoiceSessionService } from '../../src/service/voiceSessionService'
 import { timeSkill } from '../../src/service/skills/time_skill'
 import { preferenceSkill } from '../../src/service/skills/preference_skill'
 import { createWeatherSkill } from '../../src/service/skills/weather_skill'
+import { auspiciousSkill } from '../../src/service/skills/auspicious_skill'
 import { ChannelSplitter } from '../../src/service/channelSplitter'
 import type { VoiceSessionDeps } from '../../src/service/voiceSessionService'
 import type { AgentService } from '../../src/service/agentService'
@@ -297,6 +298,7 @@ function createHarness(
     // 默认注入已实现的 skill（贴近生产装配）：time 走 onDirectCommand 直连、preference 走 onFinalize。
     // 显式传 skillModules 的用例（如 spy 测试）可覆盖。
     skillModules: opts.skillModules ?? [
+      auspiciousSkill,
       timeSkill,
       createWeatherSkill({
         name: 'test-weather',

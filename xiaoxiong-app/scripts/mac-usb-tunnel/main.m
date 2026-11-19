@@ -166,9 +166,11 @@ static void handleMuxData(NSData *chunk) {
     [gConnsLock unlock];
     int fd = fdNum ? fdNum.intValue : -1;
     if (fd < 0) {
+      logLine(@"收到新连接帧 connId=%u len=%u，建本地连接", connId, len);
       // 设备侧首次为某 connId 发数据 → 建本地连接（连 Mac 的语音代理）
       fd = openLocalConn(connId);
       if (fd < 0) { sendClose(connId); continue; }
+      logLine(@"connId=%u 本地连接建立 fd=%d", connId, fd);
     }
     ssize_t written = 0;
     while (written < (ssize_t)len) {

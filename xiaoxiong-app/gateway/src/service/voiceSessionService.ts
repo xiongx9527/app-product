@@ -1,6 +1,5 @@
 import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
-import { Solar } from 'lunar-javascript'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
 import type { ClientMessage, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
@@ -34,7 +33,6 @@ import { pickDeals, preferenceKeywords } from './memory'
 import { detectSubtitleCommand } from './control/subtitleControl'
 import { detectPlayModeCommand } from './control/playModeControl'
 import { isTimeQuery } from './skills/time_skill'
-import { detectAuspiciousQuery, type AuspiciousQuery } from './control/auspiciousControl'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
 import { detectWeatherCommand } from './skills/weather_skill'
 import { detectProductQuery } from './control/productCatalog'
@@ -1024,15 +1022,9 @@ export class VoiceSessionService {
    * 返回 true 表示已被直连命令消费。
    */
   private async handleDirectCommand(text: string): Promise<boolean> {
-    // 择吉日/黄历：库内置权威宜忌数据、答案确定，绕开大模型直连；必须排在时间直连之前，
-    // 防止未来时间正则扩展出「日子」类词后抢走「推荐个吉日」。
-    const auspicious = detectAuspiciousQuery(text)
-    if (auspicious) {
-      await this.runAuspiciousCommand(auspicious)
-      return true
-    }
-    // 时间/日期/天气：业务已迁进 time_skill(20)/weather_skill(30)，按 skill priority 调度。
-    // 守卫类（auspicious=10）仍在上面的 if，等迁成 skill 后这里就是统一调度点。
+    // 直连意图统一调度：业务已迁进各 skill（auspicious=10 / time=20 / weather=30 …），
+    // dispatchDirectCommand 按 skill 自声明的 priority 依次询问、consumed 短路。
+    // 顺序由 priority 保证（择日<时间<天气<…），不再靠这里的 if 级联顺序。
     if (await this.dispatchDirectCommand(text)) return true
     const memCmd = detectMemoryCommand(text)
     if (memCmd && this.deviceId) {
@@ -1114,62 +1106,6 @@ export class VoiceSessionService {
    * 按识别出的意图分流——问时间只报时分；问日期（星期几 / 几月几号）必须报全
    * 「X年X月X日 星期X」；两样都问就都报。日期文案按 lang 本地化（weekday 由 Intl 产出）。
    */
-  /**
-   * 择吉日直连：用 lunar-javascript 内置的权威黄历宜忌数据扫未来日期，直接口播，
-   * 零网络、零 LLM。带事项（「搬家吉日」）找宜该事项的日子；没说事项推荐宜较多的日子。
-   * 日期/星期/农历串固定中文（与日期直连同口径，不随语言英化）；扫 30 天，报前 3 个。
-   */
-  private async runAuspiciousCommand(q: AuspiciousQuery): Promise<void> {
-    const m = messages(this.lang)
-    // 起点日按会话时区取（与时间直连同一套 en-GB parts 手法，不依赖进程本地时区）
-    const todayParts = new Intl.DateTimeFormat('en-GB', {
-      timeZone: this.timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      weekday: 'short',
-    }).formatToParts(new Date())
-    const pick = (type: string) => todayParts.find((p) => p.type === type)?.value ?? ''
-    const WEEKDAY_ZH: Record<string, string> = {
-      Sun: '星期日', Mon: '星期一', Tue: '星期二', Wed: '星期三',
-      Thu: '星期四', Fri: '星期五', Sat: '星期六',
-    }
-    const startY = Number(pick('year'))
-    const startMo = Number(pick('month'))
-    const startD = Number(pick('day'))
-    // 用 UTC 时间轴逐日 +1（无时区漂移），每格按序号构造 Solar.fromYmd
-    const baseMs = Date.UTC(startY, startMo - 1, startD)
-    const SCAN_DAYS = 30
-    const REPORT_LIMIT = 3
-    const matched: string[] = []
-    for (let i = 0; i < SCAN_DAYS && matched.length < REPORT_LIMIT; i += 1) {
-      const dt = new Date(baseMs + i * 86400000)
-      const y = dt.getUTCFullYear()
-      const mo = dt.getUTCMonth() + 1
-      const d = dt.getUTCDate()
-      const weekday = WEEKDAY_ZH[['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dt.getUTCDay()]] ?? ''
-      const lunar = Solar.fromYmd(y, mo, d).getLunar()
-      const yi = lunar.getDayYi()
-      const leap = lunar.getMonth() < 0 ? '闰' : ''
-      // 带事项：只报日期；泛吉日：顺带报当天前 3 个宜词，让用户知道那天适合什么
-      const dayLabel =
-        `${mo}月${d}日（${weekday}，农历${leap}${lunar.getMonthInChinese()}月${lunar.getDayInChinese()}`
-        + (q.yiWords.length ? '' : `，宜${yi.slice(0, 3).join('、')}`) + '）'
-      const isMatch =
-        q.yiWords.length > 0
-          ? q.yiWords.some((w) => yi.includes(w))
-          : yi.length >= 4
-      if (isMatch) matched.push(dayLabel)
-    }
-    if (!matched.length) {
-      await this.speakReply(m.auspicious.none(q.activity ?? '这件事'))
-      return
-    }
-    const daysText = matched.join('、')
-    await this.speakReply(
-      q.activity ? m.auspicious.found(q.activity, daysText) : m.auspicious.best(daysText),
-    )
-  }
 
 
   /**
