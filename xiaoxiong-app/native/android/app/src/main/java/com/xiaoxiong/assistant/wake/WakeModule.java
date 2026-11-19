@@ -434,6 +434,12 @@ public class WakeModule extends UniModule {
                             // JS 已解绑，忽略
                         }
                     }
+                    // 播空后在此线程内自行复位播报态：playRunning 之前只在 stopPlaybackInternal 复位，
+                    // 而原生直连路径下前端的 stopPlayback 打在另一个非单例实例上是 no-op，导致
+                    // playRunning 长期卡 true（真机 PCM-DIAG 播完仍 play=true、采集被消音、插话采不到）。
+                    // 这里复位后 while 下一轮 411 行自然 break；下一句首帧经 writePcmFrame 的
+                    // `playTrack==null || !playRunning` 判断自动重建 AudioTrack，不误伤多句播报。
+                    finishPlaybackFromIdle();
                 }
                 try {
                     Thread.sleep(20);
@@ -444,6 +450,28 @@ public class WakeModule extends UniModule {
             Log.i(TAG, "idle polling ended");
         }, "wake-playback-idle");
         idlePollThread.start();
+    }
+
+    /** 播空后由 idle polling 线程自行复位：不调 stopPlaybackInternal（它会 interrupt+join
+     *  本线程，自等卡死），只置 playRunning=false、停/释放 playTrack、恢复 AEC。 */
+    private void finishPlaybackFromIdle() {
+        synchronized (playLock) {
+            playRunning = false;
+            localDucked = false;
+            if (playTrack != null) {
+                try {
+                    playTrack.stop();
+                    playTrack.release();
+                } catch (Throwable ignored) {
+                }
+                playTrack = null;
+            }
+            writtenFrames = 0;
+            idleNotified = true;
+            lastFrameWriteMs = 0;
+        }
+        setAecEnabled(true);
+        Log.i(TAG, "playback finished from idle, playRunning=false, AEC restored");
     }
 
     private void stopPlaybackInternal() {

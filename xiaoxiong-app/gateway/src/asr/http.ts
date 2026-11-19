@@ -40,9 +40,9 @@ export class HttpVoiceAsr implements AsrProvider {
   speechDuration = -1
   /** 串行化识别请求：本地服务不必承受并发，定稿也不会和中间结果抢跑。 */
   private inflight: Promise<void> = Promise.resolve()
-  /** 上一次 partial 识别是否还在进行。云端上游（WS/HTTP，往返~2s）若还用固定
-   *  600ms 节奏提交，请求会排队堆积，partial 返回时音频已过时、finalize 被拖到错位——
-   *  真机表现为"识别延后/截断/脑补单字"。忙碌时跳过本次 partial，不自适应地降频。 */
+  /** 上一次 partial 识别是否还在进行。慢上游（往返~2s）若仍按固定 600ms 提交，
+   *  请求会堆积，partial 返回时音频已过时、finalize 被拖到错位（截断/延后）。
+   *  忙碌时跳过本次 partial，自适应降频；finalize 不受限，必定拿最终整段结果。 */
   private partialBusy = false
 
   constructor(
@@ -58,8 +58,7 @@ export class HttpVoiceAsr implements AsrProvider {
     const now = Date.now()
     if (now - this.lastPartialAt < PARTIAL_INTERVAL_MS) return null
     if (this.bufferedBytes < PARTIAL_MIN_BYTES) return null
-    // 上一次 partial 还没回来就跳过本次：不排队，避免慢上游请求堆积导致滞后/错位。
-    // finalize 不受此限制（它 await inflight，必定拿到最终整段结果）。
+    // 上一次 partial 没回来就跳过本次（不排队），避免慢上游请求堆积导致滞后/错位。
     if (this.partialBusy) return null
 
     this.lastPartialAt = now

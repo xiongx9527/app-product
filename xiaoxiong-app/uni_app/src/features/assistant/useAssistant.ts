@@ -242,6 +242,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       playbackDoneFallback = null
     }
     cancelPlaybackIdle = null
+    // playRunning 由原生 idle polling 播空后自行复位（finishPlaybackFromIdle）。
+    // 这里不再调 stopTts：WakeModule 非单例，前端 stopPlayback 打在另一个实例上是 no-op，
+    // 且多句间隙可能误拆正在播的 AudioTrack。
     duckMusic(false)
     isSpeaking.value = false
     // 真正播完这一刻记为「最近一次说话」，覆盖其后的回声窗口：
@@ -1055,9 +1058,17 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         errorMessage.value = t('error.micUnavailable', { reason: '麦克风权限被拒绝' })
         return
       }
+      // 临时诊断：把原生 PCM 直连配置结果经 sendDiag.trace 上报网关落盘，
+      // 定位"播报期插话识别不到"是否因 configureDirectUpload 没生效。
+      const diagMsg = (msg: string) => {
+        transport.sendDiag?.({
+          state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
+          frames: 0, rms: 0, connected: transport.isConnected(), trace: `CAPTURE-DIAG ${msg}`,
+        })
+      }
       const ok = startAppCapture(onPcm, (message) => {
         errorMessage.value = t('error.micUnavailable', { reason: message })
-      })
+      }, diagMsg)
       if (ok) capturing = true
       else errorMessage.value = t('error.micUnavailable', { reason: '原生录音启动失败' })
       return

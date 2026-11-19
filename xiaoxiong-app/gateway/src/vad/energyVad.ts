@@ -30,6 +30,9 @@ export interface VadOptions {
   riseRate?: number
   /** 底噪下探速率，比上抬快，安静下来能立刻恢复灵敏度 */
   fallRate?: number
+  /** 绝对能量下限：低于此 RMS 的帧一律不算人声（远场背景声/杂音/清嗓）。
+   *  自适应门限在极安静环境会降到很低，挡不住背景声；用固定下限兜底。 */
+  absFloorRms?: number
 }
 
 export interface VadPushOptions {
@@ -63,7 +66,13 @@ const DEFAULTS = {
   prerollMs: 600,
   riseRate: 0.05,
   fallRate: 0.3,
+  // 绝对能量下限：实测近场说话 RMS 0.01~0.11（中位0.03），远场背景声/杂音 <0.004。
+  // 0.008 有 2 倍余量挡远场、近场最低也能过。用户原则"宁愿不出来也不要错"。
+  absFloorRms: 0.008,
 }
+
+/** 对外导出的能量下限，供 handleBinary 喂帧兜底复用（与 EnergyVad 同源）。 */
+export const ABS_FLOOR_RMS = DEFAULTS.absFloorRms
 
 /**
  * strict 模式的门槛倍数与连续帧要求。
@@ -88,6 +97,7 @@ export class EnergyVad {
   private readonly prerollBytes: number
   private readonly riseRate: number
   private readonly fallRate: number
+  private readonly absFloorRms: number
 
   private noise = 0.008
   private inSpeech = false
@@ -107,6 +117,7 @@ export class EnergyVad {
     )
     this.riseRate = options.riseRate ?? DEFAULTS.riseRate
     this.fallRate = options.fallRate ?? DEFAULTS.fallRate
+    this.absFloorRms = options.absFloorRms ?? DEFAULTS.absFloorRms
   }
 
   /** 当前自适应底噪，便于调参与测试观察。 */
@@ -130,7 +141,9 @@ export class EnergyVad {
     const rms = computeRms(chunk)
     const threshold = this.threshold * (strict ? STRICT_MULTIPLIER : 1)
     const neededFrames = strict ? this.startFrames * STRICT_START_FACTOR : this.startFrames
-    const voiced = rms >= threshold
+    // 自适应门限之外再叠绝对下限：极安静环境底噪下探后门限很低，远场背景声/杂音
+    // 会越过自适应门限被误判人声。低于下限的帧一律不算 voiced，喂帧/句末计时共用此判据。
+    const voiced = rms >= threshold && rms >= this.absFloorRms
 
     if (!this.inSpeech) {
       this.remember(chunk)
@@ -154,10 +167,10 @@ export class EnergyVad {
       this.lastVoicedAt = now
       return { speech: true, voiced: true, started: false, frames: [chunk] }
     }
-    if (now - this.lastVoicedAt < this.hangoverMs) {
+    if (now - this.lastVoicedAt < this.hangoverMs && rms >= this.absFloorRms) {
       return { speech: true, voiced: false, started: false, frames: [chunk] }
     }
-    // 这句话结束，当前帧转为下一句的前置缓冲
+    // 这句话结束（或尾帧能量已低于下限：远场噪声不该续命），当前帧转为下一句的前置缓冲
     this.inSpeech = false
     this.voicedRun = 0
     this.remember(chunk)
