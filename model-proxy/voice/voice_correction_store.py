@@ -150,10 +150,26 @@ class CorrectionStore:
             self._cache.set_all(rows)
         return rows
 
+    def find_exact(self, correct: str, wrong: str) -> dict[str, Any] | None:
+        """按文字精确查一条错词（correct+wrong 完全一致），与来源无关。
+        用于添加前查重：无论已存在的是本地手动还是客户端上传，命中即视为重复。"""
+        for r in self.list():
+            if r.get("correct") == correct and r.get("wrong") == wrong:
+                return r
+        return None
+
+    def find_main(self, correct: str) -> dict[str, Any] | None:
+        """按正确词文字精确查主表，与来源无关。"""
+        for m in self._b.list_mains(1, 100000).get("items", []):
+            if m.get("correct") == correct:
+                return m
+        return None
+
     def list_review(self, page: int = 1, page_size: int = 10, q: str = "") -> dict[str, Any]:
-        """审核 tab：按子表维度分页，列全部错词（来源统一显示"上传"）。q 为错词/正确词/拼音搜索。"""
+        """审核 tab：按子表维度分页，只列 source=uploaded 的上传词（含已审核）。
+        本地手动添加的词不进此 tab（它们在"热词" tab 管理）。q 为错词/正确词/拼音搜索。"""
         flat = self.list()  # 全量（走缓存）
-        rows = list(flat)
+        rows = [r for r in flat if r.get("source") == "uploaded"]
         if q:
             ql = q.lower()
             rows = [r for r in rows if ql in (r.get("wrong", "") or "").lower()

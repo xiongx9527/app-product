@@ -519,7 +519,7 @@ const I18N = {
     "asr.detectFailed": "检测失败",
     "asr.detecting": "正在真实加载内置模型并跑一次推理…",
     "asr.detectingTitle": "真实加载内置模型并跑一次推理",
-    "asr.modelFile": "模型文件：model.int8.onnx + tokens.txt（~240MB，install-voice 下载至 models/sensevoice/）",
+    "asr.modelFile": "模型文件：model.int8.onnx + tokens.txt（~240MB）+ silero_vad.onnx（~2MB，幻觉拦截用），均由 install-voice 下载至 models/sensevoice/",
     "asr.noAudio": "未内嵌音频",
     "asr.ok": "内置可用：模型加载与推理均正常",
     "asr.outPlaceholder": "识别结果将显示在这里。",
@@ -679,6 +679,8 @@ const I18N = {
     "config.hotwordEnable": "启用",
     "config.hotwordDisable": "禁用",
     "config.hotwordDelConfirm": "确认删除热词：",
+    "config.hotwordDupMain": "该正确词已存在，未重复添加",
+    "config.hotwordDupVariant": "该错词已存在，未重复添加",
     "config.hotwordPage": "第 {p}/{n} 页，共 {total} 条",
     "config.prevPage": "上一页",
     "config.nextPage": "下一页",
@@ -767,7 +769,7 @@ const I18N = {
     "asr.detectFailed": "detection failed",
     "asr.detecting": "Loading the built-in model and running one inference…",
     "asr.detectingTitle": "Load the built-in model and run one inference",
-    "asr.modelFile": "Model files: model.int8.onnx + tokens.txt (~240MB, install-voice downloads to models/sensevoice/)",
+    "asr.modelFile": "Model files: model.int8.onnx + tokens.txt (~240MB) + silero_vad.onnx (~2MB, for hallucination gating), all downloaded by install-voice to models/sensevoice/",
     "asr.noAudio": "No embedded audio",
     "asr.ok": "Built-in OK: model loads and infers normally",
     "asr.outPlaceholder": "Recognition result will appear here.",
@@ -902,6 +904,8 @@ const I18N = {
     "config.hotwordDel": "Delete",
     "config.hotwordPinyin": "Pinyin",
     "config.hotwordDelConfirm": "Delete hotword:",
+    "config.hotwordDupMain": "This correct word already exists; nothing was added",
+    "config.hotwordDupVariant": "This typo already exists; nothing was added",
     "config.hotwordPage": "Page {p}/{n}, {total} entries",
     "config.prevPage": "Prev",
     "config.nextPage": "Next",
@@ -1248,9 +1252,9 @@ async function loadHotwords(){
       wrap.innerHTML='<table class="cfg-table"><thead><tr>'
         +'<th style="width:24px"></th><th>'+t('config.hotwordCorrect')+'</th>'
         +'<th>'+t('config.hotwordCorrectPinyin')+'</th><th>'+t('config.hotwordSource')+'</th>'
-        +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
+        +'<th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
         +'<th>'+t('config.hotwordStatus')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead>'
-        +'<tbody><tr><td colspan="9" class="hint" style="text-align:center;padding:16px">'+t('config.hotwordEmpty')+'</td></tr></tbody></table>';
+        +'<tbody><tr><td colspan="8" class="hint" style="text-align:center;padding:16px">'+t('config.hotwordEmpty')+'</td></tr></tbody></table>';
       const pager=document.getElementById('hotwordPager');
       if(pager) pager.innerHTML='<button class="mini" disabled>'+t('config.prevPage')+'</button>'
         +'<span class="hint" style="margin:0 10px">'+t('config.hotwordPage').replace('{p}',1).replace('{n}',1).replace('{total}',0)+'</span>'
@@ -1261,7 +1265,7 @@ async function loadHotwords(){
     let html='<table class="cfg-table"><thead><tr>'
       +'<th style="width:24px"></th><th>'+t('config.hotwordCorrect')+'</th>'
       +'<th>'+t('config.hotwordCorrectPinyin')+'</th><th>'+t('config.hotwordSource')+'</th>'
-      +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
+      +'<th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
       +'<th>'+t('config.hotwordStatus')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead><tbody>';
     items.forEach(m=>{
       const on=m.enabled==1, mid=m.main_id, open=hwExpanded.has(mid);
@@ -1269,7 +1273,6 @@ async function loadHotwords(){
         +'<td>'+escapeHtml(m.correct||'')+'</td>'
         +'<td class="hint">'+escapeHtml(m.correct_pinyin||'')+'</td>'
         +'<td>'+(m.source=='uploaded'?t('config.hotwordSynced'):t('config.hotwordLocal'))+'</td>'
-        +'<td class="hint">'+escapeHtml(m.device_id||'')+'</td>'
         +'<td class="hint">'+fmtTime(m.created_at)+'</td><td class="hint">'+fmtTime(m.updated_at)+'</td>'
         +'<td>'+(on?'<span class="badge">'+t('config.hotwordEnabled')+'</span>':'<span class="hint">'+t('config.hotwordDisabled')+'</span>')+'</td>'
         +'<td class="row-act">'
@@ -1279,10 +1282,10 @@ async function loadHotwords(){
             +(on?t('config.hotwordDisable'):t('config.hotwordEnable'))+'</button>')
         +(!on && !(m.variants||[]).length && m.source!='uploaded' ?' <button class="mini danger" data-hw-del-main="'+mid+'">'+t('common.delete')+'</button>':'')+'</td></tr>';
       if(open){
-        html+='<tr><td colspan="9" style="padding:0;background:#0f1115">'
+        html+='<tr><td colspan="8" style="padding:0;background:#0f1115">'
           +'<table class="cfg-table" style="margin:0"><thead><tr><th style="width:24px"></th><th>'+t('config.hotwordWrong')+'</th>'
           +'<th>'+t('config.hotwordPinyin')+'</th><th>'+t('config.hotwordSource')+'</th>'
-          +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
+          +'<th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
           +'<th>'+t('config.hotwordStatus')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead><tbody>';
         (m.variants||[]).forEach(v=>{
           const vOn=v.enabled==1;
@@ -1296,20 +1299,19 @@ async function loadHotwords(){
           }
           html+='<tr><td></td><td>'+escapeHtml(v.wrong||'')+'</td><td class="hint">'+escapeHtml(v.pinyin||'')+'</td>'
             +'<td>'+(v.source=='uploaded'?t('config.hotwordSynced'):t('config.hotwordLocal'))+'</td>'
-            +'<td class="hint">'+escapeHtml(v.device_id||'')+'</td>'
             +'<td class="hint">'+fmtTime(v.created_at)+'</td><td class="hint">'+fmtTime(v.updated_at)+'</td>'
             +'<td>'+(vOn?'<span class="badge">'+t('config.hotwordEnabled')+'</span>':'<span class="hint">'+t('config.hotwordDisabled')+'</span>')+'</td>'
             +'<td class="row-act">'+act+'</td></tr>';
         });
         // 未启用的主表不能加明细
         if(on){
-          html+='<tr><td colspan="9" style="padding:6px 8px">'
+          html+='<tr><td colspan="8" style="padding:6px 8px">'
           +'<div style="display:flex;align-items:center;gap:8px">'
           +'<input data-hw-variant-input="'+mid+'" placeholder="'+t('config.hotwordWrong')+'" style="flex:1;min-width:0" /> '
           +'<button class="mini" data-hw-variant-add="'+mid+'" data-correct="'+escapeHtml(m.correct||'')+'">'+t('common.add')+'</button>'
           +'<span class="hint" data-hw-variant-stat="'+mid+'" style="white-space:nowrap"></span></div></td></tr>';
         } else {
-          html+='<tr><td colspan="9" style="padding:6px" class="hint">'+t('config.hotwordEnableFirst')+'</td></tr>';
+          html+='<tr><td colspan="8" style="padding:6px" class="hint">'+t('config.hotwordEnableFirst')+'</td></tr>';
         }
         html+='</tbody></table></td></tr>';
       }
@@ -1369,7 +1371,8 @@ async function loadHotwords(){
         const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
           headers:{'content-type':'application/json'},
           body:JSON.stringify({correct:correct,wrong:wrong,enabled:1})});
-        if(r.ok){ await loadHotwords(); } else if(stat){ stat.textContent='HTTP '+r.status; }
+        if(r.ok){ if(inp) inp.value=''; await loadHotwords(); }
+        else if(stat){ const d=await r.json().catch(()=>({})); stat.className='err'; stat.textContent=t(d.detail||'')||('HTTP '+r.status); }
       };
     });
     wrap.querySelectorAll('[data-hw-expand]').forEach(b=>{
@@ -1414,17 +1417,17 @@ async function loadReview(){
       wrap.innerHTML='<table class="cfg-table"><thead><tr>'
         +'<th>'+t('config.hotwordWrong')+'</th><th>'+t('config.hotwordPinyin')+'</th>'
         +'<th>'+t('config.hotwordCorrect')+'</th><th>'+t('config.hotwordCorrectPinyin')+'</th>'
-        +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordSource')+'</th>'
+        +'<th>'+t('config.hotwordDevice')+'</th>'
         +'<th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
         +'<th>'+t('config.hotwordReviewed')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead>'
-        +'<tbody><tr><td colspan="10" class="hint" style="text-align:center;padding:16px">'+t('config.hotwordEmpty')+'</td></tr></tbody></table>';
+        +'<tbody><tr><td colspan="9" class="hint" style="text-align:center;padding:16px">'+t('config.hotwordEmpty')+'</td></tr></tbody></table>';
     }
     else{
       wrap.className='';
       let html='<table class="cfg-table"><thead><tr>'
         +'<th>'+t('config.hotwordWrong')+'</th><th>'+t('config.hotwordPinyin')+'</th>'
         +'<th>'+t('config.hotwordCorrect')+'</th><th>'+t('config.hotwordCorrectPinyin')+'</th>'
-        +'<th>'+t('config.hotwordDevice')+'</th><th>'+t('config.hotwordSource')+'</th>'
+        +'<th>'+t('config.hotwordDevice')+'</th>'
         +'<th>'+t('config.hotwordCreatedAt')+'</th><th>'+t('config.hotwordUpdatedAt')+'</th>'
         +'<th>'+t('config.hotwordReviewed')+'</th><th>'+t('config.hotwordAction')+'</th></tr></thead><tbody>';
       items.forEach(v=>{
@@ -1432,7 +1435,6 @@ async function loadReview(){
         html+='<tr><td>'+escapeHtml(v.wrong||'')+'</td><td class="hint">'+escapeHtml(v.pinyin||'')+'</td>'
           +'<td>'+escapeHtml(v.correct||'')+'</td><td class="hint">'+escapeHtml(v.correct_pinyin||'')+'</td>'
           +'<td class="hint">'+escapeHtml(v.device_id||'')+'</td>'
-          +'<td>'+t('config.hotwordFromUpload')+'</td>'
           +'<td class="hint">'+fmtTime(v.created_at)+'</td><td class="hint">'+fmtTime(v.updated_at)+'</td>'
           +'<td>'+(done?'✓':'—')+'</td>'
           +'<td class="row-act">'+(done?'—':'<button class="mini" data-hw-approve="'+v.variant_id+'">'+t('config.hotwordReview')+'</button>')+'</td></tr>';
@@ -1499,8 +1501,8 @@ function wireConfig(){
     try{
       // 只加主表词条（错词留空由学习补；来源=local/uploaded 由系统自动记录）
       const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({correct:c})});
-      if(r.ok){ document.getElementById('hotwordCorrect').value=''; stat.textContent=t('common.saved')||'OK'; await loadHotwords(); }
-      else { stat.textContent='HTTP '+r.status; }
+      if(r.ok){ document.getElementById('hotwordCorrect').value=''; stat.className='hint'; stat.textContent=t('common.saved')||'OK'; await loadHotwords(); }
+      else { const d=await r.json().catch(()=>({})); stat.className='err'; stat.textContent=t(d.detail||'')||('HTTP '+r.status); }
     }catch(e){ stat.textContent=String(e); }
   };
   const postConfig = async (patch, statId)=>{
@@ -3617,10 +3619,15 @@ def register_admin_routes(
                 return " ".join(lazy_pinyin(w))
             except Exception:
                 return ""
+        # 查重只看文字，与来源无关：已存在就报错，绝不覆盖原记录（含其来源/启用/审核状态）
         if not wrong:
+            if store.find_main(correct):
+                raise HTTPException(status_code=409, detail="config.hotwordDupMain")
             result = store.upsert_main_only(correct, calc_py(correct), "local", "")
             store.set_main_enabled(result["main_id"], False)  # 本地添加默认禁用
             return {"ok": True, **result, "enabled": 0}
+        if store.find_exact(correct, wrong):
+            raise HTTPException(status_code=409, detail="config.hotwordDupVariant")
         # 加子表错词（本地添加 source=local，默认禁用）
         result = store.upsert(correct, calc_py(correct), wrong, calc_py(wrong), source="local")
         store.set_enabled(result["variant_id"], False)

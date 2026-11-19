@@ -373,7 +373,7 @@ powershell -ExecutionPolicy Bypass -File .\model-proxy\start-voice.ps1 -Port 953
 检查内容：
 
 - 所有模式：Python 3.10+、`fastapi` / `uvicorn` / `python-multipart` / `httpx`；
-- 本地 STT：`sherpa-onnx`、`numpy`、SenseVoice 的 `model.int8.onnx` / `tokens.txt`；
+- 本地 STT：`sherpa-onnx`、`numpy`、SenseVoice 的 `model.int8.onnx` / `tokens.txt`，以及幻觉拦截用的 `silero_vad.onnx`（三者均由 install-voice 下载至 `models/sensevoice/`）；
 - 本地 TTS：`edge-tts`、可执行的 `ffmpeg`；
 - LLM 代理：启用时上游地址必须是 `http(s)://`；不检查本机 Ollama，也不需要本地模型；
 - 远程同步：配了 `VOICE_REMOTE_DSN` 才会检查 Postgres 驱动，配了 `REDIS_URL`

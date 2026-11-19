@@ -1508,6 +1508,9 @@ async def voice_corrections_post(request: Request):
     wrong = str(body.get("wrong") or "").strip()
     if not correct or not wrong:
         return error_response(400, "correct 和 wrong 都不能为空")
+    # 查重只看文字（correct+wrong），与来源无关。已存在则丢弃：不覆盖原记录、不改启用/审核状态。
+    if store.find_exact(correct, wrong):
+        return {"ok": True, "duplicated": True, "correct": correct, "wrong": wrong}
     def calc_py(w: str, given: str = "") -> str:
         given = str(given or "").strip()
         if given:
