@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { VoiceSessionService } from '../../../src/service/voiceSessionService'
-import type { VoiceSessionDeps } from '../../../src/service/voiceSessionService'
-import type { AgentService } from '../../../src/service/agentService'
-import type { AsrProvider } from '../../../src/asr'
-import type { TtsProvider } from '../../../src/tts'
-import type { DataService } from '../../../src/service/dataService'
-import type { MusicSource } from '../../../src/service/music/types'
-import type { ResolvedCapabilities } from '../../../src/voiceConfig'
+import { VoiceSessionService } from '../../../../../src/service/voiceSessionService'
+import type { VoiceSessionDeps } from '../../../../../src/service/voiceSessionService'
+import type { AgentService } from '../../../../../src/service/agentService'
+import type { AsrProvider } from '../../../../../src/asr'
+import type { TtsProvider } from '../../../../../src/tts'
+import type { DataService } from '../../../../../src/service/dataService'
+import type { MusicSource } from '../../../../../src/service/skills/music_skill/music/types'
+import type { ResolvedCapabilities } from '../../../../../src/voiceConfig'
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))

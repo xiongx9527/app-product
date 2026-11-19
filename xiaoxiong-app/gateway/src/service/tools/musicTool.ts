@@ -1,9 +1,9 @@
 import { z } from 'zod'
 import type { Lang, ServerEvent } from '../../protocol'
 import { messages } from '../../i18n'
-import type { MusicSource } from '../music/types'
-import { needsProxy } from '../music'
-import { isSpokenContentRequest, MusicSourceNotImplementedError } from '../music/types'
+import type { MusicSource } from '../skills/music_skill/music/types'
+import { needsProxy } from '../skills/music_skill/music'
+import { isSpokenContentRequest, MusicSourceNotImplementedError } from '../skills/music_skill/music/types'
 
 /** 媒体指令：直接透传给客户端；客户端据此播放/停止/暂停/恢复/设音量/展示。 */
 /**

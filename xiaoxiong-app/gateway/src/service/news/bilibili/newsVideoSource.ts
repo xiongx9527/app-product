@@ -1,5 +1,5 @@
-import { getWbiKey, wbiSign, extractBilibiliAudio } from '../../music/baidu/bilibiliAudio'
-import type { MusicFetcher } from '../../music/types'
+import { getWbiKey, wbiSign, extractBilibiliAudio } from '../../skills/music_skill/music/baidu/bilibiliAudio'
+import type { MusicFetcher } from '../../skills/music_skill/music/types'
 
 /**
  * 新闻播报的音频来源：从视频网站抓「真实新闻视频」并抽取其中的音频轨道，

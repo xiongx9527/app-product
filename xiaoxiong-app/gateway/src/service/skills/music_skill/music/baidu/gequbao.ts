@@ -1,5 +1,5 @@
 import type { MusicFetcher } from '../types'
-import type { SubtitleLine } from '../../../protocol'
+import type { SubtitleLine } from '../../../../../protocol'
 import { parseLrc } from '../lyrics/parseLrc'
 import { joinArtistTitle } from '../lyrics/query'
 import { normalizeCoverUrl } from '../coverUrl'

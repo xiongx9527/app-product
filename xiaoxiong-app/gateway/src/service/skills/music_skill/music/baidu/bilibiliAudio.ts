@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { MusicFetcher } from '../types'
-import type { SubtitleLine } from '../../../protocol'
+import type { SubtitleLine } from '../../../../../protocol'
 
 /**
  * 从 B 站视频抽取可播放音轨（免费、无需登录）：

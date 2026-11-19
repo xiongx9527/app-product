@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { getBilibiliSubtitle } from '../../../../src/service/music/baidu/bilibiliAudio'
-import type { MusicFetcher } from '../../../../src/service/music/types'
+import { getBilibiliSubtitle } from '../../../../../../src/service/skills/music_skill/music/baidu/bilibiliAudio'
+import type { MusicFetcher } from '../../../../../../src/service/skills/music_skill/music/types'
 
 /** 用预设响应构造 fetcher，便于单测字幕解析，不触网。 */
 function fakeFetcher(responses: Record<string, { ok: boolean; json: () => unknown }>): MusicFetcher {

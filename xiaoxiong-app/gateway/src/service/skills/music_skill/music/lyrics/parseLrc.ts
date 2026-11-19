@@ -1,4 +1,4 @@
-import type { SubtitleLine } from '../../../protocol'
+import type { SubtitleLine } from '../../../../../protocol'
 
 /** 解析 LRC 文本为带时间的字幕行；支持一行多时间标签 [mm:ss.xx][mm:ss.xx]文本。 */
 export function parseLrc(raw: string): SubtitleLine[] {

@@ -12,8 +12,8 @@ import {
   createNextMusicTool,
   type MediaDirective,
 } from '../../../src/service/tools/musicTool'
-import type { MusicSource, ResolvedTrack } from '../../../src/service/music/types'
-import { needsProxy } from '../../../src/service/music'
+import type { MusicSource, ResolvedTrack } from '../../../src/service/skills/music_skill/music/types'
+import { needsProxy } from '../../../src/service/skills/music_skill/music'
 
 function collect(): { directives: MediaDirective[]; emit: (m: MediaDirective) => void } {
   const directives: MediaDirective[] = []

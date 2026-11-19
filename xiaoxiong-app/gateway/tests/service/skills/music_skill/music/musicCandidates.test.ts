@@ -10,7 +10,7 @@ import {
   artistMatches,
   isArtistBrowse,
   type MusicCandidate,
-} from '../../../src/service/music/musicCandidates'
+} from '../../../../../src/service/skills/music_skill/music/musicCandidates'
 
 const candidates: MusicCandidate[] = [
   { title: '稻香', artist: '周杰伦' },

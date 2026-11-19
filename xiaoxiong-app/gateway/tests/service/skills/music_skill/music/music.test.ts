@@ -1,16 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { createSomaSource } from '../../../src/service/music/baidu/somaSource'
+import { createSomaSource } from '../../../../../src/service/skills/music_skill/music/baidu/somaSource'
 import {
   createBilibiliSearchSource,
   titleMatchesKeyword,
   titleMatchesKeywordLoose,
   looksLikeCompilation,
-} from '../../../src/service/music/baidu/bilibiliSearchSource'
-import { extractBvidsFromHtml } from '../../../src/service/music/baidu/bilibiliAudio'
-import { createMusicSource, needsProxy } from '../../../src/service/music/index'
-import { SOMA_CHANNELS } from '../../../src/service/music/baidu/musicChannels'
-import type { MusicFetcher } from '../../../src/service/music/types'
-import { isGenreRequest, genreToKeyword, isSpokenContentRequest, detectContentType } from '../../../src/service/music/types'
+} from '../../../../../src/service/skills/music_skill/music/baidu/bilibiliSearchSource'
+import { extractBvidsFromHtml } from '../../../../../src/service/skills/music_skill/music/baidu/bilibiliAudio'
+import { createMusicSource, needsProxy } from '../../../../../src/service/skills/music_skill/music/index'
+import { SOMA_CHANNELS } from '../../../../../src/service/skills/music_skill/music/baidu/musicChannels'
+import type { MusicFetcher } from '../../../../../src/service/skills/music_skill/music/types'
+import { isGenreRequest, genreToKeyword, isSpokenContentRequest, detectContentType } from '../../../../../src/service/skills/music_skill/music/types'
 
 describe('music sources', () => {
   it('soma：无风格时用默认频道', async () => {

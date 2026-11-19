@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { createFmp4ToAdtsStream, fmp4BufferToAdts } from '../../../src/service/music/fmp4ToAdts'
+import { createFmp4ToAdtsStream, fmp4BufferToAdts } from '../../../../../src/service/skills/music_skill/music/fmp4ToAdts'
 
 /** 构造最小 fMP4（ftyp+moov(esds)+moof(trun)+mdat），结构与 B站 dash 音轨一致。 */
 function buildSampleFmp4(ascForm: 'ext' | 'short' = 'ext'): Buffer {

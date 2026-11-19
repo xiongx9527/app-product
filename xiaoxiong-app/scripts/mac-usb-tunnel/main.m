@@ -35,7 +35,8 @@ static const uint32_t kMaxFrame = 1024 * 1024;
 
 // 全局：mux 通道（USB）与 connId→本地 socket 映射
 static dispatch_io_t gMuxChannel = NULL;
-static dispatch_queue_t gMuxQueue = NULL;
+static dispatch_queue_t gMuxQueue = NULL;       // 写队列
+static dispatch_queue_t gMuxReadQueue = NULL;   // 读队列（与写分离，PeerTalk 要求读写不同队列）
 static NSMutableDictionary<NSNumber *, NSNumber *> *gConns = nil; // connId -> socket fd
 static NSLock *gConnsLock = nil;
 static uint32_t gNextId = 1;
@@ -134,6 +135,29 @@ static int openLocalConn(uint32_t connId) {
   return fd;
 }
 
+// 持续从 mux 通道读：PeerTalk 的 dispatch_io 必须每次读一个"有限长度"，在 done=true
+// 的回调里拿到数据后再次发起下一次读（模仿 PTProtocol 的 readFrame 模式）。用 SIZE_MAX
+// 会导致通道缓冲到 EOF 才回调、期间收不到设备发来的帧。
+static void handleMuxData(NSData *chunk); // 前向声明
+static void pumpMuxRead(dispatch_io_t channel);
+static void pumpMuxRead(dispatch_io_t channel) {
+  if (!channel) return;
+  dispatch_io_read(channel, 0, 64 * 1024, gMuxReadQueue, ^(bool done, dispatch_data_t data, int error) {
+    if (data) {
+      const uint8_t *p = NULL; size_t n = 0;
+      dispatch_data_t flat = dispatch_data_create_map(data, (const void **)&p, &n);
+      if (flat && p && n) {
+        logLine(@"mux 读 %zu 字节", n);
+        handleMuxData([NSData dataWithBytes:p length:n]);
+      }
+    }
+    if (error) logLine(@"mux 读错误 err=%d", error);
+    if (done && !error) {
+      pumpMuxRead(channel); // 继续读下一批
+    }
+  });
+}
+
 // mux 收帧处理
 static void handleMuxData(NSData *chunk) {
   if (!gMuxBuf) gMuxBuf = [NSMutableData data];
@@ -205,7 +229,8 @@ static void connectDevice(NSNumber *deviceID) {
       if (gLastConnectFailed) logLine(@"设备隧道已就绪，连接建立");
       gLastConnectFailed = NO;
       gMuxChannel = channel;
-      gMuxQueue = dispatch_queue_create("mux.rw", DISPATCH_QUEUE_SERIAL);
+      gMuxQueue = dispatch_queue_create("mux.write", DISPATCH_QUEUE_SERIAL);
+      gMuxReadQueue = dispatch_queue_create("mux.read", DISPATCH_QUEUE_SERIAL);
       [gConnsLock lock];
       [gConns removeAllObjects];
       [gConnsLock unlock];
@@ -217,34 +242,20 @@ static void connectDevice(NSNumber *deviceID) {
       dispatch_io_write(channel, 0, hs, gMuxQueue, ^(bool done, dispatch_data_t _u, int e) {
         if (e) logLine(@"握手写失败 err=%d", e);
       });
-      // 每个 mux 帧到来的连接：建本地 socket 连 127.0.0.1:gTargetPort
-      dispatch_io_read(channel, 0, SIZE_MAX, gMuxQueue, ^(bool done, dispatch_data_t data, int error) {
-        size_t dbgN = 0;
-        if (data) {
-          const uint8_t *p = NULL; size_t n = 0;
-          dispatch_data_t flat = dispatch_data_create_map(data, (const void **)&p, &n);
-          if (flat && p) { dbgN = n; if (n) handleMuxData([NSData dataWithBytes:p length:n]); }
-        }
-        logLine(@"mux 读回调 done=%d bytes=%zu err=%d", done, dbgN, error);
-        if (error) logLine(@"mux 读错误 err=%d", error);
-        if (done) {
-          logLine(@"mux 通道关闭");
-          [gConnsLock lock];
-          NSArray *fds = [gConns allValues];
-          [gConns removeAllObjects];
-          [gConnsLock unlock];
-          for (NSNumber *f in fds) close(f.intValue);
-          gMuxChannel = NULL;
-        }
-      });
-      // 监听设备侧请求新连接：由设备 JS 在收到网关 fetch 时写控制帧? 
-      // 实际是设备 JS 为每个网关连接分配 connId 并直接发数据帧；首个数据帧到达时在此按 connId 建本地 socket。
+      // 开始持续读 mux 帧（有限长度 + done 后递归，PeerTalk dispatch_io 标准模式）。
+      pumpMuxRead(channel);
+      // 通道断开时清理所有本地连接（pumpMuxRead 在 error 时也会走到这里由 onEnd 处理）。
     }
     onEnd:^(NSError *error) {
       // 无 mux 通道说明这次是"等待设备隧道"的失败尝试，不刷屏（定时重连每 2s 一次）；
       // 有通道关闭才是真实的连接断开。
       if (gMuxChannel) {
         logLine(@"mux 连接结束: %@", error.localizedDescription ?: @"normal");
+        [gConnsLock lock];
+        NSArray *fds = [gConns allValues];
+        [gConns removeAllObjects];
+        [gConnsLock unlock];
+        for (NSNumber *f in fds) close(f.intValue);
         gMuxChannel = NULL;
       }
     }];

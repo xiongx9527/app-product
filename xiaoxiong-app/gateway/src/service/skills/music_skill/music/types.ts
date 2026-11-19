@@ -1,4 +1,4 @@
-import type { SubtitleLine } from '../../protocol'
+import type { SubtitleLine } from '../../../../protocol'
 
 /** 解析出的可播放曲目：客户端据此用独立播放器播放，不与 TTS 冲突。 */
 export interface ResolvedTrack {

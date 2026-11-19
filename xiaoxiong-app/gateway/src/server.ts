@@ -12,7 +12,7 @@ import { handleMusicStream, handleAdtsByKey, getMusicDiagnostics } from './contr
 import { handleMediaByKey } from './service/mediaCache'
 import { createVoiceConnection } from './controller/voiceController'
 import { loadSkillModules } from './service/skills/loader'
-import { buildHealth } from './service/health'
+import { buildHealth, clearProbeCache } from './service/health'
 import type { VoiceConfig } from './voiceConfig'
 import { encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
 import type { GatewayConfig } from './config'
@@ -85,6 +85,9 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
         // deep=1：一键检测走「真正调用模型」的深度探测，能暴露欠费 / 模型名 / 密钥这类
         // 「连通但不可用」的故障；普通轮询不带该参数，只做轻量连通探测。
         const deep = url.searchParams.get('deep') === '1'
+        // deep=1（一键检测）必须真探：能力探测有 15s 缓存，若链路刚恢复（如 USB 隧道刚连上），
+        // 缓存里还是旧的不达结果，会让一键检测一直显示旧的红色。清缓存强制重探。
+        if (deep) clearProbeCache()
         const report = await buildHealth(config, voice, deep)
         res.writeHead(200, {
           'content-type': 'application/json; charset=utf-8',

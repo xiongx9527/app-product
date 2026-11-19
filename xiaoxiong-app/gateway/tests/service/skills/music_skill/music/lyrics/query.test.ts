@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { joinArtistTitle } from '../../../../src/service/music/lyrics/query'
+import { joinArtistTitle } from '../../../../../../src/service/skills/music_skill/music/lyrics/query'
 
 describe('joinArtistTitle', () => {
   it('歌名里已含歌手时只用歌名，不重复拼接（避免「周杰伦 周杰伦 一路向北」搜不到）', () => {

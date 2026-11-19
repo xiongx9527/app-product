@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import type { MusicFetcher } from '../../../../src/service/music/types'
-import { getGequbaoLyrics, getGequbaoAudioUrl, resolveGequbaoTrack, normalizeCoverUrl, extractLrc, extractPlayId, extractAppData, extractLrcIsEmpty } from '../../../../src/service/music/baidu/gequbao'
+import type { MusicFetcher } from '../../../../../../src/service/skills/music_skill/music/types'
+import { getGequbaoLyrics, getGequbaoAudioUrl, resolveGequbaoTrack, normalizeCoverUrl, extractLrc, extractPlayId, extractAppData, extractLrcIsEmpty } from '../../../../../../src/service/skills/music_skill/music/baidu/gequbao'
 
 const SEARCH_HTML =
   '<a href="/music/4198" title="一路向北 - 周杰伦">x</a>' +

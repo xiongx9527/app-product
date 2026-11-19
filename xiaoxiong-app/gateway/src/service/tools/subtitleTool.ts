@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { Lang } from '../../protocol'
 import type { MediaDirective } from './musicTool'
-import type { MusicSource } from '../music/types'
+import type { MusicSource } from '../skills/music_skill/music/types'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const SUBTITLE_TOOL_NAME = 'get_subtitle'

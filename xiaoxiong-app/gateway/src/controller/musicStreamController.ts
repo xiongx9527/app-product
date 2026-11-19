@@ -15,7 +15,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { fmp4BufferToAdts } from '../service/music/fmp4ToAdts'
+import { fmp4BufferToAdts } from '../service/skills/music_skill/music/fmp4ToAdts'
 
 /**
  * B 站音轨直链带防盗链（必须带 Referer），而客户端 InnerAudioContext 无法自定义请求头，

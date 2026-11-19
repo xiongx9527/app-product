@@ -1,5 +1,5 @@
 import type { MusicFetcher, MusicSource } from '../types'
-import type { SubtitleLine } from '../../../protocol'
+import type { SubtitleLine } from '../../../../../protocol'
 import { genreToKeyword, isGenreRequest } from '../types'
 import { createSomaSource } from './somaSource'
 import { createBilibiliSearchSource, searchOrdered, type BiliResult } from './bilibiliSearchSource'

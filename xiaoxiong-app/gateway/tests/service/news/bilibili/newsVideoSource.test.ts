@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { cleanNewsTitle, createNewsVideoSource } from '../../../../src/service/news/bilibili/newsVideoSource'
-import type { MusicFetcher } from '../../../../src/service/music/types'
+import type { MusicFetcher } from '../../../../src/service/skills/music_skill/music/types'
 
 describe('cleanNewsTitle 标题清洗', () => {
   it('去掉下划线、特殊括号、竖线与 emoji', () => {

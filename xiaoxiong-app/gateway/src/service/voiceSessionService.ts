@@ -6,9 +6,9 @@ import type { ClientMessage, Lang, LocationInfo, McpServerConfig, ServerEvent, S
 import type { GatewayConfig } from '../config'
 import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
-import { createMusicSource, needsProxy, type MusicSource } from './music'
-import { MusicSourceNotImplementedError } from './music/types'
-import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest, detectContentType } from './music/types'
+import { createMusicSource, needsProxy, type MusicSource } from './skills/music_skill/music'
+import { MusicSourceNotImplementedError } from './skills/music_skill/music/types'
+import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest, detectContentType } from './skills/music_skill/music/types'
 import { formatMemories, formatDeals, type MemoryStore, type RequestLocation } from './tools'
 import { createDealsTool, enrichDeal, type DealsSnapshot } from './tools/dealsTool'
 import { createDealsSource, createDealsAllSources, toDetailItems, type Deal, type DealDetail } from './deals'
@@ -25,7 +25,7 @@ import {
   isArtistBrowse,
   type MusicCandidate,
   type CandidateFetcher,
-} from './music/musicCandidates'
+} from './skills/music_skill/music/musicCandidates'
 import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './control/musicControl'
 import { detectVolumeCommand } from './control/volumeControl'
 import { detectMemoryCommand } from './control/memoryControl'
@@ -34,7 +34,8 @@ import { detectSubtitleCommand } from './control/subtitleControl'
 import { detectPlayModeCommand } from './control/playModeControl'
 import { isTimeQuery } from './skills/time_skill'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
-import { MediaPlaybackCapability, createDefaultMediaPlaybackDeps } from './media/MediaPlaybackCapability'
+import { MediaPlaybackCapability, createMediaPlaybackDeps, type MediaResolver } from './media/MediaPlaybackCapability'
+import { createMusicResolver } from './skills/music_skill/resolver'
 import { detectWeatherCommand } from './skills/weather_skill'
 import { detectProductQuery } from './control/productCatalog'
 import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
@@ -400,7 +401,39 @@ export class VoiceSessionService {
   constructor(private readonly deps: VoiceSessionDeps) {
     this.deviceId = deps.deviceId ?? null
     this.newsVideoSource = deps.newsVideoSource ?? createNewsVideoSource()
-    this.media = new MediaPlaybackCapability(createDefaultMediaPlaybackDeps((e) => this.deps.send(e)))
+    const mediaDeps = createMediaPlaybackDeps({
+      send: (e) => this.deps.send(e),
+      ensureAdtsFile,
+      needsProxy,
+      adtsKeyFor,
+    })
+    // 媒体解析能力用 getter 延迟读当前 musicSource（session.playback.source 在 session.start 才确定，
+    // 且切换来源后要立即生效）；换源只换 source，能力层与 skill 都不动。
+    mediaDeps.resolver = {
+      resolve: (params) => this.musicResolver().resolve(params),
+      next: (params) => this.musicResolver().next?.(params) ?? Promise.resolve(null),
+      getSubtitle: (title, artist) => this.musicResolver().getSubtitle?.(title, artist) ?? Promise.resolve(null),
+    }
+    this.media = new MediaPlaybackCapability(mediaDeps)
+  }
+
+  /** resolver 缓存：musicSource 变了（切换来源）才重建，其余时候复用。 */
+  private cachedMusicSource: MusicSource | undefined = undefined
+  private cachedMusicResolver: MediaResolver | undefined = undefined
+
+  /** 按当前 musicSource 取 MediaResolver（换源即时生效，能力层/skill 不感知）。 */
+  private musicResolver(): MediaResolver {
+    if (!this.musicSource) {
+      // 无源：返回空 resolver，高层方法会解析失败、由调用方回退 LLM（不谎报「没这首歌」）
+      return { resolve: async () => null }
+    }
+    if (this.cachedMusicSource !== this.musicSource || !this.cachedMusicResolver) {
+      const resolver = createMusicResolver(this.musicSource)
+      this.cachedMusicSource = this.musicSource
+      this.cachedMusicResolver = resolver
+      return resolver
+    }
+    return this.cachedMusicResolver
   }
 
   /**

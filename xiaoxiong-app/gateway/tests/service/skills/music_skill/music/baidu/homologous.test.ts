@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { createBaiduMusicSource } from '../../../../src/service/music/baidu/index'
-import type { MusicFetcher } from '../../../../src/service/music/types'
+import { createBaiduMusicSource } from '../../../../../../src/service/skills/music_skill/music/baidu/index'
+import type { MusicFetcher } from '../../../../../../src/service/skills/music_skill/music/types'
 
 const SEARCH_HTML = '<a href="/music/4198" title="一路向北 - 周杰伦"></a>'
 const DETAIL_HTML =

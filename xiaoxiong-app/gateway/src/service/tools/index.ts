@@ -29,7 +29,7 @@ import { createMusicSearchTool } from './musicSearchTool'
 import { createSubtitleTool } from './subtitleTool'
 import { createDealsTool } from './dealsTool'
 import { createDealsSource, createDealsAllSources, type DealsSource } from '../deals'
-import type { MusicSource } from '../music/types'
+import type { MusicSource } from '../skills/music_skill/music/types'
 import {
   createRememberTool,
   createRecallTool,

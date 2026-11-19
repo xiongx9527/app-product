@@ -19,8 +19,7 @@
  *  - TTS 类字幕由调用方按真实音频时长铺好传入（本层不重算、不生成）。
  */
 import type { ServerEvent, SubtitleLine } from '../../protocol'
-import { needsProxy } from '../music'
-import { adtsKeyFor, ensureAdtsFile } from '../../controller/musicStreamController'
+// 系统能力不依赖 music/news/poem/baike 任何业务域：dash 预热/代理判定/短链 key 全部由 deps 注入。
 
 /** 通用媒体描述。注意：没有 kind:news/poem/baike 等业务字段——业务类型不进系统能力层。 */
 export interface MediaAsset {
@@ -317,13 +316,19 @@ export class MediaPlaybackCapability {
   }
 }
 
-/** 默认依赖：接真实实现，供生产装配；单测注入 mock。 */
-export function createDefaultMediaPlaybackDeps(send: (e: ServerEvent) => void): MediaPlaybackDeps {
+/**
+ * 默认依赖工厂：dash 相关的真实实现由装配方（voiceSessionService）注入——
+ * 系统能力层不 import controller/music 等任何业务域，保持能力层零业务依赖。
+ * 单测直接构造 MediaPlaybackDeps mock，不走这个工厂。
+ */
+export function createMediaPlaybackDeps(params: {
+  send: (e: ServerEvent) => void
+  ensureAdtsFile: (raw: string) => Promise<string>
+  needsProxy: (channel?: string, url?: string) => boolean
+  adtsKeyFor: (raw: string) => string
+}): MediaPlaybackDeps {
   return {
-    send,
-    ensureAdtsFile,
-    needsProxy,
-    adtsKeyFor,
+    ...params,
     getNowPlayingInfo: () => null,
   }
 }
