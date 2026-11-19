@@ -10,6 +10,21 @@ function frame(amplitude: number, samples = 1600): Uint8Array {
 }
 
 describe('EnergyVad 自适应噪声底', () => {
+  it('绝对能量下限：低于 absFloorRms 的远场声/杂音不判人声（宁可不出来）', () => {
+    // 默认 absFloorRms=0.008：远场背景<0.004、近场说话>0.01
+    const vad = new EnergyVad()
+    for (let i = 0; i < 4; i += 1) {
+      const r = vad.push(frame(0.003), { now: i * 100 }) // 远场能量，低于下限
+      expect(r.voiced).toBe(false)
+      expect(r.frames).toHaveLength(0)
+    }
+    // 同样自适应门限下，0.02 近场能量能确认开口
+    vad.push(frame(0.02), { now: 400 })
+    const started = vad.push(frame(0.02), { now: 500 })
+    expect(started.started).toBe(true)
+    expect(started.voiced).toBe(true)
+  })
+
   it('纯静音不判为语音，底噪会继续下探', () => {
     const vad = new EnergyVad()
     const before = vad.noiseFloor

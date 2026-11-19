@@ -49,6 +49,19 @@ describe('HttpVoiceAsr：内置 ASR 必须显式下发 language', () => {
   })
 })
 
+describe('HttpVoiceAsr：buffer 上限防爆（防长音频重复39遍）', () => {
+  it('持续喂超长音频时 bufferedBytes 不超过 MAX_BUFFER_BYTES（丢弃最旧帧）', async () => {
+    stubFetch({})
+    const asr = new HttpVoiceAsr('http://127.0.0.1:9529/voice')
+    const bigFrame = new Uint8Array(60000)
+    // 喂 20 帧 = 1.2MB，远超 512000 上限
+    for (let i = 0; i < 20; i += 1) await asr.push(bigFrame)
+    const buffered = (asr as unknown as { bufferedBytes: number }).bufferedBytes
+    expect(buffered).toBeLessThanOrEqual(512000)
+    expect(buffered).toBeGreaterThan(0)
+  })
+})
+
 describe('HttpVoiceAsr：上游失败不能把占位文本当用户原话', () => {
   it('定稿时上游抛错 → finalize reject（由会话层走 asr-error 提示，而不是喂给大模型）', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})

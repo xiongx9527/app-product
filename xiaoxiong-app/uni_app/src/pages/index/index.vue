@@ -373,7 +373,24 @@ function onNextMusic(): void {
   nextMusic()
 }
 
+// 网关加载状态提示：启动中显示"网关启动中…"，加载完成短暂显示"已就绪"，
+// 避免用户在这段时间喊唤醒词没反应、以为坏了（提示走固定区域行内文字，不弹浮层）。
+const justReady = ref(false)
+let justReadyTimer: ReturnType<typeof setTimeout> | null = null
+watch(gatewayPreparing, (preparing, wasPreparing) => {
+  if (justReadyTimer) { clearTimeout(justReadyTimer); justReadyTimer = null }
+  justReady.value = false
+  // true→false 且不是初始（wasPreparing 为真）才算"加载完成"
+  if (wasPreparing && !preparing) {
+    justReady.value = true
+    justReadyTimer = setTimeout(() => { justReady.value = false; justReadyTimer = null }, 2500)
+  }
+})
+
 const hint = computed(() => {
+  // 网关加载状态最优先：让用户知道"正在启动/已就绪"，别对着没就绪的网关白喊
+  if (gatewayPreparing.value) return t('gateway.preparing')
+  if (justReady.value) return t('gateway.ready')
   // 静默提示与退出优先，其余按对话阶段说明「现在在干嘛」，免得用户以为卡住
   if (state.value === 'confirming') return t('hint.confirming')
   if (state.value === 'closing') return t('hint.closing')
@@ -410,6 +427,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   uni.offWindowResize(onResize)
+  if (justReadyTimer) { clearTimeout(justReadyTimer); justReadyTimer = null }
   // 清掉音量拖动可能遗留的 window 监听，避免泄漏
   volDragging = false
   if (typeof window !== 'undefined') {

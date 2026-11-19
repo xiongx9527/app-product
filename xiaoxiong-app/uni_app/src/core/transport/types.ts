@@ -89,7 +89,7 @@ export type ServerEvent =
   /** 让客户端播一条提示音（打包内本地 mp3，唯一一份，不再经网关 HTTP 下发）；
    *  ASR/TTS/LLM 未就绪时网关没法用语音播报，改发预录提示音让用户听得见。
    *  asr-error 是运行中识别失败/超时的瞬时提示（health 不覆盖），网关节流下发。cue 为提示音名。 */
-  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' | 'asr-error' }
+  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' | 'asr-error' | 'llm-error' | 'tts-error' }
   | { type: 'error'; code: string; message: string }
 
 /** media.detail 事件负载：详情卡片的全量状态快照（供 useAssistant 持有、渲染器分派）。 */

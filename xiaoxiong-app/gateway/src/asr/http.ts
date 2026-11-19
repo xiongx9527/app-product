@@ -10,6 +10,10 @@ const PARTIAL_MIN_BYTES = 12800
  * 不让一轮会话被慢服务拖死（用户感知就是「喊了没反应 / 好慢」）。
  */
 const ASR_TIMEOUT_MS = 6000
+/** buffer 累积上限（约16秒 @16k/16bit=512000 bytes）：正常句子不会触发，仅异常长音频
+ *  滑动窗口防爆——曾出现"今天天气怎么样"重复39遍、vd=55s。超出丢最旧帧，配合
+ *  stripTrailingEcho 去尾部重复。 */
+const MAX_BUFFER_BYTES = 512000
 /** 定稿失败时的占位文本（只用于 UI 诊断，绝不能被当成用户原话进后续链路）。 */
 const ASR_UNAVAILABLE_TEXT = '（ASR 服务暂不可用）'
 
@@ -54,6 +58,11 @@ export class HttpVoiceAsr implements AsrProvider {
   async push(chunk: Uint8Array): Promise<string | null> {
     this.buffer.push(Buffer.from(chunk))
     this.bufferedBytes += chunk.byteLength
+    // 异常长音频防爆：超过上限丢最旧帧（正常句子不触发）
+    while (this.bufferedBytes > MAX_BUFFER_BYTES && this.buffer.length > 1) {
+      const dropped = this.buffer.shift()
+      this.bufferedBytes -= dropped ? dropped.byteLength : 0
+    }
 
     const now = Date.now()
     if (now - this.lastPartialAt < PARTIAL_INTERVAL_MS) return null

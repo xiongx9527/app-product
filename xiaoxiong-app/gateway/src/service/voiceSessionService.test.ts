@@ -2277,39 +2277,26 @@ describe('LLM 超时兜底与队列续跑（回归：排队卡死）', () => {
       .map((e) => e.text)
       .join('')
   }
-  function finals(h: Harness): Array<{ text: string; queueRemaining: number }> {
-    return h.events
-      .filter((e): e is Extract<ServerEvent, { type: 'asr.final' }> => e.type === 'asr.final')
-      .map((e) => ({ text: e.text, queueRemaining: e.queueRemaining }))
-  }
-
-  it('LLM 超时：兜底口播播完后队列继续消费，不再卡死', async () => {
+  it('LLM 超时：发 llm-error mp3 cue（不用 TTS 念兜底），且会话不卡死能接受下一轮', async () => {
     const h = createHarness({
-      // delayDelta 让 agent 挂起，50ms 超时触发兜底口播
-      delayDelta: true,
+      delayDelta: true, // agent 挂起，50ms 超时触发失败路径
       finalizeTexts: ['你好，随便聊聊', '你好，聊聊第二个话题'],
       ttsFrames: [loudFrame()],
       llmTimeoutMs: 50,
     })
     await startDialog(h.service)
-    await speakUtterance(h) // 首句 → LLM 超时 → 兜底口播（ttsStarted=true）
-    await sleep(120)
-    // 超时窗口内插话一句进队列
+    await speakUtterance(h) // 首句 → LLM 超时 → 失败路径
+    await sleep(150)
+
+    // LLM 失败兜底改为 client.cue('llm-error')（本地 mp3），因为 TTS 可能也坏了
+    expect(h.events.some((e) => e.type === 'client.cue' && (e as Extract<ServerEvent, { type: 'client.cue' }>).cue === 'llm-error')).toBe(true)
+    // 不发 TTS 兜底文案（旧行为是 llmUnavailable 文本）
+    expect(texts(h)).not.toContain('这边一时没接上，你稍后再问我一次好吗？')
+
+    // 关键：会话不卡死——下一轮说话仍能触发 agent（queue/processing 没被卡住）
     await speakUtterance(h)
-    await sleep(30)
-    expect(h.events.some((e) => e.type === 'asr.queued')).toBe(true)
-
-    // 兜底句播完回执 → runTurn shift 下一句 → 第二句同样超时兜底 → 播完
-    h.playbackDone()
-    await sleep(200)
-    h.playbackDone()
-    await sleep(120)
-
-    // 关键断言：两句都被消费（agent 各调一次）、队列清空、口播含兜底文案
+    await sleep(150)
     expect(h.agentCalls()).toBe(2)
-    const all = finals(h)
-    expect(all.some((f) => f.text === '你好，聊聊第二个话题' && f.queueRemaining === 0)).toBe(true)
-    expect(texts(h)).toContain('这边一时没接上，你稍后再问我一次好吗？')
   })
 })
 

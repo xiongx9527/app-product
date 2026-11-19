@@ -167,10 +167,12 @@ export class EnergyVad {
       this.lastVoicedAt = now
       return { speech: true, voiced: true, started: false, frames: [chunk] }
     }
-    if (now - this.lastVoicedAt < this.hangoverMs && rms >= this.absFloorRms) {
+    // 句中短停顿/尾音（低能量）照常保留在句内，避免吞掉词间停顿与尾音。
+    // 远场噪声在 voiced 那一关就已被 absFloorRms 挡住、根本进不了 inSpeech，无需在这里再挡。
+    if (now - this.lastVoicedAt < this.hangoverMs) {
       return { speech: true, voiced: false, started: false, frames: [chunk] }
     }
-    // 这句话结束（或尾帧能量已低于下限：远场噪声不该续命），当前帧转为下一句的前置缓冲
+    // 这句话结束，当前帧转为下一句的前置缓冲
     this.inSpeech = false
     this.voicedRun = 0
     this.remember(chunk)

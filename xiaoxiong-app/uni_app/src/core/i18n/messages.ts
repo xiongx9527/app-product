@@ -12,6 +12,7 @@ const zhCN: Messages = {
   'conn.connecting': '连接中…',
 
   'gateway.preparing': '网关启动中…',
+  'gateway.ready': '网关已就绪，可以说小熊小熊了',
   'gateway.notReady': '网关未就绪，请稍后重试',
   'gateway.notConnected': '网关未连接，暂时无法唤醒，正在尝试重连',
 
@@ -322,6 +323,7 @@ const enUS: Messages = {
   'conn.connecting': 'Connecting…',
 
   'gateway.preparing': 'Starting gateway…',
+  'gateway.ready': 'Gateway ready — say "Xiaoxiong Xiaoxiong" to wake me',
   'gateway.notReady': 'Gateway is not ready yet. Try again later.',
   'gateway.notConnected': 'Gateway not connected — wake is unavailable. Reconnecting…',
 

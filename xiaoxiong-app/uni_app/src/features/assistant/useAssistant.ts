@@ -205,7 +205,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let thinkingCueTimer: ReturnType<typeof setTimeout> | null = null
   let thinkingCueFired = false
 
-  /** 思考阶段起计时：超过 10s 还没开始播报就播 thinking.mp3，让用户知道没卡死。 */
+  /** 思考阶段起计时：超过 5s 还没开始播报就播 thinking.mp3。
+   *  LLM 生成 + TTS 合成/下载的等待期用户没有反馈会以为卡死；5s 避免误报正常慢回复。
+   *  每轮最多一次。 */
+  const THINKING_CUE_DELAY_MS = 5_000
   function armThinkingCue(): void {
     disarmThinkingCue()
     thinkingCueFired = false
@@ -216,7 +219,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         thinkingCueFired = true
         void playPromptCue('thinking')
       }
-    }, 10_000)
+    }, THINKING_CUE_DELAY_MS)
   }
 
   /** 思考结束（开始播报 / 播报中 / 完成）时撤销计时。 */
@@ -787,6 +790,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 例外：asr-error 是「运行中识别失败/超时」的瞬时提示（health 不覆盖），按网关节流触发播放。
         if (event.cue === 'asr-error') {
           void playPromptCue('asrError')
+        } else if (event.cue === 'llm-error') {
+          // LLM 运行中失败：播本地 mp3（不靠 TTS，TTS 可能也坏了）
+          void playPromptCue('llmError')
+        } else if (event.cue === 'tts-error') {
+          // TTS 播报失败：播本地 mp3；并显式复位播报态，避免 tts.start 没配对 tts.end
+          // 导致 isSpeaking 卡 true、把队列下一句的 tts.start 当重复吞掉（队列卡死）。
+          if (isSpeaking.value) {
+            isSpeaking.value = false
+            stopAppPlayback() // 复位原生播报态 + playbackInFlight，避免下一句 tts.start 被吞
+            duckMusic(false)
+          }
+          void playPromptCue('ttsError')
         }
         break
     }
@@ -1115,6 +1130,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     try {
       gatewayPreparing.value = true
       errorMessage.value = ''
+      // 网关启动中先给一声提示，避免用户对着还没就绪的网关喊唤醒词没反应、以为坏了。
+      // 音频是打包内本地文件，断网/网关未起也能出声。playPromptCue 自带去重。
+      playPromptCue('gatewayPreparing')
       const ready = await waitForEmbeddedGateway()
       gatewayPreparing.value = false
       if (!ready) {
@@ -1135,6 +1153,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       // connect 返回却仍未连通（如还在握手中）：同样不进 standby
       if (!transport.isConnected()) return
       dispatch({ type: 'ENABLE' })
+      // 加载完成提示：引导用户现在可以唤醒，配合上面的"启动中"提示形成闭环
+      playPromptCue('gatewayReady')
     } finally {
       enabling = false
     }

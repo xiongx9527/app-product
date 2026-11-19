@@ -30,7 +30,9 @@ export class HttpVoiceTts implements TtsProvider {
         headers: this.authHeaders({ 'content-type': 'application/json' }),
         body: JSON.stringify({
           input: text,
-          voice: 'zh-CN-XiaoxiaoNeural',
+          // 不写死 edge 音色：9529 按当前 TTS_PROVIDER 选默认音色（builtin→XiaoxiaoNeural、
+          // deepseek→stella）。写死 edge 音色会让 deepseek 分支拒绝（502）导致播不出来。
+          // 客户端显式配了 voice（params.voice）才覆盖。
           response_format: 'wav',
           speed: 1.0,
           ...this.params,

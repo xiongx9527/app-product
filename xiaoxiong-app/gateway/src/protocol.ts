@@ -233,7 +233,7 @@ export type ServerEvent =
    *  ASR/TTS/LLM 未就绪时，网关在本帧前无法用语音播报，改用预录提示音告知用户；
    *  asr-error 是运行中识别失败/超时的瞬时提示（health 不覆盖），由网关节流下发。
    *  只需传提示音名，客户端按名播放打包内文件，不下发具体文案（提示音已含人声）。 */
-  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' | 'asr-error' }
+  | { type: 'client.cue'; cue: 'asr-down' | 'tts-down' | 'llm-down' | 'network-down' | 'asr-error' | 'llm-error' | 'tts-error' }
   | { type: 'error'; code: ServerErrorCode; message: string }
 
 /** 契约定义的错误码 */

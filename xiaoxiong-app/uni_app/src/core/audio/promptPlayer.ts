@@ -17,6 +17,12 @@ export type PromptCue =
   | 'thinking'
   /** 插话队列已满：「你说的太多了，我记不住」 */
   | 'queueFull'
+  /** 网关启动中 / 已就绪：避免用户在这段时间喊唤醒词没反应以为坏了 */
+  | 'gatewayPreparing'
+  | 'gatewayReady'
+  /** 运行中 LLM 生成失败 / TTS 播报失败：用本地 mp3 兜底（TTS 本身坏了时不能再靠 TTS 念兜底） */
+  | 'llmError'
+  | 'ttsError'
 
 const CUE_FILE: Record<PromptCue, string> = {
   greeting: 'greeting',
@@ -31,6 +37,10 @@ const CUE_FILE: Record<PromptCue, string> = {
   asrError: 'asr-error',
   thinking: 'thinking',
   queueFull: 'queue-full',
+  gatewayPreparing: 'gateway-preparing',
+  gatewayReady: 'gateway-ready',
+  llmError: 'llm-error',
+  ttsError: 'tts-error',
 }
 
 /** 提示音全部走客户端打包内的本地文件（/static/audio/，唯一一份，mp3 不在网关侧再放副本）：
@@ -79,6 +89,11 @@ const CUE_MUTE_MS: Record<PromptCue, number> = {
   asrError: 3400,
   thinking: 2300,
   queueFull: 3100,
+  // gateway-preparing ≈2.6s / gateway-ready ≈3.3s / llm-error ≈3.1s / tts-error ≈3.0s，留尾音余量
+  gatewayPreparing: 2900,
+  gatewayReady: 3600,
+  llmError: 3500,
+  ttsError: 3400,
 }
 
 let cueMuteUntil = 0

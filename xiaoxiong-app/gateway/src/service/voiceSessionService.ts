@@ -49,7 +49,8 @@ import { queryPoem, type PoemEntry } from './edu'
 import { fetchBaikeAudioUrl, splitSummaryToLines } from './baike/baidu/baikeTts'
 import { cacheExternalAudio, getCachedAudioDuration, type MediaFetcher } from './mediaCache'
 import { messages } from '../i18n'
-import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho } from '../asr/noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho, pcmRms } from '../asr/noiseFilter'
+import { ABS_FLOOR_RMS } from '../vad/energyVad'
 import { AsrCorrector, type CorrectionEntry } from './asr/asrCorrector'
 import type { CorrectionSyncer } from './asrCorrectionSync'
 import type { AutoLearnEngine } from './autoLearn'
@@ -1849,15 +1850,8 @@ export class VoiceSessionService {
 
   handleBinary(chunk: Uint8Array): void {
     if (!this.active) return
-    // 本帧 RMS（供 duck 触发与诊断共用）
-    let s = 0
-    const nn = Math.floor(chunk.byteLength / 2)
-    const dvv = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength)
-    for (let i = 0; i < nn; i += 1) {
-      const v = dvv.getInt16(i * 2, true) / 32768
-      s += v * v
-    }
-    const frameRms = nn ? Math.sqrt(s / nn) : 0
+    // 本帧 RMS（供 duck 触发与诊断共用）；复用 noiseFilter 的 pcmRms，避免重复实现
+    const frameRms = pcmRms(chunk)
     // 累计收帧诊断（每 50 帧一条，不受节流/pb 影响）：确认帧是否真的到达网关
     bargeFrames += 1
     if (frameRms > 0.008) bargeLoudFrames += 1
@@ -1899,6 +1893,10 @@ export class VoiceSessionService {
     // 喂 ASR 的帧必须是 AEC 消除回声后的，否则等于把 TTS 回声送进识别
     const framesToFeed = forceFeed ? [cleanChunk] : vad.frames
     for (const frame of framesToFeed) {
+      // forceFeed 是插话强喂（已用原始 frameRms>0.02 把关、且是 AEC 后帧），不过门控，
+      // 否则误杀播报期插话。vad.frames（含 started 时的整段 preroll）逐帧过绝对下限，
+      // 挡掉混进前缓冲的远场背景声/杂音——按用户原则"宁愿不出来也不要错"。
+      if (!forceFeed && pcmRms(frame) < ABS_FLOOR_RMS) continue
       void this.asr.push(frame)
         .then((partial) => {
           // 临时诊断：记录每一条 ASR 返回的草稿原文与过滤决策
@@ -2392,8 +2390,13 @@ export class VoiceSessionService {
       if (ttsStarted) this.deps.send({ type: 'tts.stop' })
       this.speaking = false
       this.playbackPending = false
-      await this.speakReply(messages(this.lang).llmUnavailable())
-      return true
+      // LLM 失败兜底改用本地 mp3 提示音，不再用 TTS 念 llmUnavailable 文本——
+      // TTS 本身可能也坏了，用 TTS 兜底等于没有兜底。mp3 打包在客户端、不依赖网关/TTS。
+      this.deps.send({ type: 'client.cue', cue: 'llm-error' })
+      // 没有 llm.done 前端会停在 thinking 态，补发一个让界面收尾（LLM_ERROR 路径不发）
+      this.deps.send({ type: 'llm.done' })
+      // 返回 false：本轮没产生 TTS 播报，runTurn 会 cancelPlaybackWait 立即推进队列下一条。
+      return false
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer)
     }
@@ -2411,7 +2414,20 @@ export class VoiceSessionService {
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
     const gapMs = this.deps.ttsFrameGapMs ?? 15_000
-    const iterator = this.tts.synthesize(sentence)[Symbol.asyncIterator]()
+    let iterator: AsyncIterator<Uint8Array>
+    try {
+      iterator = this.tts.synthesize(sentence)[Symbol.asyncIterator]()
+    } catch {
+      // TTS 合成同步抛错：用本地 mp3 兜底（TTS 坏了不能再用 TTS 念兜底），
+      // swallow 不抛出，链继续 → 外层正常发 tts.end → 队列推进下一条。
+      bargeDiag(`TTS-FAIL synth threw, text="${sentence}"`)
+      this.deps.send({ type: 'client.cue', cue: 'tts-error' })
+      // 立即兑现播放等待：不让队列等 30s 超时才推进下一条（用户要求出错不卡队列）
+      this.playbackPending = false
+      this.resolvePlayback()
+      return
+    }
+    let gotAnyFrame = false
     try {
       for (;;) {
         let timer: ReturnType<typeof setTimeout> | null = null
@@ -2422,9 +2438,19 @@ export class VoiceSessionService {
           }),
         ])
         if (timer) clearTimeout(timer)
-        // 帧间超时：上游挂死，断开本句（不算错误，已收到的帧照播，链继续）
-        if (next === 'gap-timeout' || next.done) break
+        // 帧间超时：上游挂死，断开本句（已收到的帧照播，链继续）
+        if (next === 'gap-timeout' || next.done) {
+          // 一帧都没收到就超时＝TTS 真的没产出，给 mp3 提示；收到过部分帧的超时算正常截断
+          if (next === 'gap-timeout' && !gotAnyFrame) {
+            bargeDiag(`TTS-FAIL gap timeout no frame, text="${sentence}"`)
+            this.deps.send({ type: 'client.cue', cue: 'tts-error' })
+            this.playbackPending = false
+            this.resolvePlayback()
+          }
+          break
+        }
         const frame = next.value
+        gotAnyFrame = true
         if (this.turn !== turn || this.cancelled || this.skipRequested) return
         this.downlinkBytes += frame.byteLength
         this.echo.onDownlink()
@@ -2435,6 +2461,14 @@ export class VoiceSessionService {
         this.aec.pushReference(frame)
         this.deps.sendAudio(frame)
       }
+    } catch {
+      // TTS 合成中途抛错：本地 mp3 兜底，swallow 让链继续（外层发 tts.end、队列推进）。
+      // 不冒泡到 runAgent 的 catch——那会被误判成 LLM 失败。
+      bargeDiag(`TTS-FAIL iter threw, text="${sentence}"`)
+      this.deps.send({ type: 'client.cue', cue: 'tts-error' })
+      // 立即兑现播放等待，队列不等超时
+      this.playbackPending = false
+      this.resolvePlayback()
     } finally {
       void iterator.return?.()
     }
@@ -2716,11 +2750,14 @@ export class VoiceSessionService {
  * 无标点时若缓冲过长，退而按逗号或固定长度切，避免迟迟不出声。
  */
 function sentenceCut(text: string): number {
+  // 句末标点：立即切句送 TTS
   const match = text.match(/[。！？；!?;\n]/)
   if (match && match.index !== undefined) return match.index + 1
-  if (text.length >= 60) {
-    const comma = Math.max(text.lastIndexOf('，'), text.lastIndexOf(','))
-    return comma > 0 ? comma + 1 : 60
-  }
+  // 逗号/顿号：LLM 回复开头常有一长串没句号的文字，等句末标点才启动 TTS 会让
+  // "文字刷出来了、声音迟迟不来"。遇到逗号就切，让用户更早听到声音。
+  const comma = text.match(/[，、,]/)
+  if (comma && comma.index !== undefined && comma.index >= 4) return comma.index + 1
+  // 无标点时长文本兜底：降到 20 字（原 60 字），避免 LLM 一路不写标点时干等。
+  if (text.length >= 20) return 20
   return -1
 }
