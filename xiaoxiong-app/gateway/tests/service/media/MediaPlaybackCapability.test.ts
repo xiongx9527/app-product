@@ -110,3 +110,48 @@ describe('MediaPlaybackCapability：纯系统能力', () => {
     expect(cap.snapshot().ttsMediaActive).toBe(false)
   })
 })
+
+
+describe('MediaPlaybackCapability：高层语义方法（解析也是系统能力）', () => {
+  const resolved: MediaAsset = { url: 'https://x/song.mp3', title: '稻香', artist: '周杰伦' }
+
+  it('playByQuery：只传语义参数，内部用注入的 resolver 解析并播放', async () => {
+    const resolve = vi.fn(async () => resolved)
+    const { cap, events } = makeCap({ resolver: { resolve } })
+    const asset = await cap.playByQuery({ genre: '周杰伦' }, { confirm: '好的' })
+    expect(resolve).toHaveBeenCalledWith({ genre: '周杰伦' })
+    expect(asset?.title).toBe('稻香')
+    expect(events.some((e) => e.type === 'media.play')).toBe(true)
+  })
+
+  it('resolver 没找到 → 不播放、返回 null', async () => {
+    const { cap, events } = makeCap({ resolver: { resolve: async () => null } })
+    const asset = await cap.playByQuery({ query: '不存在' })
+    expect(asset).toBeNull()
+    expect(events.some((e) => e.type === 'media.play')).toBe(false)
+  })
+
+  it('未注入 resolver → 高层方法返回 null（play(MediaAsset) 仍可用）', async () => {
+    const { cap } = makeCap()
+    expect(await cap.playByQuery({ genre: 'x' })).toBeNull()
+    expect(await cap.nextAsset()).toBeNull()
+  })
+
+  it('nextAsset：优先 resolver.next，无则回退 resolve', async () => {
+    const next = vi.fn(async () => ({ ...resolved, title: '青花瓷' }))
+    const resolve = vi.fn(async () => resolved)
+    const { cap } = makeCap({ resolver: { resolve, next } })
+    const asset = await cap.nextAsset({ genre: '周杰伦' })
+    expect(asset?.title).toBe('青花瓷')
+    expect(next).toHaveBeenCalled()
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
+  it('ensureSubtitle：拉同源字幕并下发；autoSubtitle 语义由调用方控制', async () => {
+    const getSubtitle = vi.fn(async () => [{ time: 0, text: '歌词1' }])
+    const { cap, events } = makeCap({ resolver: { resolve: async () => resolved, getSubtitle } })
+    await cap.ensureSubtitle('稻香', '周杰伦')
+    const sub = events.find((e) => e.type === 'media.subtitle') as Extract<ServerEvent, { type: 'media.subtitle' }>
+    expect(sub.lines).toEqual([{ time: 0, text: '歌词1' }])
+  })
+})

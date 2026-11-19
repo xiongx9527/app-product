@@ -42,6 +42,8 @@ static uint32_t gNextId = 1;
 static NSMutableData *gMuxBuf = nil;
 static int gTargetPort = 9529;
 static NSString *gTargetUdid = nil;
+static NSNumber *gCurrentDeviceID = nil;        // 在线设备的 usbmux deviceID（定时重连用）
+static BOOL gLastConnectFailed = NO;            // 失败日志节流：只在状态翻转时打印
 
 static void logLine(NSString *fmt, ...) {
   va_list ap;
@@ -191,13 +193,17 @@ static void handleMuxData(NSData *chunk) {
 }
 
 static void connectDevice(NSNumber *deviceID) {
-  logLine(@"连接设备 deviceID=%@ port=%d", deviceID, gTargetPort);
+  BOOL firstTry = !gLastConnectFailed; // 定时重连期间只在首次尝试打印
+  if (firstTry) logLine(@"连接设备 deviceID=%@ port=%d", deviceID, gTargetPort);
   [[PTUSBHub sharedHub] connectToDevice:deviceID port:gTargetPort
     onStart:^(NSError *error, dispatch_io_t channel) {
       if (error || !channel) {
-        logLine(@"连接失败: %@（设备端 dev 隧道未启动？test/pro 包？）", error.localizedDescription);
+        if (!gLastConnectFailed) logLine(@"等待设备隧道（App 未前台/未启动？）: %@", error.localizedDescription);
+        gLastConnectFailed = YES;
         return;
       }
+      if (gLastConnectFailed) logLine(@"设备隧道已就绪，连接建立");
+      gLastConnectFailed = NO;
       gMuxChannel = channel;
       gMuxQueue = dispatch_queue_create("mux.rw", DISPATCH_QUEUE_SERIAL);
       [gConnsLock lock];
@@ -213,11 +219,13 @@ static void connectDevice(NSNumber *deviceID) {
       });
       // 每个 mux 帧到来的连接：建本地 socket 连 127.0.0.1:gTargetPort
       dispatch_io_read(channel, 0, SIZE_MAX, gMuxQueue, ^(bool done, dispatch_data_t data, int error) {
+        size_t dbgN = 0;
         if (data) {
           const uint8_t *p = NULL; size_t n = 0;
           dispatch_data_t flat = dispatch_data_create_map(data, (const void **)&p, &n);
-          if (flat && p && n) handleMuxData([NSData dataWithBytes:p length:n]);
+          if (flat && p) { dbgN = n; if (n) handleMuxData([NSData dataWithBytes:p length:n]); }
         }
+        logLine(@"mux 读回调 done=%d bytes=%zu err=%d", done, dbgN, error);
         if (error) logLine(@"mux 读错误 err=%d", error);
         if (done) {
           logLine(@"mux 通道关闭");
@@ -233,8 +241,12 @@ static void connectDevice(NSNumber *deviceID) {
       // 实际是设备 JS 为每个网关连接分配 connId 并直接发数据帧；首个数据帧到达时在此按 connId 建本地 socket。
     }
     onEnd:^(NSError *error) {
-      logLine(@"连接结束: %@", error.localizedDescription ?: @"normal");
-      gMuxChannel = NULL;
+      // 无 mux 通道说明这次是"等待设备隧道"的失败尝试，不刷屏（定时重连每 2s 一次）；
+      // 有通道关闭才是真实的连接断开。
+      if (gMuxChannel) {
+        logLine(@"mux 连接结束: %@", error.localizedDescription ?: @"normal");
+        gMuxChannel = NULL;
+      }
     }];
 }
 
@@ -247,15 +259,26 @@ static void startWatching(void) {
       NSString *serial = props[@"SerialNumber"];
       if (gTargetUdid && ![serial isEqualToString:gTargetUdid]) return;
       logLine(@"发现设备 attach deviceID=%@ serial=%@", deviceID, serial);
+      gCurrentDeviceID = deviceID;
       if (!gMuxChannel) connectDevice(deviceID);
     }];
   [[NSNotificationCenter defaultCenter] addObserverForName:PTUSBDeviceDidDetachNotification
     object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
       logLine(@"设备 detach deviceID=%@", note.userInfo[PTUSBHubNotificationKeyDeviceID]);
+      if ([[note.userInfo[PTUSBHubNotificationKeyDeviceID] description] isEqualToString:[gCurrentDeviceID description]]) {
+        gCurrentDeviceID = nil;
+      }
       if (gMuxChannel) { dispatch_io_close(gMuxChannel, DISPATCH_IO_STOP); gMuxChannel = NULL; }
     }];
   // sharedHub 自动进入监听；已 attach 的设备会补发通知。
   [PTUSBHub sharedHub];
+  // 定时重连：设备 9529 可能此刻还没起来（App 未前台）。每 2s 在无通道时重试，
+  // 这样用户稍后手动打开 App、隧道监听起来后能自动连上，无需重启 helper。
+  // 用 NSTimer（走 main RunLoop，和 PTUSBHub 的设备通知同一个 RunLoop）。
+  // 注意：RunLoop 需要至少一个 input source 才会持续运行，cmdRun 里会加 NSMachPort 保活。
+  [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *_Nonnull t) {
+    if (!gMuxChannel && gCurrentDeviceID) connectDevice(gCurrentDeviceID);
+  }];
 }
 
 static int cmdRun(int argc, const char *argv[]) {
@@ -266,7 +289,14 @@ static int cmdRun(int argc, const char *argv[]) {
   gConns = [NSMutableDictionary dictionary];
   gConnsLock = [NSLock new];
   logLine(@"启动 run port=%d udid=%@", gTargetPort, gTargetUdid ?: @"(任意)");
+  // 写 pid 供 status/stop 使用（日志在 logs/ 下，需确保目录存在）
+  [[NSFileManager defaultManager] createDirectoryAtPath:@"logs" withIntermediateDirectories:YES attributes:nil error:nil];
+  [[@(getpid()).stringValue stringByAppendingString:@"\n"] writeToFile:kPidPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
   startWatching();
+  // 保活 RunLoop：NSRunLoop 没有任何 input source 时 run 会立即返回，导致 NSTimer 不触发、
+  // PTUSBHub 设备通知收不到。加一个 NSMachPort 作为常驻 source。
+  NSMachPort *keepAlive = [NSMachPort new];
+  [[NSRunLoop currentRunLoop] addPort:keepAlive forMode:NSDefaultRunLoopMode];
   [[NSRunLoop currentRunLoop] run];
   return 0;
 }

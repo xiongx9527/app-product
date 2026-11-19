@@ -1,13 +1,13 @@
 /**
  * 媒体播放系统能力层 —— 纯机制，零业务。
  *
- * 职责边界（用户明确要求「系统能力不能有业务代码」，改动前务必读这段）：
- *  - 本层只认 MediaAsset 这个通用媒体描述，完全不知道 music/news/poem/baike 这些业务类型；
- *    意图识别、数据获取、字幕文本生成与铺行都在各 skill/工具里，不许搬进本层。
- *  - 本层只做「怎么播」：预热音轨、生成 dash 短链、下发 media.play / media.subtitle、
- *    维护播放状态机（暂停/继续/停止/重播/当前媒体）。「播什么、字幕写什么」不归本层。
- *  - 所有播放（用户显式点歌走 skill 直连、LLM 主动放歌走 play_media 工具）都必须经过
- *    本层的 play()，状态才有唯一写入方，避免两条路径各记一套导致「暂停/重播说没在播」。
+ * 职责边界（用户明确要求「系统能力不能有业务代码」「解析媒体也是通用能力」，改动前务必读这段）：
+ *  - 本层是完整的「音频系统能力」：语义参数 → 解析媒体 → 预热/短链 → 播放 → 字幕 → 状态机 → 通用指令，
+ *    全链路在这里。skill 只传语义参数（genre/query/动作）+ 口播，不碰解析、不碰 MediaAsset、不碰源。
+ *  - 本层仍完全不知道 music/news/poem/baike 这些业务类型：解析通过注入的 MediaResolver 完成
+ *    （源实现由外部注入、可替换），字幕文本由注入的 resolver 拉取；本层只认通用 MediaAsset。
+ *  - 意图识别、口播文案在各 skill 里，不进本层。
+ *  - 所有播放（skill 直连 / play_media 工具）都经过本层，状态唯一写入方，避免两条路径各记一套。
  *
  * 吸收的踩坑（都是真机实测，删注释等于埋雷）：
  *  - dash 长 URL 936 字节即被 DCloud 下载器截断，必须转 ADTS 走本地短链 audioPath + proxy:false；
@@ -57,6 +57,19 @@ export interface PlaybackSnapshot {
   subtitleLines: SubtitleLine[] | null
 }
 
+/**
+ * 媒体解析能力（系统能力的一部分，由外部注入实现 —— 换源只换这个实现，本层与 skill 都不动）。
+ * 语义参数进、通用 MediaAsset 出；本层不知道它背后是哪家源。
+ */
+export interface MediaResolver {
+  /** 按语义参数解析出要播的媒体；null 表示没找到。 */
+  resolve(params: { genre?: string; artist?: string; query?: string }): Promise<MediaAsset | null>
+  /** 换一首（可选）：同类型或指定风格；不支持的解析器可省略，本层回退到 resolve。 */
+  next?(params?: { genre?: string }): Promise<MediaAsset | null>
+  /** 拉同源字幕（可选）：返回带时间轴的行；拉不到返回 null。 */
+  getSubtitle?(title: string, artist?: string): Promise<SubtitleLine[] | null>
+}
+
 /** 外部依赖：全部注入，便于单测 mock，能力层不自己 import 数据获取逻辑。 */
 export interface MediaPlaybackDeps {
   send: (event: ServerEvent) => void
@@ -65,6 +78,8 @@ export interface MediaPlaybackDeps {
   needsProxy: (channel?: string, url?: string) => boolean
   adtsKeyFor: (raw: string) => string
   getNowPlayingInfo: () => { title: string; artist?: string; contentType?: string } | null
+  /** 媒体解析能力（可换源）；未注入时高层语义方法返回 false，play(MediaAsset) 仍可用。 */
+  resolver?: MediaResolver
 }
 
 export class MediaPlaybackCapability {
@@ -75,8 +90,23 @@ export class MediaPlaybackCapability {
   private subtitleActive = false
   private subtitleLines: SubtitleLine[] | null = null
   private autoSubtitle = true
+  /** 网关认定的当前音量权威值（0–1），每次新播放重置为默认值、滑块回执/语音增减同步。 */
+  private musicVolume = 0.5
 
   constructor(private readonly deps: MediaPlaybackDeps) {}
+
+  /** 当前音量（0–1）。 */
+  getVolume(): number {
+    return this.musicVolume
+  }
+
+  /** 设音量（0–1，越界收敛），下发 media.volume。返回生效值。 */
+  setVolume(value: number): number {
+    const v = Math.min(1, Math.max(0, value))
+    this.musicVolume = v
+    this.deps.send({ type: 'media.volume', volume: v })
+    return v
+  }
 
   /**
    * 播放一段媒体（唯一的播放入口）。
@@ -190,6 +220,47 @@ export class MediaPlaybackCapability {
     const confirm = `重新播放${asset.title}`
     this.play(asset, { confirm, reuseSubtitle: true })
     return true
+  }
+
+  /**
+   * 高层语义播放：skill 只传语义参数，本层用注入的 resolver 解析出媒体并播放。
+   * 返回解析到的媒体（供 skill 口播标题）；null 表示没找到/未注入 resolver。
+   * 口播确认由 skill 传 confirm（本层不生成文案）——这里只负责解析+播放链路。
+   */
+  async playByQuery(
+    params: { genre?: string; artist?: string; query?: string },
+    opts: PlayOptions = {},
+  ): Promise<MediaAsset | null> {
+    const resolver = this.deps.resolver
+    if (!resolver) return null
+    const asset = await resolver.resolve(params)
+    if (!asset) return null
+    this.play(asset, opts)
+    return asset
+  }
+
+  /** 换一首：优先 resolver.next，不支持则回退 resolve。返回媒体或 null。 */
+  async nextAsset(params: { genre?: string } = {}, opts: PlayOptions = {}): Promise<MediaAsset | null> {
+    const resolver = this.deps.resolver
+    if (!resolver) return null
+    const asset = (resolver.next ? await resolver.next(params) : null) ?? await resolver.resolve(params)
+    if (!asset) return null
+    this.play(asset, opts)
+    return asset
+  }
+
+  /** 拉同源字幕并下发（系统能力）：autoSubtitle 关闭时不显示、拉不到不覆盖已有字幕。 */
+  async ensureSubtitle(title: string, artist?: string, reuse = false): Promise<boolean> {
+    const resolver = this.deps.resolver
+    if (!resolver?.getSubtitle) return false
+    if (reuse && this.subtitleLines) return this.emitSubtitle(title, artist, [], true)
+    try {
+      const lines = await resolver.getSubtitle(title, artist)
+      if (!lines?.length) return false
+      return this.emitSubtitle(title, artist, lines)
+    } catch {
+      return false
+    }
   }
 
   snapshot(): PlaybackSnapshot {

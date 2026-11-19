@@ -34,6 +34,7 @@ import { detectSubtitleCommand } from './control/subtitleControl'
 import { detectPlayModeCommand } from './control/playModeControl'
 import { isTimeQuery } from './skills/time_skill'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
+import { MediaPlaybackCapability, createDefaultMediaPlaybackDeps } from './media/MediaPlaybackCapability'
 import { detectWeatherCommand } from './skills/weather_skill'
 import { detectProductQuery } from './control/productCatalog'
 import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
@@ -390,9 +391,16 @@ export class VoiceSessionService {
   /** 定稿串行链：多个 endpoint 定时器重叠时逐句处理，不丢句也不抢同一段缓冲。 */
   private finalizeChain: Promise<void> = Promise.resolve()
 
+  /**
+   * 媒体播放系统能力（唯一实例）：skill 与 play_media 工具共用，状态唯一。
+   * send 用闭包指向 deps.send——bindTransport 换连接后仍能下发到存活 socket。
+   */
+  private media: MediaPlaybackCapability
+
   constructor(private readonly deps: VoiceSessionDeps) {
     this.deviceId = deps.deviceId ?? null
     this.newsVideoSource = deps.newsVideoSource ?? createNewsVideoSource()
+    this.media = new MediaPlaybackCapability(createDefaultMediaPlaybackDeps((e) => this.deps.send(e)))
   }
 
   /**
@@ -1581,6 +1589,8 @@ export class VoiceSessionService {
       queueRemaining: () => self.queue.length,
       getLocation: () => self.getLocation(),
       requestClientLocation: () => self.requestClientLocation(),
+      // 媒体播放系统能力：skill 与 play_media 工具共用这一个实例，状态唯一。
+      media: self.media,
     }
     this.skills = modules.map((m) => m.create(ctx))
     this.skillPromptAddon = skillPromptAddon(modules, self.lang)
