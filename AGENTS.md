@@ -161,6 +161,7 @@ xiaoxiong-app/uni_app/src/
   - **迁移进度**：已完成 preference（偏好追问，onFinalize）+ time（时间，onDirectCommand，自带 i18n）+ weather（天气，onDirectCommand，自带 i18n+format+weather/域数据源）三个完整垂直切片，全量 932 单测通过。其余 control（auspicious/memory/volume/subtitle/playMode/news/baike/poem/music/deals/productCatalog）按同样垂直切片逐个迁（每个全绿再下一个）。
   - **天气/时间工具归类**：weather 的 detect+run+格式化+weather/ 源域全迁进 `skills/weather_skill/`，直接用 WeatherSource+定位，不依赖 weatherTool。currentTimeTool/weatherTool 待删；currentLocationTool 定位是系统能力（getLocation/requestClientLocation）。
   - **不需要 play_media 工具**（2026-11-19 用户明确）：删掉 LLM 音乐工具（musicTool/musicSearchTool/subtitleTool）后**不建替代工具**——LLM 侧的播放能力靠 skill 的 `description`（注入 systemPrompt）提示即可，用户明说播放走意图识别直连。系统能力层（MediaPlaybackCapability）的 resolver + playByQuery 高层方法已就位（解析媒体也是系统能力，skill 只传语义参数）。music/ 源域已迁到 `skills/music_skill/music/`，能力层去 music 依赖（dash 依赖改装配方注入）。
+  - **通用媒体控制不属于任何 skill**（2026-11-19 用户明确）：音量/字幕/播放模式/pause/resume/stop/replay 是「对当前媒体的控制」，与正在播的是音乐/新闻/诗词/百科无关，它们的 detect+run+口播文案统一放**系统能力层**（`service/media/` 下建非 skill 的媒体控制模块），网关核心只把用户这句话递给它，不写控制逻辑。内容 skill（music/news/poem/baike）只管「播什么」。能力层方法（setVolume/emitSubtitle/closeSubtitle/pause/resume/stop/replay）已就位，待把 detect+文案从 control/*.ts 和 voiceSessionService.*Command 迁进媒体控制模块。
   - **能力层边界**：MediaPlaybackCapability = 语义参数→解析(resolver 注入、可换源)→预热/短链→播放→字幕→状态机→通用指令(音量/字幕/播放模式/pause/resume/stop/replay)。skill 只识别意图+传参数+用自己的 i18n 口播，不碰 MediaAsset/源/状态。
   - 归类不硬编码：已删 `CATEGORY_RULES` 词表和 `key==='偏好'` 硬判断，交 LLM `extractMemories` 产出 `{key,value}`，归不出来用兜底 key 原样存。
 
