@@ -19,10 +19,12 @@ import {
   detectPreference,
   isAffirmative,
   isNegative,
-  classifyPreference,
   mergeMemoryValue,
 } from '../../control/memoryPrompt'
 import type { Skill, SkillContext, SkillModule } from '../types'
+
+/** LLM 抽取不可用/归不出来时的兜底 key（存储约定，非业务词表）。 */
+const FALLBACK_MEMORY_KEY = '偏好'
 
 interface PendingMemory {
   value: string
@@ -44,10 +46,11 @@ function createPreferenceSkill(ctx: SkillContext): Skill {
           const value = pending.value
           pending = null
           emitFinal()
-          // 内置分类优先；通用「偏好」才交 LLM 抽取兜底；都失败原样存，绝不丢。
-          let key = classifyPreference(value)
+          // 归类完全交给 LLM 抽取引擎（它本就产出 {key,value}）；不再用词表硬编码分类。
+          // 抽取不可用 / 归不出来 → 用兜底 key 原样存，绝不丢数据。
+          let key = FALLBACK_MEMORY_KEY
           let finalValue = value
-          if (key === '偏好' && ctx.agent && ctx.memoryStore) {
+          if (ctx.agent && ctx.memoryStore) {
             try {
               const existing = await ctx.memoryStore.list()
               const extracted = (await ctx.agent.extractMemories([value], existing)) ?? []
@@ -55,7 +58,7 @@ function createPreferenceSkill(ctx: SkillContext): Skill {
                 key = extracted[0].key
                 finalValue = extracted[0].value
               }
-            } catch { /* LLM 抽取失败：用内置通用 key 原样存 */ }
+            } catch { /* LLM 抽取失败：用兜底 key 原样存 */ }
           }
           // 相似记忆合并更新（同 key 去重），不是覆盖。
           let merged = finalValue
@@ -116,8 +119,11 @@ function createPreferenceSkill(ctx: SkillContext): Skill {
 export const preferenceSkill: SkillModule = {
   id: 'preference',
   name: '偏好记忆确认',
-  // 纯代码钩子型 skill：行为全靠生命周期钩子实现，不向 LLM 暴露提示词——
-  // 否则「遇到喜欢就追问要不要记」又被写回 systemPrompt，违背「提示词不写死业务规则」。
-  description: () => '',
+  // skill 提示词：只描述「你拥有这个能力」，不写「遇到喜欢就反问」这类硬规则——
+  // 具体追问时机与确认判定由生命周期钩子确定性处理，提示词不掺业务分支。
+  description: (lang) =>
+    lang.toLowerCase().startsWith('en')
+      ? 'You can remember the user’s personal preferences and habits. After a natural reply, a separate confirmation asks whether to save it; a later affirmative stores it and a negative discards it. Keep the chat natural and never promise “I remembered it” yourself.'
+      : '你拥有「记住用户个人偏好和习惯」的能力。用户表达喜好后你先自然聊天，系统会另行确认要不要记下来，用户之后再肯定或否定才决定保存或放弃；你自己不要抢先说「记住了」。',
   create: createPreferenceSkill,
 }

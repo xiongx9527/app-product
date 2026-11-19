@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectPreference, isAffirmative, isNegative, classifyPreference, mergeMemoryValue } from './memoryPrompt'
+import { detectPreference, isAffirmative, isNegative, mergeMemoryValue } from './memoryPrompt'
 
 describe('mergeMemoryValue（相似记忆合并更新）', () => {
   it.each([
@@ -11,24 +11,6 @@ describe('mergeMemoryValue（相似记忆合并更新）', () => {
     ['', '喜欢打篮球', '喜欢打篮球'],
   ])('合并：%s + %s → %s', (old, inc, expected) => {
     expect(mergeMemoryValue(old, inc)).toBe(expected)
-  })
-})
-
-describe('classifyPreference（内置分类兜底）', () => {
-  it.each([
-    ['喜欢吃苹果', '水果偏好'],
-    ['爱打篮球', '运动偏好'],
-    ['喜欢喝咖啡', '饮品偏好'],
-    ['爱吃火锅', '食物偏好'],
-    ['爱听周杰伦的歌', '音乐偏好'],
-    ['喜欢看电影', '影视偏好'],
-    ['爱读书', '书籍偏好'],
-    ['喜欢打游戏', '游戏偏好'],
-    ['喜欢养猫', '宠物偏好'],
-    ['习惯早起', '作息偏好'],
-    ['莫名其妙的东西', '偏好'],
-  ])('分类：%s → %s', (pref, expected) => {
-    expect(classifyPreference(pref)).toBe(expected)
   })
 })
 

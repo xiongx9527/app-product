@@ -58,7 +58,8 @@ describe('preference skill：偏好句「问一句再记」', () => {
     const r = await skill.onFinalize?.('要记下来')
     expect(r?.consumed).toBe(true)
     expect(saved).toHaveLength(1)
-    expect(saved[0].key).toBe('运动偏好')
+    // agent 不可用 → 兜底 key；归类交给 LLM，不再有内置词表
+    expect(saved[0].key).toBe('偏好')
     expect(saved[0].value).toContain('乒乓球')
     expect(spoken.at(-1)).toContain('记')
   })
@@ -129,8 +130,23 @@ describe('preference skill：偏好句「问一句再记」', () => {
     expect(saved).toHaveLength(0)
   })
 
-  it('纯代码钩子型：name 可读、description 不向 LLM 注入业务规则', () => {
+  it('归类交给 LLM：抽取成功后用 LLM 的 key/value（无内置词表硬编码）', async () => {
+    const agent = {
+      extractMemories: async () => [{ key: '运动偏好', value: '喜欢打乒乓球' }],
+    } as unknown as NonNullable<SkillContext['agent']>
+    const { ctx, saved } = makeCtx({ agent })
+    const skill = preferenceSkill.create(ctx)
+    await skill.onFinalize?.('我喜欢打乒乓球')
+    skill.onAgentReply?.('', '')
+    await skill.onFinalize?.('要记下来')
+    expect(saved).toHaveLength(1)
+    expect(saved[0].key).toBe('运动偏好') // 来自 LLM，不是内置词表
+  })
+
+  it('name/description 可读：description 是能力描述（不含「遇到喜欢就」硬规则）', () => {
     expect(preferenceSkill.name).toBeTruthy()
-    expect(preferenceSkill.description('zh-CN')).toBe('')
+    const desc = preferenceSkill.description('zh-CN')
+    expect(desc).toBeTruthy()
+    expect(desc).not.toContain('反问')
   })
 })

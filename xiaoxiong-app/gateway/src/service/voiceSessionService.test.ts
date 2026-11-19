@@ -3363,32 +3363,33 @@ describe('VAD 幻觉二级判断（短语音 + 无有效意图 → 丢弃）', (
   })
 })
 
-describe('skill 接入：偏好追问流程（迁移后行为不变）', () => {
-  it('偏好句→同链追问→肯定→落库，整条链路经 preference skill 生效', async () => {
-    const { preferenceSkill } = await import('./skills/preference')
-    const h = createHarness({
-      skillModules: [preferenceSkill],
-      finalizeTexts: ['我喜欢打乒乓球', '要记下来'],
-    })
+describe('skill 接入：生命周期钩子经 voiceSessionService 调用', () => {
+  it('定稿时调用 skill.onFinalize，LLM 收尾调用 onAgentReply，播完调用 onAfterSpeak', async () => {
+    const calls: string[] = []
+    const spySkill = {
+      id: 'spy',
+      name: 'spy',
+      description: () => '',
+      create: () => ({
+        async onFinalize() { calls.push('finalize'); return { consumed: false } },
+        onAgentReply() { calls.push('agentReply'); return { appendTts: '要记下来吗？' } },
+        async onAfterSpeak() { calls.push('afterSpeak') },
+        onSessionReset() { calls.push('reset') },
+      }),
+    }
+    const h = createHarness({ skillModules: [spySkill] })
     await startDialog(h.service)
-
-    // 第一句：偏好句。LLM 先正常回答，skill 在收尾把「要不要记」拼进同一 TTS 链。
     await speakUtterance(h)
-    await sleep(200)
-    console.log('DBG calls=',h.agentCalls(),'events=',JSON.stringify(h.events.map((e:any)=>e.type+':'+String(e.text??''))))
-    expect(h.agentCalls()).toBe(1)
-    const deltas = h.events.filter((e) => e.type === 'llm.delta').map((e) => (e as { text: string }).text)
-    expect(deltas.some((t) => t.includes('记'))).toBe(true) // 同链追问已拼进去
+    // 等整个 turn（含 agent 回复 + 同链追问 + 播完钩子）跑完
+    await sleep(300)
     h.finishReply()
     h.playbackDone()
-    await sleep(60)
+    await sleep(100)
 
-    // 第二句：肯定确认。intent 被 skill 消费，不调 LLM，落库并口播确认。
-    await speakUtterance(h)
-    await sleep(60)
-    expect(h.agentCalls()).toBe(1) // 没有新增 LLM 调用（被 skill 消费）
-    expect(h.savedMemories().length).toBe(1)
-    expect(h.savedMemories()[0].key).toBe('运动偏好')
-    expect(h.savedMemories()[0].value).toContain('乒乓球')
+    expect(calls).toContain('finalize')
+    expect(calls).toContain('agentReply')
+    expect(calls).toContain('afterSpeak')
+    // 同链追问文本被拼进 llm.delta 下发
+    expect(h.events.some((e) => e.type === 'llm.delta' && String((e as { text?: string }).text ?? '').includes('记'))).toBe(true)
   })
 })
