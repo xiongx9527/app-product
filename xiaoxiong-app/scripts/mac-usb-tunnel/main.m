@@ -45,6 +45,11 @@ static int gTargetPort = 9529;
 static NSString *gTargetUdid = nil;
 static NSNumber *gCurrentDeviceID = nil;        // 在线设备的 usbmux deviceID（定时重连用）
 static BOOL gLastConnectFailed = NO;            // 失败日志节流：只在状态翻转时打印
+// 握手自愈：helper 在 App 隧道 net server accept-ready 之前连入时，首包握手会丢，
+// 设备端 mux 永远为 null → 所有探测被拒（零帧）。记录 mux 建立时刻与是否收到过帧，
+// 启动宽限期内一帧未收到就判定握手丢失、主动断开重连（新连接重新握手），直到成功。
+static NSDate *gMuxEstablishedAt = nil;
+static BOOL gMuxGotFrame = NO;
 
 static void logLine(NSString *fmt, ...) {
   va_list ap;
@@ -162,6 +167,9 @@ static void pumpMuxRead(dispatch_io_t channel) {
 
 // mux 收帧处理
 static void handleMuxData(NSData *chunk) {
+  // 收到设备端发来的任何字节，说明握手已被设备端认出、mux 通道真实可用。
+  // （设备端只有在认出握手后才可能往这条通道写帧。）
+  if (chunk.length > 0) gMuxGotFrame = YES;
   if (!gMuxBuf) gMuxBuf = [NSMutableData data];
   [gMuxBuf appendData:chunk];
   const uint8_t *bytes = gMuxBuf.bytes;
@@ -237,6 +245,8 @@ static void connectDevice(NSNumber *deviceID) {
       [gConns removeAllObjects];
       [gConnsLock unlock];
       gMuxBuf = [NSMutableData data];
+      gMuxEstablishedAt = [NSDate date];
+      gMuxGotFrame = NO;
       logLine(@"mux 通道已建立，发握手");
       dispatch_data_t hs = dispatch_data_create(kHandshake.UTF8String, kHandshake.length,
                                                 dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),

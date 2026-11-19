@@ -37,6 +37,7 @@ import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/music
 import { MediaPlaybackCapability, createMediaPlaybackDeps, type MediaResolver } from './media/MediaPlaybackCapability'
 import { MediaControl } from './media/mediaControl'
 import { createMusicResolver } from './skills/music_skill/resolver'
+import { MusicPlayer } from './skills/music_skill/player'
 import { detectWeatherCommand } from './skills/weather_skill'
 import { detectProductQuery } from './control/productCatalog'
 import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
@@ -398,6 +399,8 @@ export class VoiceSessionService {
   private media: MediaPlaybackCapability
   /** 通用媒体控制（系统能力，非 skill）：音量/字幕/播放模式/pause/resume/stop/replay。 */
   private mediaControl!: MediaControl // start() 里按当前 lang 构造
+  /** 音乐播放业务（music_skill 的执行实现）：选曲/候选/口播，核心按 ctx.content 委托。 */
+  private musicPlayer!: MusicPlayer // start() 里构造
 
   constructor(private readonly deps: VoiceSessionDeps) {
     this.deviceId = deps.deviceId ?? null
@@ -1586,13 +1589,12 @@ export class VoiceSessionService {
       requestClientLocation: () => self.requestClientLocation(),
       // 媒体播放系统能力：skill 与工具共用这一个实例，状态唯一。
       media: self.media,
-      // 内容播放请求：music_skill 识别意图后委托核心执行（核心仍持有跨轮候选状态与播放实现）。
-      // 这样 skill 是意图入口、核心是执行器，逐步可把执行实现搬进能力层/skill。
+      // 内容播放请求：music_skill 识别意图后委托 player（音乐业务实现在 skill 目录）。
       content: {
-        play: async (text) => { await self.runMusicCommand('play', text); return true },
-        next: async (text) => { await self.runMusicCommand('next', text); return true },
-        recommend: async (text) => { await self.runMusicCommand('recommend', text); return true },
-        // 选号仍由核心在 finalizeUtterance 的回声比对前处理，这里返回 false 避免重复消费。
+        play: async (text) => { await self.musicPlayer.run('play', text); return true },
+        next: async (text) => { await self.musicPlayer.run('next', text); return true },
+        recommend: async (text) => { await self.musicPlayer.run('recommend', text); return true },
+        // 选号由核心在 finalizeUtterance 的回声比对前调 player.selectCandidate，这里返回 false 避免重复消费。
         select: async () => false,
       },
     }
@@ -2539,6 +2541,26 @@ export class VoiceSessionService {
       speak: (t) => this.speakReply(t),
       onStop: () => { this.newsPlayback = null },
       defaultLoop: () => this.defaultLoop,
+    })
+    // 音乐播放业务（music_skill 实现）：依赖用 getter 读会话当前值，切源/重武装即时生效。
+    this.musicPlayer = new MusicPlayer({
+      lang: () => this.lang,
+      speak: (t) => this.speakReply(t),
+      send: (e) => this.deps.send(e),
+      queueRemaining: () => this.queue.length,
+      media: this.media,
+      getMusicSource: () => this.musicSource,
+      candidateFetcher: this.deps.candidateFetcher,
+      defaultLoop: () => this.defaultLoop,
+      autoLoop: () => this.autoLoop,
+      clearNewsContext: () => { this.newsPlayback = null },
+      hasPendingDeals: () => this.pendingDeals !== null,
+      clearPendingDeals: () => { this.pendingDeals = null },
+      getLastTtsMedia: () => this.lastTtsMedia,
+      playNewsVideo: async (c) => {
+        if (!c.bvid) return
+        await this.playNewsVideo({ bvid: c.bvid, title: c.title, cover: c.cover })
+      },
     })
     // 用户没带时区或带的是非法值就退回东 8 区
     this.timezone = timezone?.trim() || 'Asia/Shanghai'
