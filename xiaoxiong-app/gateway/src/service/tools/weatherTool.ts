@@ -6,7 +6,7 @@ import {
   type WeatherFetcher,
   type WeatherSource,
   type WeatherPayload,
-} from '../weather'
+} from '../skills/weather_skill/weather'
 
 /** 工具名固定，作为 LLM 函数调用的标识，不要本地化。 */
 export const WEATHER_TOOL_NAME = 'get_weather'
@@ -86,7 +86,7 @@ function weatherTip(code: number | undefined, lang: Lang | string): string {
  * 统一天气结构 + 底层 fetcher 类型现在定义在 service/weather 域（可换源）。
  * 这里 re-export 保持旧调用方/测试的 import 路径不变。
  */
-export type { WeatherPayload } from '../weather'
+export type { WeatherPayload } from '../skills/weather_skill/weather'
 /** 兼容旧名 Fetcher（= WeatherFetcher）。 */
 export type Fetcher = WeatherFetcher
 

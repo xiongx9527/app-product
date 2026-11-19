@@ -158,7 +158,8 @@ xiaoxiong-app/uni_app/src/
   - **i18n 拆分范式**：skill 自带文案放 `<name>_skill/i18n.ts`（**纯数据、不 import 网关 i18n.ts**，避免循环依赖）；网关 `i18n.ts` 的 Messages 接口和 zhCN/en catalog 用 `clock: clockI18n['zh-CN']` 这种形式汇总（不是 spread——spread 会把 now/date 铺到顶层而非 clock 字段）。time_skill 是首个样板。
   - 接线：`server.ts` loadSkillModules()→voiceController deps→VoiceSessionService.deps.skillModules；`start()` 的 `ensureSkills()` create 实例（ctx 用 getter 读会话当前值），算 `skillPromptAddon` 经 agentFactory 尾参拼进 `baseSysPrompt`（必须拼进它，否则 refreshNowPlaying 每轮重建 _sysPrompt 会抹掉）。
   - **测试归位**（2026-11-19）：所有 `*.test.ts` 从 `src/**` 迁到与 src 同级的 `tests/`（gateway 64 文件 / uni_app 23 文件，镜像 src 结构），两个 `vitest.config.ts` 的 include 改 `tests/**/*.test.ts`。测试 import 相对路径回指 `../src/...`。
-  - **迁移进度**：已完成 preference（偏好追问，走 onFinalize）+ time（时间查询，走 onDirectCommand，含 i18n）两个 skill 的完整垂直切片，全量 928 单测通过。其余 control（auspicious/weather/memory/volume/subtitle/playMode/news/baike/poem/music/deals/productCatalog）按同样垂直切片逐个迁（每个全绿再下一个）。
+  - **迁移进度**：已完成 preference（偏好追问，onFinalize）+ time（时间，onDirectCommand，自带 i18n）+ weather（天气，onDirectCommand，自带 i18n+format+weather/域数据源）三个完整垂直切片，全量 932 单测通过。其余 control（auspicious/memory/volume/subtitle/playMode/news/baike/poem/music/deals/productCatalog）按同样垂直切片逐个迁（每个全绿再下一个）。
+  - **天气/时间工具归类**：weather 的 detect+run+格式化(WEATHER_CODE/WEATHER_TIPS/formatWeather)+weather/ 数据源域全迁进 `skills/weather_skill/`，weather_skill 直接用 WeatherSource+定位，不依赖 weatherTool。currentTimeTool、weatherTool 待删（时间/天气走 skill 直连）；currentLocationTool 的定位能力本质是系统能力（getLocation/requestClientLocation，已在 SkillContext），不是 LLM 工具。工具壳删除与 tools/index.ts 注销在收尾统一做。
   - 归类不硬编码：已删 `CATEGORY_RULES` 词表和 `key==='偏好'` 硬判断，交 LLM `extractMemories` 产出 `{key,value}`，归不出来用兜底 key 原样存。
 
 ### 音频与唤醒

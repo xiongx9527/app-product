@@ -12,6 +12,13 @@
 import { createGateway } from '../server'
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { startIosDevTunnel } from './iosDevTunnel'
+
+// iOS dev-only USB 隧道开关，由 build.sh 在 [2/3] 经 esbuild `--define` 注入：
+//   dev 构建 = true（在设备 127.0.0.1:9529 起 mux 端点，经 USB 转 Mac 语音代理）；
+//   test/pro = false（整段代码被常量折叠 + tree-shake，不进 bundle）。
+// 单独 `npm run build:bundle`（不经 build.sh）时该全局未定义 → typeof 守卫短路，不启用。
+declare const XIAOXIONG_IOS_DEV_TUNNEL: boolean | undefined
 
 // 单条会话的异步异常（如模型构造失败、上游抖动）不应拖垮整个网关：
 // 记录后继续运行，让其它会话不受影响，避免助手「老老挂掉」。
@@ -24,6 +31,16 @@ process.on('uncaughtException', (err) => {
 
 const gateway = createGateway()
 const server = gateway.httpServer
+
+// dev-only：在网关上游地址(127.0.0.1:9529)起 mux 端点，等 Mac helper 经 USB 连入转发。
+// 隧道失败只告警，绝不拖垮网关主进程（8787 服务照常）。
+if (typeof XIAOXIONG_IOS_DEV_TUNNEL !== 'undefined' && XIAOXIONG_IOS_DEV_TUNNEL) {
+  try {
+    startIosDevTunnel(gateway.config.voiceBuiltinUrl)
+  } catch (err) {
+    console.error('[gateway] iosDevTunnel 启动失败(网关继续):', err)
+  }
+}
 
 server.once('listening', () => {
   const addr = server.address()

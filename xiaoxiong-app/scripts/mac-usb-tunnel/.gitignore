@@ -1,0 +1,3 @@
+bin/
+*.log
+.ios-usb-tunnel.pid

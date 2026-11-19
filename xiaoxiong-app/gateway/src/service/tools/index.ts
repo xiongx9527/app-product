@@ -10,7 +10,7 @@ import {
   type RequestLocation,
 } from './currentLocationTool'
 import { createWeatherTool } from './weatherTool'
-import type { WeatherSource } from '../weather'
+import type { WeatherSource } from '../skills/weather_skill/weather'
 import { createBaikeTool } from './baikeTool'
 import { createPoemTool } from './poemTool'
 import { createLearnCorrectionTool } from './learnCorrectionTool'
@@ -75,7 +75,7 @@ export {
   createWttrSource,
   createOpenMeteoSource,
   type WeatherSource,
-} from '../weather'
+} from '../skills/weather_skill/weather'
 export {
   createDefaultBaikeSource,
   createBaikeSource,

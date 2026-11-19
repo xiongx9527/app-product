@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { VoiceSessionService } from '../../src/service/voiceSessionService'
 import { timeSkill } from '../../src/service/skills/time_skill'
 import { preferenceSkill } from '../../src/service/skills/preference_skill'
+import { createWeatherSkill } from '../../src/service/skills/weather_skill'
 import { ChannelSplitter } from '../../src/service/channelSplitter'
 import type { VoiceSessionDeps } from '../../src/service/voiceSessionService'
 import type { AgentService } from '../../src/service/agentService'
@@ -295,7 +296,15 @@ function createHarness(
     capabilityProbe: opts.capabilityProbe,
     // 默认注入已实现的 skill（贴近生产装配）：time 走 onDirectCommand 直连、preference 走 onFinalize。
     // 显式传 skillModules 的用例（如 spy 测试）可覆盖。
-    skillModules: opts.skillModules ?? [timeSkill, preferenceSkill],
+    skillModules: opts.skillModules ?? [
+      timeSkill,
+      createWeatherSkill({
+        name: 'test-weather',
+        fetch: async () => ({ current: { temperature_2m: 25, weather_code: 0 } }),
+        fetchCity: async (city: string) => ({ current: { temperature_2m: 25, weather_code: 0 }, city }),
+      } as never),
+      preferenceSkill,
+    ],
   }
   service = new VoiceSessionService(deps)
   return {
@@ -2250,6 +2259,17 @@ describe('择吉日/时间/日期直连（绕开 LLM）', () => {
     const spoken = texts(h)
     expect(spoken).toContain('现在是')
     expect(spoken).not.toContain('农历')
+    expect(h.agentCalls()).toBe(0)
+  })
+
+  it('「北京天气怎么样」：走 weather_skill 注入的源口播（指定城市），不进 LLM', async () => {
+    const h = createHarness({ finalizeText: '北京天气怎么样' })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(30)
+
+    const spoken = texts(h)
+    expect(spoken).toContain('北京')
     expect(h.agentCalls()).toBe(0)
   })
 })

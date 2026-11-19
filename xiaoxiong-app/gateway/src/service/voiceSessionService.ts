@@ -36,13 +36,12 @@ import { detectPlayModeCommand } from './control/playModeControl'
 import { isTimeQuery } from './skills/time_skill'
 import { detectAuspiciousQuery, type AuspiciousQuery } from './control/auspiciousControl'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
-import { detectWeatherCommand, extractWeatherCity } from './control/weatherControl'
+import { detectWeatherCommand } from './skills/weather_skill'
 import { detectProductQuery } from './control/productCatalog'
 import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
 import { detectBaikeCommand } from './control/baikeControl'
 import { detectPoemCommand } from './control/poemControl'
 import { createNewsVideoSource, cleanNewsTitle, type NewsVideoCandidate, type NewsVideoSourceLike } from './news'
-import { createWeatherTool } from './tools/weatherTool'
 import { createBaikeTool } from './tools/baikeTool'
 import type { BaikeEntry } from './baike'
 import { queryPoem, type PoemEntry } from './edu'
@@ -1032,14 +1031,9 @@ export class VoiceSessionService {
       await this.runAuspiciousCommand(auspicious)
       return true
     }
-    // 时间/日期：业务已迁进 time_skill（priority=20），按 skill 优先级调度。
-    // 目前只有 time_skill 挂 onDirectCommand，等价原来的 detectTimeCommandKind 分支；
-    // 后续 control 逐个迁进来后，这里会成为统一的 skill 调度点。
+    // 时间/日期/天气：业务已迁进 time_skill(20)/weather_skill(30)，按 skill priority 调度。
+    // 守卫类（auspicious=10）仍在上面的 if，等迁成 skill 后这里就是统一调度点。
     if (await this.dispatchDirectCommand(text)) return true
-    if (detectWeatherCommand(text)) {
-      await this.runWeatherCommand(extractWeatherCity(text) ?? undefined)
-      return true
-    }
     const memCmd = detectMemoryCommand(text)
     if (memCmd && this.deviceId) {
       await this.runMemoryCommand(memCmd)
@@ -1177,27 +1171,6 @@ export class VoiceSessionService {
     )
   }
 
-
-  /** 天气直连：复用天气数据源（懒加载位置），不进 LLM。超时/失败给友好兜底。 */
-  private async runWeatherCommand(city?: string): Promise<void> {
-    const query =
-      this.deps.weatherQuery ??
-      (async (): Promise<string> => {
-        const tool = createWeatherTool(
-          this.lang,
-          () => this.getLocation(),
-          undefined,
-          () => this.requestClientLocation(),
-        )
-        // 指定城市走 source.fetchCity（抽象接口，可换源）；无城市名则查设备定位
-        return tool.call(city ? { city } : undefined)
-      })
-    try {
-      await this.speakReply(await query())
-    } catch {
-      await this.speakReply(messages(this.lang).llmUnavailable())
-    }
-  }
 
   /**
    * 通用自动学习（数据源直连）：把"识别词 → 数据源返回的规范词"交给 autoLearn 引擎。
@@ -1670,6 +1643,8 @@ export class VoiceSessionService {
       send: (e) => self.deps.send(e),
       speak: (t) => self.speakReply(t),
       queueRemaining: () => self.queue.length,
+      getLocation: () => self.getLocation(),
+      requestClientLocation: () => self.requestClientLocation(),
     }
     this.skills = modules.map((m) => m.create(ctx))
     this.skillPromptAddon = skillPromptAddon(modules, self.lang)

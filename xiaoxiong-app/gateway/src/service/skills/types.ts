@@ -13,6 +13,7 @@ import type { DataService } from '../dataService'
 import type { MemoryStore } from '../tools'
 import type { AgentService } from '../agentService'
 import type { MediaPlaybackCapability } from '../media/MediaPlaybackCapability'
+import type { LocationInfo } from '../../protocol'
 
 /** 网关在每轮会话 start 时构造、注入给 skill 的运行时能力。 */
 export interface SkillContext {
@@ -37,6 +38,13 @@ export interface SkillContext {
    * skill 代码零改动；源相关的东西不进这个全局契约文件。
    */
   media?: MediaPlaybackCapability
+
+  /**
+   * 定位系统能力（懒加载）：天气等需要位置时用。不是"源"，是设备能力。
+   * 用户从不问位置相关问题时全程不触碰定位、不弹权限框。
+   */
+  getLocation?: () => LocationInfo | null
+  requestClientLocation?: () => Promise<LocationInfo | null>
 }
 
 /** 一句定稿后 skill 的处理结果。 */

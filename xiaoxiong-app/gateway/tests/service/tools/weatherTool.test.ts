@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createWeatherTool, formatWeather, WEATHER_TOOL_NAME, type WeatherPayload } from '../../../src/service/tools/weatherTool'
 import { createToolkit } from '../../../src/service/tools/index'
-import type { WeatherSource } from '../../../src/service/weather'
+import type { WeatherSource } from '../../../src/service/skills/weather_skill/weather'
 
 const SAMPLE: WeatherPayload = {
   current: {

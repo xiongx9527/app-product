@@ -3,6 +3,7 @@
 import type { SkillModule } from './types'
 import * as skillMod0 from './preference_skill/index'
 import * as skillMod1 from './time_skill/index'
+import * as skillMod2 from './weather_skill/index'
 
 const mod0 = Object.values(skillMod0).find(
   (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
@@ -10,8 +11,12 @@ const mod0 = Object.values(skillMod0).find(
 const mod1 = Object.values(skillMod1).find(
   (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
 )
+const mod2 = Object.values(skillMod2).find(
+  (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
+)
 
 export const SKILL_MODULES: Record<string, SkillModule> = {
   ...(mod0 ? { [mod0.id]: mod0 } : {}),
   ...(mod1 ? { [mod1.id]: mod1 } : {}),
+  ...(mod2 ? { [mod2.id]: mod2 } : {}),
 }

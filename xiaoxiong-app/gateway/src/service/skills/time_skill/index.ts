@@ -15,8 +15,17 @@
  *  - 「今天星期几」只报时分是漏答，日期类要给全「X年X月X日 星期X 农历…」+ 时分。
  */
 import { Solar } from 'lunar-javascript'
-import { messages } from '../../../i18n'
+// 直接用本 skill 目录自带的文案（不绕网关 messages() 聚合器）——文案跟 skill 走，
+// skill 自包含 detect+run+i18n。按 lang 前缀取（客户端可能上报 en-US / zh-TW 等）。
+import { clockI18n } from './i18n'
 import type { Skill, SkillContext, SkillModule } from '../types'
+
+/** 按语言码取本 skill 文案，带地区码按前缀回退（en-US→en、zh-TW→zh-CN）。 */
+function pickI18n(lang: string) {
+  if (clockI18n[lang]) return clockI18n[lang]
+  const prefix = lang.toLowerCase().split(/[-_]/)[0]
+  return clockI18n[prefix] ?? clockI18n['zh-CN']
+}
 
 /** 问时间：答案只是时:分。 */
 const TIME_WORDS = /几点|几时|报时|现在时间|当前时间|什么时间|什么时刻/
@@ -50,7 +59,7 @@ function createTimeSkill(ctx: SkillContext): Skill {
       const kind = detectTimeCommandKind(text)
       if (!kind) return undefined // 不是时间意图，交给后续 skill / LLM
 
-      const m = messages(ctx.lang)
+      const m = pickI18n(ctx.lang)
       const now = new Date()
       const timeParts = new Intl.DateTimeFormat('en-GB', {
         timeZone: ctx.timezone,
@@ -61,7 +70,7 @@ function createTimeSkill(ctx: SkillContext): Skill {
       const h = Number(timeParts.find((p) => p.type === 'hour')?.value ?? 0)
       const min = Number(timeParts.find((p) => p.type === 'minute')?.value ?? 0)
       if (kind === 'time') {
-        await ctx.speak(m.clock.now(h, min))
+        await ctx.speak(m.now(h, min))
         return { consumed: true }
       }
 
@@ -82,8 +91,8 @@ function createTimeSkill(ctx: SkillContext): Skill {
       const lunar = Solar.fromYmd(y, mo, d).getLunar()
       const leap = lunar.getMonth() < 0 ? '闰' : ''
       const lunarText = `农历${leap}${lunar.getMonthInChinese()}月${lunar.getDayInChinese()}`
-      const dateText = m.clock.date(dateBody, weekday, lunarText)
-      await ctx.speak(kind === 'date' ? dateText : `${dateText}${m.clock.now(h, min)}`)
+      const dateText = m.date(dateBody, weekday, lunarText)
+      await ctx.speak(kind === 'date' ? dateText : `${dateText}${m.now(h, min)}`)
       return { consumed: true }
     },
   }

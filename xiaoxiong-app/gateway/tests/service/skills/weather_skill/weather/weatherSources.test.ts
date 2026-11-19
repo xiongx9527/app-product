@@ -5,7 +5,7 @@ import {
   createOpenMeteoSource,
   createDefaultWeatherSource,
   type WeatherFetcher,
-} from '../../../src/service/weather/index'
+} from '../../../../../src/service/skills/weather_skill/weather/index'
 
 /** wttr.in 的真实响应切片（2026-11-17 实测，经纬度 28.67,116.01）。 */
 const WTTR_SAMPLE = {
