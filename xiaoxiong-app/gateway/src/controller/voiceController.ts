@@ -9,10 +9,12 @@ import { getSession, setSession, removeSession } from '../service/sessionRegistr
 import type { GatewayConfig } from '../config'
 import type { DataService } from '../service/dataService'
 import type { ServerEvent } from '../protocol'
+import type { CorrectionSyncer } from '../service/asrCorrectionSync'
 
 export interface VoiceControllerDeps {
   config: GatewayConfig
   data: DataService
+  correctionSyncer?: CorrectionSyncer
 }
 
 /** 从 WS 握手请求里取 deviceId（客户端随连接 URL query 上报）；缺省空表示旧客户端。 */
@@ -109,7 +111,7 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       resolveVoice: (voice) => resolveCapabilityConfig(voice, config),
       createAsr,
       createTts,
-      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, getNowPlaying, autoMemory, mcpServers) =>
+      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, getNowPlaying, autoMemory, mcpServers, autoLearnEngine) =>
         createAgentService(
           { llm, timeZone: timezone },
           lang,
@@ -126,9 +128,11 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
           dealsCount,
           getNowPlaying,
           autoMemory,
-          mcpServers
+          mcpServers,
+          autoLearnEngine
         ),
       data,
+      correctionSyncer: deps.correctionSyncer,
       send,
       sendAudio,
       asrEndpointMs: config.asr.endpointMs,

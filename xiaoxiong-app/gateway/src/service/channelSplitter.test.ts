@@ -24,6 +24,18 @@ describe('ChannelSplitter', () => {
     expect(r.thinking).toBe('')
   })
 
+  it('不支持 function calling 的模型吐出的裸工具名（含拼错）不泄漏到回答', () => {
+    const r = run(['\n\nplay_music'])
+    expect(r.delta).toBe('')
+    const r2 = run(['\n\nplay_small'])
+    expect(r2.delta).toBe('')
+    const r3 = run(['stop_music 和 next_music 都不能显示'])
+    expect(r3.delta).toBe('和  都不能显示')
+    // 正常含 music 的中文回答不受影响
+    const r4 = run(['已为您播放轻音乐。'])
+    expect(r4.delta).toBe('已为您播放轻音乐。')
+  })
+
   it('analysis 走思考、final 走正式回答', () => {
     const r = run([`${A}The user wants music.${END}${F}好的，已为您播放轻音乐。`])
     expect(r.thinking).toBe('The user wants music.')

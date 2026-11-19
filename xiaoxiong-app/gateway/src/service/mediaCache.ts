@@ -8,9 +8,10 @@
  *      → 客户端下载 <httpBase>/media/s/<key>.mp3 本地播（稳定）。
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { createReadStream, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { mp3DurationSec } from './mp3Duration'
 
 const CACHE_MAX = 12 // 最多留 12 个音频文件（百科/诗词量小），LRU 清理
 
@@ -84,8 +85,9 @@ export async function cacheExternalAudio(
 }
 
 /**
- * 从已缓存的短链读音频时长（秒）。百度 TTS mp3 是 CBR（实测 32kbps/16kHz mono），
- * duration ≈ 文件字节数 * 8 / 32000。用于生成贴合音频的字幕 time。
+ * 从已缓存的短链读音频真实时长（秒）。逐帧解析 mp3 帧头（CBR/VBR 都适用），
+ * 不再假设固定码率——诗词音频实测有 320kbps 立体声、~57kbps 立体声等多种规格，
+ * 用 bytes/32000 估算会把时长放大数倍，字幕随之越走越慢（2026-11-18 真机）。
  * 解析失败/文件不存在返回 0（调用方回退估算）。
  */
 export function getCachedAudioDuration(shortPath: string): number {
@@ -94,9 +96,7 @@ export function getCachedAudioDuration(shortPath: string): number {
   const file = pathForKey(key)
   if (!file) return 0
   try {
-    const bytes = statSync(file).size
-    const duration = (bytes * 8) / 32000
-    return Number.isFinite(duration) && duration > 0 ? duration : 0
+    return mp3DurationSec(readFileSync(file))
   } catch {
     return 0
   }

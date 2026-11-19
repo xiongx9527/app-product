@@ -4,8 +4,8 @@ import { WebSocketServer } from 'ws'
 import { loadConfig } from './config'
 import { createDb } from './db/client'
 import { createDataService } from './service/dataService'
-import { seedAsrCorrections } from './service/asrCorrectionSeed'
 import { loadAsrCorrections } from './service/voiceSessionService'
+import { createCorrectionSyncer } from './service/asrCorrectionSync'
 import { createApiController } from './controller/apiController'
 import { createDocsController } from './controller/docsController'
 import { handleMusicStream, handleAdtsByKey, getMusicDiagnostics } from './controller/musicStreamController'
@@ -35,12 +35,12 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
   const api = createApiController(data, config)
   const docs = createDocsController()
 
-  // ASR 纠错词表：seed 幂等灌入 SQLite → 加载进内存纠正器。
-  // fire-and-forget（createGateway 是同步的），启动后几百 ms 内完成；失败不影响启动。
-  void seedAsrCorrections(data)
-    .then(() => data.listFlatAsrCorrections())
+  // ASR 纠错词表：客户端不做 seed 初始化。词表来自两处——本地 learn_correction 学的，
+  // 以及从 9529 增量拉回的审核通过词。启动时先从本地库加载到内存，再启动同步器。
+  void data.listFlatAsrCorrections()
     .then((rows) => loadAsrCorrections(rows))
-    .catch((e) => console.error('[asr-correction] seed 加载失败：', e))
+    .catch((e) => console.error('[asr-correction] 加载本地词表失败：', e))
+  const correctionSyncer = createCorrectionSyncer(data, config.voiceBuiltinUrl)
 
   const httpServer = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
@@ -182,7 +182,7 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
 
   const wss = new WebSocketServer({ server: httpServer, path: config.ws.path })
   wss.on('connection', (ws, req) => {
-    createVoiceConnection(ws, req, { config, data })
+    createVoiceConnection(ws, req, { config, data, correctionSyncer })
   })
 
   return {

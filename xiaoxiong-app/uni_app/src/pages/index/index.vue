@@ -212,6 +212,29 @@ const musicMuted = computed(() => musicVolume.value < 0.005)
 // 避免再出现一条全宽滑杆。
 const volExpanded = ref(false)
 
+/** 收起音量面板：点页面其它地方、助手开始新一轮、切到悬浮播放器时都会调用。 */
+function closeVolPanel(): void {
+  volExpanded.value = false
+}
+
+/** 页面根点击：任何没被 .stop 拦住的点击都视为「其它焦点」，收起音量面板。 */
+function onPageTap(): void {
+  closeVolPanel()
+}
+
+// 助手开始一轮（唤醒/思考/播报）就收起：面板属于播放器局部控件，不该盖在对话内容上。
+watch(phase, (p) => {
+  if (p !== 'idle') closeVolPanel()
+})
+// 切到悬浮小圆后播放条整体隐藏，面板状态不能留到切回来时又自己弹开。
+watch(floatDiscVisible, (v) => {
+  if (v) closeVolPanel()
+})
+// 停止播放后整个播放条消失：面板状态同样复位，下次起播是收起态。
+watch(musicVisible, (v) => {
+  if (!v) closeVolPanel()
+})
+
 // 竖向音量轨道：按手指/鼠标在轨道内的纵向位置换算音量（轨道底部=0，顶部=1）。
 // 原生 slider 仅横向、CSS 旋转后拖不动，这里用自定义轨道替代。
 // 同时支持触摸与鼠标（桌面 :5173 用鼠标，没有触摸事件），用模板 ref 同步取轨道位置（H5 可靠），
@@ -407,6 +430,8 @@ function onOrbTap(): void {
   const elapsed = now - lastOrbTapAt
   if (elapsed >= 0 && elapsed < ORB_TAP_GUARD_MS) return
   lastOrbTapAt = now
+  // 点球即把注意力切回助手：音量面板这类局部控件先收起（避免盖在对话上）。
+  closeVolPanel()
   // 正在 TTS 播报时点球 == 说「小熊小熊」：只打断当前这句文字播报，媒体播放器照常继续放。
   // 必须放在 state 分支最前面——播报（尤其百科/天气/新闻确认句等空闲直连口播）时 state 可能
   // 已是 standby，若落到 wake() 分支就只是重新唤醒、停不掉正在播的文字，正是用户反馈的现象。
@@ -423,7 +448,7 @@ function onOrbTap(): void {
 </script>
 
 <template>
-  <view class="page" :class="[`bp-${screen.breakpoint}`, { landscape: isLandscape }]" :style="[pageStyle, themeStyle]" :data-theme="dataTheme">
+  <view class="page" :class="[`bp-${screen.breakpoint}`, { landscape: isLandscape }]" :style="[pageStyle, themeStyle]" :data-theme="dataTheme" @tap="onPageTap">
     <view class="header">
       <view class="header-actions">
         <view class="gear" @tap="openSettings">⚙</view>
@@ -478,6 +503,10 @@ function onOrbTap(): void {
       </view>
     </view>
 
+    <!-- 音量面板展开时的全屏透明遮罩：App 端事件冒泡不可靠，点面板以外任何地方都由遮罩收起。
+         喇叭分组 z-index 高于遮罩，保证面板内拖动、再点喇叭仍可用。 -->
+    <view v-if="volExpanded" class="vol-backdrop" @tap="closeVolPanel"></view>
+
     <!-- 播放条与悬浮小圆互斥：悬浮显示时隐藏播放条，避免两个播放器同时出现 -->
     <view v-if="musicVisible && !floatDiscVisible" class="music-bar">
       <view class="music-row">
@@ -521,18 +550,19 @@ function onOrbTap(): void {
           >
             <image class="music-icon" src="/static/icons/subtitle.svg" mode="aspectFit" />
           </view>
-          <!-- 喇叭提升到顶行：面板作为喇叭的兄弟节点（避免点击面板冒泡到开关而缩回），
-               喇叭已在上方，面板改为向下弹出，盖住下方进度行而非飞出屏幕顶部。 -->
+          <!-- 喇叭在顶行控制区：点它展开/收起音量面板。面板向上弹出（盖住上方内容而不是压住进度条），
+               并在点页面其它地方 / 助手开始一轮时自动收起，避免「打开后就关不掉」。
+               @tap.stop 防止开关自己的点击冒泡到页面根、刚展开又被收起。 -->
           <view class="vol-group">
             <view
               class="music-ctrl vol-ctrl"
               :class="{ muted: musicMuted, active: volExpanded }"
               :aria-label="musicMuted ? t('music.unmute') : t('music.mute')"
-              @tap="onToggleVolExpand"
+              @tap.stop="onToggleVolExpand"
             >
               <image class="music-icon" :src="musicMuted ? '/static/icons/volume-mute.svg' : '/static/icons/volume.svg'" mode="aspectFit" />
             </view>
-            <view v-if="volExpanded" class="vol-slider-wrap">
+            <view v-if="volExpanded" class="vol-slider-wrap" @tap.stop>
               <text class="vol-pct">{{ Math.round(musicVolume * 100) }}%</text>
               <view
                 ref="volTrackRef"
@@ -961,9 +991,18 @@ function onOrbTap(): void {
   box-shadow: 0 0 0 1px rgba(15, 18, 32, 0.6);
 }
 
+/* 全屏透明遮罩：音量面板展开时点它收起。层级低于 vol-group(21)、高于页面其它内容。 */
+.vol-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 19;
+  background: transparent;
+}
+
 /* 喇叭 + 音量面板的分组：作为竖向面板的定位锚点，面板是其兄弟节点以免点击面板冒泡到开关 */
 .vol-group {
   position: relative;
+  z-index: 21;
   display: flex;
   align-items: center;
 }
@@ -974,12 +1013,12 @@ function onOrbTap(): void {
 }
 
 /* 竖向滑块：uni-app 的 slider 仅支持横向，这里用旋转把它立起来。
-   深色圆角面板绝对定位在喇叭正下方、顶部贴着喇叭，向下弹出盖住进度行（不飞出屏幕顶部）；
+   深色圆角面板绝对定位在喇叭正上方、底部贴着喇叭，向上弹出盖住上方内容（不压住进度行）；
    顶部显示百分比，绿条自下而上填充到白色手柄。 */
 .vol-slider-wrap {
   position: absolute;
   right: 50%;
-  top: calc(100% + 10px);
+  bottom: calc(100% + 10px);
   transform: translateX(50%);
   z-index: 20;
   width: 54px;

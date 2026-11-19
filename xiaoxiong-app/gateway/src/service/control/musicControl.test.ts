@@ -60,7 +60,12 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
 
   it('明确停止类仍识别为 stop，且先于 play（「停止播放」含「播放」不能误触发 play）', () => {
     expect(detectMusicCommand('停止播放')).toBe('stop')
+    expect(detectMusicCommand('关闭播放')).toBe('stop')
     expect(detectMusicCommand('关掉播放')).toBe('stop')
+    // 重新播放=重播最后内容，不是找歌（曾在 play 前被「播放」抢中→答「没有这首歌」）
+    expect(detectMusicCommand('重新播放')).toBe('replay')
+    expect(detectMusicCommand('重播')).toBe('replay')
+    expect(detectMusicCommand('重放')).toBe('replay')
     expect(detectMusicCommand('关掉音乐')).toBe('stop')
     expect(detectMusicCommand('别放了')).toBe('stop')
   })

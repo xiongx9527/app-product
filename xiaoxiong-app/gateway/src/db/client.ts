@@ -100,5 +100,37 @@ export function createDb(path: string): AppDb {
   } catch {
     // 列已存在
   }
+  // 旧库变体表缺 source 列（来源：local/synced，同步逻辑按它判断要不要上传）
+  try {
+    sqlite.exec("ALTER TABLE asr_correction_variants ADD COLUMN source TEXT NOT NULL DEFAULT 'local'")
+  } catch {
+    // 列已存在
+  }
+  // 旧库主表缺 source 列
+  try {
+    sqlite.exec("ALTER TABLE asr_corrections ADD COLUMN source TEXT NOT NULL DEFAULT 'local'")
+  } catch {
+    // 列已存在
+  }
+  try {
+    sqlite.exec('ALTER TABLE asr_corrections ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0')
+  } catch { /* 列已存在 */ }
+  // 旧库缺 source_id 列（9529 侧对应记录 id）
+  try {
+    sqlite.exec('ALTER TABLE asr_corrections ADD COLUMN source_id INTEGER')
+  } catch { /* 列已存在 */ }
+  try {
+    sqlite.exec('ALTER TABLE asr_correction_variants ADD COLUMN source_id INTEGER')
+  } catch { /* 列已存在 */ }
+  try {
+    sqlite.exec('ALTER TABLE asr_correction_variants ADD COLUMN source_correction_id INTEGER')
+  } catch { /* 列已存在 */ }
+  try {
+    sqlite.exec('ALTER TABLE asr_correction_variants ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0')
+  } catch { /* 列已存在 */ }
+  try {
+    sqlite.exec("ALTER TABLE asr_correction_variants ADD COLUMN updated_at INTEGER")
+    sqlite.exec("UPDATE asr_correction_variants SET updated_at = created_at WHERE updated_at IS NULL")
+  } catch { /* 列已存在 */ }
   return drizzle({ client: sqlite })
 }

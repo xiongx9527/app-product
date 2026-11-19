@@ -35,12 +35,22 @@ const LEAKED_CHANNEL_WORD = /^\s*(?:thought|thinking|reasoning|analysis|commenta
 /** 上述裸词清单，用于流式截断时判断「开头是否只是某个泄漏词的前缀」、需先保留等拼齐。 */
 const LEAK_WORDS = ['thought', 'thinking', 'reasoning', 'analysis', 'commentary']
 
+/**
+ * 不支持 function calling 的模型（如本地 deepseek-r1:1.5b）会把工具名当纯文本吐出来
+ * （如 `play_music`，甚至拼错成 `play_small`）。框架拿不到结构化 tool_calls，这些英文
+ * 标识符就漏进正文，被界面显示、被 TTS 念出来。这里在下发前兜底剥除已知工具名及其
+ * 常见拼写变体；正常中文回复不会包含这些 token，零误伤。
+ */
+const TOOL_NAME_LEAK =
+  /\b(?:play|stop|pause|resume|next|get|query|learn|search|set|toggle)_?(?:music|musci|small|musi|weather|deals|baike|poem|subtitle|current_time|current_location|correction|lyrics?)\b/gi
+
 /** 把任意可能泄漏的 Harmony 内部标记清掉，只留下用户该看到的文字（兜底、绝不下发原始控制符）。 */
 export function stripChannelLeak(text: string): string {
   return text
     .replace(RESIDUAL_TOKEN, '')
     .replace(MALFORMED_CHANNEL_OPEN, '')
     .replace(LEAKED_CHANNEL_WORD, '')
+    .replace(TOOL_NAME_LEAK, '')
 }
 
 /** 这些 channel 不是给用户看的：思考过程与工具调用，只进思考区、不进 TTS、不作回答。 */

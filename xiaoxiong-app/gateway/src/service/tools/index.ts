@@ -13,6 +13,9 @@ import { createWeatherTool } from './weatherTool'
 import type { WeatherSource } from '../weather'
 import { createBaikeTool } from './baikeTool'
 import { createPoemTool } from './poemTool'
+import { createLearnCorrectionTool } from './learnCorrectionTool'
+import type { AutoLearnEngine } from '../autoLearn'
+import { withAutoLearn } from './toolAutoLearn'
 import type { BaikeSource } from '../baike'
 import {
   createMusicTool,
@@ -120,7 +123,9 @@ export function createToolkit(
   /** 天气数据源：换源只改这里/默认工厂一处；缺省用 createDefaultWeatherSource（wttr.in，无 api-key）。 */
   weatherSource?: WeatherSource,
   /** 百科数据源：换源只改这里/注册表一处；缺省用 createDefaultBaikeSource（百度搜索卡片）。 */
-  baikeSource?: BaikeSource
+  baikeSource?: BaikeSource,
+  /** 通用自动学习引擎：有则注册 learn_correction 工具并包装所有工具（agent 只依赖此抽象）。 */
+  autoLearnEngine?: AutoLearnEngine
 ): Toolkit {
   // 网关既有工具（时间/位置/天气）都用空 inputSchema + 0 参 call，与 AgentScope 的 Toolkit 类型一致；
   // 音乐类工具需要入参（genre/minutes 等），zod 泛型在此边界不兼容，故整体按 Tool[] 断言。
@@ -166,7 +171,18 @@ export function createToolkit(
         createForgetTool(lang, memoryStore),
       ]
     : []
-  return new ToolkitImpl({ tools: [...baseTools, ...musicTools, ...poemTools, ...memoryTools] as unknown as Tool[] })
+  // ASR 纠错学习工具：有学习引擎就注册（LLM 发现同音错字时调用，本地立即生效）
+  const learnTools: Tool[] = autoLearnEngine
+    ? [createLearnCorrectionTool(lang, autoLearnEngine)]
+    : []
+  // 工具统一经 withAutoLearn 包装：天然具备自动学习能力（等价父类能力）。
+  // learnTools 不包：它自己就是显式学习工具（调 engine.learn 传准确参数），再包一层会从
+  // 返回文案"记住了：错→对"里二次提取、学到"神父→神赋"这种子串错对（实测踩坑）。
+  const autoLearnable = [...baseTools, ...musicTools, ...poemTools, ...memoryTools] as unknown as Tool[]
+  const wrapped = autoLearnEngine
+    ? [...autoLearnable.map((t) => withAutoLearn(t, autoLearnEngine)), ...learnTools]
+    : [...autoLearnable, ...learnTools]
+  return new ToolkitImpl({ tools: wrapped })
 }
 
 /** 供 voiceSessionService 把媒体指令转成 ServerEvent 透传给客户端。 */

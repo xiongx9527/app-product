@@ -76,6 +76,12 @@ export const asrCorrections = sqliteTable(
     pinyin: text('pinyin').notNull(), // 正确词的无声调拼音
     note: text('note'), // 备注/描述（如「歌手」「诗词名」）
     enabled: integer('enabled').notNull().default(1),
+    // 来源：local=本地 learn_correction 学的、synced=从 9529 同步的。与上传状态无关。
+    source: text('source').notNull().default('local'),
+    /** 上传标识：0=待上传 9529，1=已上传/从9529拉回。 */
+    uploaded: integer('uploaded').notNull().default(0),
+    /** 来源 id：9529 侧对应记录的主表 id（synced 时有值），用于对账/幂等。 */
+    sourceId: integer('source_id'),
     createdAt: integer('created_at').default(sql`(strftime('%s', 'now'))`),
     updatedAt: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
   },
@@ -92,7 +98,16 @@ export const asrCorrectionVariants = sqliteTable(
     pinyin: text('pinyin').notNull(), // 错词的无声调拼音
     note: text('note'), // 备注（如来源/实机失误场景）
     enabled: integer('enabled').notNull().default(1),
+    // 来源：local=本地 learn_correction 学的、synced=从 9529 同步的。与上传状态无关。
+    source: text('source').notNull().default('local'),
+    /** 上传标识：0=待上传 9529（本地学的），1=已上传/从9529拉回（无需再传）。 */
+    uploaded: integer('uploaded').notNull().default(0),
+    /** 9529 侧主表 id（synced 时有值），与本地 correctionId 对应。 */
+    sourceCorrectionId: integer('source_correction_id'),
+    /** 9529 侧变体 id（synced 时有值），用于对账/幂等。 */
+    sourceId: integer('source_id'),
     createdAt: integer('created_at').default(sql`(strftime('%s', 'now'))`),
+    updatedAt: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
   },
   (t) => ({
     uniq: uniqueIndex('uq_asr_correction_variant').on(t.correctionId, t.wrong),

@@ -49,8 +49,10 @@ import { queryPoem, type PoemEntry } from './edu'
 import { fetchBaikeAudioUrl, splitSummaryToLines } from './baike/baidu/baikeTts'
 import { cacheExternalAudio, getCachedAudioDuration, type MediaFetcher } from './mediaCache'
 import { messages } from '../i18n'
-import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho, isBareAckFragment } from '../asr/noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho } from '../asr/noiseFilter'
 import { AsrCorrector, type CorrectionEntry } from './asr/asrCorrector'
+import type { CorrectionSyncer } from './asrCorrectionSync'
+import type { AutoLearnEngine } from './autoLearn'
 import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
@@ -90,6 +92,17 @@ const DEFAULT_CONSOLIDATE_THRESHOLD = 30
 /** 自动记忆合并（摘要）频率默认值：每这么多次抽取触发一次合并（避免每次都打 LLM）。 */
 const DEFAULT_CONSOLIDATE_EVERY = 5
 
+/**
+ * 真人会用的极短应答/单字指令（配合 VAD 幻觉二级判断）。这些单字虽然 VAD 语音短，
+ * 但是有意义的用户输入，不能当打嗝幻觉丢弃。与 isNoise 的 FILLERS（无语义语气词）不同——
+ * 这里是「有语义的单字」，宁可放行交给下游，也不误杀。
+ * 数字选号由 /^\d+$/ 单独放行，不在此集合。
+ */
+const EFFECTIVE_SHORT_WORDS = new Set([
+  '好', '好的', '是', '对', '行', '可以', '停', '走', '滚', '去', '来', '要', '不要',
+  '在', '给', '嗯', '啊', '继续', '再来', '下一首', '下一', '第一', '第二', '第三',
+])
+
 /** 默认 ASR 同音纠错器（确定性、零误纠）。懒加载，避免模块加载时的 pinyin 初始化开销。 */
 let defaultAsrCorrector: AsrCorrector | null = null
 function getDefaultAsrCorrector(): AsrCorrector {
@@ -121,7 +134,8 @@ export interface VoiceSessionDeps {
     dealsCount?: number,
     getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null,
     autoMemory?: boolean,
-    mcpServers?: McpServerConfig[]
+    mcpServers?: McpServerConfig[],
+    autoLearnEngine?: AutoLearnEngine
   ) => AgentService | Promise<AgentService>
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
   createAsr: (cfg: AsrConfig) => AsrProvider
@@ -129,6 +143,8 @@ export interface VoiceSessionDeps {
   /** 把客户端设置的语音服务配置展开成三套能力配置 */
   resolveVoice: (voice?: VoiceConfig) => ResolvedCapabilities
   data: DataService
+  /** ASR 纠错同步器：有则 learn_correction 工具可用（本地学习+择机上传 9529） */
+  correctionSyncer?: CorrectionSyncer
   send: (event: ServerEvent) => void
   sendAudio: (bytes: Uint8Array) => void
   asrEndpointMs: number
@@ -236,6 +252,14 @@ export class VoiceSessionService {
    * 后续换内容、失败提示都据此措辞，避免一律当成「放歌」。
    */
   private lastTrack: { url: string; title: string; channel?: string; cover?: string; artist?: string; contentType?: string } | null = null
+  /**
+   * 最后一次播放的百科/诗词媒体（tts）：「重新播放」要重现它而不是找歌。
+   * 记下重播所需的全部字段——音频 url/本地短链、封面、字幕行、标题；音乐重播仍走 lastTrack。
+   */
+  private lastTtsMedia: {
+    url: string; title: string; audioPath?: string; cover?: string;
+    lines: Array<{ time: number; text: string }>
+  } | null = null
   /** 自动字幕开关：播放音乐时同源字幕是否自动拉取并展示；来自客户端设置（缺省开启）。 */
   private autoSubtitle = true
   /** 上一次成功下发的同源字幕，供「循环播放」重播同一首时复用，避免重新拉取失败把字幕覆盖成「暂无字幕」 */
@@ -280,6 +304,10 @@ export class VoiceSessionService {
   /** 当前是否正在播放（播放/切歌/循环置真，停止置假）。决定「点歌按当前歌手优先」是否生效：
    *  仅当用户正处于某个歌手的播放会话时才自动选同歌手版本；已停止则老老实实列选项让用户选。 */
   private musicActive = false
+  /** 百科/诗词(tts)媒体是否在播：这类 media.play 不置 musicActive（不影响同歌手选歌/nowPlaying），
+   *  但说「暂停/继续/停掉」时它同样是有效媒体，不能谎答「没在播放」。下发 tts media.play 置真，
+   *  pause/stop 后清假；播完客户端无上行回执（与音乐一致），靠下次操作覆盖，不误用。 */
+  private ttsMediaActive = false
   /** 音乐播放音量（0–1）：网关认定的权威值，随客户端滑块回执同步；语音「调大/调小」相对增减用。 */
   private musicVolume = 0.5
   /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
@@ -336,12 +364,6 @@ export class VoiceSessionService {
   private readonly queue: string[] = []
   /** 最近送进 TTS 的原文，用于把「收回来的自己的声音」判成回声丢弃。 */
   private readonly spoken: string[] = []
-  /**
-   * 助手最近一次用问句收尾的时刻：窗口内用户的「对/是/好」是在回答，不能当空闲噪声丢。
-   * 短应答（对/是/嗯/啥）本身没有内容，脱离「刚被问过」就没有意义——环境噪/回声被
-   * ASR 脑补出来的正是这种片段（真机 2026-11-18：噪声「对。」触发了一轮不相干的回答）。
-   */
-  private lastQuestionAt = 0
   /**
    * 最后一次下发音频之后的回声保护窗口（毫秒）：窗口内定稿的文本一律按回声对待。
    * 播放结束（含被打断）后仍留一小段尾巴，盖住扬声器余音经空气/回路传回麦克风的延迟。
@@ -829,8 +851,11 @@ export class VoiceSessionService {
   }
 
   private async runMusicCommand(action: NonNullable<ReturnType<typeof detectMusicCommand>>, text: string): Promise<void> {
+    // 只有「找新歌」类动作需要音乐源；pause/resume/stop/replay 操作的是已下发/已记住的媒体
+    // （音乐或百科/诗词），与音乐源无关——没配音乐源时这些也必须能执行，否则会交 LLM 乱答。
+    const needsSource = action === 'play' || action === 'next' || action === 'recommend' || action === 'loop'
     const source = this.musicSource
-    if (!source) return
+    if (needsSource && !source) return
     const genre = genreToKeyword(text)
     const m = messages(this.lang).music
     try {
@@ -846,7 +871,7 @@ export class VoiceSessionService {
           // 「放一首稻香」靠当前歌手上下文自动选同歌手版本，不强制列表。
           // 带「再」的请求（再放稻香…）关掉上下文，不当成「还是当前歌手的歌」直接播。
           if (await this.offerCandidates(text, isArtistBrowse(text), false, !hasAgainMarker(text))) break
-          const track = await source.resolve(genre)
+          const track = await source!.resolve(genre)
           if (!track?.url) throw new Error('no track')
           // 「循环 N 遍」可作为点歌后缀（如「放稻香循环3遍」），一并下发给客户端循环
           const loop = parseLoopCount(text)
@@ -902,15 +927,18 @@ export class VoiceSessionService {
         }
         case 'pause':
           // 没在播放却说「暂停」是谎话：如实说当前没有可暂停的内容。
-          if (!this.musicActive) {
+          // 百科/诗词(tts)媒体在播也算——它不置 musicActive，得单独认 ttsMediaActive。
+          if (!this.musicActive && !this.ttsMediaActive) {
             await this.speakReply(m.musicNotPlaying())
             break
           }
           this.deps.send({ type: 'media.pause' })
+          // 暂停≠停止：媒体仍在（只是 paused），保留 ttsMediaActive，否则「继续/停止」会误判没在播。
+          // 与 music 一致——music 的 pause 从不清 musicActive，只有 stop 才清。
           await this.speakReply(m.paused())
           break
         case 'resume':
-          if (!this.musicActive) {
+          if (!this.musicActive && !this.ttsMediaActive) {
             await this.speakReply(m.musicNotPlaying())
             break
           }
@@ -921,14 +949,41 @@ export class VoiceSessionService {
           // 新闻播报不置 musicActive，但它同样是媒体播放：「停掉」要真停并清掉切条上下文。
           const wasNews = this.newsPlayback !== null
           this.newsPlayback = null
-          if (!this.musicActive && !wasNews) {
+          if (!this.musicActive && !this.ttsMediaActive && !wasNews) {
             await this.speakReply(m.musicNotPlaying())
             break
           }
           this.deps.send({ type: 'media.stop' })
           this.musicActive = false
+          this.ttsMediaActive = false
           this.subtitleActive = false
           await this.speakReply(m.stopped())
+          break
+        }
+        case 'replay': {
+          // 重新播放 = 把最后一次播放的内容从头再放一次（歌 / 百科 / 诗词），不是找歌。
+          // 优先 tts（最近一次百科/诗词），其次音乐曲目；都没播过就如实说没有可重播的。
+          if (this.lastTtsMedia) {
+            const last = this.lastTtsMedia
+            this.deps.send({ type: 'media.subtitle', title: last.title, lines: last.lines })
+            this.deps.send({
+              type: 'media.play',
+              url: last.url,
+              title: last.title,
+              source: 'tts',
+              ...(last.audioPath ? { audioPath: last.audioPath } : {}),
+              ...(last.cover ? { cover: last.cover } : {}),
+            })
+            this.ttsMediaActive = true
+            await this.speakReply(messages(this.lang).baike.playing(last.title))
+            break
+          }
+          if (this.lastTrack) {
+            await this.playTrack(this.lastTrack, m.playing(this.lastTrack.title), undefined, this.lastTrack.artist, true)
+            this.musicActive = true
+            break
+          }
+          await this.speakReply(m.musicNotPlaying())
           break
         }
       }
@@ -1024,7 +1079,10 @@ export class VoiceSessionService {
     const action = detectMusicCommand(text)
     const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
       action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
-    if (effectiveAction && this.musicSource) {
+    // pause/resume/stop/replay 操作当前/上次媒体（含百科/诗词 tts），不依赖 musicSource；
+    // 只有找歌类（play/next/recommend/loop）才要求已配置音乐源，否则会漏给 LLM 乱答「没这首歌」。
+    const mediaOnlyAction = effectiveAction === 'pause' || effectiveAction === 'resume' || effectiveAction === 'stop' || effectiveAction === 'replay'
+    if (effectiveAction && (mediaOnlyAction || this.musicSource)) {
       await this.runMusicCommand(effectiveAction, text)
       return true
     }
@@ -1174,6 +1232,26 @@ export class VoiceSessionService {
   }
 
   /**
+   * 通用自动学习（数据源直连）：把"识别词 → 数据源返回的规范词"交给 autoLearn 引擎。
+   * 引擎按已注册规则判断学什么（同音纠错是第一条），直连层不关心具体规则。
+   * 百科/诗词等数据源会把识别词纠正成规范词（李存旭→李存勖、滕王格世→滕王阁序），
+   * 这是现成的学习信号，不必等 LLM 调工具（本地小模型不支持 function calling）。
+   */
+  private async autoLearnCorrection(wrong: string | null, correct: string | null): Promise<void> {
+    const w = (wrong ?? '').trim()
+    const c = (correct ?? '').trim()
+    if (!w || !c || w === c) return
+    const syncer = this.deps.correctionSyncer
+    if (!syncer) return
+    try {
+      // 引擎命中时会统一打带 source/rule 的 AUTO-LEARN 日志，这里不再重复打
+      await syncer.autoLearn(w, c, { source: 'direct' })
+    } catch {
+      // 学习失败不影响主流程
+    }
+  }
+
+  /**
    * 百科查询直连（绕开 LLM）：抓真实百科词条摘要 → 助手框显示 + TTS 播报。
    * keyword 为空（纯「百科」）时提示用户说查谁；有词时用注入的 query 或默认工具。
    * 与新闻一样走 media.play 播真实音频（百度百科自己的 TTS 直链），文字不进助手框；
@@ -1201,6 +1279,10 @@ export class VoiceSessionService {
       }
       text = r.text
       title = r.entry.title || keyword
+      // 数据源已替我们做了同音纠错（如"李存旭"→返回"李存勖"词条）。
+      // 若输入词与返回标题同音但字面不同，说明这是一个 ASR 同音错词对——自动学进本地
+      // 词表，下次识别该错词就能直接纠正，不必再依赖数据源侧的联想。零网络、立即生效。
+      void this.autoLearnCorrection(keyword, title)
       // 桩/旧实现可能不带 spoken：退回完整摘要（行为同旧版，不炸）
       spoken = r.spoken ?? r.entry.summary ?? ''
       image = r.entry.image
@@ -1227,18 +1309,23 @@ export class VoiceSessionService {
       // 字幕转成歌词格式：只切「真正被播报的正文」并按真实音频时长铺满。
       // 不能用完整 summary——音频只念 trimSummary(≤300 字)，用 500 字摘要铺 66 秒会让字幕
       // 每秒推进 7.6 字而语音只有 4.3 字/秒（真机实测第 2 行提前 11 秒翻、末尾还显示没播的内容）。
-      this.deps.send({ type: 'media.subtitle', title, lines: splitSummaryToLines(spoken, durationSec || undefined) })
+      const subtitleLines = splitSummaryToLines(spoken, durationSec || undefined)
+      this.deps.send({ type: 'media.subtitle', title, lines: subtitleLines })
       // 封面用百科卡片的词条配图（同源），无图则不覆盖（客户端会按 cover 缺省清空）。
       // audioPath 是相对路径（media/s/<key>.mp3），客户端自己拼 httpBase 下载后本地播；
       // url 保留原始直链作兼容（客户端有 audioPath 时优先用它）。
+      const audioPath = mediaPath ? mediaPath.replace(/^\//, '') : undefined
       this.deps.send({
         type: 'media.play',
         url: audioUrl,
         title,
         source: 'tts',
-        ...(mediaPath ? { audioPath: mediaPath.replace(/^\//, '') } : {}),
+        ...(audioPath ? { audioPath } : {}),
         ...(image ? { cover: image } : {}),
       })
+      // 记住这次播的百科，供「重新播放」原样重播（不重新查百度、不找歌）。
+      this.lastTtsMedia = { url: audioUrl, title, ...(audioPath ? { audioPath } : {}), ...(image ? { cover: image } : {}), lines: subtitleLines }
+      this.ttsMediaActive = true // 百科音频在播，「暂停/停掉」要认它
     } catch {
       // getaudio 是百度非公开接口，失败就不播——不用网关文字转语音兜底（用户明确不要自己合成）。
       // 只补 llm.done 收尾思考态，避免卡在「思考中」；字幕/封面都没下发，界面保持原样。
@@ -1274,6 +1361,8 @@ export class VoiceSessionService {
       )
       return true
     }
+    // edu 数据源把识别词纠成规范标题（如"滕王格世"→"滕王阁序"）：同音错字对自动学进词表
+    void this.autoLearnCorrection(title, entry.title)
     // 与百科同理：先落盘音频拿真实时长，再按字数比例铺字幕 time（固定 3.2 秒/行会走太快/太慢）。
     let durationSec = 0
     let mediaPath: string | null = null
@@ -1292,13 +1381,17 @@ export class VoiceSessionService {
     this.deps.send({ type: 'media.subtitle', title: entry.title, lines })
     if (entry.audioUrl) {
       // 第三方 mp3 直链直拉不稳，下发 local 短链 audioPath 走下载本地播。
+      const audioPath = mediaPath ? mediaPath.replace(/^\//, '') : undefined
       this.deps.send({
         type: 'media.play',
         url: entry.audioUrl,
         title: entry.title,
         source: 'tts',
-        ...(mediaPath ? { audioPath: mediaPath.replace(/^\//, '') } : {}),
+        ...(audioPath ? { audioPath } : {}),
       })
+      // 记住这次播的诗词，供「重新播放」原样重播。
+      this.lastTtsMedia = { url: entry.audioUrl, title: entry.title, ...(audioPath ? { audioPath } : {}), lines }
+      this.ttsMediaActive = true // 诗词音频在播，「暂停/停掉」要认它
     }
     const confirm = this.lang.toLowerCase().startsWith('en')
       ? `Found "${entry.title}".`
@@ -1498,7 +1591,26 @@ export class VoiceSessionService {
   }
 
   /** 工具层下发的事件统一走这里透传客户端（商品/天气/时间等都是直连，不旁听）。 */
+  /** LLM 工具（poemTool/baikeTool）路径刚下发的字幕行，供随后的 media.play(source:tts) 一并记入 lastTtsMedia。 */
+  private toolPendingSubtitle: { title: string; lines: Array<{ time: number; text: string }> } | null = null
+
   private readonly emitToClient = (m: ServerEvent): void => {
+    // LLM 工具路径的 tts 媒体也纳入状态管理：之前只有直连(runPoemCommand/runBaikeCommand)记
+    // ttsMediaActive/lastTtsMedia，LLM 直接说作品名走 query_poem 工具时不记 → 「暂停/停止」说没在播、
+    // 「重新播放」找不到。这里在统一出口补记（直连走 deps.send 不经此，不会重复）。
+    if (m.type === 'media.subtitle' && !m.close) {
+      this.toolPendingSubtitle = { title: m.title, lines: m.lines }
+    } else if (m.type === 'media.play' && m.source === 'tts') {
+      const lines = this.toolPendingSubtitle?.title === m.title ? this.toolPendingSubtitle.lines : []
+      this.lastTtsMedia = {
+        url: m.url, title: m.title,
+        ...(m.audioPath ? { audioPath: m.audioPath } : {}),
+        ...(m.cover ? { cover: m.cover } : {}),
+        lines,
+      }
+      this.ttsMediaActive = true
+      this.toolPendingSubtitle = null
+    }
     this.deps.send(m)
   }
 
@@ -1885,6 +1997,37 @@ export class VoiceSessionService {
     this.deps.send({ type: 'client.cue', cue: 'asr-error' })
   }
 
+  /**
+   * 幻觉二级判断（配合 9529 的 Silero VAD）：VAD 说这段「真人语音极短」(<0.6s) 时，
+   * 若文本既不是已知有效意图、也不是真人会用的单字实义/选号，就当噪声丢弃。
+   *
+   * 为什么需要它：声学上打嗝/吸鼻子和真人说「嗯/好」完全重叠（实测 ZCR/能量/时长都分不开），
+   * 单靠声学门控要么漏幻觉、要么误杀真人。VAD 提供「说了多久真语音」这个可靠信号，
+   * 再用「是否有效意图」做语义兜底——用的是业务本就要维护的意图识别（白名单），
+   * 不是为噪声堆字黑名单，真人任何正常指令都不误伤。
+   */
+  private isHallucinationShort(text: string, speechDuration: number, hasSelectionContext = false): boolean {
+    if (!Number.isFinite(speechDuration) || speechDuration < 0 || speechDuration >= 0.6) return false
+    const t = text.trim()
+    // 多字句一律放行：真人正常说话/选号（第二首）都是多字，打嗝幻觉是单字或纯数字。
+    // 注意纯数字单独处理（见下）——「8」既可能是选号也可能是打嗝幻觉，靠上下文区分。
+    if (Array.from(t).length > 1 && !/^\d+$/.test(t)) return false
+    // 命中任何已知有效意图 → 放行（音乐/诗词/百科/音量/字幕/记忆/时间/天气/新闻/商品/好价）
+    if (
+      detectMusicCommand(t) || detectPoemCommand(t) || detectBaikeCommand(t) ||
+      detectVolumeCommand(t) || detectSubtitleCommand(t) || detectMemoryCommand(t) ||
+      detectTimeCommandKind(t) || detectWeatherCommand(t) || detectNewsCommand(t) ||
+      detectProductQuery(t) || detectDealsCommand(t) || detectPlayModeCommand(t)
+    ) return false
+    // 纯数字选号：只有在「刚给过候选列表/编号列表」的上下文里才是有效输入；
+    // 否则单字数字（8/9）和打嗝/吸鼻子幻觉文本相同，短语音一律当幻觉拦。
+    if (/^\d+$/.test(t)) return !hasSelectionContext
+    // 真人会用的单字实义/应答 → 放行（好/停/是/对/走/滚…）
+    if (EFFECTIVE_SHORT_WORDS.has(t)) return false
+    // 短语音 + 既非有效意图、也非真人应答 → 幻觉（打嗝→我/你、吸鼻子→8、回声碎片）
+    return true
+  }
+
   private async finalizeUtterance(): Promise<void> {
     // 打断/关闭后串行链里可能还挂着定稿，不能让它再发 asr.final 或排队
     if (!this.active || this.cancelled) return
@@ -1920,8 +2063,16 @@ export class VoiceSessionService {
     bargeDiag(
       `FINAL text="${text}"${text !== rawText ? ` raw="${rawText}"` : ''} pb=${this.playbackPending} noise=${isNoise(text)} `
       + `foreign=${isForeignNoise(text, this.lang)} echo=${Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)}`
+      + ` vd=${this.asr.speechDuration ?? -1}`
     )
     if (!text || isNoise(text) || isForeignNoise(text, this.lang)) return
+
+    // VAD 幻觉二级判断：短语音 + 无有效意图 → 噪声丢弃（打嗝/吸鼻子/回声脑补的单字）。
+    // 内置 SenseVoice 才有 speechDuration；上游 ASR（-1）跳过此判断，行为不变。
+    if (this.isHallucinationShort(text, this.asr.speechDuration ?? -1, !!(this.pendingCandidates || this.pendingDeals))) {
+      bargeDiag(`HALLUCINATION-DROP text="${text}" vd=${this.asr.speechDuration}`)
+      return
+    }
 
     // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。
     // 必须在下面的回声比对之前：用户说的「第二首」「稻香」正是刚口播过的词，
@@ -1975,16 +2126,6 @@ export class VoiceSessionService {
     // 避免被丢给大模型由 play_music 自动播放（破坏「按歌手浏览要给候选列表让用户选」）。
     if (this.processing) {
       this.enqueueDuringBusy(text)
-      return
-    }
-
-    // 空闲：纯应答/语气片段（对。/是。/嗯。/啥？/你看嗯。）没有内容，脱离「刚被问过」
-    // 就没有语义——环境噪/回声被 SenseVoice 脑补出来的正是这类片段，送去大模型只会凭空
-    // 多一轮不相干的回答（真机 2026-11-18：「对。」「你看嗯。」各触发一轮）。
-    // 必须在直连命令之前判：短指令本身就是 1~3 字（停/暂停/几点了），但它们含实义字，
-    // isBareAckFragment 不会命中；助手刚用问句收尾时（20s 内）短应答是在回答问题，放行。
-    if (isBareAckFragment(text) && Date.now() - this.lastQuestionAt > 20_000) {
-      bargeDiag(`IDLE-ACK-DROP text="${text}"`)
       return
     }
 
@@ -2219,6 +2360,12 @@ export class VoiceSessionService {
         this.deps.data.insertCommandLog(this.deviceId, text, 'cancelled')
         return ttsStarted
       }
+      // LLM 回复自动学习：用 learnFromAnchors 从识别原文取用户词、从 LLM 回复里按锚点
+      // （《》/播放：）取规范词，再交规则链判学。比旧的滑动窗口 learnFromTexts 更准，
+      // 且 homophone/source-correction 规则都有公共子串≥2护栏，不再误学"神父→神赋"。
+      if (this.deps.correctionSyncer) {
+        void this.deps.correctionSyncer.learnFromAnchors(text, full, { source: 'llm' })
+      }
       enqueue(buffer)
       buffer = ''
       this.deps.send({ type: 'llm.done' })
@@ -2263,11 +2410,6 @@ export class VoiceSessionService {
     this.spoken.push(sentence)
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
-    // 助手用问句收尾时记下时刻：随后 20s 内的「对/是/好」是在回答问题，
-    // 不能被空闲期的纯应答过滤当成噪声丢掉（见 finalizeUtterance 的 isBareAckFragment 判定）。
-    if (/(吗|呢|要不要|是不是|好不好|行不行|对不对|还是|怎么样|[?？])\s*$/u.test(sentence.trim())) {
-      this.lastQuestionAt = Date.now()
-    }
     const gapMs = this.deps.ttsFrameGapMs ?? 15_000
     const iterator = this.tts.synthesize(sentence)[Symbol.asyncIterator]()
     try {
@@ -2403,7 +2545,8 @@ export class VoiceSessionService {
             this.dealsCount,
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
             this.autoMemory,
-            this.mcpServers
+            this.mcpServers,
+            this.deps.correctionSyncer?.engine
           )
       this.lastLlmKey = llmKey
       return
@@ -2452,7 +2595,8 @@ export class VoiceSessionService {
             this.dealsCount,
             () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
             this.autoMemory,
-            this.mcpServers
+            this.mcpServers,
+            this.deps.correctionSyncer?.engine
           )
     this.lastLlmKey = llmKey
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())

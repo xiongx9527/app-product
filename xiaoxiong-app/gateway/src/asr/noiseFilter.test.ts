@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isNoise, isForeignNoise, resemblesSpoken, pcmRms, stripTrailingEcho, isBareAckFragment } from './noiseFilter'
+import { isNoise, isForeignNoise, resemblesSpoken, pcmRms, stripTrailingEcho } from './noiseFilter'
 
 describe('ASR 杂音过滤', () => {
   it('纯符号、空白、幻觉短词判为噪声', () => {
@@ -27,6 +27,17 @@ describe('ASR 杂音过滤', () => {
     expect(isNoise('嗯额')).toBe(true)
     expect(isNoise('呃呃呃')).toBe(true)
     expect(isNoise('咳，咳咳。')).toBe(true)
+    // 打嗝/呃逆被 SenseVoice 识别成「嗯哼」「嗝」类拟声（真机 2026-11-18）：叠用与单字都判噪声
+    expect(isNoise('嗯哼')).toBe(true)
+    expect(isNoise('嗯哼。')).toBe(true)
+    expect(isNoise('嗝')).toBe(true)
+    expect(isNoise('嗝嗝')).toBe(true)
+    expect(isNoise('哼哼')).toBe(true)
+    expect(isNoise('哎')).toBe(true)
+    expect(isNoise('哎哎')).toBe(true)
+    // 「我/你/数字」类幻觉由 VAD 幻觉二级判断（isHallucinationShort）接管，不在这里堆字
+    expect(isNoise('你好')).toBe(false)
+    expect(isNoise('你能播放吗')).toBe(false)
     // 实义叠字/带实义词不放行误杀
     expect(isNoise('好好')).toBe(false)
     expect(isNoise('是是')).toBe(false)
@@ -134,40 +145,5 @@ describe('stripTrailingEcho（去掉 SenseVoice 句尾多吐的重复词）', ()
 
   it('空串原样返回', () => {
     expect(stripTrailingEcho('')).toBe('')
-  })
-})
-
-describe('空闲期纯应答片段（isBareAckFragment）', () => {
-  it('只有应答/语气、没有内容的片段命中（真机噪声高频输出）', () => {
-    expect(isBareAckFragment('是。')).toBe(true)
-    expect(isBareAckFragment('对。')).toBe(true)
-    expect(isBareAckFragment('啊？')).toBe(true)
-    expect(isBareAckFragment('啥')).toBe(true)
-    expect(isBareAckFragment('好的')).toBe(true)
-    expect(isBareAckFragment('对对')).toBe(true)
-    // 口头语前缀 + 语气字（真机：播报期收回来的回声被识别成「你看嗯。」）
-    expect(isBareAckFragment('你看嗯。')).toBe(true)
-    expect(isBareAckFragment('那个啊')).toBe(true)
-    // 真机高频：含笑/鼻音的「嗯哼」被识别成实词放行，触发一轮无关回答
-    expect(isBareAckFragment('嗯哼。')).toBe(true)
-  })
-
-  it('短指令 / 实义短句 / 选号不误判为应答', () => {
-    expect(isBareAckFragment('停')).toBe(false)
-    expect(isBareAckFragment('暂停')).toBe(false)
-    expect(isBareAckFragment('继续')).toBe(false)
-    expect(isBareAckFragment('下一首')).toBe(false)
-    expect(isBareAckFragment('几点了')).toBe(false)
-    expect(isBareAckFragment('你好')).toBe(false)
-    expect(isBareAckFragment('在吗')).toBe(false)
-    expect(isBareAckFragment('9')).toBe(false)
-    expect(isBareAckFragment('播放音乐')).toBe(false)
-    expect(isBareAckFragment('')).toBe(false)
-  })
-
-  it('含实义字的长句/命令一律放行（只吃「全应答字」或「口头语前缀+语气字」）', () => {
-    expect(isBareAckFragment('嗯，播放音乐')).toBe(false)
-    expect(isBareAckFragment('对，来一首周杰伦的歌')).toBe(false)
-    expect(isBareAckFragment('是我说的那首歌')).toBe(false)
   })
 })

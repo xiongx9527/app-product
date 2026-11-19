@@ -1294,18 +1294,37 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /**
    * 字幕高亮相对播放进度的时间偏移（秒）。
    * - music（歌曲）：onTimeUpdate 采样/解码滞后，给 +1s 提前量让歌词跟唱（原设计）。
-   * - tts（百科/诗词朗读）：字幕是按字数估算 time 的「边读边转」，本身就可能快于百度 TTS 音频，
-   *   再加提前量会更超前——用户实测字幕比语音快。故 tts 用负偏移让字幕稍微滞后、贴合语音。
+   * - tts（百科/诗词朗读）：effectiveSubtitleLines 用真实 duration 均匀重铺 time，但百度 TTS
+   *   「读一句停一秒」，字幕仍略超前于声音。给 -1.0s 让字幕滞后，贴合朗读节奏（真机实测 -0.2s
+   *   仍「快了些」，加大到 -1.0s）。
    */
-  // 网关已按真实音频时长铺准字幕 time（不再前端拉伸），tts 不需要额外偏移；
-  // 歌曲(music)仍保留 +1s 提前量抵消 onTimeUpdate 采样滞后、让歌词跟唱。
-  const subtitleLeadSec = computed(() => (mediaSource.value === 'tts' ? 0 : 1.0))
+  const subtitleLeadSec = computed(() => (mediaSource.value === 'tts' ? -1.0 : 1.0))
 
-  // 字幕行直接用网关下发的 lines：网关已按真实音频时长铺好每行 time（见 baikeTts.splitSummaryToLines
-  // 的 durationSec 参数），前端不要再拉伸——二次拉伸会把末行 time 拉到≈duration，
-  // 导致 activeSubtitleSplit 最后一行 span≈0、逐字高亮瞬间全亮（用户反馈「字幕太快」的根因）。
-  const activeSubtitleIndex = computed(() => {
+  /**
+   * tts（百科/诗词）字幕行：用播放器读到的真实 duration 重铺 time，不信任网关算的 durationSec。
+   * 真机踩坑：网关 mp3DurationSec 对设备实际下载的音频可能算错（滕王阁序真实 411s 被算成约 489s），
+   * 铺出来的 time 过大 → 字幕推进只有声音一半、明显「慢于声音」。播放器 duration 来自解码器、是准的。
+   *
+   * 重铺用「均匀句间隔 + 前奏补偿」而非字数占比：百度 TTS 是「读一句停一秒」的节奏（本机 ffmpeg
+   * 静音检测：洛神赋开头静音 3s、每句间停 0.7~1.6s），字数占比把停顿均摊、字幕匀速跑到声音前面
+   * （本机拟合误差 9.3s）；均匀铺误差降到 3.3s，明显更贴。诗词/骈文每句字数相近，均匀铺尤其合适。
+   * music（歌曲）走网关原始 lines，一字不动。tts 已关逐字高亮，不存在末行 span≈0 的旧问题。
+   */
+  const effectiveSubtitleLines = computed(() => {
     const lines = subtitle.value?.lines
+    if (!lines?.length || mediaSource.value !== 'tts') return lines ?? []
+    const dur = musicState.duration.value
+    if (!Number.isFinite(dur) || dur <= 0 || lines.length < 2) return lines
+    // 前奏：TTS 音频开头普遍有静音（本机实测诗词 ~3s）。按总时长比例给，短音频自适应小一点。
+    const prelude = Math.min(5, dur * 0.05)
+    // 尾部留 1s 缓冲，避免末句 time 顶到音频结束、一闪而过。
+    const span = Math.max(dur - prelude - 1, 1)
+    const step = span / (lines.length - 1)
+    return lines.map((l, i) => ({ ...l, time: Math.round((prelude + step * i) * 10) / 10 }))
+  })
+
+  const activeSubtitleIndex = computed(() => {
+    const lines = effectiveSubtitleLines.value
     if (!lines?.length) return -1
     const cur = musicState.currentTime.value + subtitleLeadSec.value
     let idx = -1
@@ -1319,7 +1338,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 当前正在播放的那句歌词（activeSubtitleIndex 对应行），供悬浮小圆等业务单独大字展示 */
   const currentSubtitleText = computed(() => {
     const idx = activeSubtitleIndex.value
-    const lines = subtitle.value?.lines
+    const lines = effectiveSubtitleLines.value
     if (idx < 0 || !lines || !lines[idx]) return ''
     return lines[idx].text
   })
@@ -1330,7 +1349,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 用 Array.from 切分以兼容代理对（emoji 等），避免 String.slice 按码元计数错位。最后一行用整曲时长作结束。
    */
   const activeSubtitleSplit = computed(() => {
-    const lines = subtitle.value?.lines
+    const lines = effectiveSubtitleLines.value
     const idx = activeSubtitleIndex.value
     if (!lines || idx < 0 || !lines[idx]) return { sung: '', rest: '' }
     // 百科/诗词(tts)不做逐字高亮：TTS 朗读有停顿/轻重，逐字平分时长会让字「唰唰」advance、

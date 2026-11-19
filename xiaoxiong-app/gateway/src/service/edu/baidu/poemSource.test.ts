@@ -26,8 +26,23 @@ describe('extractPoemSid', () => {
     expect(extractPoemSid(html)).toBe('88a995b2cee5470a9e75a09209b3f51c')
   })
 
+  it('pid 前面还有其它参数时也能提取（滕王阁序 ?from=aladdin&pid=）', () => {
+    const html = '<a href="https://hanyu.baidu.com/shici/detail?from=aladdin&pid=812645dae8cc493b89434f272f92a315&smp_names=termBr">x</a>'
+    expect(extractPoemSid(html)).toBe('812645dae8cc493b89434f272f92a315')
+  })
+
+  it('HTML 转义的 &amp;pid 也能提取', () => {
+    const html = 'href="https://hanyu.baidu.com/shici/detail?from=aladdin&amp;pid=812645dae8cc493b89434f272f92a315"'
+    expect(extractPoemSid(html)).toBe('812645dae8cc493b89434f272f92a315')
+  })
+
   it('从 poem-voice mp3 提取 sid', () => {
     const html = 'https://hanyu-poem-voice.cdn.bcebos.com/man/812645dae8cc493b89434f272f92a315.mp3'
+    expect(extractPoemSid(html)).toBe('812645dae8cc493b89434f272f92a315')
+  })
+
+  it('poem-mp3 无 man/ 段的直链也能提取', () => {
+    const html = 'http://hanyu-poem-mp3.cdn.bcebos.com/812645dae8cc493b89434f272f92a315.mp3'
     expect(extractPoemSid(html)).toBe('812645dae8cc493b89434f272f92a315')
   })
 

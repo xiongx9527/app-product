@@ -36,8 +36,14 @@ export class HttpVoiceAsr implements AsrProvider {
   private bufferedBytes = 0
   private lastPartialAt = 0
   private partialText = ''
+  /** 最近一次 finalize 音频的 VAD 真语音秒数（-1=无数据/未装模型），供网关幻觉二级判断。 */
+  speechDuration = -1
   /** 串行化识别请求：本地服务不必承受并发，定稿也不会和中间结果抢跑。 */
   private inflight: Promise<void> = Promise.resolve()
+  /** 上一次 partial 识别是否还在进行。云端上游（WS/HTTP，往返~2s）若还用固定
+   *  600ms 节奏提交，请求会排队堆积，partial 返回时音频已过时、finalize 被拖到错位——
+   *  真机表现为"识别延后/截断/脑补单字"。忙碌时跳过本次 partial，不自适应地降频。 */
+  private partialBusy = false
 
   constructor(
     private readonly baseUrl: string,
@@ -52,19 +58,27 @@ export class HttpVoiceAsr implements AsrProvider {
     const now = Date.now()
     if (now - this.lastPartialAt < PARTIAL_INTERVAL_MS) return null
     if (this.bufferedBytes < PARTIAL_MIN_BYTES) return null
-    this.lastPartialAt = now
+    // 上一次 partial 还没回来就跳过本次：不排队，避免慢上游请求堆积导致滞后/错位。
+    // finalize 不受此限制（它 await inflight，必定拿到最终整段结果）。
+    if (this.partialBusy) return null
 
+    this.lastPartialAt = now
+    this.partialBusy = true
     const pcm = Buffer.concat(this.buffer)
     const run = this.inflight.then(() => this.transcribe(pcm, true))
     this.inflight = run.then(
       () => undefined,
       () => undefined,
     )
-    const text = await run
-    // 文本没变化就不重复下发，减少界面无意义的刷新
-    if (!text || text === this.partialText) return null
-    this.partialText = text
-    return text
+    try {
+      const { text } = await run
+      // 文本没变化就不重复下发，减少界面无意义的刷新
+      if (!text || text === this.partialText) return null
+      this.partialText = text
+      return text
+    } finally {
+      this.partialBusy = false
+    }
   }
 
   async finalize(): Promise<string> {
@@ -72,7 +86,8 @@ export class HttpVoiceAsr implements AsrProvider {
     await this.inflight
     const pcm = Buffer.concat(this.buffer)
     this.reset()
-    const text = await this.transcribe(pcm, false)
+    const { text, speechDuration } = await this.transcribe(pcm, false)
+    this.speechDuration = speechDuration
     // 占位文本绝不能当「用户说的话」往下走：真机 2026-11-18 实锤，ASR 上游 500 时
     // 网关把「（ASR 服务暂不可用）」当成用户输入交给大模型，答了一轮完全不相干的内容。
     // 抛给 finalizeUtterance 的 catch：下发 asr-error 提示音（「没听清，再说一遍」）并丢弃本轮。
@@ -85,10 +100,13 @@ export class HttpVoiceAsr implements AsrProvider {
     this.bufferedBytes = 0
     this.lastPartialAt = 0
     this.partialText = ''
+    this.speechDuration = -1
+    this.partialBusy = false
   }
 
-  /** 提交一段 PCM 做识别；partial=true 时失败返回空串（中间结果可丢，定稿不能丢）。 */
-  private async transcribe(pcm: Buffer, partial: boolean): Promise<string> {
+  /** 提交一段 PCM 做识别；partial=true 时失败返回空串（中间结果可丢，定稿不能丢）。
+   *  speechDuration 是 9529 用 Silero VAD 判出的真语音秒数（-1=无数据），供幻觉二级判断。 */
+  private async transcribe(pcm: Buffer, partial: boolean): Promise<{ text: string; speechDuration: number }> {
     try {
       const sampleRate = Number(this.params.sampleRate ?? 16000)
       const wav = pcmToWav(pcm, Number.isFinite(sampleRate) ? sampleRate : 16000)
@@ -114,15 +132,17 @@ export class HttpVoiceAsr implements AsrProvider {
       if (!res.ok) throw new Error(`ASR HTTP ${res.status}`)
       const text = await res.text()
       try {
-        const parsed = JSON.parse(text) as { text?: string }
-        return typeof parsed.text === 'string' ? parsed.text.trim() : text.trim()
+        const parsed = JSON.parse(text) as { text?: string; speech_duration?: number }
+        const sd = typeof parsed.speech_duration === 'number' && Number.isFinite(parsed.speech_duration)
+          ? parsed.speech_duration : -1
+        return { text: typeof parsed.text === 'string' ? parsed.text.trim() : text.trim(), speechDuration: sd }
       } catch {
-        return text.trim()
+        return { text: text.trim(), speechDuration: -1 }
       }
     } catch (err) {
       // 超时/断连：舍弃这次识别，partial 静默跳过，定稿回退占位，绝不把会话挂死
       console.error('[asr] 调用本地语音服务失败（已 abort 断开）：', err)
-      return partial ? '' : ASR_UNAVAILABLE_TEXT
+      return { text: partial ? '' : ASR_UNAVAILABLE_TEXT, speechDuration: -1 }
     }
   }
 

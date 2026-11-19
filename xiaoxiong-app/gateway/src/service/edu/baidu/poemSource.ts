@@ -7,8 +7,8 @@
  *
  * 百度汉语搜索页本身是 JS 渲染 + seccaptcha 验证码，拿不到数据；edu-web-go/hanyu/search
  * 返回固定推荐列表（非真搜索），也不能按名找 sid。故走百度搜索页提取 sid 这条路。
- * aladdin 卡片覆盖因词条而异（岳阳楼记能提到、滕王阁序纯搜提不到）——提不到就返回 null，
- * 由上层诚实回退 LLM（受 ≤100 字闸门约束），绝不编造诗词内容。
+ * aladdin 卡片覆盖因词条而异：多数作品能提到；提不到就返回 null，由上层诚实回退，
+ * 绝不编造诗词内容。
  */
 const BAIDU_SEARCH = 'https://www.baidu.com/s?wd='
 const POEM_DETAIL = 'https://hanyuapp.baidu.com/dictapp/swan/poemdetail?sid='
@@ -42,14 +42,15 @@ export interface PoemEntry {
 
 /**
  * 从百度搜索页 HTML 里提取诗词 aladdin 卡片的 sid。
- * 两种形态：hanyu.baidu.com/shici/detail?pid=<32hex> 或
- * hanyu-poem-voice.cdn.bcebos.com/man/<32hex>.mp3。
- * 取第一个 32 位 hex（优先 shici/detail 形态）。
+ * 两种形态：hanyu.baidu.com/shici/detail?...pid=<32hex> 或
+ * hanyu-poem-(voice|mp3).cdn.bcebos.com/[man/]<32hex>.mp3。
+ * 注意 pid 不一定紧跟在 `?` 后：滕王阁序的卡片是 `?from=aladdin&pid=...`，
+ * 旧正则只认 `?pid=` 才漏掉它（2026-11-18 真机「暂时没找到《滕王阁序》」根因）。
  */
 export function extractPoemSid(html: string): string | null {
-  const fromDetail = /hanyu\.baidu\.com\/shici\/detail\?pid=([0-9a-f]{32})/i.exec(html)
+  const fromDetail = /hanyu\.baidu\.com\/shici\/detail[^"'\s<>]*?[?&](?:amp;)?pid=([0-9a-f]{32})/i.exec(html)
   if (fromDetail) return fromDetail[1]
-  const fromAudio = /hanyu-poem-(?:voice|mp3)\.cdn\.bcebos\.com\/man\/([0-9a-f]{32})/i.exec(html)
+  const fromAudio = /hanyu-poem-(?:voice|mp3)\.cdn\.bcebos\.com\/(?:man\/)?([0-9a-f]{32})\.mp3/i.exec(html)
   return fromAudio ? fromAudio[1] : null
 }
 

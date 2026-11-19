@@ -3332,48 +3332,43 @@ describe('诗词朗读直连（背诵/朗诵，绕开 LLM）', () => {
   })
 })
 
-describe('空闲期纯应答/环境噪声不该触发一轮回答', () => {
-  it('空闲时定稿「对。」：直接丢弃，不进直连、不进大模型、不回传 asr.final', async () => {
-    const h = createHarness({ finalizeText: '对。' })
-    await startDialog(h.service)
-    await speakUtterance(h)
-    await sleep(40)
 
-    expect(h.agentCalls()).toBe(0)
-    expect(h.events.some((e) => e.type === 'asr.final')).toBe(false)
+describe('VAD 幻觉二级判断（短语音 + 无有效意图 → 丢弃）', () => {
+  const judge = (text: string, vd: number, selection = false): boolean =>
+    (createHarness().service as unknown as {
+      isHallucinationShort: (t: string, v: number, sel: boolean) => boolean
+    }).isHallucinationShort(text, vd, selection)
+
+  it('长语音一律放行（真人正常说话）', () => {
+    expect(judge('嗯', 1.5)).toBe(false)
+    expect(judge('我', 1.5)).toBe(false)
+    expect(judge('随便聊聊天', 3.0)).toBe(false)
   })
 
-  it('短指令不受影响：空闲定稿「停」仍然照常处理（含实义字，不算纯应答）', async () => {
-    const h = createHarness({ finalizeText: '停' })
-    await startDialog(h.service)
-    await speakUtterance(h)
-    await sleep(40)
-
-    // 「停」不是纯应答片段：正常下发 asr.final（是否命中命令由直连决定，这里只看没被丢弃）
-    expect(h.events.some((e) => e.type === 'asr.final' && e.text === '停')).toBe(true)
+  it('VAD 无数据/上游 ASR（-1）跳过判断，行为不变', () => {
+    expect(judge('我', -1)).toBe(false)
+    expect(judge('8', -1)).toBe(false)
   })
 
-  it('助手刚用问句收尾时「对。」是在回答，正常进大模型', async () => {
-    const h = createHarness({
-      replyText: '要不要换一首歌？',
-      finalizeTexts: ['你好，随便聊聊', '对。'],
-    })
-    await startDialog(h.service)
-    await speakUtterance(h) // 第一轮：助手问句收尾，记录 lastQuestionAt
-    await sleep(40)
-    h.finishReply()
-    await sleep(20)
-    h.playbackDone()
-    await sleep(40)
-    expect(h.agentCalls()).toBe(1)
+  it('短语音 + 无语义幻觉单字 → 判幻觉（打嗝/吸鼻子/回声）', () => {
+    expect(judge('我', 0.2)).toBe(true)
+    expect(judge('你', 0.3)).toBe(true)
+    expect(judge('8', 0.1)).toBe(true)   // 无选号上下文的单字数字=打嗝幻觉
+    expect(judge('三', 0.3)).toBe(true)
+    // 嗯哼/嗝 等拟声叠字由 isNoise 的 COUGH_FILLER_CHARS 拦，走不到二级判断
+  })
 
-    // 紧接着的短应答：20s 窗口内，必须放行进大模型（而不是当噪声丢掉）
-    const h2 = h
-    await speakUtterance(h2)
-    await sleep(40)
-    expect(h2.agentCalls()).toBe(2)
-    expect(h2.events.some((e) => e.type === 'asr.final' && e.text === '对。')).toBe(true)
-    h2.finishReply()
-    await sleep(10)
+  it('短语音但命中有效意图 → 放行（不误杀真人指令）', () => {
+    expect(judge('停', 0.3)).toBe(false)   // 实义单字
+    expect(judge('好', 0.2)).toBe(false)
+    expect(judge('9', 0.2, true)).toBe(false)  // 数字选号（有候选列表上下文）
+    expect(judge('下一首', 0.4)).toBe(false)
+    expect(judge('播放音乐', 0.4)).toBe(false)
+    expect(judge('第二首', 0.4)).toBe(false) // 选号，多字
+  })
+
+  it('多字句一律放行（哪怕 VAD 判很短）', () => {
+    expect(judge('我要听歌', 0.2)).toBe(false)
+    expect(judge('今天天气', 0.3)).toBe(false)
   })
 })

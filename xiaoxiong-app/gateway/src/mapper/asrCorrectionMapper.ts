@@ -1,11 +1,17 @@
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, inArray } from 'drizzle-orm'
 import type { AppDb } from '../db/client'
 import { asrCorrections, asrCorrectionVariants } from '../db/schema'
+
+/** 纠错词来源：local=本地学的（待上传 9529）、synced=从 9529 同步的。 */
+export type CorrectionSource = 'local' | 'synced'
 
 export interface CorrectionInput {
   correct: string // 正确热词
   pinyin: string // 正确词拼音
   note?: string // 备注/描述（合一）
+  source?: CorrectionSource
+  uploaded?: number // 上传标识：0=待上传，1=已上传/拉回。缺省 0
+  sourceId?: number | null // 9529 侧主表 id
 }
 
 export interface VariantInput {
@@ -13,13 +19,19 @@ export interface VariantInput {
   wrong: string // 错词字
   pinyin: string // 错词拼音
   note?: string
+  source?: CorrectionSource // 缺省 local
+  uploaded?: number // 上传标识：0=待上传，1=已上传/拉回。缺省 0
+  sourceId?: number | null // 9529 侧变体 id
+  sourceCorrectionId?: number | null // 9529 侧主表 id
 }
 
 /** 纠正器加载用的扁平项：错词拼音 → 正确词。 */
 export interface FlatCorrection {
   wrong: string
-  pinyin: string
+  pinyin: string // 错词拼音（匹配用）
   correct: string
+  correctPinyin?: string // 正确词拼音（上传 9529 用）
+  id?: number // 本地变体 id（标记已上传用）
 }
 
 /**
@@ -81,13 +93,19 @@ export function asrCorrectionMapper(db: AppDb) {
         .insert(asrCorrections)
         .values({
           correct: input.correct, pinyin: input.pinyin, note: input.note ?? null, enabled: 1,
+          source: input.source ?? 'local', uploaded: input.uploaded ?? 0,
+          ...(input.sourceId !== undefined ? { sourceId: input.sourceId } : {}),
         })
         .onConflictDoUpdate({
           target: asrCorrections.correct,
           set: {
-            pinyin: input.pinyin,
+            // pinyin 为空时不覆盖（同步拉回时没有正确词拼音，保留本地已有的）
+            ...(input.pinyin ? { pinyin: input.pinyin } : {}),
             note: input.note ?? null,
             enabled: 1,
+            ...(input.source ? { source: input.source } : {}),
+            ...(input.uploaded !== undefined ? { uploaded: input.uploaded } : {}),
+            ...(input.sourceId !== undefined ? { sourceId: input.sourceId } : {}),
             updatedAt: sql`(strftime('%s', 'now'))`,
           },
         })
@@ -95,15 +113,75 @@ export function asrCorrectionMapper(db: AppDb) {
       return row!.id
     },
 
-    /** 给某热词加错词（按 correctionId+wrong 唯一）。 */
+    /** 给某热词加错词（按 correctionId+wrong 唯一）。source=local 表示本地新增待上传。 */
     async upsertVariant(correctionId: number, v: Omit<VariantInput, 'correct'>): Promise<void> {
       await db
         .insert(asrCorrectionVariants)
-        .values({ correctionId, wrong: v.wrong, pinyin: v.pinyin, note: v.note ?? null, enabled: 1 })
+        .values({
+          correctionId, wrong: v.wrong, pinyin: v.pinyin, note: v.note ?? null,
+          enabled: 1, source: v.source ?? 'local', uploaded: v.uploaded ?? 0,
+          ...(v.sourceId !== undefined ? { sourceId: v.sourceId } : {}),
+          ...(v.sourceCorrectionId !== undefined ? { sourceCorrectionId: v.sourceCorrectionId } : {}),
+        })
         .onConflictDoUpdate({
           target: [asrCorrectionVariants.correctionId, asrCorrectionVariants.wrong],
-          set: { pinyin: v.pinyin, note: v.note ?? null, enabled: 1 },
+          set: {
+            pinyin: v.pinyin, note: v.note ?? null, enabled: 1,
+            ...(v.source !== undefined ? { source: v.source } : {}),
+            ...(v.uploaded !== undefined ? { uploaded: v.uploaded } : {}),
+            ...(v.sourceId !== undefined ? { sourceId: v.sourceId } : {}),
+            ...(v.sourceCorrectionId !== undefined ? { sourceCorrectionId: v.sourceCorrectionId } : {}),
+            updatedAt: sql`(strftime('%s', 'now'))`,
+          },
         })
+    },
+
+    /** 待上传 9529 的错词（uploaded=0），联表带出正确词和拼音。 */
+    async listPendingUpload(): Promise<FlatCorrection[]> {
+      const rows = await db
+        .select({
+          id: asrCorrectionVariants.id,
+          wrong: asrCorrectionVariants.wrong,
+          wrongPinyin: asrCorrectionVariants.pinyin,
+          correct: asrCorrections.correct,
+          correctPinyin: asrCorrections.pinyin,
+        })
+        .from(asrCorrectionVariants)
+        .innerJoin(asrCorrections, eq(asrCorrectionVariants.correctionId, asrCorrections.id))
+        .where(and(eq(asrCorrectionVariants.enabled, 1), eq(asrCorrectionVariants.uploaded, 0)))
+      return rows.map((r) => ({
+        id: r.id, wrong: r.wrong, pinyin: r.wrongPinyin,
+        correct: r.correct, correctPinyin: r.correctPinyin,
+      }))
+    },
+
+    /** 标记这些变体已上传（uploaded=1，source 保持 local 不变——来源和上传状态是两个维度）。同时标记对应主表。 */
+    async markUploaded(ids: number[]): Promise<void> {
+      if (!ids.length) return
+      const rows = await db.select().from(asrCorrectionVariants)
+        .where(inArray(asrCorrectionVariants.id, ids))
+      await db.update(asrCorrectionVariants)
+        .set({ uploaded: 1, updatedAt: sql`(strftime('%s', 'now'))` })
+        .where(inArray(asrCorrectionVariants.id, ids))
+      const mainIds = [...new Set(rows.map((r) => r.correctionId))]
+      if (mainIds.length) {
+        await db.update(asrCorrections)
+          .set({ uploaded: 1 })
+          .where(inArray(asrCorrections.id, mainIds))
+      }
+    },
+
+    /** 回填 9529 来源 id（本地词上传成功后记下对端的 main/variant id）。 */
+    async setAsrSourceId(localVariantId: number, sourceMainId: number, sourceVariantId: number): Promise<void> {
+      const v = await db.select().from(asrCorrectionVariants)
+        .where(eq(asrCorrectionVariants.id, localVariantId)).then((r) => r[0])
+      if (!v) return
+      await db.update(asrCorrections)
+        .set({ sourceId: sourceMainId })
+        .where(eq(asrCorrections.id, v.correctionId))
+      await db.update(asrCorrectionVariants)
+        .set({ sourceId: sourceVariantId, sourceCorrectionId: sourceMainId })
+        .where(eq(asrCorrectionVariants.id, localVariantId))
     },
 
     async disableMain(correct: string): Promise<void> {

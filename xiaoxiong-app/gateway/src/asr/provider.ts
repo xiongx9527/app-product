@@ -9,4 +9,10 @@ export interface AsrProvider {
   finalize(): Promise<string>
   /** 重置，开始下一轮 */
   reset(): void
+  /**
+   * 最近一次 finalize 音频里 VAD 判出的「真人语音」秒数（仅内置 SenseVoice 有）。
+   * -1/undefined = 无 VAD 数据（上游 ASR 或未装模型），调用方据此跳过二级判断。
+   * 可选：上游 ASR 实现不需要提供。
+   */
+  speechDuration?: number
 }
