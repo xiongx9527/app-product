@@ -14,8 +14,15 @@ const ASR_TIMEOUT_MS = 6000
  *  滑动窗口防爆——曾出现"今天天气怎么样"重复39遍、vd=55s。超出丢最旧帧，配合
  *  stripTrailingEcho 去尾部重复。 */
 const MAX_BUFFER_BYTES = 512000
-/** 定稿失败时的占位文本（只用于 UI 诊断，绝不能被当成用户原话进后续链路）。 */
-const ASR_UNAVAILABLE_TEXT = '（ASR 服务暂不可用）'
+
+/** 单次识别结果。failed=true 表示上游调用失败（超时/非2xx/断连），text 无意义——
+ *  定稿层据此抛错走 asr-error 提示，绝不把失败当用户原话送进 LLM（曾踩坑：上游500时
+ *  错误页正文被当成用户说的话，答了一轮不相干内容）。 */
+interface TranscribeResult {
+  text: string
+  speechDuration: number
+  failed: boolean
+}
 
 /**
  * 对接本地语音服务（openai-voice，OpenAI 兼容）的 ASR。
@@ -73,7 +80,7 @@ export class HttpVoiceAsr implements AsrProvider {
     this.lastPartialAt = now
     this.partialBusy = true
     const pcm = Buffer.concat(this.buffer)
-    const run = this.inflight.then(() => this.transcribe(pcm, true))
+    const run = this.inflight.then(() => this.transcribe(pcm))
     this.inflight = run.then(
       () => undefined,
       () => undefined,
@@ -94,12 +101,12 @@ export class HttpVoiceAsr implements AsrProvider {
     await this.inflight
     const pcm = Buffer.concat(this.buffer)
     this.reset()
-    const { text, speechDuration } = await this.transcribe(pcm, false)
+    const { text, speechDuration, failed } = await this.transcribe(pcm)
     this.speechDuration = speechDuration
-    // 占位文本绝不能当「用户说的话」往下走：真机 2026-11-18 实锤，ASR 上游 500 时
-    // 网关把「（ASR 服务暂不可用）」当成用户输入交给大模型，答了一轮完全不相干的内容。
+    // 识别失败绝不能当「用户说的话」往下走：真机 2026-11-18 实锤，ASR 上游 500 时
+    // 曾把错误正文当成用户输入交给大模型，答了一轮完全不相干的内容。
     // 抛给 finalizeUtterance 的 catch：下发 asr-error 提示音（「没听清，再说一遍」）并丢弃本轮。
-    if (text === ASR_UNAVAILABLE_TEXT) throw new Error('asr unavailable')
+    if (failed) throw new Error('asr unavailable')
     return text
   }
 
@@ -112,9 +119,9 @@ export class HttpVoiceAsr implements AsrProvider {
     this.partialBusy = false
   }
 
-  /** 提交一段 PCM 做识别；partial=true 时失败返回空串（中间结果可丢，定稿不能丢）。
+  /** 提交一段 PCM 做识别；失败返回 failed=true + 空 text（partial 层静默跳过，定稿层抛错）。
    *  speechDuration 是 9529 用 Silero VAD 判出的真语音秒数（-1=无数据），供幻觉二级判断。 */
-  private async transcribe(pcm: Buffer, partial: boolean): Promise<{ text: string; speechDuration: number }> {
+  private async transcribe(pcm: Buffer): Promise<TranscribeResult> {
     try {
       const sampleRate = Number(this.params.sampleRate ?? 16000)
       const wav = pcmToWav(pcm, Number.isFinite(sampleRate) ? sampleRate : 16000)
@@ -143,14 +150,14 @@ export class HttpVoiceAsr implements AsrProvider {
         const parsed = JSON.parse(text) as { text?: string; speech_duration?: number }
         const sd = typeof parsed.speech_duration === 'number' && Number.isFinite(parsed.speech_duration)
           ? parsed.speech_duration : -1
-        return { text: typeof parsed.text === 'string' ? parsed.text.trim() : text.trim(), speechDuration: sd }
+        return { text: typeof parsed.text === 'string' ? parsed.text.trim() : text.trim(), speechDuration: sd, failed: false }
       } catch {
-        return { text: text.trim(), speechDuration: -1 }
+        return { text: text.trim(), speechDuration: -1, failed: false }
       }
     } catch (err) {
-      // 超时/断连：舍弃这次识别，partial 静默跳过，定稿回退占位，绝不把会话挂死
+      // 超时/断连：舍弃这次识别，partial 静默跳过，定稿抛错走 asr-error 提示，绝不把会话挂死
       console.error('[asr] 调用本地语音服务失败（已 abort 断开）：', err)
-      return { text: partial ? '' : ASR_UNAVAILABLE_TEXT, speechDuration: -1 }
+      return { text: '', speechDuration: -1, failed: true }
     }
   }
 
