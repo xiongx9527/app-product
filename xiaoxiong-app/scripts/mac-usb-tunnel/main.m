@@ -101,11 +101,14 @@ static void *localReadThread(void *arg) {
   [gConnsLock unlock];
 
   uint8_t buf[16384];
+  uint32_t respTotal = 0;
   while (fd > 0) {
     ssize_t n = read(fd, buf, sizeof(buf));
     if (n <= 0) break;
+    respTotal += (uint32_t)n;
     sendFrame(connId, buf, (uint32_t)n);
   }
+  logLine(@"connId=%u 本地响应结束 共%u字节 fd=%d", connId, respTotal, fd);
   close(fd);
   [gConnsLock lock];
   [gConns removeObjectForKey:@(connId)];

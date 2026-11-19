@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectMusicCommand, parseLoopCount } from '../../../src/service/control/musicControl'
+import { detectMusicCommand, parseLoopCount } from '../../../../src/service/skills/music_skill/detect'
 
 describe('detectMusicCommand 音乐控制指令识别', () => {
   it('播放类：含「播放 / 的歌」等触发词', () => {

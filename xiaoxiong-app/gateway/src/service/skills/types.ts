@@ -45,6 +45,22 @@ export interface SkillContext {
    */
   getLocation?: () => LocationInfo | null
   requestClientLocation?: () => Promise<LocationInfo | null>
+
+  /**
+   * 内容播放请求回调（点歌/换一首/推荐/选号）。内容型 skill（音乐/新闻）在识别意图后
+   * 通过这些回调请求核心执行「取媒体+列候选+选号」——这些逻辑依赖跨轮状态与数据源，
+   * 由核心/能力层持有，skill 只负责识别+传参+口播。语义通用，不含具体业务类型。
+   */
+  content?: {
+    /** 点播：text 为用户原话，返回是否已处理。 */
+    play: (text: string) => Promise<boolean>
+    /** 换一首/下一条。 */
+    next: (text: string) => Promise<boolean>
+    /** 推荐列表。 */
+    recommend: (text: string) => Promise<boolean>
+    /** 选第几条（跨轮候选）。 */
+    select: (text: string) => Promise<boolean>
+  }
 }
 
 /** 一句定稿后 skill 的处理结果。 */

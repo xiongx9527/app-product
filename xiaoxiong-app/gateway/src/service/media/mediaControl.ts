@@ -19,8 +19,28 @@ import type { MediaPlaybackCapability } from './MediaPlaybackCapability'
 import { detectVolumeCommand, type VolumeAction } from '../control/volumeControl'
 import { detectSubtitleCommand, type SubtitleAction } from '../control/subtitleControl'
 import { detectPlayModeCommand, type PlayModeAction } from '../control/playModeControl'
-import { detectMusicCommand, parseLoopCount } from '../control/musicControl'
+import { parseLoopCount } from '../skills/music_skill/detect'
 import { pickI18n } from './mediaControlI18n'
+
+/**
+ * 通用媒体控制识别（系统能力，不依赖任何内容 skill）：只认对「当前媒体」的动作，
+ * 不认「播什么内容」（play/next/recommend 归内容 skill）。正则从原 musicControl 的
+ * 通用控制部分迁入，顺序保证 pause>stop>replay>loop>resume，避免「暂停播放」被 stop/play 抢中。
+ */
+type MediaAction = 'pause' | 'stop' | 'replay' | 'loop' | 'resume' | null
+const CONTROL_PATTERNS: Array<{ action: Exclude<MediaAction, null>; re: RegExp }> = [
+  { action: 'pause', re: /(暂停|先停|停一下|歇一下)/ },
+  { action: 'stop', re: /(停止播放|关闭播放|关掉(音乐|播放)|别放了|停(掉)?音乐|关闭音乐|不(要|放)了)/ },
+  { action: 'replay', re: /(重新播放|重播|重放|重新来(一遍|一次)?|再来一遍)/ },
+  { action: 'loop', re: /(循环播放|单曲循环|列表循环|重复播放|再放(一|这|那)?遍|循环(播|放)?|回放(一|这)?遍)/ },
+  { action: 'resume', re: /(继续(播放|放)?|接着(放|播|听)|恢复(播放)?|再播放|再放(?=$|[\s，。！？、]))/ },
+]
+function detectMediaAction(text: string): MediaAction {
+  const t = (text || '').trim()
+  if (!t) return null
+  for (const { action, re } of CONTROL_PATTERNS) if (re.test(t)) return action
+  return null
+}
 
 export interface MediaControlDeps {
   media: MediaPlaybackCapability
@@ -106,7 +126,7 @@ export class MediaControl {
   }
 
   private async handleMediaAction(text: string): Promise<boolean> {
-    const action = detectMusicCommand(text)
+    const action = detectMediaAction(text)
     if (!action) return false
     const i = pickI18n(this.deps.lang)
     const media = this.deps.media

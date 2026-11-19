@@ -26,7 +26,7 @@ import {
   type MusicCandidate,
   type CandidateFetcher,
 } from './skills/music_skill/music/musicCandidates'
-import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './control/musicControl'
+import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './skills/music_skill/detect'
 import { detectVolumeCommand } from './control/volumeControl'
 import { detectMemoryCommand } from './control/memoryControl'
 import { pickDeals, preferenceKeywords } from './memory'

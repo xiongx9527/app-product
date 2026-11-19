@@ -2,9 +2,10 @@
 // 新增 skill：往 skills/ 丢一个 xxx_skill/ 目录（其 index.ts 导出一个 SkillModule）后重新构建即可。
 import type { SkillModule } from './types'
 import * as skillMod0 from './auspicious_skill/index'
-import * as skillMod1 from './preference_skill/index'
-import * as skillMod2 from './time_skill/index'
-import * as skillMod3 from './weather_skill/index'
+import * as skillMod1 from './music_skill/index'
+import * as skillMod2 from './preference_skill/index'
+import * as skillMod3 from './time_skill/index'
+import * as skillMod4 from './weather_skill/index'
 
 const mod0 = Object.values(skillMod0).find(
   (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
@@ -18,10 +19,14 @@ const mod2 = Object.values(skillMod2).find(
 const mod3 = Object.values(skillMod3).find(
   (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
 )
+const mod4 = Object.values(skillMod4).find(
+  (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
+)
 
 export const SKILL_MODULES: Record<string, SkillModule> = {
   ...(mod0 ? { [mod0.id]: mod0 } : {}),
   ...(mod1 ? { [mod1.id]: mod1 } : {}),
   ...(mod2 ? { [mod2.id]: mod2 } : {}),
   ...(mod3 ? { [mod3.id]: mod3 } : {}),
+  ...(mod4 ? { [mod4.id]: mod4 } : {}),
 }
