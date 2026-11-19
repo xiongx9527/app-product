@@ -1,0 +1,153 @@
+/**
+ * 通用媒体控制模块（系统能力，非 skill，不依赖任何内容 skill）。
+ *
+ * 职责边界（用户明确「音量/字幕/播放模式/pause/resume/stop/replay 跟 skill 无关」）：
+ *  - 这些是对「当前正在播的媒体」的通用控制，与播的是音乐/新闻/诗词/百科无关；
+ *    统一收在这层，网关核心只把用户这句话递给 handle()，不写控制逻辑。
+ *  - 全部通过 MediaPlaybackCapability 操作状态与下发事件（暂停/继续/停止/音量/字幕/重播）；
+ *    播放模式是客户端 UI 控制（client.playMode），不属媒体能力，直接下发。
+ *  - 口播用本模块自带的 i18n（./mediaControlI18n），与内容 skill 无关。
+ *
+ * 注意顺序与诚实反馈（真机踩坑，迁代码时注释一起搬）：
+ *  - pause/resume/stop 当前没在播要如实说「没在播放」，不乱称已操作；
+ *  - pause 不清 active（暂停≠停止），stop 清全部；
+ *  - 关字幕时当前本就没字幕，不说「已关闭」；开字幕但无同源字幕，直说没有；
+ *  - replay 优先 tts（百科/诗词），其次音乐曲目（能力层 replay() 已实现此优先级）。
+ */
+import type { ServerEvent } from '../../protocol'
+import type { MediaPlaybackCapability } from './MediaPlaybackCapability'
+import { detectVolumeCommand, type VolumeAction } from '../control/volumeControl'
+import { detectSubtitleCommand, type SubtitleAction } from '../control/subtitleControl'
+import { detectPlayModeCommand, type PlayModeAction } from '../control/playModeControl'
+import { detectMusicCommand, parseLoopCount } from '../control/musicControl'
+import { pickI18n } from './mediaControlI18n'
+
+export interface MediaControlDeps {
+  media: MediaPlaybackCapability
+  lang: string
+  send: (e: ServerEvent) => void
+  speak: (text: string) => Promise<void>
+  /** 停止时要清掉的新闻切条上下文（核心状态），由核心回调处理。 */
+  onStop?: () => void
+  /** 设置里的默认循环遍数（不带遍数的「循环播放」用它，不写死）。 */
+  defaultLoop?: () => number
+}
+
+export class MediaControl {
+  constructor(private readonly deps: MediaControlDeps) {}
+
+  /**
+   * 处理一句通用媒体控制指令。返回 consumed=true 表示已消费，网关不再走 skill / LLM。
+   * 只认通用控制；play/next/recommend 等「播什么」返回 false，交内容 skill。
+   */
+  async handle(text: string): Promise<boolean> {
+    if (this.handleVolume(text)) return true
+    if (await this.handleSubtitle(text)) return true
+    if (this.handlePlayMode(text)) return true
+    if (await this.handleMediaAction(text)) return true
+    return false
+  }
+
+  private handleVolume(text: string): boolean {
+    const cmd: VolumeAction = detectVolumeCommand(text)
+    if (!cmd) return false
+    const i = pickI18n(this.deps.lang)
+    const media = this.deps.media
+    const step = 0.1
+    if (cmd.kind === 'increase') {
+      if (media.getVolume() >= 1 - 1e-6) { void this.deps.speak(i.volumeMax()); return true }
+      const next = media.setVolume(Math.min(1, media.getVolume() + step))
+      void this.deps.speak(i.volumeUp(Math.round(next * 100)))
+      return true
+    }
+    if (cmd.kind === 'decrease') {
+      if (media.getVolume() <= 1e-6) { void this.deps.speak(i.volumeMin()); return true }
+      const next = media.setVolume(Math.max(0, media.getVolume() - step))
+      void this.deps.speak(i.volumeDown(Math.round(next * 100)))
+      return true
+    }
+    const next = media.setVolume(cmd.value)
+    void this.deps.speak(i.volumeSet(Math.round(next * 100)))
+    return true
+  }
+
+  private async handleSubtitle(text: string): Promise<boolean> {
+    const action: SubtitleAction = detectSubtitleCommand(text)
+    if (!action) return false
+    const i = pickI18n(this.deps.lang)
+    const media = this.deps.media
+    media.setAutoSubtitle(action === 'on')
+    if (action === 'off') {
+      const had = media.hasSubtitle()
+      media.closeSubtitle()
+      await this.deps.speak(had ? i.subtitleOff() : i.subtitleNoActive())
+      return true
+    }
+    // 开启：对当前正在播的媒体重发字幕；没有则如实说。
+    const current = media.snapshot().current
+    if (current && current.source !== 'tts') {
+      const has = await media.ensureSubtitle(current.title, current.artist)
+      await this.deps.speak(has ? i.subtitleOn() : i.subtitleNone())
+      return true
+    }
+    await this.deps.speak(i.subtitleOn())
+    return true
+  }
+
+  private handlePlayMode(text: string): boolean {
+    const action: PlayModeAction = detectPlayModeCommand(text)
+    if (!action) return false
+    const i = pickI18n(this.deps.lang)
+    const mode = action === 'float' ? 'float' : action === 'player' ? 'player' : undefined
+    this.deps.send({ type: 'client.playMode', ...(mode ? { mode } : {}) })
+    const confirm = action === 'float' ? i.playModeFloat() : action === 'player' ? i.playModePlayer() : i.playModeToggled()
+    void this.deps.speak(confirm)
+    return true
+  }
+
+  private async handleMediaAction(text: string): Promise<boolean> {
+    const action = detectMusicCommand(text)
+    if (!action) return false
+    const i = pickI18n(this.deps.lang)
+    const media = this.deps.media
+    switch (action) {
+      case 'pause': {
+        if (!media.pause()) { await this.deps.speak(i.musicNotPlaying()); return true }
+        await this.deps.speak(i.paused())
+        return true
+      }
+      case 'resume': {
+        if (!media.resume()) { await this.deps.speak(i.musicNotPlaying()); return true }
+        await this.deps.speak(i.resumed())
+        return true
+      }
+      case 'stop': {
+        const wasActive = media.snapshot().musicActive || media.snapshot().ttsMediaActive
+        this.deps.onStop?.()
+        if (!media.stop() && !wasActive) { await this.deps.speak(i.musicNotPlaying()); return true }
+        await this.deps.speak(i.stopped())
+        return true
+      }
+      case 'replay': {
+        // 能力层 replay() 已实现 tts 优先于 music
+        if (!media.replay()) { await this.deps.speak(i.musicNotPlaying()); return true }
+        return true
+      }
+      case 'loop': {
+        const current = media.snapshot().current
+        if (!current) { await this.deps.speak(i.loopNothing()); return true }
+        // 显式遍数优先；不带遍数用设置里的默认循环次数（不写死 2，尊重用户的 3 遍设置）。
+        const explicit = parseLoopCount(text)
+        const loop = explicit > 1 ? explicit : (this.deps.defaultLoop?.() ?? 3)
+        media.play(
+          { ...current, loop },
+          { confirm: i.looping(loop), reuseSubtitle: true, speak: this.deps.speak },
+        )
+        return true
+      }
+      default:
+        // play/next/recommend 是「播什么」，交内容 skill
+        return false
+    }
+  }
+}

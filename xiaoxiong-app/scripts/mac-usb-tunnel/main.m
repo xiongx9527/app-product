@@ -63,6 +63,9 @@ static void logLine(NSString *fmt, ...) {
   [fh closeFile];
 }
 
+// 注意：PeerTalk 的 dispatch_io 是 stream channel，写 offset 必须恒为 0（见 PTProtocol.m:133
+// dispatch_io_write(channel, 0, ...)）——libdispatch 内部自己管理流位置，传递增 offset 会写错位置。
+// 多个 localReadThread 的并发写用串行 gMuxQueue 保证顺序即可（同 PeerTalk 官方做法）。
 static void sendFrame(uint32_t connId, const uint8_t *payload, uint32_t len) {
   if (!gMuxChannel) return;
   NSMutableData *frame = [NSMutableData dataWithCapacity:kHeaderBytes + len];
@@ -72,10 +75,11 @@ static void sendFrame(uint32_t connId, const uint8_t *payload, uint32_t len) {
   [frame appendBytes:&beLen length:4];
   if (len) [frame appendBytes:payload length:len];
   dispatch_data_t data = dispatch_data_create(frame.bytes, frame.length,
-                                              dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-                                              DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-  dispatch_io_write(gMuxChannel, 0, data, gMuxQueue, ^(bool done, dispatch_data_t _unused, int error) {
-    if (error && done) logLine(@"mux 写帧失败 connId=%u err=%d", connId, error);
+                                              gMuxQueue, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  dispatch_async(gMuxQueue, ^{
+    dispatch_io_write(gMuxChannel, 0, data, gMuxQueue, ^(bool done, dispatch_data_t _unused, int error) {
+      if (error && done) logLine(@"mux 写帧失败 connId=%u err=%d", connId, error);
+    });
   });
 }
 
@@ -237,10 +241,11 @@ static void connectDevice(NSNumber *deviceID) {
       gMuxBuf = [NSMutableData data];
       logLine(@"mux 通道已建立，发握手");
       dispatch_data_t hs = dispatch_data_create(kHandshake.UTF8String, kHandshake.length,
-                                                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-                                                DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-      dispatch_io_write(channel, 0, hs, gMuxQueue, ^(bool done, dispatch_data_t _u, int e) {
-        if (e) logLine(@"握手写失败 err=%d", e);
+                                                gMuxQueue, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+      dispatch_async(gMuxQueue, ^{
+        dispatch_io_write(channel, 0, hs, gMuxQueue, ^(bool done, dispatch_data_t _u, int e) {
+          if (e) logLine(@"握手写失败 err=%d", e);
+        });
       });
       // 开始持续读 mux 帧（有限长度 + done 后递归，PeerTalk dispatch_io 标准模式）。
       pumpMuxRead(channel);

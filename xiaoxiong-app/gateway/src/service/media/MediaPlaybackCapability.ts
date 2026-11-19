@@ -107,6 +107,34 @@ export class MediaPlaybackCapability {
     return v
   }
 
+  /** 客户端滑块回执：只同步状态、不下发事件（避免回声式回环）。 */
+  syncVolumeFromClient(value: number): void {
+    if (Number.isFinite(value)) this.musicVolume = Math.min(1, Math.max(0, value))
+  }
+
+  /**
+   * 采纳一次「已在编排层下发」的音乐播放：只同步状态、不重复发 media.play。
+   * 过渡期用——playTrack 仍自己拼 dash 短链下发，但状态必须收敛到能力层，
+   * 这样通用控制（暂停/重播/循环/字幕）读到的才是真实在播内容。
+   */
+  adoptMusic(asset: MediaAsset, lines?: SubtitleLine[]): void {
+    this.lastMusic = asset
+    this.musicActive = true
+    if (lines?.length) {
+      this.subtitleLines = lines
+      this.subtitleActive = true
+    } else if (asset.lines?.length) {
+      this.subtitleLines = asset.lines
+      this.subtitleActive = true
+    }
+  }
+
+  /** 同步字幕显示状态（编排层 emitAutoSubtitle 拉到字幕后调用）。 */
+  adoptSubtitle(lines: SubtitleLine[] | null): void {
+    this.subtitleLines = lines
+    this.subtitleActive = !!lines?.length
+  }
+
   /**
    * 播放一段媒体（唯一的播放入口）。
    * 流程顺序刻意为之：先记状态、再后台预热、再口播（不 await）、最后立即下发 media.play，

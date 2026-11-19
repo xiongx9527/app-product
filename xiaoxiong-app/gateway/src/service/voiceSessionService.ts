@@ -35,6 +35,7 @@ import { detectPlayModeCommand } from './control/playModeControl'
 import { isTimeQuery } from './skills/time_skill'
 import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
 import { MediaPlaybackCapability, createMediaPlaybackDeps, type MediaResolver } from './media/MediaPlaybackCapability'
+import { MediaControl } from './media/mediaControl'
 import { createMusicResolver } from './skills/music_skill/resolver'
 import { detectWeatherCommand } from './skills/weather_skill'
 import { detectProductQuery } from './control/productCatalog'
@@ -312,8 +313,6 @@ export class VoiceSessionService {
    *  但说「暂停/继续/停掉」时它同样是有效媒体，不能谎答「没在播放」。下发 tts media.play 置真，
    *  pause/stop 后清假；播完客户端无上行回执（与音乐一致），靠下次操作覆盖，不误用。 */
   private ttsMediaActive = false
-  /** 音乐播放音量（0–1）：网关认定的权威值，随客户端滑块回执同步；语音「调大/调小」相对增减用。 */
-  private musicVolume = 0.5
   /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
   private pendingCandidates: { items: MusicCandidate[]; query: string } | null = null
   /**
@@ -397,6 +396,8 @@ export class VoiceSessionService {
    * send 用闭包指向 deps.send——bindTransport 换连接后仍能下发到存活 socket。
    */
   private media: MediaPlaybackCapability
+  /** 通用媒体控制（系统能力，非 skill）：音量/字幕/播放模式/pause/resume/stop/replay。 */
+  private mediaControl!: MediaControl // start() 里按当前 lang 构造
 
   constructor(private readonly deps: VoiceSessionDeps) {
     this.deviceId = deps.deviceId ?? null
@@ -470,7 +471,7 @@ export class VoiceSessionService {
         this.defaultLoop = typeof pb?.defaultLoop === 'number' ? Math.max(0, Math.floor(pb.defaultLoop)) : 3
         this.defaultVolume = typeof pb?.defaultVolume === 'number' ? Math.min(1, Math.max(0, pb.defaultVolume)) : 0.5
         this.autoLoop = typeof pb?.autoLoop === 'boolean' ? pb.autoLoop : false
-        this.musicVolume = this.defaultVolume
+        this.media.syncVolumeFromClient(this.defaultVolume)
         // 推荐条数：来自客户端设置页（session.start.recommend），缺省各 3，收敛到 1–10 整数。
         const rc = msg.recommend
         const toCount = (v: unknown, fallback: number): number => {
@@ -553,7 +554,7 @@ export class VoiceSessionService {
       case 'music.volume':
         // 客户端拖动滑块回执当前音量：保持网关音量状态同步，保证后续的「调大/调小」相对增减准确。
         if (Number.isFinite(Number(msg.volume))) {
-          this.musicVolume = Math.min(1, Math.max(0, Number(msg.volume)))
+          this.media.syncVolumeFromClient(Number(msg.volume))
         }
         break
     }
@@ -645,9 +646,8 @@ export class VoiceSessionService {
       artist: this.lastTrack?.artist,
     }
     this.musicActive = true
-    // 音量以默认值为起点：每次新播放下发 media.volume，供后续「调大/调小」相对增减。
-    this.musicVolume = this.defaultVolume
-    this.deps.send({ type: 'media.volume', volume: this.defaultVolume })
+    // 音量以默认值为起点：每次新播放经能力层下发 media.volume，供后续「调大/调小」相对增减。
+    this.media.setVolume(this.defaultVolume)
     // dash 音轨：后台预热，不阻塞 media.play（转封装要拉满整轨 9MB+，等它会让播放器
     // 迟迟不出现）；客户端请求短链时网关会等同一 key 的 in-flight 转封装。
     const dashNext = needsProxy(track.channel, track.url) && track.url.includes('.m4s')
@@ -694,9 +694,8 @@ export class VoiceSessionService {
       artist: track.artist ?? artist,
       contentType: contentType ?? this.lastTrack?.contentType,
     }
-    // 音量以默认值为起点：每次新播放下发 media.volume，供后续「调大/调小」相对增减。
-    this.musicVolume = this.defaultVolume
-    this.deps.send({ type: 'media.volume', volume: this.defaultVolume })
+    // 音量以默认值为起点：每次新播放经能力层下发 media.volume，供后续「调大/调小」相对增减。
+    this.media.setVolume(this.defaultVolume)
     // 有效循环次数：语音「循环 N 遍」显式指定优先；否则仅当「自动循环播放」开启时用默认循环次数；>1 才下发 loop。
     const effectiveLoop =
       typeof loop === 'number' && loop > 1 ? loop : this.autoLoop ? this.defaultLoop : undefined
@@ -721,6 +720,16 @@ export class VoiceSessionService {
       ...(effectiveLoop && effectiveLoop > 1 ? { loop: effectiveLoop } : {}),
       ...(track.cover ? { cover: track.cover } : {}),
     })
+    // 状态收敛到能力层：通用控制（暂停/重播/循环/字幕）读它，避免两套状态分裂。
+    this.media.adoptMusic({
+      source: 'music',
+      url: track.url,
+      title: track.title,
+      ...(track.channel ? { channel: track.channel } : {}),
+      ...(artist ?? track.artist ? { artist: artist ?? track.artist } : {}),
+      ...(track.cover ? { cover: track.cover } : {}),
+      ...(contentType ? { contentType } : {}),
+    })
     void speak
   }
 
@@ -742,6 +751,7 @@ export class VoiceSessionService {
     if (!this.autoSubtitle) {
       recordMusicDiag(`subtitle skip: autoSubtitle=off title=${title.slice(0, 16)}`)
       this.subtitleActive = false
+      this.media.adoptSubtitle(null)
       return false
     }
     // 循环播放重播同一首：直接复用上一次成功下发的同源字幕，不再重新拉取。
@@ -749,12 +759,14 @@ export class VoiceSessionService {
     if (reuse && this.lastSubtitleLines) {
       this.deps.send({ type: 'media.subtitle', title, artist, lines: this.lastSubtitleLines })
       this.subtitleActive = this.lastSubtitleLines.length > 0
+      this.media.adoptSubtitle(this.lastSubtitleLines)
       return this.subtitleActive
     }
     const source = this.musicSource
     if (!source?.getSubtitle) {
       recordMusicDiag('subtitle skip: source has no getSubtitle')
       this.subtitleActive = false
+      this.media.adoptSubtitle(null)
       return false
     }
     try {
@@ -763,11 +775,13 @@ export class VoiceSessionService {
       this.lastSubtitleLines = lines ?? []
       this.deps.send({ type: 'media.subtitle', title, artist, lines: lines ?? [] })
       this.subtitleActive = (lines ?? []).length > 0
+      this.media.adoptSubtitle(lines ?? [])
       return this.subtitleActive
     } catch {
       recordMusicDiag('subtitle fail: getSubtitle threw')
       this.lastSubtitleLines = null
       this.subtitleActive = false
+      this.media.adoptSubtitle(null)
       // 字幕失败不影响播放
       return false
     }
@@ -1072,23 +1086,9 @@ export class VoiceSessionService {
       await this.runMemoryCommand(memCmd)
       return true
     }
-    const volCmd = detectVolumeCommand(text)
-    if (volCmd) {
-      await this.runVolumeCommand(volCmd)
-      return true
-    }
-    const subCmd = detectSubtitleCommand(text)
-    if (subCmd) {
-      await this.runSubtitleCommand(subCmd)
-      return true
-    }
-    // 「切换播放模式」「换个播放模式」含「播放」，会被音乐指令的 play 词误中，
-    // 故播放模式检测必须排在音乐指令之前。
-    const playModeCmd = detectPlayModeCommand(text)
-    if (playModeCmd) {
-      await this.runPlayModeCommand(playModeCmd)
-      return true
-    }
+    // 通用媒体控制（音量/字幕/播放模式/pause/resume/stop/replay/loop）由系统能力层处理，
+    // 与内容 skill 无关；内部 detect 顺序已保证 playMode/pause/stop 不被音乐 play 抢匹配。
+    if (await this.mediaControl.handle(text)) return true
     // 新闻播放中的「下一条 / 换一条」必须先于新闻重搜与音乐指令拦截：
     // 这句本身没有新闻词，detectNewsCommand 命中不了；musicControl 的「播放」会把它当点歌
     // 去搜「下一条」这首歌。只有确实在播新闻时才拦，音乐场景照旧走 music.next。
@@ -1543,44 +1543,6 @@ export class VoiceSessionService {
     }
   }
 
-  /**
-   * 处理音量控制指令（绕开 LLM）：set 设到绝对值、increase/decrease 在当前值上 ±10%，
-   * 下发 media.volume 让客户端真正调音量，并口播确认（含当前百分比）。
-   * 已到最大/最小时再让调大/调小，提示「已经最大/最小了」而非静默或重复确认。
-   * 音量状态由网关持有，随客户端滑块回执（music.volume）同步，保证相对增减准确。
-   */
-  private async runVolumeCommand(cmd: NonNullable<ReturnType<typeof detectVolumeCommand>>): Promise<void> {
-    const m = messages(this.lang).music
-    const step = 0.1
-    if (cmd.kind === 'increase') {
-      if (this.musicVolume >= 1 - 1e-6) {
-        await this.speakReply(m.volumeMax())
-        return
-      }
-      const next = Math.min(1, this.musicVolume + step)
-      this.musicVolume = next
-      this.deps.send({ type: 'media.volume', volume: next })
-      await this.speakReply(m.volumeUp(Math.round(next * 100)))
-      return
-    }
-    if (cmd.kind === 'decrease') {
-      if (this.musicVolume <= 1e-6) {
-        await this.speakReply(m.volumeMin())
-        return
-      }
-      const next = Math.max(0, this.musicVolume - step)
-      this.musicVolume = next
-      this.deps.send({ type: 'media.volume', volume: next })
-      await this.speakReply(m.volumeDown(Math.round(next * 100)))
-      return
-    }
-    // set：设到绝对值（超出范围收敛到 0–1）
-    const next = Math.min(1, Math.max(0, cmd.value))
-    this.musicVolume = next
-    this.deps.send({ type: 'media.volume', volume: next })
-    await this.speakReply(m.volumeSet(Math.round(next * 100)))
-  }
-
   /** 处理「忘了XX / 清空记忆」直接指令：落地删除并口播确认，不进 LLM。 */
   private async runMemoryCommand(cmd: ReturnType<typeof detectMemoryCommand>): Promise<void> {
     if (!cmd || !this.deviceId) return
@@ -1739,48 +1701,6 @@ export class VoiceSessionService {
     } catch {
       // 自动记忆失败不影响正常对话：静默丢弃，下一轮再试
     }
-  }
-
-  /**
-   * 处理「关闭字幕 / 开启字幕」直接指令（绕开 LLM）：运行时切换 autoSubtitle 开关，
-   * 关闭时下发 close 事件收起当前字幕面板，开启时对正在播放的曲子重发字幕。
-   * 只影响本会话，持久设置仍由设置页的开关控制。
-   */
-  private async runSubtitleCommand(action: NonNullable<ReturnType<typeof detectSubtitleCommand>>): Promise<void> {
-    const m = messages(this.lang).music
-    this.autoSubtitle = action === 'on'
-    if (action === 'off') {
-      // 如实反馈：当前本就没有字幕时，不乱称「已关闭」，直接说没有。
-      const had = this.subtitleActive
-      this.deps.send({ type: 'media.subtitle', title: '', lines: [], close: true })
-      this.subtitleActive = false
-      await this.speakReply(had ? m.subtitleOff() : m.subtitleNoActive())
-      return
-    }
-    // 开启：对当前正在播放的曲子重发字幕；没有则在下一首播放时自动带出。
-    if (this.lastTrack) {
-      // 如实反馈：有字幕才说「已开启字幕」，没有就直说这首歌没字幕，不乱称已显示。
-      const has = await this.emitAutoSubtitle(this.lastTrack.title, this.lastTrack.artist)
-      await this.speakReply(has ? m.subtitleOn() : m.subtitleNone())
-      return
-    }
-    // 没在播的曲子：仅把开关打开（设置态），当前没有字幕可显示，照实说已开启即可。
-    this.subtitleActive = false
-    await this.speakReply(m.subtitleOn())
-  }
-
-  /**
-   * 处理「切换播放模式」直接指令（绕开 LLM）：下发 client.playMode 让客户端
-   * 在「悬浮小圆」与「普通播放条」之间切换，再口播一句确认。
-   * toggle 不指定 mode，由客户端翻转当前模式；float/player 则直接指定。
-   */
-  private async runPlayModeCommand(action: NonNullable<ReturnType<typeof detectPlayModeCommand>>): Promise<void> {
-    const m = messages(this.lang).music
-    const mode = action === 'float' ? 'float' : action === 'player' ? 'player' : undefined
-    this.deps.send({ type: 'client.playMode', ...(mode ? { mode } : {}) })
-    const confirm =
-      action === 'float' ? m.playModeFloat() : action === 'player' ? m.playModePlayer() : m.playModeToggled()
-    await this.speakReply(confirm)
   }
 
   /**
@@ -2602,6 +2522,15 @@ export class VoiceSessionService {
     voice?: VoiceConfig
   ): Promise<void> {
     this.lang = lang
+    // 通用媒体控制（系统能力，非 skill）：按当前 lang 构造
+    this.mediaControl = new MediaControl({
+      media: this.media,
+      lang: this.lang,
+      send: (e) => this.deps.send(e),
+      speak: (t) => this.speakReply(t),
+      onStop: () => { this.newsPlayback = null },
+      defaultLoop: () => this.defaultLoop,
+    })
     // 用户没带时区或带的是非法值就退回东 8 区
     this.timezone = timezone?.trim() || 'Asia/Shanghai'
     this.mode = mode
