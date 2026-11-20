@@ -90,7 +90,7 @@ function createDefaultGeneral(): GeneralConfig {
   return { autoConnect: true, theme: 'default' }
 }
 
-const THEME_IDS = ['auto', 'default', 'purple', 'teal', 'amber'] as const
+const THEME_IDS = ['default', 'purple', 'teal', 'amber'] as const
 
 /** 归一化通用设置：autoConnect 只认 boolean，缺省/非法回退默认（开）。 */
 function normalizeGeneral(raw: unknown): GeneralConfig {

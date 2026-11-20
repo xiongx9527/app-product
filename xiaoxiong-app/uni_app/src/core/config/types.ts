@@ -93,10 +93,10 @@ export interface GeneralConfig {
    */
   autoConnect: boolean
   /**
-   * 主题：驱动整体配色（强调色 + 背景辉光），通过 :root 的 CSS 变量即时生效。
-   * 'auto' 跟随系统（当前仅深色设计，回退 default）。
+   * 主题：驱动整体配色（强调色 + 背景辉光），通过页面根元素的 CSS 变量即时生效。
+   * 全为深色主题；老配置里的 'auto' 会在归一化时回退到 default。
    */
-  theme: 'auto' | 'default' | 'purple' | 'teal' | 'amber'
+  theme: 'default' | 'purple' | 'teal' | 'amber'
 }
 
 /** 记忆设置 */

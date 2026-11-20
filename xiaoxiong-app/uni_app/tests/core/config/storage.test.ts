@@ -188,6 +188,14 @@ describe('app config', () => {
     expect(config2.memory.consolidateEvery).toBe(2)
   })
 
+  it('主题：仅 4 个深色主题合法；老配置 auto（已移除）回退 default', () => {
+    expect(normalizeConfig({ general: { theme: 'auto' } }).general.theme).toBe('default')
+    expect(normalizeConfig({ general: { theme: 'bogus' } }).general.theme).toBe('default')
+    expect(normalizeConfig({ general: { theme: 'purple' } }).general.theme).toBe('purple')
+    expect(normalizeConfig({ general: { theme: 'teal' } }).general.theme).toBe('teal')
+    expect(normalizeConfig({ general: { theme: 'amber' } }).general.theme).toBe('amber')
+  })
+
   it('normalizeMcp 保留合法项、丢弃缺 command 的 stdio 与缺 url 的 sse/http', () => {
     const config = normalizeConfig({
       mcp: {

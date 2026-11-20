@@ -1,8 +1,8 @@
 /**
- * 主题：用一组 CSS 变量（挂在 :root 上）驱动整体配色，切换主题即改写变量，页面无需改结构。
- * 全为深色方案，差异在强调色与背景辉光；"auto" 跟随系统（当前仅深色设计，回退 default）。
+ * 主题：用一组 CSS 变量驱动整体配色，切换主题即改写变量，页面无需改结构。
+ * 全为深色方案，差异在强调色与背景辉光；无「随系统」（App 逻辑层读不到系统外观，且全深色主题跟随无意义）。
  */
-export type ThemeId = 'auto' | 'default' | 'purple' | 'teal' | 'amber'
+export type ThemeId = 'default' | 'purple' | 'teal' | 'amber'
 
 interface ThemeVars {
   accent: string
@@ -14,7 +14,7 @@ interface ThemeVars {
   bgGlow: string
 }
 
-export const THEME_VARS: Record<Exclude<ThemeId, 'auto'>, ThemeVars> = {
+export const THEME_VARS: Record<ThemeId, ThemeVars> = {
   default: {
     accent: '#6c8cff',
     accent2: '#8a6cff',
@@ -45,22 +45,10 @@ export const THEME_VARS: Record<Exclude<ThemeId, 'auto'>, ThemeVars> = {
   },
 }
 
-export const THEME_IDS: ThemeId[] = ['auto', 'default', 'purple', 'teal', 'amber']
-
-function resolveAuto(): Exclude<ThemeId, 'auto'> {
-  try {
-    if (typeof window !== 'undefined' && window.matchMedia) {
-      // 当前仅深色设计：浅色系统也回退到 default，避免无浅色主题时发白。
-      if (window.matchMedia('(prefers-color-scheme: light)').matches) return 'default'
-    }
-  } catch {
-    // 忽略，回退 default
-  }
-  return 'default'
-}
+export const THEME_IDS: ThemeId[] = ['default', 'purple', 'teal', 'amber']
 
 function resolveVars(id: ThemeId): ThemeVars {
-  return THEME_VARS[id === 'auto' ? resolveAuto() : id]
+  return THEME_VARS[id]
 }
 
 /**
@@ -79,7 +67,7 @@ export function themeVarStyle(id: ThemeId): Record<string, string> {
   }
 }
 
-/** 主题对应的 data-theme 取值（auto 解析为实际主题，供需要时按属性区分样式）。 */
+/** 主题对应的 data-theme 取值（供需要时按属性区分样式）。 */
 export function dataThemeValue(id: ThemeId): string {
-  return id === 'auto' ? resolveAuto() : id
+  return id
 }

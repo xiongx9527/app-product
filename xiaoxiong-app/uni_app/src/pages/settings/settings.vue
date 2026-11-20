@@ -62,14 +62,14 @@ function setSubtitleColor(value: string): void {
 }
 
 /** 主题色板：选项来自 core/theme 的 THEME_IDS/THEME_VARS（颜色单一来源），标签按语言本地化。
- *  auto 用「蓝/深色各半」表达「跟随系统」；其余用各自 bgBase 打底、accent 作圆点。 */
+ *  各主题用各自 bgBase 打底、accent 作圆点。 */
 const themeOptions = computed(() =>
   THEME_IDS.map((id) => {
-    const v = THEME_VARS[id === 'auto' ? 'default' : id]
+    const v = THEME_VARS[id]
     return {
       value: id,
       label: t(`settings.theme.${id}`),
-      bg: id === 'auto' ? 'linear-gradient(135deg, #6c8cff 50%, #0f1220 50%)' : v.bgBase,
+      bg: v.bgBase,
       dot: v.accent,
     }
   }),
