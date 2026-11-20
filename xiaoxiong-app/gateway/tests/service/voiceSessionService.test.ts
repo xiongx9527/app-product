@@ -93,6 +93,8 @@ function createHarness(
     ttsFrames?: Uint8Array[]
     delayDelta?: boolean
     finalizeText?: string
+    /** 让 asr.finalize 抛错，验证 ASR 失败兜底提示的 mode 门控 */
+    finalizeFail?: boolean
     /** 多轮定稿文本队列：每次 finalize 依次取一个，用尽后重复最后一个 */
     finalizeTexts?: string[]
     /** asr.push 返回的实时草稿：驱动 handleBinary 的 asr.partial 下发条件验证 */
@@ -212,6 +214,7 @@ function createHarness(
       return opts.partialText
     },
     async finalize() {
+      if (opts.finalizeFail) throw new Error('asr upstream failed')
       if (opts.finalizeTexts?.length) {
         const t = opts.finalizeTexts[Math.min(textIdx, opts.finalizeTexts.length - 1)]
         textIdx += 1
@@ -596,6 +599,24 @@ describe('语音会话：句末判定、排队与去噪', () => {
     expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(before)
     expect(h.events.some((e) => e.type === 'asr.queued' || e.type === 'asr.rejected')).toBe(false)
     expect(h.agentCalls()).toBe(1)
+  })
+
+  it('ASR 失败提示只在对话态响：待唤醒态(wake)静默，不播「没听清」', async () => {
+    // 根因回归：notifyAsrFailed 原先不看 mode，wake 态 ASR 一失败就下发 asr-error
+    // → 客户端反复播「没听清，请重新说一遍」，而用户根本还没唤醒对话。
+    const wake = createHarness({ finalizeFail: true })
+    wake.service.handleText(JSON.stringify({ type: 'session.start', sessionId: 's1', lang: 'zh-CN', mode: 'wake' }))
+    await sleep(5)
+    await speakUtterance(wake)
+    await sleep(20)
+    expect(wake.events.some((e) => e.type === 'client.cue' && e.cue === 'asr-error')).toBe(false)
+
+    // 对话态同样失败必须有提示（不能一起砍掉）
+    const dialog = createHarness({ finalizeFail: true })
+    await startDialog(dialog.service)
+    await speakUtterance(dialog)
+    await sleep(20)
+    expect(dialog.events.some((e) => e.type === 'client.cue' && e.cue === 'asr-error')).toBe(true)
   })
 
   it('tts.end 之后、playback_done 之前：其它声音进队列（asr.queued）但不发起新轮次', async () => {

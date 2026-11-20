@@ -1,0 +1,2 @@
+# KWS 模型随包产物：由 scripts/prepare-kws-assets.sh 从 native/kws/vendor 拷入
+KwsResources/

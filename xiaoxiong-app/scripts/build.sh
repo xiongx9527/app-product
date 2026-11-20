@@ -138,6 +138,11 @@ BRAND_ARG=(--app-name "$APP_DISPLAY_NAME")
 ICON_ARG=()
 [ -n "$APP_ICON_DIR" ] && ICON_ARG=(--icon-dir "$APP_ICON_DIR")
 
+# 端侧 KWS 随包资源：确保 sherpa-onnx AAR + 中文 KWS 模型已就位（缺则下载），
+# 并拷到 Android assets / iOS bundle 引用位。模型不入库，靠此脚本生成。
+echo "==> [KWS] 准备端侧唤醒依赖（AAR + 模型）"
+bash "$SCRIPT_DIR/prepare-kws-assets.sh"
+
 if [ "$PLATFORM" = "android" ]; then
   echo "==> [3/3] 接入 Android 离线资源 + 原生编译 (gradle :app:assembleDebug)"
   cd "$ROOT"

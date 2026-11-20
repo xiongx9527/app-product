@@ -1,0 +1,5 @@
+# KWS 原生依赖与模型：大二进制不入库，用 scripts/download-kws-deps.sh 下载生成
+vendor/
+# 解压/反编译临时目录（ Inspect classes.jar 用）
+**/_aar_inspect/
+**/*.class

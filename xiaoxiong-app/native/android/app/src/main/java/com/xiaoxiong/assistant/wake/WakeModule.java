@@ -10,8 +10,9 @@
 //     startPlayback / playPcm({pcm:base64}) / stopPlayback / onPlaybackIdle
 //   playPcm 必须收 {pcm:base64字符串}：weex 桥会丢弃 JS 对象里的数组字段（传空对象），
 //   裸数组又以 '[' 开头被 fastjson 误判成 JSONObject；只有字符串标量能可靠过桥。
-//   声学唤醒占位（KWS 模型未集成前不触发 onWake；唤醒判定当前由网关 ASR + JS matchWakeWord 完成）：
-//     start / stop / onWake / onError
+//   端侧 KWS 唤醒（sherpa-onnx zipformer 3.3M，随包离线）：start / stop / onWake / onError。
+//     start 初始化 KeywordSpotter 并在采集循环里逐帧检测，命中经 onWake({word}) 回调 JS，
+//     由 useAssistant.handleWakeHit 统一路由「唤醒 / 打断」；ASR 文本匹配保留作兜底。
 //
 // 注册：App.java 里 UniSDKEngine.registerUniModule("app-product-wake", WakeModule.class, false)。
 // 非单例：JS 侧必须缓存 requireNativePlugin 返回的实例，否则 PCM 被投给各自独立的原生队列。
@@ -43,6 +44,15 @@ import org.json.JSONObject;
 import io.dcloud.feature.uniapp.annotation.UniJSMethod;
 import io.dcloud.feature.uniapp.bridge.UniJSCallback;
 import io.dcloud.feature.uniapp.common.UniModule;
+
+// sherpa-onnx 端侧 KWS（关键词唤醒）：见 docs/kws-wake-interrupt-plan.md
+import com.k2fsa.sherpa.onnx.FeatureConfig;
+import com.k2fsa.sherpa.onnx.KeywordSpotter;
+import com.k2fsa.sherpa.onnx.KeywordSpotterConfig;
+import com.k2fsa.sherpa.onnx.KeywordSpotterResult;
+import com.k2fsa.sherpa.onnx.OnlineModelConfig;
+import com.k2fsa.sherpa.onnx.OnlineStream;
+import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig;
 
 public class WakeModule extends UniModule {
     private static final String TAG = "WakeModule";
@@ -112,6 +122,18 @@ public class WakeModule extends UniModule {
     private UniJSCallback wakeErrCb;
     private UniJSCallback playbackIdleCb;
     private UniJSCallback cueEndCb;
+
+    // ---- 端侧 KWS（sherpa-onnx zipformer 3.3M，int8 随包）----
+    // 常驻检测唤醒词，命中直接回调 wakeCb（{word}），唤醒判定不再等 ASR 整段转写。
+    // 与 ASR 共用同一条 AudioRecord 采集（captureLoop 每帧喂一份给 KWS），不额外占麦克风。
+    private KeywordSpotter kws;
+    private OnlineStream kwsStream;
+    private volatile boolean kwsEnabled = false;
+    /** KWS 命中去抖：一次唤醒词可能在连续多帧重复命中，命中后静音 N ms 再允许下一次。 */
+    private static final long KWS_REARM_MS = 1500;
+    private volatile long lastKwsHitMs = 0;
+    /** 模型在 assets 内的目录（相对 assets 根），由打包脚本从 native/kws/vendor 拷入 */
+    private static final String KWS_ASSET_DIR = "kws/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01";
 
     // ---- 本地提示音播放（原生 MediaPlayer，不申请音频焦点）----
     // 为什么不用 uni.createInnerAudioContext：那条路底层 io.dcloud.feature.audio.AudioPlayer
@@ -515,18 +537,95 @@ public class WakeModule extends UniModule {
         }
     }
 
-    // ---- 声学唤醒接口（providers/native.ts 使用；KWS 未集成前 onWake 不触发）----
+    // ---- 声学唤醒接口（providers/native.ts 使用）----
 
     @UniJSMethod(uiThread = false)
     public void start(JSONObject options, UniJSCallback cb) {
-        // 当前唤醒判定在网关 ASR + JS，本插件只负责把音频采上来。
-        Log.i(TAG, "start called (wake placeholder)");
+        // 采集是 ASR 与 KWS 共用的：先确保 AudioRecord 在跑，再开 KWS 引擎。
         startCapture();
+        initKws();
+        kwsEnabled = (kws != null);
+        Log.i(TAG, "KWS start: " + (kwsEnabled ? "ok" : "unavailable (ASR 文本兜底继续)"));
     }
 
     @UniJSMethod(uiThread = false)
     public void stop() {
-        stopCapture();
+        kwsEnabled = false;
+        // 注意：这里不 stopCapture——采集由 startPcm/stopPcm 独立管理（ASR 仍要用）。
+        // KWS stop 只是停止「喂帧检测」，引擎保留以便快速重启。
+    }
+
+    /** 初始化 sherpa-onnx KeywordSpotter：模型与 keywords.txt 从 assets 加载（随包、离线）。 */
+    private synchronized void initKws() {
+        if (kws != null) return;
+        Context ctx = safeContext();
+        if (ctx == null) return;
+        try {
+            FeatureConfig feat = new FeatureConfig();
+            feat.setSampleRate(SAMPLE_RATE);
+            feat.setFeatureDim(80);
+
+            OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
+            transducer.setEncoder(KWS_ASSET_DIR + "/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+            transducer.setDecoder(KWS_ASSET_DIR + "/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+            transducer.setJoiner(KWS_ASSET_DIR + "/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+
+            OnlineModelConfig model = new OnlineModelConfig();
+            model.setTransducer(transducer);
+            model.setTokens(KWS_ASSET_DIR + "/tokens.txt");
+            model.setModelType("zipformer2");
+
+            KeywordSpotterConfig cfg = new KeywordSpotterConfig();
+            cfg.setFeatConfig(feat);
+            cfg.setModelConfig(model);
+            cfg.setKeywordsFile(KWS_ASSET_DIR + "/keywords.txt");
+            cfg.setMaxActivePaths(4);
+            cfg.setKeywordsScore(1.5f);
+            cfg.setKeywordsThreshold(0.25f);
+
+            kws = new KeywordSpotter(ctx.getAssets(), cfg);
+            kwsStream = kws.createStream("");
+            Log.i(TAG, "KeywordSpotter initialized from assets");
+        } catch (Throwable e) {
+            Log.w(TAG, "KWS init failed (fallback to ASR text): " + e.getMessage());
+            kws = null;
+            kwsStream = null;
+        }
+    }
+
+    /** 把一帧 16bit PCM 转成 float[] 喂给 KWS 并检测命中。在采集线程调用。 */
+    private void feedKws(byte[] frame) {
+        if (!kwsEnabled || kws == null || kwsStream == null) return;
+        try {
+            int n = frame.length / 2;
+            float[] samples = new float[n];
+            for (int i = 0, j = 0; i < frame.length; i += 2, j += 1) {
+                samples[j] = (short) (((frame[i + 1] & 0xff) << 8) | (frame[i] & 0xff)) / 32768.0f;
+            }
+            kwsStream.acceptWaveform(samples, SAMPLE_RATE);
+            while (kws.isReady(kwsStream)) {
+                kws.decode(kwsStream);
+                KeywordSpotterResult result = kws.getResult(kwsStream);
+                String keyword = result == null ? null : result.getKeyword();
+                if (keyword != null && !keyword.isEmpty()) {
+                    long now = System.currentTimeMillis();
+                    if (now - lastKwsHitMs >= KWS_REARM_MS) {
+                        lastKwsHitMs = now;
+                        Log.i(TAG, "KWS HIT: " + keyword);
+                        if (wakeCb != null) {
+                            try {
+                                java.util.Map<String, Object> payload = new java.util.HashMap<>();
+                                payload.put("word", keyword);
+                                wakeCb.invokeAndKeepAlive(new org.json.JSONObject(payload));
+                            } catch (Throwable ignored) { }
+                        }
+                    }
+                    kws.reset(kwsStream);  // 命中后重置，准备下一次检测
+                }
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "feedKws error: " + e.getMessage());
+        }
     }
 
     @UniJSMethod(uiThread = false)
@@ -631,6 +730,9 @@ public class WakeModule extends UniModule {
                 diagAt = nowMs;
                 Log.i(TAG, "PCM-DIAG rms=" + String.format("%.4f", rms) + " play=" + playRunning);
             }
+            // 端侧 KWS：每帧喂一份给关键词检测（与 ASR 共用这条 AEC 后的采集）。
+            // 播报期的回声已由 AEC 抵消，命中即回调 JS（word），由 handleWakeHit 统一路由/节流。
+            feedKws(frame);
             // 原生本地 duck：播报期检测到真人开口就压低 TTS，静音超时恢复。
             // 只在 playRunning 时生效，不碰非播报期；按时间戳去抖，避免每帧 setVolume 刷屏。
             if (playRunning) {

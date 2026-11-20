@@ -3,7 +3,11 @@ export interface WakeProvider {
   /** 界面展示用的实现名，例如“浏览器语音”“原生 KWS” */
   readonly name: string
   isSupported(): boolean
-  start(onWake: () => void, onError?: (message: string) => void): void
+  /**
+   * 唤醒回调。word 是端侧 KWS 命中的词（可能为空：H5 回退或原生未回传时用默认词）。
+   * 上层据此把命中路由到「唤醒」或「播报期打断」。
+   */
+  start(onWake: (word?: string) => void, onError?: (message: string) => void): void
   stop(): void
 }
 

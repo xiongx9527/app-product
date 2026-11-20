@@ -59,6 +59,7 @@ import { toProxiedMusicUrl } from '@/core/audio/resolveMediaUrl'
 import type { ServerEvent, SessionMode } from '@/core/transport/types'
 import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
 import { matchWakeWord } from '@/core/wake/wakeWord'
+import { createWakeService, type WakeService } from '@/core/wake/wakeService'
 import { getLanguage } from '@/core/config'
 import { appConfig, persistConfig, activeVoiceConfig } from '@/core/config'
 import { addFavorite } from '@/features/favorites/favoritesStore'
@@ -301,6 +302,17 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    */
   let lastSpokeAt = 0
   const WAKE_ECHO_MS = 2000
+  /**
+   * KWS 唤醒静默窗：端侧 KWS 命中唤醒词后，同一句话仍会被 ASR 兜底链路再转写一遍
+   * （双轨并存），若在窗口内不拦，就会出现「KWS 先唤醒→ASR 的『小熊小熊』又进来二次 reWake、
+   * 且把唤醒词写进草稿区」。KWS 命中时记时刻，窗口内 ASR 的唤醒词文本一律忽略。
+   * 时长要覆盖 ASR 整段识别延迟（真机实测 final 比 KWS 晚约 3.4s），留足余量。
+   */
+  let kwsWakeAt = 0
+  const KWS_WAKE_MUTE_MS = 5000
+  /** ASR 转写的这句是否就是刚被 KWS 消费掉的那句唤醒词（应忽略，不再写草稿/不再二次唤醒）。 */
+  const isKwsWakeEcho = (text: string): boolean =>
+    Date.now() - kwsWakeAt < KWS_WAKE_MUTE_MS && !!matchWakeWord(text, DEFAULT_WAKE_WORDS)
   /** 播报期 partial 命中唤醒词打断的节流：流式识别连续多帧命中只打一次，避免重复招呼/重复跳过。 */
   let lastPartialSkipAt = 0
   /** barge-in duck 音量：正常播报 0.2（与原生 PLAYBACK_VOLUME 一致），用户开口压到 0.04。 */
@@ -339,9 +351,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const stateLabel = computed(() => t(STATE_LABEL[state.value]))
   const phaseLabel = computed(() => t(PHASE_LABEL[phase.value]))
   const enabled = computed(() => state.value !== 'idle')
-  // 唤醒改为网关本地 ASR（SenseVoice）识别，不依赖浏览器/Google 的语音服务
-  const wakeSupported = true
-  const wakeProviderName = '网关语音（本地 ASR）'
+  // wakeSupported / wakeProviderName 在 kwsService 创建之后定义（见下方端侧 KWS 段）。
 
   // 订阅必须保存反订阅函数并在 onUnmounted 清理：transport 是模块级单例、跨 HMR 存活，
   // 若热更新重挂载时旧监听不移除，会往同一个 transport 上叠加多份 handleServerEvent，
@@ -498,29 +508,26 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 网关 asr.final 要等 VAD 静音 endpointMs(默认 2.5s) 才下发，那样「说完了还得等一下」
         // 才唤醒。asr.partial 在说话过程中就随缓冲重识别下发，命中即唤醒；asr.final 仍作兜底。
         if (mode === 'wake') {
-          // 刚播完 TTS 的回声窗口内，ASR 命中的唤醒词是助手自己话里的「小熊小熊」被收回，
-          // 当回声忽略，避免「我在」过一会又来一句（回声重新唤醒）。
-          if (Date.now() - lastSpokeAt < WAKE_ECHO_MS) break
-          if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
+          // 回声窗口内的命中由 handleWakeHit 统一忽略（助手自己话里的「小熊小熊」）。
+          if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) handleWakeHit()
           break
         }
         // confirming（T2 倒计时）下用户一开口就要取消退下：partial 是说话过程中的流式识别，
         // 比等 asr.final（endpointMs 静音 + 识别链 2.5s+）早得多——否则 T2 先炸、话被吞
         //（用户实测「刚好卡在要退下的时机就退下了」）。listening 态下重置 T1 同理早触发。
         if (mode === 'dialog') {
+          // 刚被 KWS 消费掉的那句唤醒词，ASR 兜底链路还会再转写一遍——静默窗内直接忽略，
+          // 既不写草稿区、也不当成新插话（真机实测：KWS 命中后 3.4s ASR 又把『小熊小熊』送进来）。
+          if (isKwsWakeEcho(event.text)) break
           dispatch({ type: 'USER_SPEECH' })
           // 播报中 partial 命中「小熊小熊」= 用户嫌这句太长、想立刻打断：流式识别到就打断，
           // 不等 asr.final 定稿（那要再等 endpoint 1 秒 + 识别链，体感「打断很困难」）。
           // 回声已被网关 resemblesSpoken 在 partial 层挡掉，这里不会把助手自己话当打断。
           if (
             isSpeaking.value &&
-            Date.now() - lastPartialSkipAt >= PARTIAL_SKIP_MS &&
-            matchWakeWord(event.text, DEFAULT_WAKE_WORDS)
-          ) {
-            lastPartialSkipAt = Date.now()
-            skipCurrentAndGreet(event.text)
-            break
-          }
+            matchWakeWord(event.text, DEFAULT_WAKE_WORDS) &&
+            handleWakeHit(event.text, true)
+          ) break
           // 刚入队那句的尾音 partial 不回填草稿（有排队角标就够了）；但紧接的新插话要照常显示——
           // 只看时间窗口会把下一句说话当下的 partial 一起挡掉（真机复现），故改成按文本判断：
           // 只有与刚入队原文一致/互为前缀的尾音才挡，新句文本不同立即显示。
@@ -539,8 +546,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 命中「小熊小熊」= 用户嫌当前这句长、想打断。招呼一声并让网关跳过当前句（队列保留），
         // 且这句唤醒词不能累加排队徽标——它会被网关从队列删掉，随后 asr.final 的权威剩余数会同步回来。
         if (mode === 'dialog' && matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) {
-          skipCurrentAndGreet(event.text)
-          break
+          if (handleWakeHit(event.text)) break
         }
         // 插话已入队：文字保留约 1 秒让用户看清（partial 与 queued 常只隔几 ms，
         // 立即清就看不到），之后清掉交给右上角排队角标；这句播完轮到它时再由 asr.final 进正文。
@@ -559,8 +565,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 队列已满时服务端拒收，但仍带回了识别原文：唤醒词即使发生在队列满时也要能打断
         // （招呼 + 跳过当前句），否则用户喊「小熊小熊」会被当成又一句被吞掉。
         if (mode === 'dialog' && matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) {
-          skipCurrentAndGreet()
-          break
+          if (handleWakeHit()) break
         }
         // 专用话术显示在「我说」卡片右上角（与排队数量徽标同位置同款式），不进正文、不弹浮层
         // 同时播一声 mp3「你说的太多了，我记不住」：队列满也要有听得见的反馈，
@@ -577,9 +582,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         break
       case 'asr.final':
         if (mode === 'wake') {
-          // 待唤醒阶段只做唤醒词匹配，命中后进入对话；回声窗口内忽略（见 asr.partial 说明）
-          if (Date.now() - lastSpokeAt < WAKE_ECHO_MS) break
-          if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) dispatch({ type: 'WAKE' })
+          // 待唤醒阶段回声窗内的命中由 handleWakeHit 统一忽略（见 asr.partial 说明）
+          if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) handleWakeHit()
+          break
+        }
+        // 刚被 KWS 消费掉的唤醒词，ASR 兜底链路的 final 又到了：静默窗内清掉草稿、忽略，
+        // 绝不二次 reWake / 二次招呼（用户实测「喊一遍却招呼两次」「文字留在草稿区」）。
+        if (isKwsWakeEcho(event.text)) {
+          liveText.value = ''
           break
         }
         // 对话中再次叫「小熊小熊」分两种：
@@ -588,9 +598,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // - 空闲（对听中）：整轮重来（reWake = cancel+start+招呼），回干净对听状态。
         // 音乐播放不受影响（不设置 isSpeaking），且此分支只认唤醒词，普通插话不会触发。
         if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) {
-          if (assistantBusy || isSpeaking.value || queuePending.value > 0) skipCurrentAndGreet()
-          else reWake()
-          break
+          if (handleWakeHit(event.text)) break
         }
         // 播报（TTS）还没结束：其它声音不显示正文、不发起新轮次
         //（插话原文已随 asr.queued 进队列角标）。但必须清掉监听草稿 liveText——
@@ -1184,6 +1192,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       // 「准备中」提示音在调 health/建连之前就播：真机 health 首次探测可达 10s+，
       // 等就绪再播「准备中」就晚了（用户反馈接口都调完了才响）。让它先响、正常播完。
       playPromptCue('gatewayPreparing')
+      // KWS 引擎初始化（加载 3.3M 模型约 1-3s）与网关就绪等待并行：放到最前面，
+      // 等网关 ready 时 KWS 早已可唤醒，避免「首次启动喊好几遍没反应」。
+      // 网关没好时即便命中，dispatch(WAKE) 的 canWake 会拦截，不会进假 listening。
+      startKws()
       const ready = await waitForEmbeddedGateway()
       if (!ready) {
         // 网关启动失败：结束"启动中"态、标记失败（首页显示失败提示而非误报已就绪），
@@ -1216,6 +1228,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         return
       }
       dispatch({ type: 'ENABLE' })
+      // KWS 已在 enable 开头提前启动（与网关就绪并行），此处不重复 start。
       // 真正就绪：结束"启动中"态，首页据此显示短暂的"已就绪"行内文字
       gatewayPreparing.value = false
       // 「准备中」已在等待之前播过（见上），这里只补「就绪」。若准备中还在播，
@@ -1227,6 +1240,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   }
 
   function disable(): void {
+    stopKws()
     dispatch({ type: 'DISABLE' })
   }
 
@@ -1328,6 +1342,60 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     playPromptCue('greeting')
     interruptSpeech(dropText)
   }
+
+  /**
+   * 唤醒词命中的统一入口（P0 收敛 + KWS 接入点）。
+   *
+   * 6 处文本匹配（asr.partial/final 的 wake 与 dialog、asr.queued、asr.rejected）和
+   * 端侧 KWS 的 onWake 回调都走这里，保证「唤醒 / 打断」的路由与节流只有一份逻辑：
+   * - wake 态：过回声窗后 dispatch(WAKE) 进入对话。
+   * - dialog 态：忙（思考/播报/排队）→ skipCurrentAndGreet 只跳当前句；空闲 → reWake 整轮重来。
+   * - 回声窗（WAKE_ECHO_MS）：刚播完的回声（助手话里的唤醒词）不当作新命中。
+   * - canWake 硬约束由 dispatch / skipCurrentAndGreet / reWake 内部保证，网关/ASR 不可达时不放行。
+   *
+   * @param text 命中的唤醒词原文（进「我说」框、给网关 dropText）；KWS 回调可传 null 用默认词。
+   * @param throttle 是否走 PARTIAL_SKIP_MS 节流。流式 partial（连续多帧）和 KWS 命中要节流，
+   *   避免一次喊词触发多次招呼；asr.final / queued / rejected 是离散事件，不节流。
+   * @returns 是否真正消费了这次命中（调用点据此决定是否 break 后续逻辑）。
+   */
+  function handleWakeHit(text?: string, throttle = false): boolean {
+    if (!canWake()) return false
+    if (mode === 'wake') {
+      if (Date.now() - lastSpokeAt < WAKE_ECHO_MS) return false
+      // 记下 KWS/文本唤醒时刻：接下来几秒内 ASR 转写的同一句唤醒词当回显忽略（见 isKwsWakeEcho）。
+      kwsWakeAt = Date.now()
+      dispatch({ type: 'WAKE' })
+      return true
+    }
+    if (throttle) {
+      if (Date.now() - lastPartialSkipAt < PARTIAL_SKIP_MS) return false
+      lastPartialSkipAt = Date.now()
+    }
+    if (assistantBusy || isSpeaking.value || queuePending.value > 0) skipCurrentAndGreet(text)
+    else reWake()
+    return true
+  }
+
+  // ── 端侧 KWS 唤醒 ─────────────────────────────────────────────────
+  // 命中回调复用 handleWakeHit（与 ASR 文本匹配同一节流点），避免双重招呼/双跳。
+  // 插件缺失/未就绪时 isSupported=false，wakeService.start 静默跳过，ASR 文本匹配照常兜底。
+  const kwsService: WakeService = createWakeService({
+    wakeWords: DEFAULT_WAKE_WORDS,
+    lang: getLanguage(),
+    onWake: (word) => { handleWakeHit(word, true) },
+    onError: (msg) => { console.warn('[kws]', msg) },
+  })
+  function startKws(): void {
+    kwsService.start()
+  }
+  function stopKws(): void {
+    kwsService.stop()
+  }
+  // KWS 插件可用时展示端侧唤醒；不可用时仍可唤醒（ASR 文本兜底），故 wakeSupported 恒 true。
+  const wakeSupported = true
+  const wakeProviderName = computed(() =>
+    kwsService.isSupported() ? kwsService.providerName : '网关语音（本地 ASR）'
+  )
 
   /** 重新打开字幕面板：仅翻 visible 标记，数据仍在（手动关闭后照样能打开） */
   function openSubtitle(): void {
@@ -1470,6 +1538,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     if (doneToListeningTimer) { clearTimeout(doneToListeningTimer); doneToListeningTimer = null }
     cancelFinalClear()
     cancelPendingIdle()
+    stopKws()
     leaveWake()
     // 撤销本实例的全部订阅，避免模块级单例 transport 在 HMR 重挂载时叠加重复监听
     offEvent()

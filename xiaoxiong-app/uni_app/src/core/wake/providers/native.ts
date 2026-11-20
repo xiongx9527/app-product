@@ -15,8 +15,15 @@ import type { WakeProvider } from '../types'
 interface NativeWakeModule {
   start(options: { words: string[]; lang?: string }): void
   stop(): void
-  onWake(callback: () => void): void
+  /** 原生 KWS 命中回调：payload 形如 { word: '小熊小熊' }，也可能无参（旧基座） */
+  onWake(callback: (payload?: { word?: string } | string) => void): void
   onError(callback: (payload: { message?: string } | string) => void): void
+}
+
+function wakeWordOf(payload?: { word?: string } | string): string | undefined {
+  if (!payload) return undefined
+  if (typeof payload === 'string') return payload || undefined
+  return payload.word || undefined
 }
 
 function loadPlugin(): NativeWakeModule | null {
@@ -39,7 +46,7 @@ export function createNativeWakeProvider(
   let plugin: NativeWakeModule | null = null
   let bound = false
   let running = false
-  let wakeHandler: (() => void) | null = null
+  let wakeHandler: ((word?: string) => void) | null = null
 
   function resolvePlugin(): NativeWakeModule | null {
     if (!plugin) plugin = loadPlugin()
@@ -49,8 +56,8 @@ export function createNativeWakeProvider(
   function bind(instance: NativeWakeModule): void {
     if (bound) return
     bound = true
-    instance.onWake(() => {
-      if (running) wakeHandler?.()
+    instance.onWake((payload) => {
+      if (running) wakeHandler?.(wakeWordOf(payload))
     })
     instance.onError((payload) => {
       // 原生层错误只记录，不打断会话；界面会展示最近一条错误

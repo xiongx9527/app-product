@@ -24,7 +24,8 @@ export interface WakeService {
 }
 
 export interface WakeServiceOptions {
-  onWake: () => void
+  /** KWS 命中回调；word 为命中的唤醒词（可能为空，用默认词兜底） */
+  onWake: (word?: string) => void
   onError?: (message: string) => void
   wakeWords?: readonly string[]
   /** 识别语言，默认取配置页里的全局语言 */

@@ -957,6 +957,9 @@ export class VoiceSessionService {
 
   /** ASR 上游出错/超时的兜底提示：下发 asr-error 提示音（客户端本地播「没听清，再说一遍」）。 */
   private notifyAsrFailed(): void {
+    // 待唤醒态（wake）用户还没开口对话，ASR 失败不该反复播「没听清，请重新说一遍」打扰用户。
+    // P1 接入端侧 KWS 后 wake 态不再调 ASR，这条路径自然消失；当前先挡住误播。
+    if (this.mode === 'wake') return
     const now = Date.now()
     bargeDiag(`ASR-FAIL-CUE throttled=${now - this.lastAsrFailNoticeAt < 30_000} pb=${this.playbackPending} proc=${this.processing} queue=${this.queue.length}`)
     if (now - this.lastAsrFailNoticeAt < 30_000) return
