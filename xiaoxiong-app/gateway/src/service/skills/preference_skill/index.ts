@@ -83,6 +83,19 @@ function createPreferenceSkill(ctx: SkillContext): Skill {
           }
           if (ctx.deviceId) await ctx.data.saveMemory(ctx.deviceId, key, merged)
           await ctx.speak(messages(ctx.lang).memory.rememberedSimple(merged))
+          // 记住后接着聊：不让对话戛然而止在「已记住」。让 LLM 基于用户刚说的偏好自然续一句
+          // （表示兴趣 / 追问细节 / 延伸话题）。stub 模型或失败时静默，不影响已落库的记忆。
+          if (ctx.agent) {
+            try {
+              let followup = ''
+              const hint = ctx.lang.toLowerCase().startsWith('en')
+                ? `The user just said "${value}" and agreed to let me remember it. Naturally continue the chat with ONE short sentence — show interest, ask a light follow-up, or extend the topic. Do NOT say "okay" or "noted" alone.`
+                : `用户刚说「${value}」并同意我记住。请自然地接着聊一句（表示兴趣、轻松追问细节或延伸话题），不要只说「好的/知道了」。`
+              await ctx.agent.reply(hint, (delta) => { followup += delta })
+              const trimmed = followup.trim()
+              if (trimmed) await ctx.speak(trimmed)
+            } catch { /* 续聊失败不影响记忆已保存 */ }
+          }
           return { consumed: true }
         }
 

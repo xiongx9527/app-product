@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { ServerEvent } from '../../../../src/protocol'
 import type { SkillContext } from '../../../../src/service/skills/types'
 import { preferenceSkill } from '../../../../src/service/skills/preference_skill/index'
@@ -63,6 +63,25 @@ describe('preference skill：偏好句「问一句再记」', () => {
     expect(saved[0].key).toBe('运动')
     expect(saved[0].value).toContain('乒乓球')
     expect(spoken.at(-1)).toContain('记')
+  })
+
+  it('记住后接着聊：调 LLM 续一句，不只播「已记住」就断掉', async () => {
+    const replyMock = vi.fn(async (_hint: string, onDelta: (d: string) => void) => {
+      for (const piece of ['乒乓球', '不错呀', '你常打吗？']) onDelta(piece)
+      return '乒乓球不错呀你常打吗？'
+    })
+    const agent = { reply: replyMock } as unknown as NonNullable<SkillContext['agent']>
+    const { ctx, saved, spoken } = makeCtx({ agent })
+    const skill = preferenceSkill.create(ctx)
+    await skill.onFinalize?.('我喜欢打乒乓球')
+    skill.onAgentReply?.('', '')
+    const r = await skill.onFinalize?.('要记下来')
+    expect(r?.consumed).toBe(true)
+    expect(saved).toHaveLength(1)
+    // 口播：先「已记住」，再 LLM 续聊（拼接后的完整一句）
+    expect(spoken[0]).toContain('已记住')
+    expect(spoken[1]).toBe('乒乓球不错呀你常打吗？')
+    expect(replyMock).toHaveBeenCalledOnce()
   })
 
   it('回答了反问 + 要记下来的混合句也算肯定（真机场景）', async () => {

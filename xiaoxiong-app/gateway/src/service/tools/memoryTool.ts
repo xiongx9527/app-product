@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { Lang } from '../../protocol'
 import type { MemoryEntry } from '../../service/dataService'
+import { classifyPreference } from '../skills/preference_skill/preferenceCategory'
 
 /**
  * 记忆读写接口（按当前设备维度，由 controller 用 DataService 包好 deviceId 注入）。
@@ -77,8 +78,11 @@ export function createRememberTool(lang: Lang | string, store: MemoryStore) {
           ? 'That seems too trivial or unclear to remember; I will only store durable facts.'
           : '这个太零碎或说不清，我不记了；只记长期有用的习惯和偏好。'
       }
-      await store.save(args.key, args.value)
-      return p === 'en' ? `Got it, I'll remember: ${args.key} — ${args.value}.` : `好的，我记住了：${args.key} —— ${args.value}。`
+      // 分类走确定性词表，不信 LLM 给的 key（真机实测 LLM 把「喜欢打乒乓球」的 key 抽成「下来」）。
+      const key = classifyPreference(args.value)
+      const value = args.value.trim()
+      await store.save(key, value)
+      return p === 'en' ? `Got it, I'll remember: ${key} — ${value}.` : `好的，我记住了：${key} —— ${value}。`
     },
   }
 }
