@@ -21,15 +21,20 @@ if [ ! -s "$VENDOR/$MODEL/tokens.txt" ]; then
   "$ROOT/scripts/download-kws-deps.sh" model
 fi
 
-# 2) Android：AAR
+# 2) 用项目入库的关键词表覆盖下载的官方表（官方是「小爱同学」等，不是我们的唤醒词；
+#    且 vendor 不入库，必须靠这里覆盖才能保证任意环境 clone 后 KWS 都能正确唤醒）。
+echo "==> [KWS] 覆盖唤醒词表"
+cp -f "$ROOT/native/kws/keywords.txt" "$VENDOR/$MODEL/keywords.txt"
+
+# 3) Android：AAR + 模型
 echo "==> [KWS] 放置 Android AAR / 模型"
 mkdir -p "$ROOT/native/android/sdk/libs"
 cp -f "$VENDOR/$AAR" "$ROOT/native/android/sdk/libs/$AAR"
 mkdir -p "$ROOT/native/android/app/src/main/assets/kws/$MODEL"
 cp -f "$VENDOR/$MODEL"/* "$ROOT/native/android/app/src/main/assets/kws/$MODEL/"
 
-# 3) iOS：模型（xcframework 由 SPM 依赖，不在这里拷）
+# 4) iOS：模型（xcframework 由 SPM 依赖，不在这里拷）
 mkdir -p "$ROOT/native/ios/app/KwsResources/$MODEL"
 cp -f "$VENDOR/$MODEL"/* "$ROOT/native/ios/app/KwsResources/$MODEL/"
 
-echo "==> [KWS] 就绪（AAR + 模型已放置，随包编译）"
+echo "==> [KWS] 就绪（AAR + 模型 + 唤醒词表已放置，随包编译）"

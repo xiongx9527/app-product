@@ -56,12 +56,12 @@ dl_ios() {
 
 dl_model() {
   echo "[Model] 中文 KWS 模型（int8）"
-  # int8 三件套 + tokens + keywords
+  # int8 三件套 + tokens（keywords.txt 由 prepare 脚本用项目入库的唤醒词表覆盖，不下载官方表）
   fetch_ms "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" "$MODEL_DIR/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
   fetch_ms "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx" "$MODEL_DIR/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
   fetch_ms "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx" "$MODEL_DIR/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"
   fetch_ms "tokens.txt" "$MODEL_DIR/tokens.txt"
-  fetch_ms "keywords.txt" "$MODEL_DIR/keywords.txt"   # 官方测试关键词（含「你好问问」等，供参考）
+  cp -f "$ROOT/native/kws/keywords.txt" "$MODEL_DIR/keywords.txt"
   echo "  模型文件:"
   ls -lh "$MODEL_DIR"
 }

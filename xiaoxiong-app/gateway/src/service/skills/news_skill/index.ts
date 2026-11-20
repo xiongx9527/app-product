@@ -101,7 +101,14 @@ function makeNewsSkill(ctx: SkillContext, source: NewsVideoSourceLike): Skill {
       }
       const cmd = detectNewsCommand(text)
       if (!cmd) return undefined
-      await runNews(cmd.keyword)
+      // 没说具体话题（如「播放新闻」）：结合长期记忆偏好搜，列候选让用户选；
+      // 偏好搜不到就用 null keyword 走原有兜底（全量新闻/如实告知），不硬编内容。
+      let keyword = cmd.keyword
+      if (!keyword && ctx.getPreferenceKeywords) {
+        const prefs = await ctx.getPreferenceKeywords()
+        keyword = prefs.find((p) => p.length >= 2) ?? null
+      }
+      await runNews(keyword)
       return { consumed: true }
     },
     async playExternalVideo(c) {

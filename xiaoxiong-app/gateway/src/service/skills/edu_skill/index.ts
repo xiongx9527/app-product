@@ -22,11 +22,21 @@ function makePoemSkill(ctx: SkillContext, query: PoemQuery): Skill {
       const cmd = detectPoemCommand(text)
       if (!cmd) return undefined
       const i = pickPoemI18n(ctx.lang)
-      if (!cmd.title) {
-        await ctx.speak(i.prompt())
-        return { consumed: true }
+      let title = cmd.title
+      if (!title) {
+        // 没说诗名：结合长期记忆偏好搜一首（如记得「李白」就找李白的诗），搜不到再引导反问。
+        const prefs = ctx.getPreferenceKeywords ? await ctx.getPreferenceKeywords() : []
+        for (const pref of prefs) {
+          if (pref.length < 2) continue
+          let found: PoemEntry | null = null
+          try { found = await query(pref) } catch { found = null }
+          if (found) { title = pref; break }
+        }
+        if (!title) {
+          await ctx.speak(i.prompt())
+          return { consumed: true }
+        }
       }
-      const title = cmd.title
       let entry: PoemEntry | null = null
       try {
         entry = await query(title)

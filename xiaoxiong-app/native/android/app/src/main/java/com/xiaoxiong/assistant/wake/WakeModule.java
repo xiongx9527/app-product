@@ -96,6 +96,8 @@ public class WakeModule extends UniModule {
     private volatile long writtenFrames = 0;
     private volatile boolean playRunning = false;
     private Thread idlePollThread;
+    /** 提示音（MediaPlayer）正在播放：期间关 AEC，避免把同时说话的唤醒词抵消 */
+    private volatile boolean cueActive = false;
     /** 播空事件是否已通知前端：每次写入新 PCM 重置，播空后只通知一次。 */
     private volatile boolean idleNotified = true;
     /** 最后一帧写入时刻：head 追上 written 后还要静默确认，避免流式 TTS 帧间隙假播空
@@ -132,6 +134,8 @@ public class WakeModule extends UniModule {
     /** KWS 命中去抖：一次唤醒词可能在连续多帧重复命中，命中后静音 N ms 再允许下一次。 */
     private static final long KWS_REARM_MS = 1500;
     private volatile long lastKwsHitMs = 0;
+    /** 诊断：每 400ms 打印一次 KWS 当前解码出的 token（有声音时），定位「有时快有时慢」漏检原因 */
+    private long kwsDiagAt = 0;
     /** 模型在 assets 内的目录（相对 assets 根），由打包脚本从 native/kws/vendor 拷入 */
     private static final String KWS_ASSET_DIR = "kws/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01";
 
@@ -365,6 +369,11 @@ public class WakeModule extends UniModule {
             String path = CUE_ASSET_PREFIX + file;
             AssetFileDescriptor afd = ctx.getAssets().openFd(path);
             cuePlayer = new MediaPlayer();
+            // 提示音播放期间关 AEC：与 TTS 播报同理——AEC 会把同时说话的人声当回声抵消，
+            // 导致「首次启动播 gateway-ready 时喊小熊小熊」KWS 完全收不到（真机：要说好几遍）。
+            // 提示音很短（<2s），关 AEC 不会明显恶化回声；播完在 stopCueInternal 恢复。
+            cueActive = true;
+            setAecEnabled(false);
             cuePlayer.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
             afd.close();
             // STREAM_MUSIC：与音乐同一流，duck 时同为媒体音量；裸 MediaPlayer 主动不调
@@ -408,6 +417,12 @@ public class WakeModule extends UniModule {
             } catch (Throwable ignored) {
             }
             cuePlayer = null;
+        }
+        // 提示音播完/被打断：恢复 AEC——但仅当当前没有 TTS 播报在跑（播报期须保持 AEC 关，
+        // 否则又把用户插话抵消）。cueActive 防止重复恢复。
+        if (cueActive && !playRunning) {
+            cueActive = false;
+            setAecEnabled(true);
         }
     }
 
@@ -580,8 +595,10 @@ public class WakeModule extends UniModule {
             cfg.setModelConfig(model);
             cfg.setKeywordsFile(KWS_ASSET_DIR + "/keywords.txt");
             cfg.setMaxActivePaths(4);
-            cfg.setKeywordsScore(1.5f);
-            cfg.setKeywordsThreshold(0.25f);
+            // 官方默认 score=1.5/threshold=0.25 偏保守，真机「有时快有时慢、要说好几遍」= 漏检。
+            // 提高关键词 boost + 降低触发门槛，让近场喊词一次命中；误唤醒由时间窗 + 文本兜底兜着。
+            cfg.setKeywordsScore(2.0f);
+            cfg.setKeywordsThreshold(0.18f);
 
             kws = new KeywordSpotter(ctx.getAssets(), cfg);
             kwsStream = kws.createStream("");
@@ -594,7 +611,7 @@ public class WakeModule extends UniModule {
     }
 
     /** 把一帧 16bit PCM 转成 float[] 喂给 KWS 并检测命中。在采集线程调用。 */
-    private void feedKws(byte[] frame) {
+    private void feedKws(byte[] frame, double rms) {
         if (!kwsEnabled || kws == null || kwsStream == null) return;
         try {
             int n = frame.length / 2;
@@ -607,6 +624,13 @@ public class WakeModule extends UniModule {
                 kws.decode(kwsStream);
                 KeywordSpotterResult result = kws.getResult(kwsStream);
                 String keyword = result == null ? null : result.getKeyword();
+                // 诊断：有声音时每 400ms 打印 KWS 当前 token，看漏检时它把唤醒词识别成了什么
+                long nowMs = System.currentTimeMillis();
+                if (rms > 0.01 && nowMs - kwsDiagAt >= 400) {
+                    kwsDiagAt = nowMs;
+                    String toks = result == null ? "" : String.join("|", result.getTokens());
+                    Log.i(TAG, "KWS-DIAG rms=" + String.format("%.3f", rms) + " tok=[" + toks + "] kw=" + keyword);
+                }
                 if (keyword != null && !keyword.isEmpty()) {
                     long now = System.currentTimeMillis();
                     if (now - lastKwsHitMs >= KWS_REARM_MS) {
@@ -732,7 +756,7 @@ public class WakeModule extends UniModule {
             }
             // 端侧 KWS：每帧喂一份给关键词检测（与 ASR 共用这条 AEC 后的采集）。
             // 播报期的回声已由 AEC 抵消，命中即回调 JS（word），由 handleWakeHit 统一路由/节流。
-            feedKws(frame);
+            feedKws(frame, rms);
             // 原生本地 duck：播报期检测到真人开口就压低 TTS，静音超时恢复。
             // 只在 playRunning 时生效，不碰非播报期；按时间戳去抖，避免每帧 setVolume 刷屏。
             if (playRunning) {

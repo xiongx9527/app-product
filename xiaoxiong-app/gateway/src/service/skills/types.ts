@@ -90,7 +90,7 @@ export interface SkillContext {
 
   /** ASR 同音纠错学习（数据源把识别词纠成规范词时调用）：跨业务能力，核心持有。 */
   autoLearn?: (wrong: string, correct: string) => void
-  /** 读设备长期记忆里的商品偏好关键词（好价 skill 据此挑 3 件，纯函数排序）。 */
+  /** 读设备长期记忆里的偏好关键词。好价据此排序、音乐/新闻/诗词/百科在无明确内容时据此推荐候选。 */
   getPreferenceKeywords?: () => Promise<string[]>
 }
 

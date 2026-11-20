@@ -16,7 +16,7 @@
  */
 import type { MediaAsset } from '../../media/mediaPlaybackCapability'
 import type { ContentSource, ContentExecutor, ContentExecutorDeps, ContentAction, ContentCandidate } from '../../content/types'
-import { pickI18n } from './i18n_player'
+import { pickI18n, type MusicI18n } from './i18n_player'
 import { detectMusicCommand } from './detect'
 import { parseLoopCount, hasAgainMarker } from '../../media/mediaIntent'
 import { messages } from '../../../i18n'
@@ -95,6 +95,27 @@ export class MusicPlayer implements ContentExecutor {
       detectContentType(track.title) ?? this.d.media.getLastMusic()?.contentType)
   }
 
+  /**
+   * 无明确内容时，结合长期记忆偏好列候选让用户选（绝不自动播默认电台）。
+   * 依次试每个偏好词去搜候选，搜到就列候选 + 口播推荐文案；全搜不到返回 false，由调用方降级为引导反问。
+   */
+  private async recommendByPreference(m: MusicI18n): Promise<boolean> {
+    const prefs = (await this.d.getPreferenceKeywords?.()) ?? []
+    if (!prefs.length) return false
+    for (const pref of prefs) {
+      const items = await searchCandidates(pref, this.d.candidateFetcher)
+      if (!items.length) continue
+      const ranked = items.slice(0, 4)
+      this.pendingCandidates = { items: ranked, query: pref }
+      this.d.clearPendingDeals()
+      const labels = ranked.map((c) => (c.artist ? `${c.title}，${c.artist}` : c.title))
+      // 口播点出偏好依据，让用户知道是「根据你喜欢的X」推荐的（诚实、可解释）。
+      await this.d.speak(`根据你喜欢的${pref}，${m.recommend(labels)}${m.chooseHint()}`)
+      return true
+    }
+    return false
+  }
+
   /** 执行音乐动作（play/next/recommend/loop 内容类；通用控制归 mediaControl）。 */
   async run(action: ContentAction, text: string): Promise<void> {
     // 只处理内容意图；通用控制（含 loop）由 media/mediaControl 先消费
@@ -111,6 +132,13 @@ export class MusicPlayer implements ContentExecutor {
           // recommend=false（点歌不是推荐口吻）；allowContext=!hasAgainMarker——「再放稻香」关上下文、列候选让用户选。
           if (await this.offer(source, text, isArtistBrowse(text), false, !hasAgainMarker(text))) break
           const genre = genreToKeyword(text)
+          // 没有明确内容词（如「放首歌」「看。」「来点音乐」）：绝不自动播默认电台 Groove Salad。
+          // 先结合长期记忆偏好列候选让用户选；偏好也搜不到就引导用户说清想听什么。
+          if (contentWords(genre).length === 0) {
+            if (await this.recommendByPreference(m)) break
+            await this.d.speak(m.recommendPrompt())
+            break
+          }
           const track = await source.resolve(genre)
           if (!track?.url) throw new Error('no track')
           const loop = parseLoopCount(text)

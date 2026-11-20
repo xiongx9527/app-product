@@ -33,11 +33,22 @@ function makeBaikeSkill(ctx: SkillContext, deps: BaikeDeps): Skill {
     async onDirectCommand(text) {
       const cmd = detectBaikeCommand(text)
       if (!cmd) return undefined
-      if (!cmd.keyword) {
-        await ctx.speak(i.prompt())
-        return { consumed: true }
+      let keyword = cmd.keyword
+      if (!keyword) {
+        // 没说查谁：结合长期记忆偏好查一个词条（如记得「李白」就查李白），查不到再引导反问。
+        const prefs = ctx.getPreferenceKeywords ? await ctx.getPreferenceKeywords() : []
+        for (const pref of prefs) {
+          if (pref.length < 2) continue
+          try {
+            const r = await query(pref)
+            if (r.entry) { keyword = pref; break }
+          } catch { /* 换下一个偏好词 */ }
+        }
+        if (!keyword) {
+          await ctx.speak(i.prompt())
+          return { consumed: true }
+        }
       }
-      const keyword = cmd.keyword
       let result: BaikeQueryResult
       try {
         result = await query(keyword)

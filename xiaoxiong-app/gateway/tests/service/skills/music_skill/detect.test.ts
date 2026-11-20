@@ -51,6 +51,15 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
     expect(detectMusicCommand('看情况再说')).toBeNull()
   })
 
+  it('单独「看。」「唱。」（噪音/幻觉单字）不触发播放——禁止没说明内容就自动放东西', () => {
+    // 真机实测：用户说「看。」（噪音被识别成单字）竟自动播放了 Groove Salad。
+    // 原则：没有明确说出要听/看什么，绝不自动播放。
+    expect(detectMusicCommand('看。')).toBeNull()
+    expect(detectMusicCommand('看')).toBeNull()
+    expect(detectMusicCommand('唱。')).toBeNull()
+    expect(detectMusicCommand('唱')).toBeNull()
+  })
+
   it('通用媒体控制（暂停/停止/重播/继续/循环）不归本 skill，返回 null（由 mediaControl 先消费）', () => {
     // 用户定稿：pause/stop/resume/replay/loop 跟播什么内容无关，归系统能力层 mediaControl，
     // music skill 只识别「播什么」（play/next/recommend）。这些句子即使含「播放」也不该命中 play。

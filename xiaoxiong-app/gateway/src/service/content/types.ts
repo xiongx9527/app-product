@@ -54,6 +54,8 @@ export interface ContentExecutorDeps {
   clearPendingDeals: () => void
   getLastTtsMedia: () => { url: string; title: string; audioPath?: string; cover?: string; lines: Array<{ time: number; text: string }> } | null
   playNewsVideo: (c: { bvid?: string; title: string; cover?: string }) => Promise<void>
+  /** 长期记忆偏好关键词：无明确内容时据此个性化推荐（列候选让用户选），不自动播默认内容。 */
+  getPreferenceKeywords?: () => Promise<string[]>
 }
 
 /** 内容执行器接口：核心只认它，不认任何具体内容业务类。 */

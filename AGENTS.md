@@ -377,4 +377,16 @@ xiaoxiong-app/uni_app/src/
 - **首次启动**：KWS 初始化（1-3s）必须与网关就绪等待并行（在 `enable()` 开头 `startKws()`），否则「首次启动喊好几遍没反应」。网关没好时 dispatch 的 canWake 会拦截命中，安全。
 - Android 依赖不入库：`scripts/download-kws-deps.sh`（AAR 走 gh-proxy.com，模型走 ModelScope，**GitHub 直连仅 30KB/s 弃用**）+ `scripts/prepare-kws-assets.sh`（拷 AAR→sdk/libs、模型→assets/kws），已挂到 `build.sh`。新增大二进制一律配 gitignore，不要提交 .class/.aar/.onnx/xcframework。
 - 关键词表用 **ppinyin** 音素格式（对照模型 tokens.txt 音素集），不是普通拼音。
-- iOS 端 `app-product-wake` 插件尚未接入（GATEWAY_INTEGRATION.md 第 9 条待办），iOS KWS 需从零实现 UniModule + SPM（deployment target 14→15）+ AVAudioEngine，范围/时机待确认。
+
+## 无明确内容时的偏好推荐（用户原则，2026-11-20）
+
+- **绝不自动播默认内容**：用户没明确说要听/看什么时不能自动播放（曾因「看。」这种噪音单字触发播了 Groove Salad）。正确做法：**结合长期记忆偏好列候选让用户选**，偏好也搜不到就**降级为引导反问**，不硬编内容。覆盖 music/news/诗词/百科/好价所有内容 skill。
+- `ctx.getPreferenceKeywords()` / `ContentExecutorDeps.getPreferenceKeywords()` 从长期记忆抽偏好关键词（通用能力，非商品专属）。
+- music 的 play 分支：`offer` 失败且 `contentWords(genre).length===0`（无明确内容）→ `recommendByPreference()`（偏好词搜候选 + 口播「根据你喜欢的X」）→ 失败 `recommendPrompt()` 引导，全程不调 `source.resolve`（不播电台）。明确风格请求（背景音乐→轻音乐）有 contentWords 不受影响。
+- news/诗词/百科：detect 无 keyword/title 时用偏好词 query，有结果就用、无结果降级各自 `i.prompt()`。好价原本就有 `pickDeals(deals, prefs, 3)` 偏好排序。
+- detect 正则：「看/唱」不允许单独单字触发播放，必须后跟明确内容词（「看。」不触发）。测试：detect.test.ts + preferenceRecommend.test.ts。
+
+- **【2026-11-21 网关判绿根因锁定：mux 并发写】** 本机直接跑 health 探测逻辑三项全 true（ASR `{"text":""}`合法JSON、TTS 57678B>44、LLM 200），后端 voice.log 全 200 无 ClientDisconnect——证明探测逻辑和后端都对，问题在 USB 隧道回传。铁证：helper 日志响应成败时间分布是「每批 ZERO×10 集中1秒 → 5秒后零星 OK」（09:10:08 ZERO×10→09:10:13 OK×2 等多次重复），即**10个并发 health 请求的响应帧经 single mux 回传时互相覆盖/丢失**，只有部分到达。根因=helper `sendFrame` 用 `dispatch_io_write(gMuxChannel, 0, ...)` 并发写多个 connId 的响应帧，offset=0 在 stream channel 上导致帧覆盖（PTProtocol 用 offset=0 是单线程串行写，我们多线程并发不适用）。修复方向：响应帧写串行化（semaphore 等 write completion 或攒队列单次写），或每 connId 响应帧独立有序写。**这是网关判绿不稳的真正根因，非设备/后端/探测配置**。
+
+- **【2026-11-20 网关判绿日志分析】** 分析 9529 `~/.app-product/voice/voice.log`：所有探测路径全 200（transcriptions 275次/speech 41次/llm/v1 43次，无 ClientDisconnect、无异常），后端 LLM 上游 healthy。**探测频率规律=每 30s 一组 3-4 请求**（对应前端 usePermissions POLL_MS=30000），不是并发风暴。结论：**后端完全正常，网关 health 判 false 是网关侧 fetch 经 USB 隧道响应回传/判定时序问题**——请求到了 9529、200 返回，但网关 probeOne 拿到的响应超时/丢失。设备 App 状态极不稳定（8787 时通时断），无法在脚本环境稳定抓到判绿现场。此项与隧道代码/后端无关，属设备 USB 会话 + App 网关线程的运行时问题。
+- **【2026-11-20 iOS 录音插件已实现】**：`app-product-wake` 原生插件 iOS 版已落地——`native/ios/app/XiaoxiongGateway.xcodeproj/AppProductWakeModule.h/.m`（ObjC 类继承 `DCUniModule`，`UNI_EXPORT_METHOD(@selector(...))` 导出 startPcm/stopPcm/onPcmFrame/onPcmError/configureDirectUpload，AVAudioEngine 16k/mono 采集转 int16 PCM 每 32ms/1024B 帧经 `UniModuleKeepAliveCallback(frame,YES)` 回调 JS，走 JS 回调透传不原生直连；不含 KWS/播放——唤醒交给网关 ASR）。参照 Android WakeModule.java 的 PCM 部分。集成由 `scripts/ios-integrate.rb` 幂等完成：拷h/.m进壳工程 HBuilder-Hello + 加入主 target Sources + HEADER_SEARCH_PATHS 加 uniapp headers + bridging header import DCUniModule.h + Info.plist `dcloud_uniplugins` 注册 `app-product-wake → AppProductWakeModule (module)`。**关键坑**：`UNI_EXPORT_METHOD` 宏参数是 selector 字面量，必须写 `@selector(method:)` 不能写 `method:(Type)arg`；AVAudioFormat 用 `initStandardFormatWithSampleRate:channels:`（不是 initWith/standardFormat 类方法）。**静态验证铁证**：装机 .app 的 Info.plist 有注册、HBuilder.debug.dylib 含 AppProductWakeModule/configureDirectUpload:/onPcmFrame: 符号、reprovision BUILD SUCCEEDED。**运行时验证受限**：这台 iPad 上 App 网关 health 判绿不稳定（idevicedebug 冻结、纯前台网关线程有时不启动），App 停在"网关启动中"没进待唤醒态，故采集检查/插件 require 的运行时日志未拿到；插件本身已完整打包注册。iOS KWS（端侧唤醒词）仍未实现，唤醒靠网关 ASR 文本层。+ AVAudioEngine，范围/时机待确认。

@@ -538,7 +538,7 @@ export class VoiceSessionService {
       // 跨业务状态由核心持有：百科/诗词的「重新播放」记忆 + ASR 同音纠错学习。
       rememberTtsMedia: (media) => { self.lastTtsMedia = media },
       autoLearn: (wrong, correct) => self.autoLearnCorrection(wrong, correct),
-      // 商品偏好关键词来自设备长期记忆（纯读取），好价 skill 据此挑 3 件。
+      // 长期记忆偏好关键词（纯读取）：各内容 skill 在无明确内容时据此个性化推荐，好价据此排序。
       getPreferenceKeywords: async () => {
         try {
           return preferenceKeywords((await self.memoryStore?.list()) ?? [])
@@ -1567,6 +1567,14 @@ export class VoiceSessionService {
         clearPendingDeals: () => this.dispatchClearOtherCandidates(),
         getLastTtsMedia: () => this.lastTtsMedia,
         playNewsVideo: (c) => this.dispatchExternalVideo(c),
+        // 无明确内容时（如「放点音乐」「看。」），执行器据此从长期记忆偏好推荐候选，不自动播默认电台。
+        getPreferenceKeywords: async () => {
+          try {
+            return preferenceKeywords((await this.memoryStore?.list()) ?? [])
+          } catch {
+            return []
+          }
+        },
       }
       this.content = this.deps.contentExecutorFactory(executorDeps)
     }
