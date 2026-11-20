@@ -40,6 +40,29 @@ function langPrefix(lang: Lang | string): 'zh' | 'en' {
   return (lang || 'zh-CN').toLowerCase().split(/[-_]/)[0] === 'en' ? 'en' : 'zh'
 }
 
+/**
+ * LLM 抽取出的 key 质量校验：话题标签必须是有实义的短语，不能是助词/语气词/单字/残句
+ * （真机踩坑：用户说「我喜欢打乒乓球」，LLM 把 key 抽成「下来」——「记下来」的残留）。
+ * 不靠谱的 key 一律拒收，由调用方用兜底 key 原样存 value，绝不把垃圾分类落库。
+ */
+const BAD_KEYS = new Set([
+  '下来', '起来', '过去', '回来', '出来', '上来', '下去', '进去', '过来',
+  '了', '吧', '吗', '呢', '啊', '呀', '哦', '嗯', '的', '得', '着',
+  '这个', '那个', '什么', '怎么', '一个', '一些', '东西', '事情', '问题',
+  '记下来', '记住', '记一下', '帮我记', '要记',
+])
+
+function isValidMemoryKey(key: string): boolean {
+  const k = key.trim()
+  if (!k || k.length < 2 || k.length > 20) return false
+  if (BAD_KEYS.has(k)) return false
+  // 纯标点/数字/空白不是话题标签
+  if (!/[\p{L}]/u.test(k)) return false
+  // 助词结尾（下来/起来/了吧等）视为残句
+  if (/(下来|起来|过去|回来|出来|进去|过来|下去|了吧|了呢|了吗)$/.test(k)) return false
+  return true
+}
+
 /** 把模型工具调用返回的 input（JSON 串）解析成抽取条目；解析失败/结构不对都返回空，绝不丢异常。 */
 export function parseExtractorInput(input: string | undefined): ExtractedMemory[] {
   if (!input) return []
@@ -49,7 +72,7 @@ export function parseExtractorInput(input: string | undefined): ExtractedMemory[
     if (!Array.isArray(entries)) return []
     return entries
       .map((e) => ({ key: (e?.key ?? '').trim(), value: (e?.value ?? '').trim() }))
-      .filter((e) => e.key && e.value)
+      .filter((e) => e.value && isValidMemoryKey(e.key))
   } catch {
     return []
   }

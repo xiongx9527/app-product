@@ -22,10 +22,8 @@ import {
   mergeMemoryValue,
 } from './memoryPrompt'
 import { detectMemoryCommand } from './memoryControl'
+import { classifyPreference } from './preferenceCategory'
 import type { Skill, SkillContext, SkillModule } from '../types'
-
-/** LLM 抽取不可用/归不出来时的兜底 key（存储约定，非业务词表）。 */
-const FALLBACK_MEMORY_KEY = '偏好'
 
 interface PendingMemory {
   value: string
@@ -70,20 +68,10 @@ function createPreferenceSkill(ctx: SkillContext): Skill {
           const value = pending.value
           pending = null
           emitFinal()
-          // 归类完全交给 LLM 抽取引擎（它本就产出 {key,value}）；不再用词表硬编码分类。
-          // 抽取不可用 / 归不出来 → 用兜底 key 原样存，绝不丢数据。
-          let key = FALLBACK_MEMORY_KEY
-          let finalValue = value
-          if (ctx.agent && ctx.memoryStore) {
-            try {
-              const existing = await ctx.memoryStore.list()
-              const extracted = (await ctx.agent.extractMemories([value], existing)) ?? []
-              if (extracted.length > 0) {
-                key = extracted[0].key
-                finalValue = extracted[0].value
-              }
-            } catch { /* LLM 抽取失败：用兜底 key 原样存 */ }
-          }
+          // 分类用确定性词表（苹果→饮食、乒乓球→运动…），不靠 LLM 抽 key——
+          // 真机实测 LLM 把「喜欢打乒乓球」抽成「下来」，用户明确说分类不靠谱。
+          const key = classifyPreference(value)
+          const finalValue = value
           // 相似记忆合并更新（同 key 去重），不是覆盖。
           let merged = finalValue
           if (ctx.memoryStore) {
@@ -148,9 +136,10 @@ export const preferenceSkill: SkillModule = {
   priority: 5,
   // skill 提示词：只描述「你拥有这个能力」，不写「遇到喜欢就反问」这类硬规则——
   // 具体追问时机与确认判定由生命周期钩子确定性处理，提示词不掺业务分支。
+  // 明确禁止模型自己追问「要不要记」——否则代码拼的追问 + 模型自己问 = 两个问句，用户懵。
   description: (lang) =>
     lang.toLowerCase().startsWith('en')
-      ? 'You can remember the user’s personal preferences and habits. After a natural reply, a separate confirmation asks whether to save it; a later affirmative stores it and a negative discards it. Keep the chat natural and never promise “I remembered it” yourself.'
-      : '你拥有「记住用户个人偏好和习惯」的能力。用户表达喜好后你先自然聊天，系统会另行确认要不要记下来，用户之后再肯定或否定才决定保存或放弃；你自己不要抢先说「记住了」。',
+      ? 'You can remember the user’s personal preferences and habits. After a natural reply, a separate confirmation asks whether to save it. NEVER ask the user whether to remember anything yourself — the system does that for you. Do not promise “I remembered it” yourself either; just reply naturally.'
+      : '你拥有「记住用户个人偏好和习惯」的能力。用户表达喜好后你只管自然聊天、正常回答，系统会另行确认要不要记下来。你绝对不要自己问用户「要不要记下来/要我记住吗」之类的话——系统会自动问，避免重复追问让你困惑；你自己也不要抢先说「记住了」。',
   create: createPreferenceSkill,
 }

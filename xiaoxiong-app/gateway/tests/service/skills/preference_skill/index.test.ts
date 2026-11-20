@@ -59,8 +59,8 @@ describe('preference skill：偏好句「问一句再记」', () => {
     const r = await skill.onFinalize?.('要记下来')
     expect(r?.consumed).toBe(true)
     expect(saved).toHaveLength(1)
-    // agent 不可用 → 兜底 key；归类交给 LLM，不再有内置词表
-    expect(saved[0].key).toBe('偏好')
+    // 分类用确定性词表（不靠 LLM）：乒乓球 → 运动
+    expect(saved[0].key).toBe('运动')
     expect(saved[0].value).toContain('乒乓球')
     expect(spoken.at(-1)).toContain('记')
   })
@@ -131,9 +131,10 @@ describe('preference skill：偏好句「问一句再记」', () => {
     expect(saved).toHaveLength(0)
   })
 
-  it('归类交给 LLM：抽取成功后用 LLM 的 key/value（无内置词表硬编码）', async () => {
+  it('分类确定性与 LLM 无关：即便 agent 返回垃圾 key，也用词表分类', async () => {
+    // 真机踩坑：LLM 把「喜欢打乒乓球」抽成 key「下来」。现在分类完全不靠 LLM。
     const agent = {
-      extractMemories: async () => [{ key: '运动偏好', value: '喜欢打乒乓球' }],
+      extractMemories: async () => [{ key: '下来', value: '喜欢打乒乓球' }],
     } as unknown as NonNullable<SkillContext['agent']>
     const { ctx, saved } = makeCtx({ agent })
     const skill = preferenceSkill.create(ctx)
@@ -141,7 +142,7 @@ describe('preference skill：偏好句「问一句再记」', () => {
     skill.onAgentReply?.('', '')
     await skill.onFinalize?.('要记下来')
     expect(saved).toHaveLength(1)
-    expect(saved[0].key).toBe('运动偏好') // 来自 LLM，不是内置词表
+    expect(saved[0].key).toBe('运动') // 词表分类，不受 LLM 的「下来」影响
   })
 
   it('name/description 可读：description 是能力描述（不含「遇到喜欢就」硬规则）', () => {
