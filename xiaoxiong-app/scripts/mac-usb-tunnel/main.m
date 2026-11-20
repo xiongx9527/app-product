@@ -51,21 +51,27 @@ static BOOL gLastConnectFailed = NO;            // 失败日志节流：只在�
 static NSDate *gMuxEstablishedAt = nil;
 static BOOL gMuxGotFrame = NO;
 
+// 线程安全日志：多个 localReadThread 并发调用。原实现每次 open/close 一个 NSFileHandle，
+// 并发时一个线程 closeFile 后另一个 writeData 抛 NSFileHandleOperationException(Bad file
+// descriptor)，直接崩掉 helper 进程（真机铁证：Terminating ... at logLine/localReadThread）。
+// 改为单个长期 FILE* + pthread 互斥锁，全程不 close，彻底消除竞态。
+static pthread_mutex_t gLogLock = PTHREAD_MUTEX_INITIALIZER;
+static FILE *gLogFile = NULL;
 static void logLine(NSString *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
   va_end(ap);
   NSString *line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], msg];
-  fprintf(stderr, "%s", line.UTF8String);
-  NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kLogPath];
-  if (!fh) {
-    [[NSFileManager defaultManager] createFileAtPath:kLogPath contents:nil attributes:nil];
-    fh = [NSFileHandle fileHandleForWritingAtPath:kLogPath];
+  const char *utf8 = line.UTF8String;
+  pthread_mutex_lock(&gLogLock);
+  fputs(utf8, stderr);
+  if (!gLogFile) {
+    [[NSFileManager defaultManager] createDirectoryAtPath:@"logs" withIntermediateDirectories:YES attributes:nil error:nil];
+    gLogFile = fopen(kLogPath.UTF8String, "a");
   }
-  [fh seekToEndOfFile];
-  [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-  [fh closeFile];
+  if (gLogFile) { fputs(utf8, gLogFile); fflush(gLogFile); }
+  pthread_mutex_unlock(&gLogLock);
 }
 
 // 回退到 114 帧实证成功版本（7524b49）的写法：dispatch_data 用 global queue，直接
@@ -145,23 +151,30 @@ static int openLocalConn(uint32_t connId) {
   return fd;
 }
 
-// 持续从 mux 通道读：114 帧实证成功版（1052623）用有限长度 64KB + done 后递归。
-// 曾误改成 SIZE_MAX 单队列，反而收不到帧——已按实证版本恢复。
+// 持续从 mux 通道读。PeerTalk 的 dispatch_io_t 是 stream channel：读固定长度时，若数据不足
+// 该长度则 never done → 64KB 版收不到帧（真机 zero frame）；SIZE_MAX 版回调不触发。
+// 正确做法（真机实证读到 88 帧/17 响应）：读小固定块 4KB，收到【非空数据】就处理并递归读
+// 下一块；无数据且无错误时低频重读（不能靠 done 递归——stream channel 的 done 会立即空转，
+// 曾实测 93092 次空回调饿死真帧）。
 static void handleMuxData(NSData *chunk); // 前向声明
-static void pumpMuxRead(dispatch_io_t channel);
 static void pumpMuxRead(dispatch_io_t channel) {
   if (!channel) return;
-  dispatch_io_read(channel, 0, 64 * 1024, gMuxReadQueue, ^(bool done, dispatch_data_t data, int error) {
-    if (data) {
-      const uint8_t *p = NULL; size_t n = 0;
-      dispatch_data_t flat = dispatch_data_create_map(data, (const void **)&p, &n);
-      if (flat && p && n) {
-        logLine(@"mux 读 %zu 字节", n);
-        handleMuxData([NSData dataWithBytes:p length:n]);
+  dispatch_io_read(channel, 0, 4 * 1024, gMuxReadQueue, ^(bool done, dispatch_data_t data, int error) {
+    size_t n = data ? dispatch_data_get_size(data) : 0;
+    if (n > 0) {
+      const uint8_t *p = NULL; size_t mapped = 0;
+      dispatch_data_t flat = dispatch_data_create_map(data, (const void **)&p, &mapped);
+      if (flat && p && mapped) {
+        handleMuxData([NSData dataWithBytes:p length:mapped]);
+        pumpMuxRead(channel); // 读到数据才立即递归下一块
+        return;
       }
     }
-    if (error) logLine(@"mux 读错误 err=%d", error);
-    if (done && !error) pumpMuxRead(channel);
+    if (error) { logLine(@"mux 读错误 err=%d done=%d", error, done); return; }
+    // 无数据/空回调：低频重读，避免忙等刷屏。
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), gMuxReadQueue, ^{
+      if (gMuxChannel == channel) pumpMuxRead(channel);
+    });
   });
 }
 
@@ -193,7 +206,9 @@ static void handleMuxData(NSData *chunk) {
         [gConnsLock lock];
         NSNumber *fdNum = gConns[@(target)];
         [gConnsLock unlock];
-        if (fdNum) { close(fdNum.intValue); /* 读线程会清理映射 */ }
+        // 主线程直接 close 会与读线程 read 竞态 → EBADF(errno=9)。改为 shutdown 唤醒
+        // 阻塞的 read，让它读到 0 后由读线程自己 close 并清 gConns 映射（fd 生命周期收敛到读线程）。
+        if (fdNum) { shutdown(fdNum.intValue, SHUT_RDWR); }
       }
       continue;
     }
@@ -247,15 +262,21 @@ static void connectDevice(NSNumber *deviceID) {
       gMuxBuf = [NSMutableData data];
       gMuxEstablishedAt = [NSDate date];
       gMuxGotFrame = NO;
-      logLine(@"mux 通道已建立，发握手");
-      dispatch_data_t hs = dispatch_data_create(kHandshake.UTF8String, kHandshake.length,
-                                                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-                                                DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-      dispatch_io_write(channel, 0, hs, gMuxQueue, ^(bool done, dispatch_data_t _u, int e) {
-        if (e) logLine(@"握手写失败 err=%d", e);
-      });
-      // 114 帧实证成功版本（1052623）：有限长度 64KB + done 后递归读 + 读写分离队列。
+      logLine(@"mux 通道已建立，延迟发握手");
+      // helper 常在设备端 net server accept-ready 之前连入，握手首包此刻写出会丢 →
+      // 设备端 mux 永远 null、所有探测被"无活动 mux"拒绝。延迟 300ms 给设备端 accept 时间。
+      // 同时先启动读：读逻辑本身是低频重读，不会和握手写竞争（读写在不同 queue）。
       pumpMuxRead(channel);
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), gMuxQueue, ^{
+        if (gMuxChannel != channel) return;
+        dispatch_data_t hs = dispatch_data_create(kHandshake.UTF8String, kHandshake.length,
+                                                  dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+                                                  DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+        dispatch_io_write(channel, 0, hs, gMuxQueue, ^(bool done, dispatch_data_t _u, int e) {
+          if (e) logLine(@"握手写失败 err=%d", e);
+          else if (done) logLine(@"握手已写出");
+        });
+      });
       // 通道断开的清理在 onEnd 回调里做。
     }
     onEnd:^(NSError *error) {
