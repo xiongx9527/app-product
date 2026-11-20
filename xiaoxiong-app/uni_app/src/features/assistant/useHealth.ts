@@ -70,13 +70,6 @@ export function useHealth(wsConnected: Ref<boolean>) {
   const healthError = ref(false)
   let timer: ReturnType<typeof setInterval> | null = null
 
-  function stopTimer(): void {
-    if (timer) {
-      clearInterval(timer)
-      timer = null
-    }
-  }
-
   async function fetchHealth(): Promise<void> {
     try {
       const base = resolveGatewayHttpBase()
@@ -99,10 +92,26 @@ export function useHealth(wsConnected: Ref<boolean>) {
     }
   }
 
-  function start(): void {
+  /**
+   * 连上 WS 时只探测一次（给唤醒前置判断 canWake 提供初始健康度），不启动定时器。
+   * 30s 定时轮询由上层（useAssistant）在进入对话态后才启动——待唤醒态有端侧 KWS 常驻，
+   * 不调 ASR、不需要每 30s 打一次 /api/health（省流量、避免 USB 隧道并发风暴干扰唤醒）。
+   */
+  function refreshOnce(): void {
+    void fetchHealth()
+  }
+
+  function startPolling(): void {
     if (timer) return
     void fetchHealth()
     timer = setInterval(() => void fetchHealth(), POLL_MS)
+  }
+
+  function stopTimer(): void {
+    if (timer) {
+      clearInterval(timer)
+      timer = null
+    }
   }
 
   function reset(): void {
@@ -114,7 +123,7 @@ export function useHealth(wsConnected: Ref<boolean>) {
   watch(
     wsConnected,
     (connected) => {
-      if (connected) start()
+      if (connected) refreshOnce()
       else reset()
     },
     { immediate: true },
@@ -122,7 +131,7 @@ export function useHealth(wsConnected: Ref<boolean>) {
 
   onUnmounted(stopTimer)
 
-  return { health, healthError, refreshHealth: fetchHealth }
+  return { health, healthError, refreshHealth: fetchHealth, startPolling, stopTimer }
 }
 
 /**

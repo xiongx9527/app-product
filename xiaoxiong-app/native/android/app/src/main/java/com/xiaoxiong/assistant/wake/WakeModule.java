@@ -595,10 +595,10 @@ public class WakeModule extends UniModule {
             cfg.setModelConfig(model);
             cfg.setKeywordsFile(KWS_ASSET_DIR + "/keywords.txt");
             cfg.setMaxActivePaths(4);
-            // 官方默认 score=1.5/threshold=0.25 偏保守，真机「有时快有时慢、要说好几遍」= 漏检。
-            // 提高关键词 boost + 降低触发门槛，让近场喊词一次命中；误唤醒由时间窗 + 文本兜底兜着。
-            cfg.setKeywordsScore(2.0f);
-            cfg.setKeywordsThreshold(0.18f);
+            // 官方默认 score=1.5/threshold=0.25。曾放宽到 2.0/0.18 想提灵敏度，但旁边电视播放时
+            // 被噪声误触发、且 rearm 去抖锁死反而「唤醒不了」——恢复官方保守默认值。
+            cfg.setKeywordsScore(1.5f);
+            cfg.setKeywordsThreshold(0.25f);
 
             kws = new KeywordSpotter(ctx.getAssets(), cfg);
             kwsStream = kws.createStream("");
@@ -632,6 +632,12 @@ public class WakeModule extends UniModule {
                     Log.i(TAG, "KWS-DIAG rms=" + String.format("%.3f", rms) + " tok=[" + toks + "] kw=" + keyword);
                 }
                 if (keyword != null && !keyword.isEmpty()) {
+                    // 官方词（你好军哥/小爱同学…）只用于撑起关键词表结构（单词表在真机上检不准），
+                    // 真正当唤醒词的只有「小熊小熊」——其它命中一律忽略，避免误唤醒。
+                    if (!"小熊小熊".equals(keyword)) {
+                        kws.reset(kwsStream);
+                        continue;
+                    }
                     long now = System.currentTimeMillis();
                     if (now - lastKwsHitMs >= KWS_REARM_MS) {
                         lastKwsHitMs = now;

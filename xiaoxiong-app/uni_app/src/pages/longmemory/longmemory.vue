@@ -56,7 +56,8 @@ const { goBack } = useSubPageBack()
   <view class="page" :style="themeStyle" :data-theme="dataTheme">
     <SubPageNav :title="t('settings.memory.openLong')" @back="goBack" />
 
-    <view class="head">
+    <!-- 空数据时整个 head 不渲染，避免留下空白把下面的提示文字往下挤 -->
+    <view class="head" v-if="total || items.length">
       <text v-if="total" class="count">{{ t('settings.memory.total', { n: total }) }}</text>
       <!-- App 端内联 <svg> 不渲染 → 用文字按钮 -->
       <text v-if="items.length" class="clear-text" @tap="onClear">{{ t('settings.memory.clearAll') }}</text>
@@ -151,7 +152,8 @@ const { goBack } = useSubPageBack()
   font-size: 13px;
   line-height: 1.6;
   color: #6f7691;
-  padding: 24px 4px;
+  /* 无数据时顶到顶部：head 条件隐藏 + 去掉 hint padding，文字紧贴导航栏下方 */
+  padding: 0 4px;
 }
 
 .card {

@@ -425,7 +425,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   )
   // 网关能力健康度（LLM / ASR / TTS / 外网）：连上后定时轮询，负责「运行中 ok→down」的瞬时变化；
   // 「建连那一刻就已不可用」的兜底下发由网关 client.cue 事件负责（见 handleServerEvent）。
-  const { health } = useHealth(wsConnected)
+  const { health, startPolling: startHealthPolling, stopTimer: stopHealthPolling } = useHealth(wsConnected)
   // 设备权限只读检测（不弹授权框）：麦克风未授权要出声提示，定位只显示状态。
   const { permissions, refreshPermissions } = usePermissions(wsConnected)
   // 能力不可用播报以客户端健康报告为唯一来源：连上后 useHealth 主动拉 /api/health，时序确定、每次连接都会跑。
@@ -1016,6 +1016,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 待唤醒：连网关（wake 模式，只做 ASR）并开启麦克风上行。 */
   async function enterWake(): Promise<void> {
     mode = 'wake'
+    // 回到待唤醒态：停掉 30s 健康轮询（KWS 常驻，唤醒前不调 ASR，无需重复探测）。
+    stopHealthPolling()
     // 每次开启唤醒重新武装掉线播报，让一次新的「开启」能重新提示一次
     resetGatewayDownAnnounce()
     phase.value = 'idle'
@@ -1039,6 +1041,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 命中唤醒：在同一条连接上切到 dialog 模式，进入 LLM/TTS。 */
   async function enterDialog(): Promise<void> {
     mode = 'dialog'
+    // 进入对话态才启动 30s 健康轮询：对话中要用 ASR/LLM/TTS，需持续掌握可用性。
+    startHealthPolling()
     if (transport.isConnected()) {
       transport.startSession('dialog')
       return
@@ -1052,6 +1056,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   /** 关闭助手：停采集、关连接，并停掉音乐。两个采集后端互斥，都尝试停止（未启动的是 no-op）。 */
   function leaveWake(): void {
+    stopHealthPolling()
     resetGatewayDownAnnounce()
     if (capturing) {
       stopCapture()
