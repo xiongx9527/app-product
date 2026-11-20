@@ -37,6 +37,9 @@
 
 - 240MB 的 ASR 一直听，只为等三个字。
 - 播报期 AEC 双讲畸变会把叠词识别成"有有"（真机踩坑，见 `project_barge_in_direct_pcm_fix` 记忆），打断不稳。
+- **待唤醒态反复播「没听清，请重新说一遍」（2026-11-20 用户实测反馈）**：这是上面"ASR 全程开着"的直接恶果。用户还没唤醒、根本没在对话，但 wake 态下 ASR 一直在跑，上游 ASR 一失败/超时就定稿抛错 → `voiceSessionService.ts` 的 `finalizeUtterance()` catch 无条件调 `notifyAsrFailed()`（约 1007-1011）→ 下发 `client.cue: asr-error`（30s 节流），客户端播本地提示音「没听清，请重新说一遍」。**根因是 `notifyAsrFailed()` 没判断 `this.mode`**：wake 态也走了对话态才该有的失败提示。用户推测「可能是 ASR 挂了」——9529 `/voice/health` 当时显示 sensevoice ready、无上游，但 health 是带缓存的状态快照，不等于当时 ASR 调用没失败。
+  - **KWS 方案根治**：P1 后待唤醒态根本不调 ASR（端侧 KWS 常驻），这条失败提示路径在 wake 态自然消失。
+  - **临时规避（P1 之前）**：`notifyAsrFailed()` 里加 `if (this.mode === 'wake') return`，只在对话态提示；待唤醒态静默，不打扰用户。此为独立小修，可与 KWS 方案并行、不冲突。
 
 ## 三、总体设计
 

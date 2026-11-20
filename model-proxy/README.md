@@ -8,6 +8,8 @@
 
 所有能力都是**原生 Python 进程**，不使用 Docker。macOS / Linux 用 `.sh`，Windows 用同目录下的 `.cmd` / `.ps1`。
 
+数据库表结构（SQLite 真相源 / Postgres / Redis 三套存储、版本变更、纠错词表）见 [`DB_SCHEMA.md`](DB_SCHEMA.md)。
+
 ## 目录
 
 ```
