@@ -126,7 +126,9 @@ async function probe(baseUrl: string, apiKey?: string, timeoutMs = 3000): Promis
   // 让真正可用的 /llm/v1/models=200 永远探不到。baseUrl 以 /v1 结尾时先去掉再拼。
   const baseForFallback = /\/v1$/i.test(base) ? base.slice(0, -3) : base
   for (const p of HEALTH_FALLBACK_PATHS) {
-    if (await probeOne(`${baseForFallback}${p}`, Math.min(timeoutMs, 1500), headers)) return true
+    // fallback 超时不再压到 1.5s：iOS 内嵌网关经 USB 隧道转发时延迟更高，1.5s 内
+    // 本该 200 的 /llm/v1/models 经常超时 → LLM 时好时坏误判。与主探测同样给 3s。
+    if (await probeOne(`${baseForFallback}${p}`, timeoutMs, headers)) return true
   }
   return false
 }
@@ -194,7 +196,9 @@ async function probeAsr(
       // 400 拒绝，导致检测误报「地址不可达」。优先用已配置的模型，未配则回退内置默认。
       form.append('model', model)
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 4000)
+      // iOS 内嵌网关经 USB 隧道转发 + 真发音频识别，4s 常不够（并发风暴下更易超时误报
+      // 「地址不可达」）。放宽到 8s，与 LLM deep 探测一致；并行探测下总耗时仍可控在 15s 窗口内。
+      const timer = setTimeout(() => controller.abort(), 8000)
       try {
         const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/audio/transcriptions`, {
           method: 'POST',
@@ -262,7 +266,8 @@ async function probeTts(
   const ok = await cachedProbe(`tts:${baseUrl}`, async () => {
     try {
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 4000)
+      // 同 ASR：USB 隧道下真合成 4s 易超时，放宽到 8s。
+      const timer = setTimeout(() => controller.abort(), 8000)
       try {
         const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/audio/speech`, {
           method: 'POST',

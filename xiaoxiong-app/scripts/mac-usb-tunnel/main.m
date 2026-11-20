@@ -74,8 +74,15 @@ static void logLine(NSString *fmt, ...) {
   pthread_mutex_unlock(&gLogLock);
 }
 
-// 回退到 114 帧实证成功版本（7524b49）的写法：dispatch_data 用 global queue，直接
-// dispatch_io_write(offset=0, queue=gMuxQueue)，不额外 dispatch_async 包裹。
+// 响应帧写回 mux。关键（2026-11-21 日志铁证修复）：PeerTalk 的 dispatch_io_t 是 stream
+// channel，dispatch_io_write(offset=0) 在【多线程并发写】时会互相覆盖——多个 localReadThread
+// 同时 write 不同 connId 的响应帧，offset 都是 0，帧交错/覆盖 → 设备端解帧错乱、大部分响应
+// 读成 0 字节 → health 探测拿不到完整响应体 → 判 false。铁证：helper 日志「每批 ZERO×10 集中
+// 1 秒、5 秒后零星 OK」，而本机不经过隧道探测三项全 true、后端全 200 无异常。
+// PTProtocol 也用 offset=0 但它单线程串行写，我们多线程并发不适用。
+// 修复：用 semaphore 等待本次 write 的 done，确保同一时刻只有一帧在写（串行化），帧不交错。
+// 安全：调用方是 localReadThread(pthread) / gMuxReadQueue，完成回调在 gMuxQueue，三个不同
+// 执行上下文，等待不会死锁。带 3s 超时兜底，避免异常时永久卡住读线程。
 static void sendFrame(uint32_t connId, const uint8_t *payload, uint32_t len) {
   if (!gMuxChannel) return;
   NSMutableData *frame = [NSMutableData dataWithCapacity:kHeaderBytes + len];
@@ -87,9 +94,18 @@ static void sendFrame(uint32_t connId, const uint8_t *payload, uint32_t len) {
   dispatch_data_t data = dispatch_data_create(frame.bytes, frame.length,
                                               dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
                                               DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  dispatch_semaphore_t written = dispatch_semaphore_create(0);
+  __block int writeErr = 0;
   dispatch_io_write(gMuxChannel, 0, data, gMuxQueue, ^(bool done, dispatch_data_t _unused, int error) {
-    if (error && done) logLine(@"mux 写帧失败 connId=%u err=%d", connId, error);
+    if (error) writeErr = error;
+    if (done) dispatch_semaphore_signal(written); // 本帧全部写出才放行下一帧
   });
+  // 等待写完成（串行化 mux 写），3s 超时兜底。
+  if (dispatch_semaphore_wait(written, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC)) != 0) {
+    logLine(@"mux 写帧超时 connId=%u len=%u", connId, len);
+  } else if (writeErr) {
+    logLine(@"mux 写帧失败 connId=%u err=%d", connId, writeErr);
+  }
 }
 
 static void sendClose(uint32_t connId) {

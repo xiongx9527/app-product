@@ -2989,6 +2989,15 @@ def llm_root():
     return llm_health()
 
 
+@app.get("/llm/v1")
+def llm_v1_root():
+    # 网关内置 LLM 的 baseUrl 就是 ${root}/llm/v1（带 /v1），健康探测第一步会打它。
+    # 与 /llm 同样直接给 200，避免探测落到 /llm/v1/v1/models 等错误 fallback 路径、
+    # 省掉 4 次 404 往返（iOS USB 隧道下每次往返都会累积超时 → LLM 误判不可达）。
+    # 注意：此为 GET 健康根；OpenAI 兼容的 POST /llm/v1/chat/completions 等不受影响。
+    return llm_health()
+
+
 @app.get("/llm/health")
 def llm_health_route():
     return llm_health()

@@ -103,6 +103,47 @@ end
 app_target.resources_build_phase.add_file_reference(gw_ref, true)
 puts '[integrate] gateway/ 文件夹引用已在 Copy Bundle Resources'
 
+# ── 5b) app-product-wake 原生录音插件（iOS，参照 Android WakeModule.java）──
+#   把 AppProductWakeModule.h/.m 从源工程拷进壳工程 HBuilder-Hello 目录，加入主 target
+#   Sources，并在 bridging header 暴露 DCUniModule.h。全部幂等。
+wake_group = proj.main_group['HBuilder-Hello'] || proj.main_group
+wake_src = File.expand_path('../native/ios/app/XiaoxiongGateway.xcodeproj', __dir__)
+%w[AppProductWakeModule.h AppProductWakeModule.m].each do |fname|
+  dst = File.join(shell_root, 'HBuilder-Hello', fname)
+  src = File.join(wake_src, fname)
+  if File.exist?(src)
+    unless File.exist?(dst) && FileUtils.compare_file(src, dst)
+      FileUtils.cp(src, dst)
+      puts "[wake] 已拷贝 #{fname} -> #{dst}"
+    end
+    # pbxproj 文件引用（裸文件名，因 wake_group 已有 path=HBuilder-Hello）
+    ref = wake_group.files.find { |fr| fr.path == fname || fr.display_name == fname }
+    unless ref
+      ref = wake_group.new_reference(fname)
+      ref.last_known_file_type = fname.end_with?('.h') ? 'sourcecode.c.h' : 'sourcecode.c.objc'
+      puts "[wake] pbxproj 已加引用 #{fname}"
+    end
+    if fname.end_with?('.m') && !app_target.source_build_phase.files.any? { |bf| bf.file_ref&.path == fname }
+      app_target.source_build_phase.add_file_reference(ref, true)
+      puts "[wake] #{fname} 已加入主 target Sources"
+    end
+  else
+    puts "[wake] 警告：源不存在 #{src}"
+  end
+end
+
+# Header Search Paths 兜底：让 bridging header 的 #import "DCUniModule.h" 能找到
+app_target.build_configurations.each do |c|
+  hsp = c.build_settings['HEADER_SEARCH_PATHS'] || ['$(inherited)']
+  hsp = hsp.is_a?(Array) ? hsp : [hsp]
+  unless hsp.any? { |p| p.to_s.include?('Headers/Public/uniapp') }
+    hsp << '$(PROJECT_DIR)/Pods/Headers/Public/uniapp'
+    hsp << '$(PODS_ROOT)/Headers/Public/uniapp'
+    c.build_settings['HEADER_SEARCH_PATHS'] = hsp
+    puts "[wake] HEADER_SEARCH_PATHS += uniapp headers (#{c.name})"
+  end
+end
+
 proj.save
 puts "[integrate] 已保存 #{proj_path}"
 
@@ -124,6 +165,59 @@ ad_files.each do |ad|
     File.write(ad, s)
     puts "[appdelegate] 已更新 #{ad}（GatewayLauncher 调用 + framework 头）"
   end
+end
+
+# ── 7) bridging header：暴露 DCUniModule.h 给 Swift 工程（WakeModule 是 ObjC，实际不需要；
+#       但保留 #import 以便 Swift 侧如需调用也无碍；用哨兵幂等）──
+bh = File.join(shell_root, 'HBuilder-Hello', 'HBuilder-Bridging-Header.h')
+if File.exist?(bh)
+  s = File.read(bh)
+  unless s.include?('DCUniModule.h')
+    s = s.rstrip + "\n// xiaoxiong-wake: iOS 录音插件基类\n#import \"DCUniModule.h\"\n"
+    File.write(bh, s)
+    puts '[wake] bridging header 已加 DCUniModule.h'
+  end
+end
+
+# ── 8) Info.plist：dcloud_uniplugins 注册 app-product-wake → AppProductWakeModule ──
+plist_files = Dir.glob(File.join(shell_root, '**', '*-Info.plist')).reject { |p| p =~ %r{/Pods/|/build/} }
+plist_files.each do |pl|
+  s = File.read(pl)
+  next if s.include?('app-product-wake') # 幂等
+  # 在 dcloud_uniplugins 的 <array> 后插入一个插件 dict（与现有 DCRichAlert 同结构）。
+  marker = '<key>dcloud_uniplugins</key>'
+  idx = s.index(marker)
+  unless idx
+    puts "[wake] 警告：#{pl} 无 dcloud_uniplugins，跳过注册"
+    next
+  end
+  arr_start = s.index('<array>', idx)
+  unless arr_start
+    puts "[wake] 警告：#{pl} dcloud_uniplugins 后无 array，跳过"
+    next
+  end
+  insert_at = arr_start + '<array>'.length
+  plugin = <<~XML.chomp
+    
+    		<dict>
+    			<key>hooksClass</key>
+    			<string>AppProductWakeModule</string>
+    			<key>plugins</key>
+    			<array>
+    				<dict>
+    					<key>class</key>
+    					<string>AppProductWakeModule</string>
+    					<key>name</key>
+    					<string>app-product-wake</string>
+    					<key>type</key>
+    					<string>module</string>
+    				</dict>
+    			</array>
+    		</dict>
+  XML
+  s.insert(insert_at, plugin)
+  File.write(pl, s)
+  puts "[wake] Info.plist 已注册 app-product-wake -> AppProductWakeModule (#{pl})"
 end
 
 puts '[integrate] 完成'
