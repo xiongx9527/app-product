@@ -34,9 +34,9 @@ H5 端使用 WebAudio 生成提示音 + Toast 兜底，不依赖这些文件；
 App 端通过 `uni.createInnerAudioContext()` 播放。
 文件缺失时只少一声提示，不影响状态机。
 
-重新生成（edge-tts，音色与网关 `edge` 厂商 / `192.168.1.100:9529` 默认一致）：
-提示音是打包内的现成 mp3，平时无需重新生成；如需重做，edge-tts 工具已挪出 static、
-放在仓库的 `xiaoxiong-app/audio-tool/`（Python venv，避免被整目录拷进包）：
-- 生成（在 `xiaoxiong-app/` 下执行）：`audio-tool/bin/python -c "import asyncio,edge_tts; asyncio.run(edge_tts.Communicate('我在','zh-CN-XiaoxiaoNeural').save('uni_app/src/static/audio/greeting.mp3'))"`
-- 其余两个文案同上，替换文字与输出文件名即可。
-- 注：`192.168.1.100:9529` 当前把默认音色路由到 kokoro 引擎且未加载音色，会报 `unknown kokoro voice`；本地直连 edge-tts 可得到相同音色，待该服务修好引擎路由后自动一致。
+重新生成：提示音是打包内的现成 mp3，平时无需重做；如需重做，用仓库里的
+`xiaoxiong-app/audio-tool/generate-cues.sh`——它调 9529 的 TTS 接口（`POST /voice/v1/audio/speech`）
+批量生成，音色 `zh-CN-XiaoxiaoNeural`，与网关 `edge` 厂商默认一致。生成参数（提供商 / base_url /
+api_key / 模型 / 音色）在 `xiaoxiong-app/audio-tool/.env` 配置，详见该目录 README。
+- 生成全部：`xiaoxiong-app/audio-tool/generate-cues.sh`
+- 生成单个：`xiaoxiong-app/audio-tool/generate-cues.sh greeting`

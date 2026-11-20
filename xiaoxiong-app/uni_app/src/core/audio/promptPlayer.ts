@@ -85,16 +85,16 @@ const CUE_MUTE_MS: Record<PromptCue, number> = {
   ttsDown: 3600,
   llmDown: 3700,
   micDenied: 6200,
-  // asr-error ≈3.1s / thinking ≈2.0s / queue-full ≈2.8s（edge-tts XiaoxiaoNeural），留一点尾音余量
-  asrError: 3400,
-  thinking: 2300,
-  queueFull: 3100,
-  // gateway-preparing ≈2.6s / gateway-ready ≈1.7s，留尾音余量
-  // llm-error ≈3.1s / tts-error ≈3.0s
-  gatewayPreparing: 2900,
+  // 时长经 9529 重新生成后实测（edge-tts XiaoxiaoNeural），留约 200ms 尾音余量：
+  // asr-error 3.79s / thinking 2.64s / queue-full 2.83s
+  asrError: 4000,
+  thinking: 2850,
+  queueFull: 3050,
+  // gateway-preparing 2.83s / gateway-ready 1.80s / llm-error 3.46s / tts-error 3.43s
+  gatewayPreparing: 3050,
   gatewayReady: 2000,
-  llmError: 3500,
-  ttsError: 3400,
+  llmError: 3700,
+  ttsError: 3650,
 }
 
 let cueMuteUntil = 0
