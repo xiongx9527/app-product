@@ -32,6 +32,59 @@ import httpx  # 探测上游连通性（/admin/api/probe）
 import llm_protocols  # 由协议名推导模型列表接口地址（prepare_models）
 
 from fastapi import Cookie, Depends, Form, HTTPException, Request
+
+# 热词词性校验：jieba 懒加载（首次调用才载入词典，避免拖慢服务启动）。
+# 返回 [(词, 词性标记)]；依赖缺失返回 None，调用方据此降级为只做字数校验。
+_PSEG = None
+_PSEG_TRIED = False
+
+
+def _pseg_cut(text: str):
+    global _PSEG, _PSEG_TRIED
+    if not _PSEG_TRIED:
+        _PSEG_TRIED = True
+        try:
+            import jieba.posseg as _p
+            _PSEG = _p
+        except Exception:
+            _PSEG = None
+    if _PSEG is None:
+        return None
+    try:
+        return [(t.word, t.flag) for t in _PSEG.cut(text)]
+    except Exception:
+        return None
+
+
+def _validate_hotword(correct: str, wrong: str) -> None:
+    """热词字数/词性校验，不通过直接抛 400。添加与审核通过两处共用。
+
+    - 正确词、错词都须 2-6 个纯汉字；两者字数相等。
+    - 正确词须为名词性词语（含 n* token、无代词/虚词/形容词）；jieba 把
+      「太阳花→太阳(ns)+花(v)」这类专有词单字误标为 v，故动词 token 不一律拒。
+    - 错词不得含动词(v*)/形容词(a*)/区别词(b)。
+    - jieba 不可用时降级为只做字数/形态校验，不阻断。
+    """
+    han = re.compile(r"^[\u3400-\u9fff]+$")
+    if not (2 <= len(correct) <= 6) or not han.match(correct):
+        raise HTTPException(status_code=400, detail="config.hotwordBadLen")
+    if wrong:
+        if not (2 <= len(wrong) <= 6) or not han.match(wrong):
+            raise HTTPException(status_code=400, detail="config.hotwordBadLen")
+        if len(correct) != len(wrong):
+            raise HTTPException(status_code=400, detail="config.hotwordLenMismatch")
+    tags_c = _pseg_cut(correct)
+    if tags_c is not None:
+        bad = {"a", "b", "r", "d", "c", "l", "m", "q", "p", "u", "zg"}
+        if (not any(f.startswith("n") for _, f in tags_c)
+                or any(f in bad or f.startswith("a") for _, f in tags_c)):
+            raise HTTPException(status_code=400, detail="config.hotwordMustBeName")
+    if wrong:
+        tags_w = _pseg_cut(wrong)
+        if tags_w is not None and any(
+            f.startswith("v") or f.startswith("a") or f == "b" for _, f in tags_w
+        ):
+            raise HTTPException(status_code=400, detail="config.hotwordWrongPos")
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 # ── 路径与配置（由主文件 init_admin 注入）────────────────────────────
@@ -337,9 +390,9 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .hw-input, input[data-hw-variant-input] { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:6px; padding:7px 10px; font-size:13px; outline:none; }
   .hw-input:focus, input[data-hw-variant-input]:focus { border-color:var(--acc); }
   .hw-input::placeholder, input[data-hw-variant-input]::placeholder { color:var(--mut); }
-  table.cfg-table td.acc-cell { cursor:pointer; width:120px; max-width:120px; vertical-align:middle; }
+  table.cfg-table td.acc-cell { cursor:pointer; width:200px; max-width:200px; vertical-align:middle; }
   table.cfg-table td.acc-cell:hover { background:#1f2530; }
-  table.cfg-table td.acc-cell .acc-url, table.cfg-table td.acc-cell .acc-key { display:block; max-width:108px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  table.cfg-table td.acc-cell .acc-url, table.cfg-table td.acc-cell .acc-key { display:block; max-width:188px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   table.cfg-table .prov-cell { background:#14171f; vertical-align:middle; white-space:nowrap; }
   table.cfg-table .prov-cell b { font-size:13px; }
   table.cfg-table td.row-act { white-space:nowrap; width:1%; text-align:center; vertical-align:middle; padding:5px 4px; }
@@ -646,7 +699,7 @@ const I18N = {
     "config.security": "安全",
     "config.title": "配置",
     "config.asrModels": "模型",
-    "config.hotwords": "热词",
+    "config.hotwords": "热词管理",
     "config.reviewTab": "热词审核",
     "config.reviewHint": "客户端上传的纠错词在此审核，通过后自动启用并同步给所有设备。",
     "config.reviewSearch": "搜索错词/正确词/拼音",
@@ -682,6 +735,10 @@ const I18N = {
     "config.hotwordDupMain": "该正确词已存在，未重复添加",
     "config.hotwordDupVariant": "该错词已存在，未重复添加",
     "config.hotwordPage": "第 {p}/{n} 页，共 {total} 条",
+    "config.hotwordBadLen": "正确词和错词都必须是 2-6 个字（汉字）",
+    "config.hotwordLenMismatch": "正确词与错词字数必须相等",
+    "config.hotwordMustBeName": "正确词必须是名词（人名/地名/作品名等），不能是动词或形容词",
+    "config.hotwordWrongPos": "错词不能包含动词或形容词",
     "config.prevPage": "上一页",
     "config.nextPage": "下一页",
     "hdr.label": "自定义请求头（仅 LLM 对话请求透传到上游；不保存，本次填写本次生效）",
@@ -891,7 +948,7 @@ const I18N = {
     "config.security": "Security",
     "config.title": "Config",
     "config.asrModels": "Models",
-    "config.hotwords": "Hotwords",
+    "config.hotwords": "Hotword Manager",
     "config.reviewTab": "Review",
     "config.reviewHint": "Review client-uploaded corrections; approval auto-enables and syncs to all devices.",
     "config.reviewSearch": "Search wrong/correct/pinyin",
@@ -906,6 +963,10 @@ const I18N = {
     "config.hotwordDupMain": "This correct word already exists; nothing was added",
     "config.hotwordDupVariant": "This typo already exists; nothing was added",
     "config.hotwordPage": "Page {p}/{n}, {total} entries",
+    "config.hotwordBadLen": "Correct and wrong words must both be 2-6 Chinese characters",
+    "config.hotwordLenMismatch": "Correct and wrong words must have the same character count",
+    "config.hotwordMustBeName": "Correct word must be a noun (person/place/work), not a verb or adjective",
+    "config.hotwordWrongPos": "Wrong word must not contain verbs or adjectives",
     "config.prevPage": "Prev",
     "config.nextPage": "Next",
     "hdr.label": "Custom request headers (forwarded to upstream only for LLM chat; not saved, applies to this session)",
@@ -1347,7 +1408,7 @@ async function loadHotwords(){
       b.onclick=async()=>{
         const vid=Number(b.dataset.hwApprove);
         const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
-          headers:{'content-type':'application/json'},body:JSON.stringify({op:'approve',variant_id:vid})});
+          headers:{'content-type':'application/json'},body:JSON.stringify({op:'approve',variant_id:vid,correct:b.dataset.correct||'',wrong:b.dataset.wrong||''})});
         if(r.ok) await loadHotwords();
       };
     });
@@ -1366,6 +1427,11 @@ async function loadHotwords(){
         const wrong=inp?.value.trim()||'';
         const stat=wrap.querySelector('[data-hw-variant-stat="'+mid+'"]');
         if(!wrong){ if(stat) stat.textContent=t('config.hotwordWrong'); return; }
+        const han=/^[\u3400-\u9fff]+$/;
+        if(wrong.length<2||wrong.length>6||!han.test(wrong)||wrong.length!==correct.length){
+          if(stat){ stat.className='err'; stat.textContent=t('config.hotwordBadLen'); }
+          return;
+        }
         const r=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
           headers:{'content-type':'application/json'},
           body:JSON.stringify({correct:correct,wrong:wrong,enabled:1})});
@@ -1435,16 +1501,19 @@ async function loadReview(){
           +'<td class="hint">'+escapeHtml(v.device_id||'')+'</td>'
           +'<td class="hint">'+fmtTime(v.created_at)+'</td><td class="hint">'+fmtTime(v.updated_at)+'</td>'
           +'<td>'+(done?'✓':'—')+'</td>'
-          +'<td class="row-act">'+(done?'—':'<button class="mini" data-hw-approve="'+v.variant_id+'">'+t('config.hotwordReview')+'</button>')+'</td></tr>';
+          +'<td class="row-act">'+(done?'—':'<button class="mini" data-hw-approve="'+v.variant_id+'" data-correct="'+escapeAttr(v.correct||'')+'" data-wrong="'+escapeAttr(v.wrong||'')+'">'+t('config.hotwordReview')+'</button>')+'</td></tr>';
       });
       html+='</tbody></table>';
       wrap.innerHTML=html;
       wrap.querySelectorAll('[data-hw-approve]').forEach(b=>{
         b.onclick=async()=>{
           const vid=Number(b.dataset.hwApprove);
+          const correct=b.dataset.correct||'', wrong=b.dataset.wrong||'';
+          const st=document.getElementById('reviewStat');
           const rr=await fetch('/admin/api/corrections',{method:'POST',credentials:'same-origin',
-            headers:{'content-type':'application/json'},body:JSON.stringify({op:'approve',variant_id:vid})});
+            headers:{'content-type':'application/json'},body:JSON.stringify({op:'approve',variant_id:vid,correct:correct,wrong:wrong})});
           if(rr.ok) await loadReview();
+          else { const d=await rr.json().catch(()=>({})); if(st){ st.className='err'; st.textContent=t(d.detail||'')||('HTTP '+rr.status); } }
         };
       });
     }
@@ -1495,6 +1564,8 @@ function wireConfig(){
     const c=document.getElementById('hotwordCorrect').value.trim();
     const stat=document.getElementById('hotwordStat');
     if(!c){ stat.textContent=t('config.hotwordCorrect'); return; }
+    const han=/^[\u3400-\u9fff]+$/;
+    if(c.length<2||c.length>6||!han.test(c)){ stat.className='err'; stat.textContent=t('config.hotwordBadLen'); return; }
     stat.className='hint'; stat.textContent=t('common.saving');
     try{
       // 只加主表词条（错词留空由学习补；来源=local/uploaded 由系统自动记录）
@@ -2959,9 +3030,11 @@ async function renderDashboard(){
     fetch('/voice/v1/audio/voices?provider=deepseek',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null),
   ]).then(([b,k,d,ds])=>{
     let all=[];
+    const seen=new Set();   // 按 id 去重：provider=builtin 已含 edge + kokoro 全部音色，
+                            // 再请求 model=kokoro 会返回同一批，不去重会让 kokoro 音色重复两遍。
     [b,k,d,ds].forEach(data=>{
       if(!data || !Array.isArray(data.voices)) return;
-      all=all.concat(data.voices);
+      data.voices.forEach(v=>{ if(v && v.id && !seen.has(v.id)){ seen.add(v.id); all.push(v); } });
       const key=(data.provider||'')+'|'+(data.model||'');
       VOICE_DEFAULTS[key]=data.default;
       VOICE_DEFAULTS[(data.provider||'')+'|']=data.default;
@@ -3610,6 +3683,10 @@ def register_admin_routes(
         store = voice_correction_store.get_store()
         op = str(body.get("op") or "").strip()
         if op == "approve":  # 审核通过子表：reviewed+enabled，并自动启用主表
+            # 与手动添加共用同一套字数/词性校验：不合规的词不允许审核通过并同步给设备。
+            correct = str(body.get("correct") or "").strip()
+            wrong = str(body.get("wrong") or "").strip()
+            _validate_hotword(correct, wrong)
             return {"ok": store.approve_variant(int(body.get("variant_id") or 0))}
         if op == "delete_main":  # 删主表（级联删其下所有错词）
             return {"ok": store.delete_main(int(body.get("main_id") or 0))}
@@ -3629,6 +3706,8 @@ def register_admin_routes(
         wrong = str(body.get("wrong") or "").strip()
         if not correct:
             raise HTTPException(status_code=400, detail="correct 不能为空")
+        # 字数/形态/词性校验（添加与审核通过共用同一套规则）
+        _validate_hotword(correct, wrong)
         def calc_py(w):
             try:
                 from pypinyin import lazy_pinyin
