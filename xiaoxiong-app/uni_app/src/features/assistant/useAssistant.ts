@@ -434,15 +434,23 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 之后只在「ok → down」变化时补播。不再依赖网关 client.cue（真机时有时无），避免双份提示音。
   let prevHealthStatus: Partial<Record<HealthItem['key'], HealthStatus>> = {}
   let firstReportHandled = false
-  let initialCueTimers: ReturnType<typeof setTimeout>[] = []
+  // 按能力 key 存首次 down 的待播提示音定时器：若后续报告该能力恢复 ok，
+  // 必须取消对应定时器——否则功能其实正常（探测偶发超时导致的短暂 down），
+  // 却仍播报「ASR/LLM/TTS 不可用」误导用户（手动点正常、语音却报不可用即此因）。
+  const initialCueTimers = new Map<HealthItem['key'], ReturnType<typeof setTimeout>>()
+  function clearInitialCueTimer(k: HealthItem['key']): void {
+    const t = initialCueTimers.get(k)
+    if (t !== undefined) { clearTimeout(t); initialCueTimers.delete(k) }
+  }
   function clearInitialCueTimers(): void {
-    initialCueTimers.forEach(clearTimeout)
-    initialCueTimers = []
+    initialCueTimers.forEach((t) => clearTimeout(t))
+    initialCueTimers.clear()
   }
   watch(health, (report) => {
     if (!report) {
       prevHealthStatus = {}
       firstReportHandled = false
+      clearInitialCueTimers()
       return
     }
     if (!wsConnected.value) return
@@ -454,14 +462,20 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       )
       clearInitialCueTimers()
       keys.forEach((k, idx) => {
-        initialCueTimers.push(setTimeout(() => playPromptCue(HEALTH_CUE[k]), idx * 4600))
+        initialCueTimers.set(k, setTimeout(() => {
+          initialCueTimers.delete(k)
+          void playPromptCue(HEALTH_CUE[k])
+        }, idx * 4600))
       })
       for (const item of items) prevHealthStatus[item.key] = item.status
       return
     }
     const changed: HealthItem['key'][] = []
     for (const item of items) {
-      if (prevHealthStatus[item.key] === 'ok' && item.status === 'down') changed.push(item.key)
+      const prev = prevHealthStatus[item.key]
+      // 首次报告的 down 若已恢复 ok：取消还没播的提示音，避免误报（探测偶发超时造成的短暂 down）。
+      if (prev === 'down' && item.status === 'ok') clearInitialCueTimer(item.key)
+      if (prev === 'ok' && item.status === 'down') changed.push(item.key)
     }
     for (const item of items) prevHealthStatus[item.key] = item.status
     const downKeys = HEALTH_PRIORITY.filter((k) => changed.includes(k))
@@ -1239,6 +1253,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       // 「准备中」已在等待之前播过（见上），这里只补「就绪」。若准备中还在播，
       // 用串行队列等它播完再播就绪，保证两条都不被打断、按序完整。失败路径上面已 return。
       playPromptCueSequence(['gatewayReady'])
+    } catch (err) {
+      // 兜底：enable 链路任何未预期异常（如原生插件方法缺失抛错）都必须结束「启动中」态，
+      // 否则 gatewayPreparing 永远 true、界面永久卡「网关启动中」且 45s 超时机制也不生效。
+      console.warn('[enable] 异常，复位启动态', err)
+      gatewayFailed.value = true
+      gatewayPreparing.value = false
+      errorMessage.value = t('gateway.startFailedRetry')
+      announceGatewayDown()
     } finally {
       enabling = false
     }

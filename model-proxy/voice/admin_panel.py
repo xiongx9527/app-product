@@ -4,9 +4,11 @@
 塞进 openai_voice_server.py 会让主文件更难读；独立出来后由主文件调用
 init_admin() + register_admin_routes(app) 挂到同一个 FastAPI app 上，端口还是 9529。
 
-鉴权：账号密码来自独立的 admin.conf（与 voice.conf 互不干扰）。登录成功后发一个
+鉴权：账号密码存本地 SQLite 的 admin_credentials 表（真相源），不再写 admin.conf。
+首次启动若表为空，会把存量 admin.conf 迁移进库；若连 admin.conf 都没有，则生成一把
+随机密码入库并在启动日志打印一次（只显示一次，之后从库里读）。登录成功后发一个
 httpOnly 的会话 Cookie，后续 /admin/api/* 都校验它；Cookie 不暴露给 JS，降低 XSS
-盗用风险。会话只存内存（重启即失效），本地管理工具够用，不引第三方依赖。
+盗用风险。会话同样落库（voice_db.admin_sessions），跨重启 / 多实例一致，不引第三方依赖。
 
 为什么不直接复用网关那套 RSA 参数加密：管理面板和代理同进程同端口，没必要把
 浏览器到本机的链路再套一层非对称加密；httpOnly Cookie + 本地访问即可。
@@ -156,23 +158,80 @@ def _parse_kv(path: str) -> dict[str, str]:
     return values
 
 
-# ── admin.conf 账号密码 ────────────────────────────────────────────
+# ── 管理面板内置管理员 ────────────────────────────────────────────
 def load_admin_config() -> dict[str, str]:
-    """读 admin.conf；缺失时用默认 admin/admin 并提示修改。
+    """确保 admin_users 里存在内置管理员；返回其账号密码（供启动日志打印一次）。
 
-    默认账号只在本地开发、且用户还没创建 admin.conf 时兜底，正式用前应改掉。
+    真相源是 admin_users 表（v10）。启动时调用：
+      1. 已有 is_builtin=1 账号 → 直接返回（不打印，密码已在首次创建时显示过）；
+      2. 没有 → 按 voice.conf 的 ADMIN_USER/ADMIN_PASSWORD → 存量 admin.conf → 随机生成，
+         播种为 is_builtin=1 / role=admin 的账号，并打印一次。
+
+    之后一律以库为准——改配置文件不影响已有账号，要改请用重置脚本或在面板改密。
+    绝不写 config_kv，避免明文密码被 voice_sync 推到远端 Postgres/Redis。
     """
-    path = os.path.join(VOICE_HOME_DIR, "admin.conf")
-    cfg = _parse_kv(path)
-    user = cfg.get("ADMIN_USER") or "admin"
-    pw = cfg.get("ADMIN_PASSWORD") or "admin"
-    if not cfg.get("ADMIN_USER"):
+    users = voice_db.admin_users_list()
+    for u in users:
+        if u["is_builtin"]:
+            # 已有内置管理员，取密码仅用于兼容旧调用；正常不会打印。
+            row = voice_db._conn_get().execute(
+                "SELECT password FROM admin_users WHERE username=?", (u["username"],)
+            ).fetchone()
+            return {"user": u["username"], "password": row["password"] if row else ""}
+
+    # 2) voice.conf 显式配置
+    conf = _parse_kv(VOICE_CONF_PATH)
+    conf_user = (conf.get("ADMIN_USER") or "").strip()
+    conf_pw = (conf.get("ADMIN_PASSWORD") or "").strip()
+    if conf_pw:
+        user = conf_user or "admin"
+        voice_db.admin_user_add(user, conf_pw, "admin")
+        _mark_builtin(user)
         print(
-            "[local-ai] 管理面板使用默认账号 admin/admin（未找到 "
-            f"{path}，建议创建并改为自定义密码）",
+            f"[local-ai] 管理面板内置管理员已从 {VOICE_CONF_PATH} 播种到数据库",
             flush=True,
         )
+        return {"user": user, "password": conf_pw}
+
+    # 3) 存量 admin.conf
+    path = os.path.join(VOICE_HOME_DIR, "admin.conf")
+    cfg = _parse_kv(path)
+    user = (cfg.get("ADMIN_USER") or "admin").strip()
+    pw = (cfg.get("ADMIN_PASSWORD") or "").strip()
+    if pw:
+        voice_db.admin_user_add(user, pw, "admin")
+        _mark_builtin(user)
+        print(
+            f"[local-ai] 管理面板内置管理员已从 {path} 迁移到数据库（原文件保留不动）",
+            flush=True,
+        )
+        return {"user": user, "password": pw}
+
+    # 4) 首次随机
+    user = "admin"
+    pw = secrets.token_urlsafe(18)
+    voice_db.admin_user_add(user, pw, "admin")
+    _mark_builtin(user)
+    print(
+        "[local-ai] 管理面板已生成随机密码（仅显示这一次，真相源在 voice.db 的 admin_users 表）：\n"
+        f"[local-ai]   账号: {user}\n"
+        f"[local-ai]   密码: {pw}\n"
+        "[local-ai] 如需重置，请用 model-proxy/reset-admin.sh 脚本。",
+        flush=True,
+    )
     return {"user": user, "password": pw}
+
+
+def _mark_builtin(username: str) -> None:
+    """把指定账号标记为内置管理员（仅播种/重置脚本用，唯一索引保证只有一个）。"""
+    with voice_db._lock:
+        c = voice_db._conn_get()
+        c.execute(
+            "UPDATE admin_users SET is_builtin=1, role='admin', enabled=1, updated_at=? "
+            "WHERE username=?",
+            (int(time.time()), username),
+        )
+        c.commit()
 
 
 # ── 会话管理（落库，跨重启 / 多实例一致）──────────────────────────
@@ -184,17 +243,50 @@ def create_session(username: str) -> str:
 
 
 def valid_session(token: str | None) -> bool:
-    return voice_db.session_valid(token)
+    """会话有效 = token 未过期 且 对应账号仍存在且启用（禁用作废即时生效）。"""
+    if not voice_db.session_valid(token):
+        return False
+    username = voice_db.session_username(token)
+    user = voice_db.admin_user_get(username) if username else None
+    return bool(user and user["enabled"])
+
+
+def session_role(token: str | None) -> str | None:
+    """取会话账号的角色（账号被禁用/删除返回 None）。"""
+    if not valid_session(token):
+        return None
+    username = voice_db.session_username(token)
+    user = voice_db.admin_user_get(username) if username else None
+    return user["role"] if user else None
 
 
 def destroy_session(token: str | None) -> None:
     voice_db.session_destroy(token)
 
 
-def require_admin(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> None:
-    """/admin/api/* 的鉴权依赖：无有效会话直接 401。"""
-    if not valid_session(session):
-        raise HTTPException(status_code=401, detail="未登录或会话已过期")
+# 角色优先级：viewer < operator < admin
+ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}
+
+
+def require_role(min_role: str):
+    """构造一个 FastAPI 依赖：会话有效 + 账号启用 + 角色达到 min_role。
+
+    会话无效 401；账号禁用/删除 401；角色不足 403。替代原 require_admin，
+    实现后端强制分级——绕过前端直接调接口也拦得住。
+    """
+    def _dep(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> None:
+        if not valid_session(session):
+            raise HTTPException(status_code=401, detail="未登录或会话已过期")
+        role = session_role(session)
+        if role is None or ROLE_ORDER.get(role, -1) < ROLE_ORDER.get(min_role, 99):
+            raise HTTPException(status_code=403, detail="权限不足")
+    return _dep
+
+
+# 分级依赖别名
+require_viewer = require_role("viewer")
+require_operator = require_role("operator")
+require_admin = require_role("admin")
 
 
 # ── voice.conf 读写（打码 / 哨兵）──────────────────────────────────
@@ -383,8 +475,11 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   button.danger { background:#3a1f24; color:#ff8a8a; }
   button.full { width:100%; }
   button:disabled { opacity:.5; cursor:default; }
-  input[type=text], input[type=password], input[type=number] { background:#0f1115; border:1px solid var(--line); color:var(--fg);
+  input[type=text], input[type=password], input[type=number], input[type=datetime-local] { background:#0f1115; border:1px solid var(--line); color:var(--fg);
            border-radius:8px; padding:8px 10px; font-size:13px; width:100%; box-sizing:border-box; }
+  /* datetime-local 用浏览器原生控件：强制深色配色，避免白底黑字破坏深色面板 */
+  input[type=datetime-local] { color-scheme:dark; }
+  input[type=datetime-local]::-webkit-calendar-picker-indicator { filter:invert(.7); cursor:pointer; }
   input::placeholder, textarea::placeholder { color:var(--mut); opacity:1; }
   label { display:block; color:var(--mut); margin:10px 0 4px; font-size:12px; }
   textarea { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:8px;
@@ -413,6 +508,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   .kv .k { color:var(--mut); font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; word-break:break-all; }
   .kv input { width:100%; }
   .hint { color:var(--mut); font-size:12px; margin-top:6px; }
+  .hint-warn { color:var(--err); font-size:12px; margin-top:6px; font-weight:600; }
   pre { background:#0b0d11; border:1px solid var(--line); border-radius:8px; padding:12px;
         overflow:auto; max-height:320px; font-size:12px; color:#cdd3de; white-space:pre-wrap; word-break:break-all; }
   .think { background:#161a22; border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:6px; padding:8px 10px; font-size:12px; color:#c2c9d6; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-all; font-style:italic; }
@@ -470,6 +566,14 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.model-sub td.mm { color:var(--fg); }         /* 模型列自适应，过长省略号（与上方定宽列配合，两表列宽一致） */
   table.model-sub td.avail-cell { padding:2px 3px; }
   table.model-sub .mini { padding:2px 7px; font-size:11px; }
+  /* 管理表（账号 / API Key）：不用 model-sub 的定宽列（那是给勾选列设计的），
+     改为自动布局 + 账号列给足宽度，避免用户名被截成 a... */
+  table.admin-table { width:100%; border-collapse:collapse; table-layout:auto; }
+  table.admin-table th, table.admin-table td { border:1px solid var(--line); padding:5px 8px; font-size:12px; vertical-align:middle; }
+  table.admin-table th { background:#10141b; color:var(--mut); font-weight:600; text-align:left; white-space:nowrap; }
+  table.admin-table td { text-align:left; }
+  table.admin-table td.col-name { min-width:160px; word-break:break-all; }
+  table.admin-table td.col-actions { white-space:nowrap; text-align:right; }
   /* 勾选/单选去掉浏览器默认外边距，否则在单元格里看着偏左不居中 */
   table.model-sub input[type=checkbox], table.model-sub input[type=radio] { margin:0; vertical-align:middle; }
   /* 只读子表（内置模型）的 disabled 控件：Chrome 会把 disabled+checked 渲染成灰色，
@@ -518,7 +622,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<header><h1 data-i18n="app.title">模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><a class="sec" id="docsLink" data-i18n="common.docs" href="/docs" target="_blank" rel="noopener">文档</a><a class="sec" id="wsDocsLink" data-i18n="common.wsDocs" href="/docs/ws" target="_blank" rel="noopener">WS 文档</a><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
+<header><h1 data-i18n="app.title">模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><span id="roleTag" class="muted" style="margin-left:6px"></span><button class="sec" id="changePwd" data-i18n="users.changePwd" style="display:none">修改密码</button><a class="sec" id="docsLink" data-i18n="common.docs" href="/docs" target="_blank" rel="noopener">文档</a><a class="sec" id="wsDocsLink" data-i18n="common.wsDocs" href="/docs/ws" target="_blank" rel="noopener">WS 文档</a><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
 <main id="app"></main>
 <div id="panelLoading"><div class="loading-box"><span class="spinner"></span><span data-i18n="common.loading">请求中…</span></div></div>
 
@@ -599,6 +703,43 @@ function el(html){ const d=document.createElement('div'); d.innerHTML=html; retu
    以中文原文为 key，zh-CN 为空（源串兜底），en 为译文。 ── */
 const I18N = {
   'zh-CN': {
+    "users.title": "用户管理",
+    "users.add": "新增用户",
+    "users.hint": "仅管理员可管理账号；内置管理员不可删/改角色/禁用/重置密码",
+    "users.name": "账号",
+    "users.password": "密码",
+    "users.genPwd": "生成",
+    "users.genPwdTitle": "点击生成随机强密码（20 位）",
+    "users.role": "角色",
+    "users.enabled": "启用",
+    "users.disabled": "已禁用",
+    "users.changeRole": "改角色",
+    "users.resetPwd": "重置密码",
+    "users.disable": "禁用",
+    "users.enable": "启用",
+    "users.confirmDelete": "确认删除账号",
+    "users.newPwd": "新密码（至少 8 位）",
+    "users.oldPwd": "旧密码",
+    "users.changePwd": "修改密码",
+    "apikey.title": "API Key 管理",
+    "apikey.add": "新增 Key",
+    "apikey.hint": "哈希存储，明文仅创建时显示一次；生效/失效留空表示不限",
+    "apikey.name": "备注名",
+    "apikey.ip": "绑定 IP",
+    "apikey.window": "生效 ~ 失效",
+    "apikey.notBefore": "生效开始（留空=立即）",
+    "apikey.expires": "失效时间（留空=永不过期）",
+    "apikey.ips": "绑定 IP / 网段（逗号分隔，留空=不限）",
+    "apikey.empty": "暂无 API Key",
+    "apikey.created": "API Key 已创建",
+    "apikey.copyHint": "请立即复制保存，明文只显示这一次：",
+    "apikey.copy": "复制",
+    "apikey.copied": "已复制",
+    "apikey.confirmDelete": "确认删除该 Key？",
+    "common.forbidden": "权限不足",
+    "common.edit": "编辑",
+    "common.ok": "确定",
+    "common.delete": "删除",
     "app.logout": "退出登录",
     "app.title": "模型代理管理",
     "asr.builtinModel": "内置离线模型（无需外部服务）",
@@ -821,11 +962,12 @@ const I18N = {
     "proto.gemini": "Google Gemini（generateContent / streamGenerateContent，alt=sse）",
     "proto.openaiChat": "OpenAI Chat Completions 线协议（/v1/chat/completions，deepseek / 通义等大多兼容）",
     "proto.openaiResponses": "OpenAI Responses API（/v1/responses）",
+    "sec.subConfig": "安全配置",
     "sec.ipHint": "一行一个 IP 或 CIDR（如 192.168.1.0/24）。留空=不限制来源",
     "sec.keyHint": "一行一个 Key；或填 auto 自动生成并写入文件。留空则不修改",
     "sec.offDefault": "关闭（默认）",
     "sec.on": "开启",
-    "sec.onHint": "开启后 /llm 与 /voice 数据接口须持有效 Key；/health 与管理面板不受影响",
+    "sec.onHint": "开启后所有对外数据接口（/llm/v1、/voice/v1 等）须持有效 Key，否则设备端语音会全部失败；/health、接口文档与管理面板不受影响",
     "test.replyStream": "回复将在这里流式显示。",
     "test.builtin": "内置",
     "test.protoHint": "协议从模型的协议字段总结出来，为必填条件，选中后筛选模型。选 http 走 /voice/v1 HTTP 接口；选 ws 走 /voice/ws/inference（实时 WebSocket，上游同为 ws 协议）。",
@@ -852,6 +994,43 @@ const I18N = {
     "vendor.custom": "自定义",
   },
   'en': {
+    "users.title": "Users",
+    "users.add": "Add user",
+    "users.hint": "Admin only; built-in admin cannot be deleted / role-changed / disabled / password-reset",
+    "users.name": "Username",
+    "users.password": "Password",
+    "users.genPwd": "Generate",
+    "users.genPwdTitle": "Click to generate a random strong password (20 chars)",
+    "users.role": "Role",
+    "users.enabled": "Enabled",
+    "users.disabled": "Disabled",
+    "users.changeRole": "Change role",
+    "users.resetPwd": "Reset password",
+    "users.disable": "Disable",
+    "users.enable": "Enable",
+    "users.confirmDelete": "Delete user",
+    "users.newPwd": "New password (min 8 chars)",
+    "users.oldPwd": "Old password",
+    "users.changePwd": "Change password",
+    "apikey.title": "API Key Management",
+    "apikey.add": "Add Key",
+    "apikey.hint": "Hash stored, plaintext shown once; empty window = unlimited",
+    "apikey.name": "Name",
+    "apikey.ip": "Bound IP",
+    "apikey.window": "Not before ~ Expires",
+    "apikey.notBefore": "Not before (empty = now)",
+    "apikey.expires": "Expires (empty = never)",
+    "apikey.ips": "Bound IPs / CIDRs (comma separated, empty = any)",
+    "apikey.empty": "No API Keys yet",
+    "apikey.created": "API Key created",
+    "apikey.copyHint": "Copy it now; plaintext is shown only once:",
+    "apikey.copy": "Copy",
+    "apikey.copied": "Copied",
+    "apikey.confirmDelete": "Delete this Key?",
+    "common.forbidden": "Forbidden",
+    "common.edit": "Edit",
+    "common.ok": "OK",
+    "common.delete": "Delete",
     "app.logout": "Log out",
     "app.title": "Model Proxy Admin",
     "asr.builtinModel": "Built-in offline model (no external service)",
@@ -994,6 +1173,27 @@ const I18N = {
     "config.hotwordEmpty": "No hotwords yet",
     "config.hotwordDel": "Delete",
     "config.hotwordPinyin": "Pinyin",
+    "config.hotwordCorrectPinyin": "Correct pinyin",
+    "config.hotwordSource": "Source",
+    "config.hotwordUploaded": "Upload",
+    "config.hotwordLocal": "Manual",
+    "config.hotwordSynced": "Client upload",
+    "config.hotwordYes": "Yes",
+    "config.hotwordNo": "No",
+    "config.hotwordReviewed": "Reviewed",
+    "config.hotwordCreatedAt": "Created",
+    "config.hotwordDevice": "Device",
+    "config.hotwordFromUpload": "Client upload",
+    "config.hotwordUpdatedAt": "Updated",
+    "config.hotwordEnableFirst": "Enable the main entry before adding typos",
+    "config.hotwordReview": "Mark reviewed",
+    "config.hotwordUnreview": "Unreview",
+    "config.hotwordStatus": "Status",
+    "config.hotwordAction": "Action",
+    "config.hotwordEnabled": "Enabled",
+    "config.hotwordDisabled": "Disabled",
+    "config.hotwordEnable": "Enable",
+    "config.hotwordDisable": "Disable",
     "config.hotwordDelConfirm": "Delete hotword:",
     "config.hotwordDupMain": "This correct word already exists; nothing was added",
     "config.hotwordDupVariant": "This typo already exists; nothing was added",
@@ -1049,11 +1249,12 @@ const I18N = {
     "proto.gemini": "Google Gemini (generateContent / streamGenerateContent, alt=sse)",
     "proto.openaiChat": "OpenAI Chat Completions wire protocol (/v1/chat/completions, compatible with deepseek / Qwen etc.)",
     "proto.openaiResponses": "OpenAI Responses API (/v1/responses)",
+    "sec.subConfig": "Security config",
     "sec.ipHint": "One IP or CIDR per line (e.g. 192.168.1.0/24). Blank = no source restriction",
     "sec.keyHint": "One Key per line; or fill \"auto\" to auto-generate and write to file. Blank = no change",
     "sec.offDefault": "Off (default)",
     "sec.on": "On",
-    "sec.onHint": "On: /llm and /voice data APIs require a valid Key; /health and the admin panel are unaffected",
+    "sec.onHint": "When on, all external data APIs (/llm/v1, /voice/v1, etc.) require a valid Key or device speech will fail; /health, docs and the admin panel are unaffected",
     "test.replyStream": "Reply will stream here.",
     "test.builtin": "Built-in",
     "test.protoHint": "Protocols are summarized from the models' protocol fields; required, and selecting one filters the model list. http hits the /voice/v1 HTTP API; ws hits /voice/ws/inference (realtime WebSocket, with a ws upstream of the same protocol).",
@@ -1081,6 +1282,8 @@ const I18N = {
   }
 };
 let curLang = localStorage.getItem('admin_lang') || 'zh-CN';
+// 当前登录用户的角色（viewer/operator/admin），由 /admin/api/me 注入，用于前端按角色隐藏。
+let currentRole = 'viewer';
 const t = (zh) => (I18N[curLang] && I18N[curLang][zh]) || zh;
 // 仅翻译「自定义」供应商的展示文案；底层存储值 '自定义' 保持不变，避免破坏配置落盘
 function vendorLabel(v){ return v==='自定义' ? t('vendor.custom') : v; }
@@ -1131,8 +1334,16 @@ if (wsDocsLink) wsDocsLink.addEventListener('click', (e)=>{ e.preventDefault(); 
 
 async function boot(){
   const me = await api('/admin/api/me').then(r=>r.ok?r.json():null);
-  if(!me || !me.authenticated){ renderLogin(); document.getElementById('logout').style.display='none'; }
-  else { document.getElementById('who').textContent = t('login.accountPrefix')+me.user; document.getElementById('logout').style.display=''; renderDashboard(); }
+  if(!me || !me.authenticated){ renderLogin(); document.getElementById('logout').style.display='none'; const cp=document.getElementById('changePwd'); if(cp) cp.style.display='none'; }
+  else {
+    currentRole = me.role || 'viewer';
+    document.getElementById('who').textContent = t('login.accountPrefix')+me.user;
+    const rt = document.getElementById('roleTag'); if(rt) rt.textContent = '['+currentRole+']';
+    document.getElementById('logout').style.display='';
+    const cp=document.getElementById('changePwd'); if(cp) cp.style.display='';
+    wireChangePwd();
+    renderDashboard();
+  }
 }
 
 function renderLogin(){
@@ -1167,7 +1378,7 @@ const CFG_TABS = {
   llm: ['LLM_ENABLED','LLM_UPSTREAM_BASE_URL','LLM_UPSTREAM_API_KEY','LLM_UPSTREAM_MODEL','LLM_UPSTREAM_PROTOCOL','LLM_UPSTREAM_VENDOR'],
   asr: ['VOICE_UPSTREAM_BASE_URL','VOICE_UPSTREAM_API_KEY'],
   tts: ['TTS_UPSTREAM_VOICE','TTS_UPSTREAM_MODEL','TTS_UPSTREAM_BASE_URL','TTS_UPSTREAM_API_KEY','TTS_VOICE'],
-  sec: ['VOICE_API_KEY_AUTH','VOICE_API_KEY','VOICE_IP_ALLOW'],
+  sec: ['VOICE_API_KEY_AUTH','VOICE_IP_ALLOW'],  // VOICE_API_KEY 已改为表管理（见下方 API Key 管理块）
 };
 const CFG_LABEL = {
   LLM_ENABLED:'cfg.llmEnabled', LLM_UPSTREAM_BASE_URL:'cfg.llmUpstreamUrl', LLM_UPSTREAM_API_KEY:'cfg.llmApiKey',
@@ -1242,7 +1453,19 @@ function buildConfigCard(){
       <div id="ttsTableWrap" class="hint">${t('common.loadingX')}</div>
       <div class="row" style="margin-top:12px"><button id="cfgSave_tts">${t('common.save')}</button><span class="hint" id="cfgStat_tts" style="margin-left:10px"></span></div>
     </div>
-    <div id="c-sec" class="cfgpane" hidden><div id="secWrap"></div><div class="row" style="margin-top:12px"><button id="cfgSave_sec">${t('common.save')}</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div></div>
+    <div id="c-sec" class="cfgpane" hidden>
+      <div class="tabs" id="secSubTabs" style="margin:4px 0 12px">
+        <button class="tab active" data-secsub="cfg">${t('sec.subConfig')}</button>
+        <button class="tab" data-secsub="keys">${t('apikey.title')}</button>
+        <button class="tab" data-secsub="users">${t('users.title')}</button>
+      </div>
+      <div id="sec-sub-cfg">
+        <div id="secWrap"></div>
+        <div class="row" style="margin-top:12px"><button id="cfgSave_sec">${t('common.save')}</button><span class="hint" id="cfgStat_sec" style="margin-left:10px"></span></div>
+      </div>
+      <div id="sec-sub-keys" hidden><div id="apiKeyManage"></div></div>
+      <div id="sec-sub-users" hidden><div id="userManage"></div></div>
+    </div>
     <div id="c-embed" class="cfgpane" hidden>
       <div id="embedTableWrap" class="hint">${t('common.loadingX')}</div>
       <div class="row" style="margin-top:12px"><button id="cfgSave_embed">${t('common.save')}</button><span class="hint" id="cfgStat_embed" style="margin-left:10px"></span></div>
@@ -1623,13 +1846,11 @@ function wireConfig(){
     const patch={}; keys.forEach(k=>{ const v=cfgVal(k); if(v!==undefined && v!==null) patch[k]=v; });
     return postConfig(patch, statId);
   };
-  // 安全 tab：开关总要提交；IP 白名单留空=清空（必须显式发空串）；
-  // API Key 留空=不修改（保留原 Key），只有填了新值才提交。
+  // 安全 tab：鉴权开关与 IP 白名单都提交（IP 留空=清空，必须显式发空串）。
+  // API Key 已改为表管理（下方「API Key 管理」子 tab），不再有文本输入框。
   const saveSec = ()=>{
     const patch={ VOICE_API_KEY_AUTH: document.getElementById('cfg_VOICE_API_KEY_AUTH').value,
                   VOICE_IP_ALLOW: document.getElementById('cfg_VOICE_IP_ALLOW').value };
-    const k=document.getElementById('cfg_VOICE_API_KEY').value;
-    if(k.trim()) patch.VOICE_API_KEY=k;
     return postConfig(patch, 'cfgStat_sec');
   };
   ['tts'].forEach(t=>{ const b=document.getElementById('cfgSave_'+t); if(b) b.onclick=()=>save(t,CFG_TABS[t],'cfgStat_'+t); });
@@ -1641,6 +1862,22 @@ function wireConfig(){
   const lb=document.getElementById('cfgSave_llm'); if(lb) lb.onclick=()=>saveLlmTable();
   const ab=document.getElementById('cfgSave_asr'); if(ab) ab.onclick=saveSttTable;
   const tb=document.getElementById('cfgSave_tts'); if(tb) tb.onclick=saveTtsTable;
+  // 安全 tab 的三个子 tab：安全配置 / API Key 管理 / 账号管理
+  document.querySelectorAll('#secSubTabs .tab').forEach(t=>{
+    t.onclick=()=>{
+      document.querySelectorAll('#secSubTabs .tab').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      const sub=t.dataset.secsub;
+      ['cfg','keys','users'].forEach(k=>{ const e=document.getElementById('sec-sub-'+k); if(e) e.hidden=(sub!==k); });
+      if(sub==='keys') loadApiKeys();
+      if(sub==='users') loadUsers();
+    };
+  });
+  // 两个管理块（都在「安全」tab 内，仅 admin 会渲染到）
+  const akm=document.getElementById('apiKeyManage');
+  if(akm){ buildApiKeyManage(akm); loadApiKeys(); }
+  const um=document.getElementById('userManage');
+  if(um){ buildUserManage(um); loadUsers(); }
 }
 
 // ── 上游池表格（按提供商分组；列：默认 | 提供商 | 地址 | API Key | 模型）──
@@ -2513,7 +2750,6 @@ async function testTtsUpstream(model, provider){
 function renderSecTable(){
   const wrap=document.getElementById('secWrap'); if(!wrap) return;
   const auth = (cfgOrig['VOICE_API_KEY_AUTH']||'off');
-  const keyVal = isSecret('VOICE_API_KEY') ? '' : (cfgOrig['VOICE_API_KEY']||'');
   const ipVal = (cfgOrig['VOICE_IP_ALLOW']||'');
   wrap.innerHTML = `
     <div class="row"><label>${t(CFG_LABEL['VOICE_API_KEY_AUTH'])}</label>
@@ -2521,10 +2757,7 @@ function renderSecTable(){
         <option value="off"${auth==='off'?' selected':''}>${t('sec.offDefault')}</option>
         <option value="on"${auth==='on'?' selected':''}>${t('sec.on')}</option>
       </select>
-      <span class="hint">${t('sec.onHint')}</span>
-    </div>
-    <div class="row"><label>${t(CFG_LABEL['VOICE_API_KEY'])}</label>
-      <textarea id="cfg_VOICE_API_KEY" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('sec.keyHint')}">${escapeHtml(keyVal)}</textarea>
+      <span class="hint-warn">${t('sec.onHint')}</span>
     </div>
     <div class="row"><label>${t(CFG_LABEL['VOICE_IP_ALLOW'])}</label>
       <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('sec.ipHint')}">${escapeHtml(ipVal)}</textarea>
@@ -2781,10 +3014,14 @@ async function runLlmEmbeddings(opts){
 
 async function renderDashboard(){
   const app = document.getElementById('app'); app.innerHTML='';
+  const isAdmin = currentRole === 'admin';
+  const canTest = currentRole === 'operator' || isAdmin;
 
-  app.appendChild(buildConfigCard());
+  // 配置卡：仅 admin（含密钥/配置/安全 tab）；viewer/operator 看不到
+  if(isAdmin) app.appendChild(buildConfigCard());
 
-  app.appendChild(el(`<div class="card collapsed" id="testCard"><h2>${t('common.test')}</h2>
+  // 测试卡：operator 及以上
+  if(canTest){ app.appendChild(el(`<div class="card collapsed" id="testCard"><h2>${t('common.test')}</h2>
     <label>${t('common.authHint')}</label>
     <input id="testKey" type="password" placeholder="${t('common.apiKeyOptional')}" />
     <div class="tabs">
@@ -2914,6 +3151,7 @@ async function renderDashboard(){
     modalExtra.dataset.ready='1';
     addHeaderRow('modal'); addBodyRow('modal');
   }
+  } // end if(canTest)
 
   app.appendChild(el(`<div class="card"><h2>${t('log.title')}</h2>
     <div class="row" style="margin-bottom:10px">
@@ -2922,12 +3160,14 @@ async function renderDashboard(){
     <pre id="logs">${t('common.loadingX')}</pre>
   </div>`));
 
+  // 用户管理：已并入配置卡「安全」tab 的第 3 个子 tab，不再单独挂卡
+
   document.getElementById('logout').onclick = async ()=>{
     await api('/admin/logout',{method:'POST'}); boot();
   };
-  app.querySelector('#logRefresh').onclick = loadLogs;
+  const logRefreshEl = app.querySelector('#logRefresh'); if(logRefreshEl) logRefreshEl.onclick = loadLogs;
 
-  wireConfig(); loadConfig();
+  if(isAdmin){ wireConfig(); loadConfig(); }
 
   // 卡片可折叠：点击标题（配置 / 测试 / 日志）展开或收起；登录卡片不可折叠
   app.querySelectorAll('.card > h2').forEach(h=>{
@@ -3494,6 +3734,197 @@ async function toWav(blob){
 // 弃用的面板函数（运行状态 / 数据库 / 配置 / 服务控制）已按需求移除，相关
 // 业务配置一律存放在本地 SQLite（voice.db），不再通过 Web 面板展示或编辑。
 
+// ── 用户管理 / API Key 管理（v10，仅 admin）────────────────────────
+function showModal(title, bodyHtml, onOk, okLabel){
+  let mask=document.getElementById('genericModal');
+  if(!mask){
+    mask=el('<div class="modal-mask" id="genericModal"><div class="modal"><h3 id="gmTitle"></h3><div id="gmBody"></div><div class="row" style="margin-top:14px;justify-content:flex-end"><button class="sec" id="gmCancel"></button><button id="gmOk"></button></div></div></div>');
+    document.body.appendChild(mask);
+  }
+  mask.querySelector('#gmTitle').textContent=title;
+  mask.querySelector('#gmBody').innerHTML=bodyHtml;
+  const cancel=mask.querySelector('#gmCancel'), ok=mask.querySelector('#gmOk');
+  cancel.textContent=t('common.cancel')||'取消'; ok.textContent=okLabel||t('common.save')||'保存';
+  cancel.onclick=()=>mask.classList.remove('show');
+  ok.onclick=async ()=>{ const r=await onOk(mask); if(r!==false && r!=='keep') mask.classList.remove('show'); };
+  mask.classList.add('show');
+  return mask;
+}
+// 生成强随机密码（浏览器 crypto.getRandomValues，避免可预测）
+function genPassword(len){
+  len=len||20;
+  const chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
+  const buf=new Uint32Array(len);
+  (window.crypto||window.msCrypto).getRandomValues(buf);
+  let out=''; for(let i=0;i<len;i++) out+=chars[buf[i]%chars.length];
+  return out;
+}
+// 密码输入行：输入框 + 右侧「生成」按钮（点击填入随机密码并切到 text 可见）
+function pwdRowHtml(id){
+  return '<label>'+t('users.password')+'</label><div class="row" style="gap:8px">'+
+    '<input id="'+id+'" type="text" style="flex:1;font-family:monospace" autocomplete="new-password" />'+
+    '<button type="button" class="sec" id="'+id+'Gen" title="'+t('users.genPwdTitle')+'">'+t('users.genPwd')+'</button></div>';
+}
+function wirePwdGen(mask, id){
+  const btn=mask.querySelector('#'+id+'Gen'), inp=mask.querySelector('#'+id);
+  if(btn && inp) btn.onclick=()=>{ inp.value=genPassword(); inp.focus(); };
+}
+function isoLocal(ts){
+  if(!ts) return '';
+  const d=new Date(ts*1000), p=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes());
+}
+function epochLocal(v){ return v ? Math.floor(new Date(v).getTime()/1000) : null; }
+
+function buildUserManage(box){
+  box.innerHTML=`<div class="row" style="margin-bottom:10px"><button id="userAdd">${t('users.add')}</button><span class="muted">${t('users.hint')}</span></div>
+    <div id="userList"><span class="muted">${t('common.loadingX')}</span></div>`;
+}
+async function loadUsers(){
+  const box=document.getElementById('userList'); if(!box) return;
+  const r=await api('/admin/api/users');
+  if(!r.ok){ box.textContent=t('common.loadFailed'); return; }
+  const users=(await r.json()).users||[];
+  box.innerHTML='<table class="admin-table"><thead><tr><th>'+t('users.name')+'</th><th>'+t('users.role')+'</th><th>'+t('common.status')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody>'+
+    users.map(u=>'<tr><td class="col-name">'+esc(u.username)+(u.is_builtin?' <span class="hint">内置</span>':'')+'</td><td>'+u.role+'</td><td>'+(u.enabled?t('users.enabled'):t('users.disabled'))+'</td><td class="col-actions">'+
+      (u.is_builtin? '<span class="hint">—</span>' :
+        '<button class="sec" data-u="'+esc(u.username)+'" data-op="role">'+t('users.changeRole')+'</button> '+
+        '<button class="sec" data-u="'+esc(u.username)+'" data-op="pw">'+t('users.resetPwd')+'</button> '+
+        '<button class="sec" data-u="'+esc(u.username)+'" data-op="toggle">'+(u.enabled?t('users.disable'):t('users.enable'))+'</button> '+
+        '<button class="sec" data-u="'+esc(u.username)+'" data-op="del">'+t('common.delete')+'</button>')+
+      '</td></tr>').join('')+'</tbody></table>';
+  box.querySelectorAll('button[data-u]').forEach(b=>{
+    b.onclick=()=>userAction(b.dataset.u, b.dataset.op);
+  });
+  const add=document.getElementById('userAdd'); if(add) add.onclick=()=>userAddModal();
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+async function userAddModal(){
+  const mask=showModal(t('users.add'),
+    '<label>'+t('users.name')+'</label><input id="nuName" type="text" autocomplete="off" />'+
+    pwdRowHtml('nuPwd')+
+    '<label>'+t('users.role')+'</label><select id="nuRole"><option value="viewer">viewer</option><option value="operator">operator</option><option value="admin">admin</option></select>',
+    async (m)=>{
+      const body={username:m.querySelector('#nuName').value.trim(), password:m.querySelector('#nuPwd').value, role:m.querySelector('#nuRole').value};
+      const r=await api('/admin/api/users',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+      if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; }
+      loadUsers(); return true;
+    });
+  wirePwdGen(mask, 'nuPwd');
+}
+async function userAction(username, op){
+  if(op==='del'){
+    if(!confirm(t('users.confirmDelete')+': '+username)) return;
+    const r=await api('/admin/api/users/'+encodeURIComponent(username),{method:'DELETE'});
+    if(!r.ok) alert(fmtErr((await r.json()).detail)); else loadUsers(); return;
+  }
+  if(op==='toggle'){
+    // 先读当前状态再翻转
+    const list=await api('/admin/api/users').then(r=>r.json());
+    const u=(list.users||[]).find(x=>x.username===username);
+    const r2=await api('/admin/api/users/'+encodeURIComponent(username),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:!u.enabled})});
+    if(!r2.ok) alert(fmtErr((await r2.json()).detail)); else loadUsers(); return;
+  }
+  if(op==='role'){
+    const list=await api('/admin/api/users').then(r=>r.json());
+    const u=(list.users||[]).find(x=>x.username===username);
+    showModal(t('users.changeRole')+' — '+username,
+      '<label>'+t('users.role')+'</label><select id="erRole">'+
+      ['viewer','operator','admin'].map(r=>'<option value="'+r+'"'+(u&&u.role===r?' selected':'')+'>'+r+'</option>').join('')+'</select>',
+      async(m)=>{ const r=await api('/admin/api/users/'+encodeURIComponent(username),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({role:m.querySelector('#erRole').value})});
+        if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; } loadUsers(); return true; });
+    return;
+  }
+  if(op==='pw'){
+    const mask=showModal(t('users.resetPwd')+' — '+username,
+      pwdRowHtml('epPwd'),
+      async(m)=>{ const r=await api('/admin/api/users/'+encodeURIComponent(username),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({password:m.querySelector('#epPwd').value})});
+        if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; } loadUsers(); return true; });
+    wirePwdGen(mask, 'epPwd');
+    return;
+  }
+}
+function wireChangePwd(){
+  const b=document.getElementById('changePwd'); if(!b) return;
+  b.onclick=()=>{
+    const mask=showModal(t('users.changePwd'),
+      '<label>'+t('users.oldPwd')+'</label><input id="cpOld" type="password" />'+
+      pwdRowHtml('cpNew').replace(t('users.password'), t('users.newPwd')),
+      async(m)=>{ const body={old_password:m.querySelector('#cpOld').value,new_password:m.querySelector('#cpNew').value};
+        const r=await api('/admin/api/me/password',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+        if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; } return true; });
+    wirePwdGen(mask, 'cpNew');
+  };
+}
+
+function buildApiKeyManage(box){
+  box.innerHTML='<h3>'+t('apikey.title')+'</h3>'+
+    '<div class="row" style="margin-bottom:8px"><button id="akAdd">'+t('apikey.add')+'</button><span class="hint">'+t('apikey.hint')+'</span></div>'+
+    '<div id="akList"><span class="muted">'+t('common.loadingX')+'</span></div>';
+  document.getElementById('akAdd').onclick=()=>apiKeyAddModal();
+}
+async function loadApiKeys(){
+  const box=document.getElementById('akList'); if(!box) return;
+  const r=await api('/admin/api/api-keys');
+  if(!r.ok){ box.textContent=t('common.loadFailed'); return; }
+  const keys=(await r.json()).keys||[];
+  if(!keys.length){ box.innerHTML='<span class="muted">'+t('apikey.empty')+'</span>'; return; }
+  box.innerHTML='<table class="admin-table"><thead><tr><th>'+t('apikey.name')+'</th><th>Key</th><th>'+t('apikey.window')+'</th><th>'+t('apikey.ip')+'</th><th>'+t('common.status')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody>'+
+    keys.map(k=>'<tr><td class="col-name">'+esc(k.name||'—')+'</td><td><code>'+esc(k.key_prefix)+'…</code></td><td>'+
+      (k.not_before?isoLocal(k.not_before):'—')+' ~ '+(k.expires_at?isoLocal(k.expires_at):'—')+'</td><td>'+esc((JSON.parse(k.allowed_ips||'[]')||[]).join(', ')||'—')+'</td><td>'+(k.enabled?t('users.enabled'):t('users.disabled'))+'</td><td class="col-actions">'+
+      '<button class="sec" data-k="'+k.id+'" data-op="edit">'+t('common.edit')+'</button> '+
+      '<button class="sec" data-k="'+k.id+'" data-op="toggle">'+(k.enabled?t('users.disable'):t('users.enable'))+'</button> '+
+      '<button class="sec" data-k="'+k.id+'" data-op="del">'+t('common.delete')+'</button></td></tr>').join('')+'</tbody></table>';
+  box.querySelectorAll('button[data-k]').forEach(b=> b.onclick=()=>apiKeyAction(Number(b.dataset.k), b.dataset.op));
+}
+function apiKeyFieldsHtml(k){
+  k=k||{};
+  return '<label>'+t('apikey.name')+'</label><input id="akName" type="text" value="'+esc(k.name||'')+'" />'+
+    '<label>'+t('apikey.notBefore')+'</label><input id="akNb" type="datetime-local" value="'+isoLocal(k.not_before)+'" />'+
+    '<label>'+t('apikey.expires')+'</label><input id="akExp" type="datetime-local" value="'+isoLocal(k.expires_at)+'" />'+
+    '<label>'+t('apikey.ips')+'</label><textarea id="akIps" rows="2" placeholder="192.168.1.0/24, 10.0.0.8">'+(k.allowed_ips?esc((JSON.parse(k.allowed_ips)||[]).join(', ')):'')+'</textarea>';
+}
+function apiKeyBodyFromModal(m){
+  const ips=(m.querySelector('#akIps').value||'').split(/[\s,]+/).filter(Boolean);
+  return {name:m.querySelector('#akName').value.trim(), not_before:epochLocal(m.querySelector('#akNb').value), expires_at:epochLocal(m.querySelector('#akExp').value), allowed_ips:ips};
+}
+function apiKeyAddModal(){
+  showModal(t('apikey.add'), apiKeyFieldsHtml(null), async(m)=>{
+    const r=await api('/admin/api/api-keys',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(apiKeyBodyFromModal(m))});
+    if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; }
+    const d=await r.json();
+    // 明文只显示这一次：直接把当前弹窗改成展示框（showModal 复用同一 DOM，
+    // 不能在这里再调 showModal——会被外层回调立刻关掉）。返回 'keep' 保持打开。
+    m.querySelector('#gmTitle').textContent=t('apikey.created');
+    m.querySelector('#gmBody').innerHTML=
+      '<p class="hint-warn" style="margin:0 0 8px">'+t('apikey.copyHint')+'</p>'+
+      '<div class="row" style="gap:8px"><input id="akPlain" type="text" readonly value="'+esc(d.key)+'" style="flex:1;font-family:monospace" />'+
+      '<button type="button" class="sec" id="akCopy">'+t('apikey.copy')+'</button></div>';
+    const copy=m.querySelector('#akCopy'), plain=m.querySelector('#akPlain');
+    copy.onclick=async ()=>{ try{ await navigator.clipboard.writeText(plain.value); copy.textContent=t('apikey.copied'); }
+      catch(e){ plain.select(); document.execCommand('copy'); copy.textContent=t('apikey.copied'); } };
+    m.querySelector('#gmOk').textContent=t('common.ok');
+    loadApiKeys();
+    return 'keep';
+  });
+}
+async function apiKeyAction(id, op){
+  if(op==='del'){ if(!confirm(t('apikey.confirmDelete'))) return;
+    const r=await api('/admin/api/api-keys/'+id,{method:'DELETE'}); if(!r.ok) alert(fmtErr((await r.json()).detail)); else loadApiKeys(); return; }
+  if(op==='toggle'){
+    const list=await api('/admin/api/api-keys').then(r=>r.json());
+    const k=(list.keys||[]).find(x=>x.id===id);
+    const r=await api('/admin/api/api-keys/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:!k.enabled})});
+    if(!r.ok) alert(fmtErr((await r.json()).detail)); else loadApiKeys(); return; }
+  if(op==='edit'){
+    const list=await api('/admin/api/api-keys').then(r=>r.json());
+    const k=(list.keys||[]).find(x=>x.id===id)||{};
+    showModal(t('common.edit'), apiKeyFieldsHtml(k), async(m)=>{
+      const r=await api('/admin/api/api-keys/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(apiKeyBodyFromModal(m))});
+      if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; } loadApiKeys(); return true; });
+  }
+}
+
 async function loadLogs(){
   const r = await api('/admin/api/logs');
   const pre = document.getElementById('logs');
@@ -3590,6 +4021,16 @@ def register_admin_routes(
     _STT_UPSTREAM_TEST = stt_upstream_test
     _TTS_UPSTREAM_TEST = tts_upstream_test
 
+    @app.middleware("http")
+    async def admin_security_headers(request: Request, call_next):
+        """仅给管理面板加防御性响应头（点击劫持 / MIME 嗅探 / 来源泄露）。"""
+        resp = await call_next(request)
+        if request.url.path.startswith("/admin"):
+            resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+            resp.headers.setdefault("X-Frame-Options", "DENY")
+            resp.headers.setdefault("Referrer-Policy", "no-referrer")
+        return resp
+
     @app.get("/admin", response_class=HTMLResponse)
     @app.get("/admin/", response_class=HTMLResponse)
     def admin_page():
@@ -3598,23 +4039,29 @@ def register_admin_routes(
         return HTMLResponse(ADMIN_HTML, headers={"Cache-Control": "no-store, must-revalidate"})
 
     @app.post("/admin/login")
-    def admin_login(user: str | None = Form(None), password: str | None = Form(None)):
+    def admin_login(request: Request, user: str | None = Form(None), password: str | None = Form(None)):
         # 表单缺字段时显式返回可读字符串，避免 FastAPI 默认 422 把 detail 写成对象数组
         if not user or not password:
             raise HTTPException(status_code=400, detail="请输入账号和密码")
-        cfg = load_admin_config()
-        ok = hmac.compare_digest(user, cfg["user"]) and hmac.compare_digest(
-            password, cfg["password"]
-        )
-        if not ok:
+        client = request.client.host if request.client else "unknown"
+        # 多账号校验：按 username 查 admin_users（含 enabled 判定）
+        if not voice_db.admin_user_auth(user, password):
+            voice_db.append_audit(client, "admin_login_failed", f"user={user}")
             raise HTTPException(status_code=401, detail="账号或密码错误")
-        tok = create_session(cfg["user"])
-        resp = JSONResponse({"ok": True, "user": cfg["user"]})
+        acct = voice_db.admin_user_get(user)
+        voice_db.append_audit(client, "admin_login_success", f"user={user}")
+        tok = create_session(user)
+        resp = JSONResponse({
+            "ok": True, "user": user,
+            "role": acct["role"] if acct else "viewer",
+            "is_builtin": bool(acct and acct["is_builtin"]),
+        })
         resp.set_cookie(
             SESSION_COOKIE,
             tok,
             httponly=True,
             samesite="lax",
+            secure=(request.url.scheme == "https"),
             max_age=SESSION_TTL,
             path="/admin",
         )
@@ -3630,11 +4077,140 @@ def register_admin_routes(
     @app.get("/admin/api/me")
     def admin_me(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)):
         if valid_session(session):
-            cfg = load_admin_config()
-            return {"authenticated": True, "user": cfg["user"]}
+            username = voice_db.session_username(session)
+            acct = voice_db.admin_user_get(username) if username else None
+            return {
+                "authenticated": True,
+                "user": username,
+                "role": acct["role"] if acct else "viewer",
+                "is_builtin": bool(acct and acct["is_builtin"]),
+            }
         return {"authenticated": False}
 
-    @app.get("/admin/api/status", dependencies=[Depends(require_admin)])
+    @app.post("/admin/api/me/password")
+    def admin_change_own_password(
+        request: Request,
+        body: dict[str, Any],
+        session: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    ):
+        """所有人改自己密码（含内置管理员）；校验旧密码。"""
+        if not valid_session(session):
+            raise HTTPException(status_code=401, detail="未登录或会话已过期")
+        username = voice_db.session_username(session)
+        old = (body or {}).get("old_password") or ""
+        new = (body or {}).get("new_password") or ""
+        if len(new) < 8:
+            raise HTTPException(status_code=400, detail="新密码至少 8 位")
+        if not voice_db.admin_user_change_password(username, old, new):
+            raise HTTPException(status_code=400, detail="旧密码错误")
+        client = request.client.host if request.client else "unknown"
+        voice_db.append_audit(client, "admin_password_changed", f"user={username}")
+        return {"ok": True}
+
+    # ── 用户管理（仅 admin）────────────────────────────────────────
+    @app.get("/admin/api/users", dependencies=[Depends(require_admin)])
+    def admin_users_list():
+        return {"users": voice_db.admin_users_list()}
+
+    @app.post("/admin/api/users", dependencies=[Depends(require_admin)])
+    def admin_users_add(request: Request, body: dict[str, Any]):
+        username = (body or {}).get("username") or ""
+        password = (body or {}).get("password") or ""
+        role = (body or {}).get("role") or "viewer"
+        if len(password) < 8:
+            raise HTTPException(status_code=400, detail="密码至少 8 位")
+        try:
+            acct = voice_db.admin_user_add(username, password, role)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        client = request.client.host if request.client else "unknown"
+        voice_db.append_audit(client, "admin_user_add", f"user={username},role={role}")
+        return {"ok": True, "user": acct}
+
+    @app.patch("/admin/api/users/{username}", dependencies=[Depends(require_admin)])
+    def admin_users_patch(request: Request, username: str, body: dict[str, Any]):
+        client = request.client.host if request.client else "unknown"
+        body = body or {}
+        if "role" in body:
+            try:
+                voice_db.admin_user_set_role(username, body["role"])
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            voice_db.append_audit(client, "admin_user_role", f"user={username},role={body['role']}")
+        if "enabled" in body:
+            try:
+                voice_db.admin_user_set_enabled(username, bool(body["enabled"]))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            voice_db.append_audit(client, "admin_user_enabled",
+                                  f"user={username},enabled={bool(body['enabled'])}")
+        if "password" in body:
+            pw = body["password"] or ""
+            if len(pw) < 8:
+                raise HTTPException(status_code=400, detail="密码至少 8 位")
+            try:
+                voice_db.admin_user_reset_password(username, pw)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            voice_db.append_audit(client, "admin_user_reset_password", f"user={username}")
+        return {"ok": True, "user": voice_db.admin_user_get(username)}
+
+    @app.delete("/admin/api/users/{username}", dependencies=[Depends(require_admin)])
+    def admin_users_delete(request: Request, username: str):
+        try:
+            voice_db.admin_user_delete(username)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        client = request.client.host if request.client else "unknown"
+        voice_db.append_audit(client, "admin_user_delete", f"user={username}")
+        return {"ok": True}
+
+    # ── API Key 管理（仅 admin）─────────────────────────────────────
+    @app.get("/admin/api/api-keys", dependencies=[Depends(require_admin)])
+    def admin_api_keys_list():
+        return {"keys": voice_db.api_keys_list()}
+
+    @app.post("/admin/api/api-keys", dependencies=[Depends(require_admin)])
+    def admin_api_keys_create(request: Request, body: dict[str, Any]):
+        body = body or {}
+        token = secrets.token_urlsafe(32)
+        try:
+            row = voice_db.api_key_create(
+                token,
+                name=(body.get("name") or "").strip(),
+                not_before=body.get("not_before"),
+                expires_at=body.get("expires_at"),
+                allowed_ips=body.get("allowed_ips") or [],
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        client = request.client.host if request.client else "unknown"
+        voice_db.append_audit(client, "api_key_create",
+                              f"id={row['id']},prefix={row['key_prefix']}")
+        # 明文只此一次返回，供复制；之后面板只显示前缀。
+        return {"ok": True, "key": token, "row": row}
+
+    @app.patch("/admin/api/api-keys/{key_id}", dependencies=[Depends(require_admin)])
+    def admin_api_keys_patch(request: Request, key_id: int, body: dict[str, Any]):
+        body = body or {}
+        # 启停走专门的函数（api_key_update 的白名单不含 enabled，之前会被静默忽略）
+        if "enabled" in body:
+            voice_db.api_key_set_enabled(key_id, bool(body["enabled"]))
+        fields = {k: v for k, v in body.items() if k != "enabled"}
+        if fields:
+            voice_db.api_key_update(key_id, **fields)
+        client = request.client.host if request.client else "unknown"
+        voice_db.append_audit(client, "api_key_update", f"id={key_id}")
+        return {"ok": True}
+
+    @app.delete("/admin/api/api-keys/{key_id}", dependencies=[Depends(require_admin)])
+    def admin_api_keys_delete(request: Request, key_id: int):
+        voice_db.api_key_delete(key_id)
+        client = request.client.host if request.client else "unknown"
+        voice_db.append_audit(client, "api_key_delete", f"id={key_id}")
+        return {"ok": True}
+
+    @app.get("/admin/api/status", dependencies=[Depends(require_viewer)])
     def admin_status():
         return voice_status()
 
@@ -3766,7 +4342,7 @@ def register_admin_routes(
         store.set_enabled(result["variant_id"], False)
         return {"ok": True, **result, "enabled": 0}
 
-    @app.get("/admin/api/logs", dependencies=[Depends(require_admin)])
+    @app.get("/admin/api/logs", dependencies=[Depends(require_viewer)])
     def admin_logs(n: int = 200):
         if n <= 0 or n > 2000:
             n = 200
@@ -3870,7 +4446,7 @@ def register_admin_routes(
         return {"groups": out, "default_vendor": default_vendor,
                 "default_model": default_model, "default_models": default_models}
 
-    @app.post("/admin/api/stt-builtin-test", dependencies=[Depends(require_admin)])
+    @app.post("/admin/api/stt-builtin-test", dependencies=[Depends(require_operator)])
     async def admin_stt_builtin_test():
         """按需真实检测内置（本地 SenseVoice）是否可用。
 
@@ -3939,7 +4515,7 @@ def register_admin_routes(
         ],
     }
 
-    @app.post("/admin/api/dashscope-models", dependencies=[Depends(require_admin)])
+    @app.post("/admin/api/dashscope-models", dependencies=[Depends(require_operator)])
     async def admin_dashscope_models(request: Request):
         """返回 DashScope 的语音模型清单（按 kind 分族），供面板「刷新模型」列出。
 
@@ -3955,13 +4531,13 @@ def register_admin_routes(
         kind = (kind or "tts").strip().lower()
         return {"ok": True, "models": list(DASHSCOPE_VOICE_MODELS.get(kind, []))}
 
-    @app.get("/admin/api/schema-history", dependencies=[Depends(require_admin)])
+    @app.get("/admin/api/schema-history", dependencies=[Depends(require_viewer)])
     def admin_schema_history():
         """表结构变更记录：每一版做了什么、何时应用。新增表/列必须同步 SCHEMA_CHANGES。"""
         return {"ok": True, "current": voice_db.SCHEMA_VERSION,
                 "changes": voice_db.schema_history()}
 
-    @app.get("/admin/api/speech-models", dependencies=[Depends(require_admin)])
+    @app.get("/admin/api/speech-models", dependencies=[Depends(require_viewer)])
     def admin_speech_models(kind: str = "", provider: str = ""):
         """基础模型库（speech_models 表）：全量官方目录，按 kind/provider 过滤。
 
@@ -3974,7 +4550,7 @@ def register_admin_routes(
         )
         return {"ok": True, "models": rows}
 
-    @app.get("/admin/api/enabled-models", dependencies=[Depends(require_admin)])
+    @app.get("/admin/api/enabled-models", dependencies=[Depends(require_viewer)])
     def admin_enabled_models(kind: str = "", provider: str = ""):
         """实际启用的模型（enabled_speech_models 表）：用户勾选、真正要用上的。
 
@@ -3986,7 +4562,7 @@ def register_admin_routes(
         )
         return {"ok": True, "models": rows}
 
-    @app.post("/admin/api/stt-upstream-test", dependencies=[Depends(require_admin)])
+    @app.post("/admin/api/stt-upstream-test", dependencies=[Depends(require_operator)])
     async def admin_stt_upstream_test(request: Request):
         """按当前 DB 配置真调一次上游 ASR；可带 {model, provider} 覆盖（模型级测试）。"""
         model = None
@@ -4002,7 +4578,7 @@ def register_admin_routes(
             return {"ok": False, "message": "检测能力未注入"}
         return await _STT_UPSTREAM_TEST(model, provider)
 
-    @app.post("/admin/api/tts-upstream-test", dependencies=[Depends(require_admin)])
+    @app.post("/admin/api/tts-upstream-test", dependencies=[Depends(require_operator)])
     async def admin_tts_upstream_test(request: Request):
         """按当前 DB 配置真合成一句验证上游 TTS；可带 {model, provider} 覆盖。"""
         model = None
@@ -4018,7 +4594,7 @@ def register_admin_routes(
             return {"ok": False, "message": "检测能力未注入"}
         return await _TTS_UPSTREAM_TEST(model, provider)
 
-    @app.post("/admin/api/tts-builtin-test", dependencies=[Depends(require_admin)])
+    @app.post("/admin/api/tts-builtin-test", dependencies=[Depends(require_operator)])
     async def admin_tts_builtin_test(request: Request):
         """按需真实检测内置 TTS（edge-tts / kokoro）是否可用：按请求里的 model 合成一句。
 
@@ -4038,7 +4614,7 @@ def register_admin_routes(
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "reason": "exception", "detail": str(exc)}
 
-    @app.post("/admin/api/probe", dependencies=[Depends(require_admin)])
+    @app.post("/admin/api/probe", dependencies=[Depends(require_operator)])
     async def admin_probe(request: Request):
         """探测任意上游连通性：给定地址/Key/协议，拉一次模型列表验证可用；支持未保存的配置。"""
         try:

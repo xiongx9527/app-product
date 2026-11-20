@@ -253,7 +253,7 @@ ADMIN_PASSWORD=改成一个强密码
 
 | 配置 | 默认 | 作用 |
 |---|---|---|
-| `VOICE_IP_ALLOW` | 空 | IP / CIDR 白名单（逗号 / 换行 / 空格分隔）。非空时白名单外的请求直接 403；本机环回恒定放行，`/admin` 不受它约束 |
+| `VOICE_IP_ALLOW` | 空 | IP / CIDR 白名单（逗号 / 换行 / 空格分隔）。非空时白名单外的请求（**含 `/admin`**）直接 403；本机环回恒定放行，配错也不会把自己锁在面板外 |
 | `VOICE_API_KEY_AUTH` | `off` | `on` 开启 API-Key 鉴权；`off` 显式关闭；留空时向后兼容旧语义（`VOICE_API_KEY` 非 off 即开启） |
 | `VOICE_API_KEY` | `off` | `off` / `none` / `false` 关闭；`auto` 读取或随机生成 Key 文件；其它值作为显式 Key（支持逗号 / 换行分隔多个） |
 
@@ -265,6 +265,57 @@ ADMIN_PASSWORD=改成一个强密码
 
 启动脚本的 `--require-api-key` / `-RequireApiKey` 等价于开启鉴权并使用 auto Key；
 `--api-key off` 显式关闭。Key 文件默认 `$VOICE_HOME/api-key`。
+
+### 用户管理（多账号 + 角色）
+
+管理面板账号存本地 SQLite 的 `admin_users` 表（`$VOICE_HOME/voice.db`，v10），**不再是
+`admin.conf` 或单行的 admin_credentials**。首次启动若表为空，按以下优先级播种一个
+**内置管理员**（`is_builtin=1`，role=admin）：
+
+1. `voice.conf` 的 `ADMIN_USER` / `ADMIN_PASSWORD`；
+2. 存量 `admin.conf` 的账号密码（老用户平滑迁移，原文件保留）；
+3. 存量 `admin_credentials` 单行表（v9 老库自动迁入）；
+4. 都没有则随机生成一把密码，启动日志打印一次。
+
+角色三档：**viewer**（只读状态/日志/目录）、**operator**（+连通性测试）、**admin**（+配置/密钥/同步/用户管理）。
+后端每个 `/admin/api/*` 按角色强制拦截，前端只是辅助隐藏。内置管理员不可删/改角色/禁用/被重置密码，
+只能自己改；禁用账号后其会话立即失效。所有账号变更写 `audit`，不记密码明文。
+
+- 改自己密码：面板顶部「修改密码」。
+- 重置内置管理员 / 修复异常：`./model-proxy/reset-admin.sh`（`--password` 指定、`--fix` 修复、
+  `--list` 查看），可在服务运行时执行，会清除该账号所有会话。
+- 登录失败写 `audit`（`admin_login_failed`，只记账号不记密码），**不做失败锁定**；Cookie 带
+  `HttpOnly` + `SameSite=Lax`、HTTPS 下自动 `Secure`；`/admin` 响应另带安全头。
+
+### API Key 管理
+
+`/llm`、`/voice` 数据接口的 Bearer Key 也改为 SQLite 表管理（`admin_api_keys`，v10）：
+
+- **只存哈希**（`sha256(key)[:16]`），明文只在创建时返回一次；面板「安全」tab 内管理，可启停、
+  改备注名、生效开始/失效时间、绑定 IP（单 IP 或 CIDR，多个逗号分隔）。
+- 两层 IP 叠加：全局 `VOICE_IP_ALLOW` 与该 key 的绑定 IP **都过才放行**；key 级留空=不额外限制。
+- 鉴权开关三态：`VOICE_API_KEY_AUTH=on` 强制开、`off` 强制关（逃生口）、未设置时**表内有启用 key 即开**。
+- 旧 `VOICE_API_KEY` 配置与 auto key 文件在首次启动时**一次性迁移进表**（哈希），之后不再读旧配置；
+  改表即时生效，无需重启。WS `/voice/ws/inference` 同样查表鉴权。
+- `owner_type` / `owner_id` 字段为将来外部用户自助管理 key 预留，本期未启用。
+
+### 日志轮转
+
+日志由 `voice.sh` 写到 `$VOICE_HOME/voice.log`。`voice.sh rotate` 手动轮转（copytruncate，不影响运行中的服务），
+参数在 `voice.conf` 可配置：`LOG_ROTATE_DAYS`（保留天数，默认 7）、`LOG_ROTATE_MAX_MB`（单文件上限，默认 10）、
+`LOG_ROTATE_BY`（`day`/`size`/`both`，默认 both）。可加入 cron 定时执行。数据库 `events`/`audit` 表沿用 5000 条上限。
+
+### 对外监听安全建议
+
+服务默认监听 `0.0.0.0:9529`（保留真机 `adb reverse`、iOS USB 隧道、局域网联调链路），
+启动时若检测到对外监听且 IP 白名单或 API-Key 未配置，会打 `[安全警告]` 提示。生产/长期
+运行时二选一：
+
+- **只在本机用**：启动加 `--ip 127.0.0.1`（或 `VOICE_HOST=127.0.0.1`），端口不对局域网开放；
+- **需要对外**：务必同时配 `VOICE_IP_ALLOW` 白名单 + `VOICE_API_KEY_AUTH=on`，并确认管理面板
+  密码已改（首次随机密码见启动日志）。本机环回始终放行，白名单配错也进得了面板自救。
+
+完整表结构见 `model-proxy/schema.sql`（本地 SQLite / 远端 Postgres / Redis KEY 三段）。
 
 ### LLM 代理
 
@@ -470,8 +521,9 @@ VOICE_DASHSCOPE_URL=https://dashscope.aliyuncs.com
 - 真机联调时设备上的 `127.0.0.1:9529` 是**电脑**的服务，需要
   `adb reverse tcp:9529 tcp:9529`（见 `AGENTS.md`）。
 
-服务默认监听 `0.0.0.0`；只在另一台机器使用时把地址换成那台机器的局域网 IP，
-只在本机使用就把 `VOICE_HOST` 改成 `127.0.0.1`。
+服务默认监听 `0.0.0.0`；只在本机使用就把 `VOICE_HOST` 改成 `127.0.0.1`（或启动加
+`--ip 127.0.0.1`）。需要局域网访问则保持默认并配好 `VOICE_IP_ALLOW` 白名单 +
+`VOICE_API_KEY_AUTH=on`，详见上文「对外监听安全建议」。
 
 ## Linux
 

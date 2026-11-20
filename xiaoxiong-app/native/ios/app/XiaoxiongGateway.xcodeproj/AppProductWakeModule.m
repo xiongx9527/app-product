@@ -47,11 +47,46 @@ static const NSInteger kFrameBytes = 1024;
 
 #pragma mark - 权限
 
-- (BOOL)checkMicPermission {
+/**
+ * 点击开始采集时按需请求麦克风权限（不在冷启动弹框）。
+ *
+ * 为什么不靠 JS 的 uni.authorize('scope.record')：那个 scope 是 Android 口径，
+ * 在本 App 的 iOS 自定义基座上不触发系统麦克风弹框（真机实测从没弹过、TCC 无麦克风请求记录、
+ * 设置→隐私→麦克风里找不到本 App），导致 AVCaptureDevice 状态永远 notDetermined，
+ * 一启动采集就报 MIC_NOT_DETERMINED。权限必须在原生侧用 AVCaptureDevice 主动请求。
+ *
+ * completion 在所有分支都会被调用（已授权/notDetermined 授权或拒绝/明确拒绝），
+ * 且一定切回主线程；调用方据此决定是否继续真正启动采集。
+ */
+- (void)requestMicPermissionWithCompletion:(void (^)(BOOL granted))completion {
     AVAuthorizationStatus st = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
-    if (st == AVAuthorizationStatusAuthorized) return YES;
-    [self emitError:st == AVAuthorizationStatusDenied ? @"NEED_PERMISSION" : @"MIC_NOT_DETERMINED"];
-    return NO;
+    if (st == AVAuthorizationStatusAuthorized) {
+        NSLog(@"%@ 麦克风权限已授权", kTag);
+        if (completion) completion(YES);
+        return;
+    }
+    if (st == AVAuthorizationStatusNotDetermined) {
+        // 首次：主动弹系统授权框（iOS 标准做法，点击开始时触发）
+        NSLog(@"%@ 麦克风权限未定，主动请求系统授权", kTag);
+        __weak typeof(self) weakSelf = self;
+        [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL granted) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (granted) {
+                    NSLog(@"%@ 麦克风授权成功", kTag);
+                    if (completion) completion(YES);
+                } else {
+                    NSLog(@"%@ 麦克风授权被拒", kTag);
+                    [weakSelf emitError:@"NEED_PERMISSION"];
+                    if (completion) completion(NO);
+                }
+            });
+        }];
+        return;
+    }
+    // denied / restricted：系统设置里明确拒绝或受限。
+    NSLog(@"%@ 麦克风权限不可用 status=%ld", kTag, (long)st);
+    [self emitError:@"NEED_PERMISSION"];
+    if (completion) completion(NO);
 }
 
 #pragma mark - JS 导出方法
@@ -98,18 +133,34 @@ UNI_EXPORT_METHOD(@selector(stopPcm))
         NSLog(@"%@ startCapture ignored: already running", kTag);
         return;
     }
-    if (![self checkMicPermission]) return;
+    // 点击开始时按需请求麦克风权限；授权成功后（含异步弹框回调）才真正启动采集。
+    __weak typeof(self) weakSelf = self;
+    [self requestMicPermissionWithCompletion:^(BOOL granted) {
+        if (!granted) return;
+        [weakSelf startCaptureInternal];
+    }];
+}
 
+/// 权限已就绪，真正启动 AVAudioEngine 采集（从原 startCapture 主体拆出）。
+- (void)startCaptureInternal {
+    if (_running) return;
     AVAudioSession *session = AVAudioSession.sharedInstance;
-    if (![session setCategory:AVAudioSessionCategoryRecord
-                         mode:AVAudioSessionModeVoiceChat
-                      options:0 error:nil]) {
-        [self emitError:@"AVAudioSession setCategory failed"];
+    // 注意：CategoryRecord + ModeVoiceChat 在部分 iOS 版本是非法组合，setCategory 会直接失败。
+    // 语音助手用 PlayAndRecord + VoiceChat（标准语音通话组合），并允许蓝牙/默认外放，
+    // 也避免与保活静音的 playback 类别冲突。
+    NSError *catErr = nil;
+    BOOL catOk = [session setCategory:AVAudioSessionCategoryPlayAndRecord
+                                 mode:AVAudioSessionModeVoiceChat
+                              options:AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth
+                                error:&catErr];
+    if (!catOk) {
+        [self emitError:[NSString stringWithFormat:@"setCategory失败:%@", catErr.localizedDescription ?: @"未知"]];
         return;
     }
     [session setPreferredSampleRate:kSampleRate error:nil];
-    if (![session setActive:YES error:nil]) {
-        [self emitError:@"AVAudioSession setActive failed"];
+    NSError *activeErr = nil;
+    if (![session setActive:YES error:&activeErr]) {
+        [self emitError:[NSString stringWithFormat:@"setActive失败:%@", activeErr.localizedDescription ?: @"未知"]];
         return;
     }
 

@@ -167,6 +167,34 @@ ad_files.each do |ad|
   end
 end
 
+# ── 6b) SceneDelegate.m：退后台/回前台调网关静音保活（幂等）──
+# 本 App 声明了 UIApplicationSceneManifest（delegate=SceneDelegate）。iOS 13+ 一旦走
+# SceneDelegate，前后台生命周期只进 SceneDelegate 的 sceneDidEnterBackground:/
+# sceneWillEnterForeground:，AppDelegate 的同名方法永不调用——所以保活必须注入这里。
+# 哨兵 xiaoxiong-gw-keepalive：import 用 sub 只插一次；两处方法调用用 gsub，s != before 才写回。
+scene_files = Dir.glob(File.join(shell_root, '**', 'SceneDelegate.m')).reject { |p| p =~ %r{/Pods/|/build/} }
+scene_files.each do |sd|
+  s = File.read(sd)
+  before = s
+  unless s.include?('xiaoxiong-gw-keepalive')
+    s = s.sub(/(#import "PDRCore\.h")/) do
+      %(#{$1}\n// xiaoxiong-gw-keepalive: 内嵌网关静音保活入口\n#import <XiaoxiongGateway/XiaoxiongGateway-Swift.h>)
+    end
+    s = s.gsub(/(\[PDRCore handleSysEvent:PDRCoreSysEventEnterBackground withObject:nil\];)/) do
+      %(#{$1}\n    [GatewayLauncher beginGatewayKeepAlive]; // xiaoxiong-gw-keepalive)
+    end
+    s = s.gsub(/(\[PDRCore handleSysEvent:PDRCoreSysEventEnterForeGround withObject:nil\];)/) do
+      %(#{$1}\n    [GatewayLauncher endGatewayKeepAlive]; // xiaoxiong-gw-keepalive)
+    end
+  end
+  if s == before
+    puts "[scenedelegate] #{sd} 无需修改（保活已注入或场景不匹配）"
+  else
+    File.write(sd, s)
+    puts "[scenedelegate] 已更新 #{sd}（退后台静音保活 begin/end 调用）"
+  end
+end
+
 # ── 7) bridging header：暴露 DCUniModule.h 给 Swift 工程（WakeModule 是 ObjC，实际不需要；
 #       但保留 #import 以便 Swift 侧如需调用也无碍；用哨兵幂等）──
 bh = File.join(shell_root, 'HBuilder-Hello', 'HBuilder-Bridging-Header.h')

@@ -4,6 +4,8 @@
 # 重要：voice.conf 只负责「基础设施」几项，其余所有业务配置
 # （ASR / LLM / TTS 的上游地址、模型、音色、鉴权等）都存放在本地
 # SQLite 数据库里，由管理面板或首次播种写入，不再写在这个文件。
+# 唯一例外：管理面板账号（ADMIN_USER / ADMIN_PASSWORD）——它只在首次
+# 启动时从这里播种进 SQLite，之后真相源仍是库（见文末说明）。
 #
 # 使用方式：
 #   1. 安装脚本首次运行时会把这个模板复制到 $VOICE_HOME/voice.conf；
@@ -22,10 +24,22 @@
 #   Windows：%LOCALAPPDATA%\app-product\voice
 # ════════════════════════════════════════════════════════════════
 
-# ── 监听端口 ─────────────────────────────────────────────────────
+# ── 监听地址与端口 ───────────────────────────────────────────────
 # 网关 .env 里的 LLM_BASE_URL / ASR_BASE_URL / TTS_BASE_URL 都指向这个端口。
-# 默认：9529
+# VOICE_HOST 默认 0.0.0.0（保留真机 adb reverse / iOS 隧道 / 局域网联调能力）。
+# 只在本机使用请改成 127.0.0.1，可彻底避免面板/接口暴露到局域网。
+# 若必须监听 0.0.0.0，务必同时配置下面的 VOICE_IP_ALLOW 与 VOICE_API_KEY_AUTH。
 VOICE_PORT=9529
+# VOICE_HOST=127.0.0.1
+
+# ── 对外访问控制（可选，强烈建议监听 0.0.0.0 时开启）────────────
+# IP / CIDR 白名单（逗号 / 换行 / 空格分隔）；非空时仅名单内 IP 可访问，
+# 含管理面板 /admin；本机环回 127.0.0.1 恒放行（配错也锁不死自己）。
+# 例：VOICE_IP_ALLOW=192.168.1.0/24,10.0.0.8
+# VOICE_IP_ALLOW=
+# API-Key 鉴权：on 开启后 /llm /voice 数据接口需带 Authorization: Bearer <key>；
+# 留空 / off 关闭。管理面板走自己的会话 Cookie，不受此项影响。
+# VOICE_API_KEY_AUTH=off
 
 # ── 本地数据库目录 ───────────────────────────────────────────────
 # 本地 SQLite（voice.db）所在的目录；本文件不在这里写任何业务配置，
@@ -39,12 +53,32 @@ VOICE_PORT=9529
 #   $VOICE_HOME/voice.log
 # 支持 ~ 与 $VOICE_HOME 展开。
 # VOICE_LOG_FILE=$VOICE_HOME/voice.log
+#
+# 日志轮转（voice.sh rotate 手动执行，或加入 cron 定时；参数均可配置）：
+#   LOG_ROTATE_DAYS=7     归档保留天数（超过即删，0=不删）
+#   LOG_ROTATE_MAX_MB=10  单文件超过该大小(MB)即切分（0=不按大小切）
+#   LOG_ROTATE_BY=both    day=按天 / size=按大小 / both=两者结合（默认）
+# 轮转用 copytruncate（复制后清空原文件），不影响运行中的服务写日志。
+# LOG_ROTATE_DAYS=7
+# LOG_ROTATE_MAX_MB=10
+# LOG_ROTATE_BY=both
 
 # ── 远程数据库（可选）───────────────────────────────────────────
 # 远端数据库 DSN（如 PostgreSQL / 远端 SQLite）。配置后，本地保存配置、
 # 服务启动时会与远端同步；不配置则只用本地库。
 # 例：postgresql://user:pass@host:5432/voice
 # VOICE_REMOTE_DSN=
+
+# ── 管理面板账号密码（可选，首次播种）───────────────────────────
+# /admin 管理面板的登录账号密码。留空时：若存在旧 admin.conf 则迁移其账号密码，
+# 否则自动生成一把随机密码（在启动日志打印一次）。
+#
+# 注意：这两项只在「首次启动、库里还没有任何管理账号」时播种进 SQLite 的
+# admin_credentials 表一次。之后真相源是该表，改这里不再生效——要改密码请直接
+# 更新表里的 username / password 列，或清空该表后重启让配置重新播种。
+# 密码不写 config_kv，因此不会被同步到远端 Postgres / Redis。
+# ADMIN_USER=admin
+# ADMIN_PASSWORD=请改成强密码
 
 # ── Redis 地址（可选）──────────────────────────────────────────
 # 远端配置缓存地址。配置后，配置缓存走 Redis 不落库；不配置则回退查远端库。

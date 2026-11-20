@@ -11,6 +11,7 @@
 		4D3F474EB63DF74BA6948D20 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 23D8A4DBF95B3AE9E31C53E1 /* Foundation.framework */; };
 		6139C13372CEB82DEF52BDB5 /* GatewayNode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58612885D5AD8E934F277F5F /* GatewayNode.swift */; };
 		73DF6B54A4EADC60C8A9B70A /* NodeMobile.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B030B09AA6ABC79CE2276FEA /* NodeMobile.xcframework */; };
+		E6DD3884C58A49369F7170B2 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B1A2CD5BCE49441BA569650B /* AVFoundation.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -19,6 +20,7 @@
 		58612885D5AD8E934F277F5F /* GatewayNode.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = XiaoxiongGateway.xcodeproj/GatewayNode.swift; sourceTree = "<group>"; };
 		6620B78604C082A8C7B2A9A4 /* GatewayLauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = XiaoxiongGateway.xcodeproj/GatewayLauncher.swift; sourceTree = "<group>"; };
 		B030B09AA6ABC79CE2276FEA /* NodeMobile.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; name = NodeMobile.xcframework; path = "../sdk/HBuilder-SDK/Frameworks/NodeMobile.xcframework"; sourceTree = "<group>"; };
+		B1A2CD5BCE49441BA569650B /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -28,6 +30,7 @@
 			files = (
 				4D3F474EB63DF74BA6948D20 /* Foundation.framework in Frameworks */,
 				73DF6B54A4EADC60C8A9B70A /* NodeMobile.xcframework in Frameworks */,
+				E6DD3884C58A49369F7170B2 /* AVFoundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -55,6 +58,7 @@
 			isa = PBXGroup;
 			children = (
 				23D8A4DBF95B3AE9E31C53E1 /* Foundation.framework */,
+				B1A2CD5BCE49441BA569650B /* AVFoundation.framework */,
 			);
 			name = iOS;
 			sourceTree = "<group>";

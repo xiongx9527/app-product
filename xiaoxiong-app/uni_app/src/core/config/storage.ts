@@ -16,9 +16,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+// 内置语音服务默认根地址：公网语音代理（原本机 127.0.0.1:9529 仅 Mac 可达，iOS 真机连不到）。
+const DEFAULT_BUILTIN_URL = 'https://25946kt718.goho.co'
+// 旧默认地址：存量配置里若仍是这个值（且用户没改过），自动迁移到公网地址。
+const LEGACY_BUILTIN_URL = 'http://127.0.0.1:9529'
+
 const DEFAULT_VOICE: VoiceServiceConfig = {
   provider: 'builtin',
-  builtin: { url: 'http://127.0.0.1:9529', apiKey: '', model: '', voice: '', voiceModel: '', asrModel: '', ttsModel: '' },
+  builtin: { url: DEFAULT_BUILTIN_URL, apiKey: '', model: '', voice: '', voiceModel: '', asrModel: '', ttsModel: '' },
   dashscope: { url: '', apiKey: '', model: '', voice: '', voiceModel: '', asrModel: '', ttsModel: '' },
 }
 
@@ -231,6 +236,9 @@ function normalizeVoice(raw: unknown): VoiceServiceConfig {
       ? { url: legacyUrl || DEFAULT_VOICE.dashscope.url, apiKey: legacyApiKey || DEFAULT_VOICE.dashscope.apiKey }
       : { url: DEFAULT_VOICE.dashscope.url, apiKey: DEFAULT_VOICE.dashscope.apiKey }
   )
+  // 存量配置迁移：builtin.url 若仍是出厂旧默认（用户没改过），升级到公网地址。
+  // 只精准命中旧默认值，用户自填的其它地址（自建 LAN / 其它服务）一律不动。
+  if (builtin.url === LEGACY_BUILTIN_URL) builtin.url = DEFAULT_BUILTIN_URL
   return { provider, builtin, dashscope }
 }
 

@@ -38,7 +38,8 @@ final class GatewayNode {
     private static let URL_FILE = "gateway.url"
     /// 固定回环端口，与前端 DEFAULT_GATEWAY_PORT / 网关 .env 的 PORT 保持一致。
     private static let PORT = 8787
-    private let queue = DispatchQueue(label: "com.xiaoxiong.gateway.node")
+    // 提高 QoS：退后台时高优先级队列更不易被系统冻结/回收，配合静音保活提高 8787 存活概率。
+    private let queue = DispatchQueue(label: "com.xiaoxiong.gateway.node", qos: .userInitiated)
     private var started = false
 
     /// 在 App 进程后台线程启动网关。幂等：重复调用只生效一次。

@@ -373,21 +373,22 @@ def _write_api_key(path: str, value: str) -> None:
 
 
 def api_key_auth_enabled() -> bool:
-    """是否启用 API-Key 鉴权（作用于 /llm 与 /voice 数据接口）。默认不开启。
+    """是否启用 API-Key 鉴权（作用于 /llm 与 /voice 数据接口）。三态语义：
 
-    显式 VOICE_API_KEY_AUTH=on -> 开启；显式 off/none/... -> 关闭。
-    未设置（空）时向后兼容：沿用旧语义——VOICE_API_KEY 为非 off 值即开启
-    （让旧的 VOICE_API_KEY=auto / --api-key 配置不因新增开关而失效）。
-    全新安装两者皆空 -> VOICE_API_KEY 默认 off -> 关闭，满足「默认不开启」。
+    - 显式 VOICE_API_KEY_AUTH=on  -> 开启；
+    - 显式 off/none/...           -> 强制关闭（逃生口，忽略表内 key）；
+    - 未设置（空）                -> 表内存在 enabled key 即视为开启。
+
+    api-key 已改为 SQLite 表管理（不读 VOICE_API_KEY 配置）；迁移后表里有 key 就自动
+    生效，避免「建了 key 却没开鉴权」。失败关闭由下游保证：开启且无可用 key 时拒绝。
     """
     auth = config_value("VOICE_API_KEY_AUTH", "").strip().lower()
     if auth in ENABLED_VALUES:
         return True
-    # 注意："" 也在 API_KEY_OFF_VALUES 里，必须排除空串，否则「未设置」会被当成
-    # 「显式关闭」，直接短路掉下面这条向后兼容分支。
+    # 注意："" 也在 API_KEY_OFF_VALUES 里，必须排除空串，否则「未设置」会被当成显式关闭。
     if auth and auth in API_KEY_OFF_VALUES:
         return False
-    return config_value("VOICE_API_KEY", "off").strip().lower() not in API_KEY_OFF_VALUES
+    return voice_db.api_keys_has_enabled()
 
 
 _auto_api_key: str | None = None
@@ -731,24 +732,18 @@ app.add_middleware(
 async def security_middleware(request: Request, call_next):
     """对外数据接口统一过滤：IP 白名单 + API-Key 鉴权。
 
-    /admin 管理面板走独立会话鉴权，两个过滤都不作用于它（「不包含 /admin」、
-    「admin 也不需要 api-key」），也避免白名单配错把自己锁在面板外面。
-
-    - IP 白名单（VOICE_IP_ALLOW 非空时）：作用于除 /admin 外的所有对外接口。
-      本机环回地址恒放行——网关 / 面板都在本机，环回不算「对外」来源。
-    - API-Key 鉴权（VOICE_API_KEY_AUTH=on 时）：作用于 /llm、/voice 数据接口。
-      健康探测 / 文档 / OPTIONS 预检豁免；已登录管理面板的会话请求直接放行
-      （面板自带会话鉴权，且它拉取模型目录不带 Bearer）。
+    - IP 白名单（VOICE_IP_ALLOW 非空时）：作用于所有路径，含 /admin 管理面板；
+      本机环回地址恒放行——网关 / 面板都在本机，环回不算「对外」来源，
+      白名单配错也把自己锁不死。
+    - API-Key 鉴权（VOICE_API_KEY_AUTH=on 时）：只作用于 /llm、/voice 数据接口；
+      /admin 免 key（走独立的会话 Cookie 鉴权）。健康探测 / 文档 / OPTIONS 预检豁免；
+      已登录管理面板的会话请求直接放行（面板拉取模型目录不带 Bearer）。
 
     两个过滤都是「默认关闭」，未配置时整层零开销直接 call_next。
     """
     path = request.url.path
 
-    # 管理面板：完全豁免两个过滤（IP 白名单与 API-Key 都不作用于 /admin）
-    if _is_admin_path(path):
-        return await call_next(request)
-
-    # 1) IP 白名单（除 /admin 外的所有对外路径）
+    # 1) IP 白名单（含 /admin；环回恒放行，配错也锁不死本机）
     allow = _parse_ip_allow()
     if allow:
         ip = client_ip(request)
@@ -762,17 +757,17 @@ async def security_middleware(request: Request, call_next):
         and _path_needs_api_key(path)
         and not admin_panel.valid_session(request.cookies.get(admin_panel.SESSION_COOKIE))
     ):
-        keys = resolve_api_keys()
         token = _bearer_token(request.headers.get("authorization"))
-        # 失败关闭：鉴权开启后 keys 必非空，这里再兜一层——解析不出 Key 也不能退化成不校验。
-        if not keys or not (token and any(
-            hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in keys
-        )):
+        # 查表校验：哈希 + enabled + 时间窗口 + key 级绑定 IP（全局白名单已在上面过）。
+        matched = voice_db.api_keys_verify(token, client_ip(request)) if token else None
+        if not matched:
             return JSONResponse(
                 status_code=401,
                 content={"detail": "缺少或错误的 API Key"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        request.state.api_key_id = matched["id"]
+        request.state.api_key_name = matched["name"]
     return await call_next(request)
 
 
@@ -2637,18 +2632,15 @@ def _ws_auth_ok(websocket: WebSocket, path: str) -> bool:
         and _path_needs_api_key(path)
         and not admin_panel.valid_session(websocket.cookies.get(admin_panel.SESSION_COOKIE))
     ):
-        keys = resolve_api_keys()
         token = _bearer_token(websocket.headers.get("authorization")) or (
             websocket.query_params.get("api_key") or ""
         )
-        # 与 HTTP 中间件一致：失败关闭，解析不出 Key 也不放行。
-        if not keys or not (
-            token
-            and any(
-                hmac.compare_digest(token.encode("utf-8"), k.encode("utf-8")) for k in keys
-            )
-        ):
+        # 与 HTTP 中间件一致：查表校验（哈希 + enabled + 时间窗口 + key 级绑定 IP）。
+        matched = voice_db.api_keys_verify(token, _ws_client_ip(websocket)) if token else None
+        if not matched:
             return False
+        websocket.state.api_key_id = matched["id"]
+        websocket.state.api_key_name = matched["name"]
     return True
 
 
@@ -3880,6 +3872,23 @@ def main(argv=None) -> None:
     remote_dsn = os.environ.get("VOICE_REMOTE_DSN") or None
     redis_url = os.environ.get("REDIS_URL") or None
     store = config_store.configure(db_path, remote_dsn, redis_url)
+
+    # api-key 存量迁移（v10，仅一次）：把旧 VOICE_API_KEY 配置 + auto key 文件的明文
+    # 哈希入库。之后鉴权一律查表，不再读 VOICE_API_KEY。迁移标记写入 config_kv 防重复。
+    try:
+        legacy_keys: list[str] = []
+        raw_key = config_value("VOICE_API_KEY", "off").strip().lower()
+        if raw_key and raw_key not in API_KEY_OFF_VALUES and raw_key not in API_KEY_AUTO_VALUES:
+            legacy_keys.extend(k for k in re.split(r"[\s,]+", raw_key) if k)
+        auto_file = _read_api_key(api_key_file())
+        if auto_file:
+            legacy_keys.append(auto_file)
+        migrated = voice_db.api_keys_migrate_legacy(legacy_keys)
+        if migrated:
+            _startup_log(f"[local-ai] API Key: 已从旧配置迁移 {migrated} 把到数据库", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        _startup_log(f"[local-ai] API Key 迁移失败（忽略，继续）: {exc}", flush=True)
+
     # ASR 纠错词表存储：三库对等（sqlite/mysql/postgresql）+ Redis 缓存。
     # db_kind 不显式配时按 VOICE_REMOTE_DSN / VOICE_MYSQL_DSN 推断，默认 sqlite（复用 voice.db）。
     try:
@@ -3970,8 +3979,8 @@ def main(argv=None) -> None:
     )
 
     if api_key_auth_enabled():
-        ks = resolve_api_keys()
-        _startup_log(f"[local-ai] 鉴权 : 开启（{len(ks)} 个 Key）", flush=True)
+        n_keys = len(voice_db.api_keys_list())
+        _startup_log(f"[local-ai] 鉴权 : 开启（表内 {n_keys} 个 Key）", flush=True)
     else:
         _startup_log("[local-ai] 鉴权 : 关闭", flush=True)
     allow = _parse_ip_allow()
@@ -3980,9 +3989,29 @@ def main(argv=None) -> None:
     else:
         _startup_log("[local-ai] IP白名单: 关闭（不限制来源）", flush=True)
 
-    # 管理面板：把 Web 控制台挂到同一个 9529 端口，用 admin.conf 的独立账号密码保护。
+    # 默认监听仍是 0.0.0.0（保留真机 adb reverse / iOS 隧道 / LAN 联调链路），
+    # 但对外暴露且未加固时给出显式告警——只加可见性，不改默认值、不拦截启动。
+    if host not in ("127.0.0.1", "localhost", "::1") and (
+        not allow or not api_key_auth_enabled()
+    ):
+        _startup_log(
+            f"[local-ai] [安全警告] 服务监听 {host}:{port}，IP白名单="
+            f"{'关' if not allow else '开'}、API-Key鉴权="
+            f"{'关' if not api_key_auth_enabled() else '开'}。"
+            "凡能访问该端口者都可调用上游或打开管理面板。",
+            flush=True,
+        )
+        _startup_log(
+            "[local-ai]   建议：只听本机用 --ip 127.0.0.1；需对外请配 VOICE_IP_ALLOW "
+            "白名单 + VOICE_API_KEY_AUTH=on（面板密码已随机生成，见上方日志）。",
+            flush=True,
+        )
+
+    # 管理面板：Web 控制台挂到同一 9529 端口，账号密码存 SQLite admin_users（多账号+角色）。
     # 与语音 / LLM 接口同进程，但走 /admin 前缀且单独鉴权，不干扰推理接口。
     admin_panel.init_admin(_config_path, VOICE_HOME)
+    # 确保内置管理员存在（存量 admin.conf/admin_credentials 迁移；新密码只打印一次）。
+    admin_panel.load_admin_config()
     admin_panel.register_admin_routes(
         app,
         stt_builtin_check=sensevoice_check,
@@ -4002,7 +4031,7 @@ def main(argv=None) -> None:
 
     _startup_log(
         f"[local-ai] 管理 : http://{host}:{port}/admin "
-        f"（账号密码见 {os.path.join(VOICE_HOME, 'admin.conf')}）",
+        f"（账号密码存 voice.db 的 admin_users 表，可用 reset-admin.sh 重置）",
         flush=True,
     )
 

@@ -60,6 +60,8 @@ def main() -> int:
     config_store.configure(db_path, None, None)
 
     # 手工建会话，绕过登录表单（测试只关心已登录后的保存链路）
+    # v10 起 valid_session 会校验账号存在且启用，先建一个 admin 账号
+    voice_db.admin_user_add("admin", "password123", "admin")
     token = "test-session-token"
     voice_db.session_create(token, "admin")
 

@@ -75,6 +75,18 @@ interface PlusIo {
  */
 function readUrlFromRoot(io: PlusIo, rootType: number): Promise<string | null> {
   return new Promise((resolve) => {
+    // 超时兜底：plus.io 的 requestFileSystem/getFile/file/readAsText 是 4 层嵌套回调，
+    // 真机实测某层 success/fail 可能都不回调（ gateway.url 已写出、health 全绿，但前端卡在
+    // 这个 await 永不返回 → waitForEmbeddedGateway 挂死 → 界面永远「网关启动中」不超时）。
+    // 1.5s 内没结果就当读不到，让调用方用 fallback 地址继续 health 探测，绝不永久挂起。
+    let settled = false
+    const finish = (v: string | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(v)
+    }
+    const timer = setTimeout(() => finish(null), 1500)
     try {
       io.requestFileSystem(
         rootType,
@@ -89,21 +101,21 @@ function readUrlFromRoot(io: PlusIo, rootType: number): Promise<string | null> {
                   reader.onloadend = () => {
                     const text =
                       typeof reader.result === 'string' ? reader.result.trim() : ''
-                    resolve(text || null)
+                    finish(text || null)
                   }
-                  reader.onerror = () => resolve(null)
+                  reader.onerror = () => finish(null)
                   reader.readAsText(file)
                 },
-                () => resolve(null),
+                () => finish(null),
               )
             },
-            () => resolve(null),
+            () => finish(null),
           )
         },
-        () => resolve(null),
+        () => finish(null),
       )
     } catch {
-      resolve(null)
+      finish(null)
     }
   })
 }
@@ -195,6 +207,17 @@ export function isGatewayHealthAllOk(raw: unknown): boolean {
  */
 function probeGatewayHealth(httpBase: string, timeoutMs = 15000): Promise<boolean> {
   return new Promise((resolve) => {
+    // Promise 级超时兜底：uni.request 的 timeout 参数在部分基座版本失效，
+    // 既不 success 也不 fail 时 Promise 永挂 → waitForEmbeddedGateway 卡死 → 界面永远「网关启动中」。
+    // 用 finish 保证只 settle 一次，超时比 uni.request 的 timeout 多 2s 缓冲。
+    let settled = false
+    const finish = (v: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(v)
+    }
+    const timer = setTimeout(() => finish(false), timeoutMs + 2000)
     try {
       const u = (uni as unknown as {
         request?: (o: {
@@ -205,16 +228,16 @@ function probeGatewayHealth(httpBase: string, timeoutMs = 15000): Promise<boolea
           fail?: () => void
         }) => void
       } | undefined)?.request
-      if (typeof u !== 'function') return resolve(false)
+      if (typeof u !== 'function') return finish(false)
       u({
         url: `${httpBase.replace(/\/$/, '')}/api/health`,
         method: 'GET',
         timeout: timeoutMs,
-        success: (res) => resolve(isGatewayHealthAllOk(res?.data)),
-        fail: () => resolve(false),
+        success: (res) => finish(isGatewayHealthAllOk(res?.data)),
+        fail: () => finish(false),
       })
     } catch {
-      resolve(false)
+      finish(false)
     }
   })
 }

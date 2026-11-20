@@ -226,7 +226,7 @@ async function listBuiltinVoices(
   builtinUrl: string,
   apiKey?: string,
 ): Promise<VoiceList> {
-  const base = (builtinUrl || 'http://127.0.0.1:9529').replace(/\/+$/, '')
+  const base = (builtinUrl || 'https://25946kt718.goho.co').replace(/\/+$/, '')
   try {
     const headers: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
     const res = await fetch(`${base}/voice/v1/audio/voices?provider=builtin`, { headers })

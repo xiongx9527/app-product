@@ -14,6 +14,7 @@
 #   ./model-proxy/voice.sh log                   # 查看日志尾部（默认 80 行）
 #   ./model-proxy/voice.sh log -f                # 持续跟踪日志
 #   ./model-proxy/voice.sh log -n 200            # 查看最近 200 行
+#   ./model-proxy/voice.sh rotate                # 手动轮转日志（按 voice.conf 的 LOG_ROTATE_* 配置）
 #   ./model-proxy/voice.sh run                   # 前台运行，Ctrl+C 停止
 #
 # 启动前检查依赖环境；缺失时只把安装方法写进日志 / 终端，不会自动安装。
@@ -53,6 +54,61 @@ if [ -n "$_conf_line" ]; then
 fi
 unset _conf_line _lf
 DEFAULT_TAIL=80
+
+# 日志轮转配置（voice.conf 可读；全部可配置）：
+#   LOG_ROTATE_DAYS=7        归档保留天数
+#   LOG_ROTATE_MAX_MB=10     单文件超过该大小即切分（0=不按大小切）
+#   LOG_ROTATE_BY=both       day=按天 / size=按大小 / both=两者
+_read_conf() {
+  local key="$1" file="" line=""
+  if [ -n "${VOICE_CONFIG:-}" ] && [ -f "$VOICE_CONFIG" ]; then file="$VOICE_CONFIG"
+  elif [ -f "$VOICE_HOME/voice.conf" ]; then file="$VOICE_HOME/voice.conf"; fi
+  [ -n "$file" ] || return 0
+  line=$(grep -m1 "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null || true)
+  [ -n "$line" ] || return 0
+  printf '%s' "$line" | cut -d= -f2- | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^["'"'"']//; s/["'"'"']$//'
+}
+LOG_ROTATE_DAYS=$(_read_conf LOG_ROTATE_DAYS); LOG_ROTATE_DAYS=${LOG_ROTATE_DAYS:-7}
+LOG_ROTATE_MAX_MB=$(_read_conf LOG_ROTATE_MAX_MB); LOG_ROTATE_MAX_MB=${LOG_ROTATE_MAX_MB:-10}
+LOG_ROTATE_BY=$(_read_conf LOG_ROTATE_BY); LOG_ROTATE_BY=${LOG_ROTATE_BY:-both}
+
+do_rotate() {
+  [ -f "$LOG_FILE" ] || { log "日志不存在：${LOG_FILE}"; return 0; }
+  local by="$LOG_ROTATE_BY" days="$LOG_ROTATE_DAYS" maxmb="$LOG_ROTATE_MAX_MB"
+  local today size_mb need=false
+  today=$(date '+%Y-%m-%d')
+  size_mb=$(( $(wc -c < "$LOG_FILE") / 1048576 ))
+  case "$by" in
+    day)  need=true ;;
+    size) [ "$size_mb" -ge "$maxmb" ] && need=true ;;
+    both) need=true ;;  # both：每天切一次，且超限再补切（下面按标记文件去重）
+  esac
+  if [ "$need" != true ]; then
+    log "无需轮转（by=${by}, ${size_mb}MB < ${maxmb}MB）"; return 0
+  fi
+  # both/day 模式：当天已轮转过且未超大小则跳过
+  local stamp_file="${VOICE_HOME}/.logrotate-day"
+  local last_day=""; [ -f "$stamp_file" ] && last_day=$(cat "$stamp_file" 2>/dev/null || true)
+  if [ "$by" = "both" ] || [ "$by" = "day" ]; then
+    # maxmb=0 表示不按大小切，此时当天只轮转一次；否则未超阈值也跳过
+    if [ "$last_day" = "$today" ] && { [ "$maxmb" -eq 0 ] || [ "$size_mb" -lt "$maxmb" ]; }; then
+      log "今日已轮转且未超大小，跳过"; return 0
+    fi
+  fi
+  local dest="${LOG_FILE}.${today}"
+  local n=1
+  while [ -e "$dest" ]; do dest="${LOG_FILE}.${today}.${n}"; n=$((n+1)); done
+  cp -p "$LOG_FILE" "$dest" || die "轮转复制失败：${dest}"
+  # copytruncate：清空原文件，保留 shell/nohup 的 fd 继续写入
+  : > "$LOG_FILE" || die "清空日志失败：${LOG_FILE}"
+  printf '%s' "$today" > "$stamp_file"
+  log "已轮转：${dest}（${size_mb}MB）"
+  # 清理超过保留天数的归档
+  if [ "$days" -gt 0 ]; then
+    find "$(dirname "$LOG_FILE")" -maxdepth 1 -name "$(basename "$LOG_FILE").*" -type f -mtime "+${days}" -delete 2>/dev/null || true
+    log "已清理 ${days} 天前的日志归档"
+  fi
+}
 
 usage() {
   # 打印文件头注释（从第 2 行到 set -euo pipefail 之前），改注释不用同步改行号。
@@ -305,6 +361,9 @@ case "$COMMAND" in
   log | logs)
     do_log "$@"
     ;;
+  rotate | logrotate)
+    do_rotate
+    ;;
   run | foreground)
     [ -x "$START_SCRIPT" ] || die "未找到可执行脚本：${START_SCRIPT}"
     exec "$START_SCRIPT" "$@"
@@ -313,6 +372,6 @@ case "$COMMAND" in
     usage
     ;;
   *)
-    die "未知命令：${COMMAND}（支持 start / stop / restart / status / check / log / run）"
+    die "未知命令：${COMMAND}（支持 start / stop / restart / status / check / log / rotate / run）"
     ;;
 esac
