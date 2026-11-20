@@ -2917,6 +2917,63 @@ async def ws_inference(websocket: WebSocket):
         await _ws_send_fail(websocket, task_id, str(exc))
 
 
+# ── LLM token 用量：解析 usage + 字符估算兜底 + 日志/响应头 ──────────────
+def _estimate_tokens_chars(text: str) -> int:
+    """拿不到上游 usage 时的字符估算：CJK/日文按 1 字≈1 token，其余按 4 字符≈1 token。
+
+    仅作统计兜底（口径记在日志/响应头的 X-Usage-Estimated: 1），不用于计费/配额。
+    """
+    if not text:
+        return 0
+    cjk = len(re.findall(r"[\u3400-\u9fff\u3040-\u30ff]", text))
+    other = len(text) - cjk
+    return cjk + (other + 3) // 4
+
+
+def _estimate_llm_usage(body: dict, out_text: str) -> dict[str, int]:
+    """从请求 messages + 输出文本估算 prompt/completion token 数。"""
+    messages = body.get("messages") or []
+    parts: list[str] = []
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            parts.append(c)
+        elif isinstance(c, list):
+            for seg in c:
+                if isinstance(seg, dict) and isinstance(seg.get("text"), str):
+                    parts.append(seg["text"])
+    prompt = _estimate_tokens_chars("\n".join(parts))
+    completion = _estimate_tokens_chars(out_text)
+    return {"prompt_tokens": prompt, "completion_tokens": completion,
+            "total_tokens": prompt + completion}
+
+
+def _log_llm_usage(usage: dict[str, int], *, model: str, protocol: str,
+                   estimated: bool, stream: bool) -> None:
+    """统一记录一行 LLM 用量日志（供后续统计/审计抓取；当前不落库）。"""
+    # 走 uvicorn.error logger：它在 log_config 里已配置、会写进 voice.log；
+    # 自定义 voice.usage 子 logger 未纳入 log_config，info 级不会输出。
+    logging.getLogger("uvicorn.error").info(
+        "[llm-usage] model=%s protocol=%s stream=%s estimated=%s "
+        "prompt=%d completion=%d total=%d",
+        model, protocol, "1" if stream else "0", "1" if estimated else "0",
+        usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
+        usage.get("total_tokens", 0),
+    )
+
+
+def _usage_response_headers(usage: dict[str, int], estimated: bool) -> dict[str, str]:
+    """非流式响应头带 usage；流式因响应头先于末帧发出，只能靠日志。"""
+    return {
+        "X-Usage-Prompt-Tokens": str(usage.get("prompt_tokens", 0)),
+        "X-Usage-Completion-Tokens": str(usage.get("completion_tokens", 0)),
+        "X-Usage-Total-Tokens": str(usage.get("total_tokens", 0)),
+        "X-Usage-Estimated": "1" if estimated else "0",
+    }
+
+
 # ── LLM 路由 ─────────────────────────────────────────────────────
 def llm_disabled_response() -> JSONResponse:
     return error_response(
@@ -3246,6 +3303,24 @@ async def chat_completions(request: Request):
     # 当 UTF-8 解码 → SSE 解析不出任何 data 行，前端测试/对话一片空白。
     req.headers["Accept-Encoding"] = "identity"
 
+    # Usage 计量：仅 openai_chat_completions / azure 协议支持 stream_options.include_usage，
+    # 让上游在流末多吐一帧 usage（token 数）。客户端显式带 stream_options 时尊重其设置，
+    # 不覆盖——测试页可显式关掉。其余协议（anthropic/gemini/ollama/responses）的 usage
+    # 走各自翻译器旁路抓取，不需要也不认识 stream_options。
+    _proto_raw = (req_protocol or entry["protocol"] or "").lower()
+    # 注意 ollama 旧别名虽 normalize 成 openai，但原生 /api/chat 不认 stream_options，
+    # 用 uses_ollama_native 排除；其 usage 由 OllamaStream 旁路抓 done 行。
+    wire_for_usage = llm_protocols.normalize_protocol(_proto_raw)
+    if (
+        body.get("stream")
+        and wire_for_usage in ("openai_chat_completions", "azure_openai_chat_completions")
+        and not llm_protocols.uses_ollama_native(_proto_raw)
+        and isinstance(req.payload, dict)
+    ):
+        so = req.payload.setdefault("stream_options", {})
+        if isinstance(so, dict):
+            so.setdefault("include_usage", True)
+
     if not body.get("stream"):
         try:
             # 复用共享连接池；超时仍按每次请求的最新配置传，保证热更新生效。
@@ -3276,6 +3351,24 @@ async def chat_completions(request: Request):
                 headers=resp_headers,
             )
         data = resp_transform(data)
+        # Usage 计量：非流式响应自带（或被翻译函数保留）usage，直接读；拿不到按字符估算。
+        usage = data.get("usage") if isinstance(data, dict) else None
+        estimated = not isinstance(usage, dict)
+        if estimated:
+            out_text = ""
+            try:
+                choices = data.get("choices") or []
+                if choices:
+                    out_text = (choices[0].get("message") or {}).get("content") or ""
+                    if not isinstance(out_text, str):
+                        out_text = ""
+            except Exception:
+                out_text = ""
+            usage = _estimate_llm_usage(body, out_text)
+        usage_headers = _usage_response_headers(usage, estimated)
+        resp_headers.update(usage_headers)
+        _log_llm_usage(usage, model=effective_model or body.get("model", ""),
+                       protocol=_proto_raw, estimated=estimated, stream=False)
         return Response(
             content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
             status_code=200, media_type="application/json",
@@ -3330,11 +3423,35 @@ async def chat_completions(request: Request):
                 return raw
         return raw
 
+    out_text_parts: list[str] = []
+
+    def _collect_out_text(out: bytes) -> None:
+        """从下发的 OpenAI SSE 里旁路收集 delta.content，仅用于 usage 估算兜底。"""
+        if not out:
+            return
+        for line in out.split(b"\n"):
+            line = line.strip()
+            if not line.startswith(b"data:") or line[5:].strip() == b"[DONE]":
+                continue
+            try:
+                obj = json.loads(line[5:].strip())
+            except (ValueError, UnicodeDecodeError):
+                continue
+            try:
+                ch = (obj.get("choices") or [{}])[0]
+                delta = ch.get("delta") or {}
+                seg = delta.get("content")
+                if isinstance(seg, str):
+                    out_text_parts.append(seg)
+            except Exception:
+                pass
+
     async def body_gen():
         try:
             async for chunk in response.aiter_raw():
                 out = translator.feed(_decode(chunk))
                 if out:
+                    _collect_out_text(out)
                     yield out
             # 流正常结束：上游确实在吐字，标记成功，避免误熔断。
             upstream_pool.mark_success("LLM", entry)
@@ -3345,7 +3462,15 @@ async def chat_completions(request: Request):
         finally:
             tail = translator.finish()
             if tail:
+                _collect_out_text(tail)
                 yield tail
+            # Usage 计量：translator 旁路抓到的 usage 优先；拿不到按请求+输出字符估算。
+            usage = translator.usage
+            estimated = usage is None
+            if estimated:
+                usage = _estimate_llm_usage(body, "".join(out_text_parts))
+            _log_llm_usage(usage, model=model, protocol=_proto_raw,
+                           estimated=estimated, stream=True)
             await response.aclose()
             # 共享连接池不能在这里关：关闭的是本次响应，不是整个 client。
 

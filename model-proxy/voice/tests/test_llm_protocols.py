@@ -66,6 +66,43 @@ def main() -> int:
         r, _, _ = prep(proto, "https://x.example.com", "")
         check(f"{proto} 路径不受影响", needle in r.url, f"url={r.url}")
 
+    # 6) usage 旁路解析（6 种协议）
+    exp = {"prompt_tokens": 5, "completion_tokens": 21, "total_tokens": 26}
+    t = lp.StreamTranslator("m")
+    t.feed(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+    t.feed(b'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":21,"total_tokens":26}}\n\n')
+    check("usage: openai 透传尾帧", t.usage == exp, f"usage={t.usage}")
+
+    o = lp.OllamaStream("m")
+    o.feed(b'{"message":{"content":"hi"},"done":true,"prompt_eval_count":5,"eval_count":21}\n')
+    check("usage: ollama done 行", o.usage == exp, f"usage={o.usage}")
+
+    a = lp.AnthropicStream("m")
+    a.feed(b'event: message_start\ndata: {"message":{"usage":{"input_tokens":5}}}\n\n')
+    a.feed(b'event: message_delta\ndata: {"usage":{"output_tokens":21}}\n\n')
+    check("usage: anthropic start+delta", a.usage == exp, f"usage={a.usage}")
+
+    g = lp.GeminiStream("m")
+    g.feed(b'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":21,"totalTokenCount":26}}\n\n')
+    check("usage: gemini usageMetadata", g.usage == exp, f"usage={g.usage}")
+
+    r = lp.OpenAiResponsesStream("m")
+    r.feed(b'event: response.completed\ndata: {"response":{"usage":{"input_tokens":5,"output_tokens":21,"total_tokens":26}}}\n\n')
+    check("usage: responses completed", r.usage == exp, f"usage={r.usage}")
+
+    # 7) 非流式翻译保留 usage
+    ou = lp.ollama_to_openai({"model": "m", "message": {"content": "hi"}, "prompt_eval_count": 5, "eval_count": 21})
+    check("usage: ollama 非流式保留", ou.get("usage") == exp, f"usage={ou.get('usage')}")
+    au = lp.anthropic_to_openai({"model": "m", "content": [], "usage": {"input_tokens": 5, "output_tokens": 21}})
+    check("usage: anthropic 非流式保留", au.get("usage") == exp, f"usage={au.get('usage')}")
+    gu = lp.gemini_to_openai({"model": "m", "candidates": [], "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 21}})
+    check("usage: gemini 非流式保留", gu.get("usage") == exp, f"usage={gu.get('usage')}")
+    ru = lp.openai_responses_to_openai({"model": "m", "output": [], "usage": {"input_tokens": 5, "output_tokens": 21}})
+    check("usage: responses 非流式保留", ru.get("usage") == exp, f"usage={ru.get('usage')}")
+
+    # 8) 上游无 usage 时归一化返回 None（调用方据此回退字符估算）
+    check("usage: 全缺返回 None", lp._normalize_usage(None, None) is None, "")
+
     failed = [n for n, ok in _RESULTS if not ok]
     print("\n== SUMMARY:", "ALL PASS" if not failed else f"{len(failed)} FAILED: {failed}")
     return 1 if failed else 0

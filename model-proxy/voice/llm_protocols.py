@@ -155,16 +155,83 @@ def _openai_chunk(model: str, delta: dict, finish: str | None = None) -> bytes:
 
 
 # ── 流式翻译器：把上游字节流翻译为 OpenAI SSE 字节 ──────────────────────
+def _normalize_usage(prompt: Any, completion: Any, total: Any = None) -> dict[str, int] | None:
+    """把各厂商 usage 字段收敛成统一的 {prompt_tokens, completion_tokens, total_tokens}。
+
+    任一为 None/非法时对应字段记 0；三个字段全缺（都拿不到）时返回 None，表示本次
+    上游没给 usage——调用方据此回退字符估算。total 缺失时用 prompt+completion 补。
+    """
+    def _int(v: Any) -> int | None:
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, (int, float)):
+            return int(v)
+        if isinstance(v, str):
+            try:
+                return int(v)
+            except ValueError:
+                return None
+        return None
+
+    p, c, t = _int(prompt), _int(completion), _int(total)
+    if p is None and c is None and t is None:
+        return None
+    p, c = p or 0, c or 0
+    return {
+        "prompt_tokens": p,
+        "completion_tokens": c,
+        "total_tokens": t if t is not None else p + c,
+    }
+
+
 class StreamTranslator:
-    """默认实现：原样透传（上游已是 OpenAI SSE）。"""
+    """默认实现：原样透传（上游已是 OpenAI SSE）。
+
+    usage 旁路：子类/本类在 feed()/finish() 里解析到 token 用量时调用
+    ``note_usage()`` 记到 ``self.usage``；调用方在流结束后读取，不依赖下发给客户端
+    的字节（不改任何转发内容）。默认实现也会扫描透传的 SSE 尾帧 usage。
+    """
 
     def __init__(self, model: str) -> None:
         self.model = model
+        self.usage: dict[str, int] | None = None
+        self._usage_buf = b""  # 跨 chunk 拼帧，供尾帧 usage 解析
+
+    def note_usage(self, usage: dict[str, int] | None) -> None:
+        if usage:
+            self.usage = usage
+
+    def _scan_openai_usage(self, chunk: bytes) -> None:
+        """从原样透传的 OpenAI SSE 里找 usage 帧（含 include_usage 的尾帧）。"""
+        self._usage_buf += chunk
+        # 只保留尾部若干 KB，避免长对话无限增长
+        if len(self._usage_buf) > 65536:
+            self._usage_buf = self._usage_buf[-65536:]
+        for line in self._usage_buf.split(b"\n"):
+            line = line.strip()
+            if not line.startswith(b"data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload or payload == b"[DONE]":
+                continue
+            try:
+                obj = json.loads(payload)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            u = obj.get("usage")
+            if isinstance(u, dict):
+                self.note_usage(_normalize_usage(
+                    u.get("prompt_tokens", u.get("input_tokens")),
+                    u.get("completion_tokens", u.get("output_tokens")),
+                    u.get("total_tokens"),
+                ))
 
     def feed(self, chunk: bytes) -> bytes:
+        self._scan_openai_usage(chunk)
         return chunk
 
     def finish(self) -> bytes:
+        self._scan_openai_usage(b"\n")  # 冲刷可能残留的尾行
         return b""
 
 
@@ -202,6 +269,10 @@ class OllamaStream(StreamTranslator):
             if delta:
                 out += _openai_chunk(self.model, delta)
             if obj.get("done"):
+                # Ollama done 行带 prompt_eval_count / eval_count（token 数），旁路抓取
+                self.note_usage(_normalize_usage(
+                    obj.get("prompt_eval_count"), obj.get("eval_count")
+                ))
                 out += OPENAI_SSE_DONE.encode()
         return out
 
@@ -224,6 +295,10 @@ class OllamaStream(StreamTranslator):
                     delta["reasoning_content"] = thinking
                 if delta:
                     out += _openai_chunk(self.model, delta)
+                if obj.get("done"):
+                    self.note_usage(_normalize_usage(
+                        obj.get("prompt_eval_count"), obj.get("eval_count")
+                    ))
         out += OPENAI_SSE_DONE.encode()
         return out
 
@@ -264,7 +339,20 @@ class AnthropicStream(StreamTranslator):
 
     def _handle(self, ev_type: str | None, obj: dict) -> bytes:
         if ev_type == "message_start":
+            # Anthropic message_start.message.usage.input_tokens；output 在 message_delta。
+            msg_usage = (obj.get("message") or {}).get("usage") or {}
+            self.note_usage(_normalize_usage(msg_usage.get("input_tokens"), 0))
             return _openai_chunk(self.model, {"role": "assistant"})
+        if ev_type == "message_delta":
+            # message_delta.usage.output_tokens（收尾时给出）。与上面 input 合并。
+            du = obj.get("usage") or {}
+            out_tokens = du.get("output_tokens")
+            if out_tokens is not None:
+                prev = self.usage or {}
+                self.note_usage(_normalize_usage(
+                    prev.get("prompt_tokens", 0), out_tokens
+                ))
+            return b""
         if ev_type == "content_block_delta":
             delta = obj.get("delta", {})
             dtype = delta.get("type")
@@ -311,6 +399,13 @@ class GeminiStream(StreamTranslator):
                 obj = json.loads(data)
             except ValueError:
                 continue
+            # Gemini 每帧（尤其末帧）的 usageMetadata：promptTokenCount / candidatesTokenCount
+            um = obj.get("usageMetadata")
+            if isinstance(um, dict):
+                self.note_usage(_normalize_usage(
+                    um.get("promptTokenCount"), um.get("candidatesTokenCount"),
+                    um.get("totalTokenCount"),
+                ))
             cands = obj.get("candidates") or []
             if not cands:
                 continue
@@ -334,6 +429,13 @@ def _identity(obj: dict) -> dict:
     return obj
 
 
+def attach_usage(out: dict, usage: dict[str, int] | None) -> dict:
+    """把统一的 usage 挂到翻译后的 OpenAI 响应上（None 则不挂，交给调用方估算）。"""
+    if usage:
+        out["usage"] = usage
+    return out
+
+
 def ollama_to_openai(obj: dict) -> dict:
     msg = obj.get("message", {}) or {}
     content = msg.get("content", "")
@@ -341,12 +443,12 @@ def ollama_to_openai(obj: dict) -> dict:
     message: dict[str, Any] = {"role": "assistant", "content": content}
     if reasoning:
         message["reasoning_content"] = reasoning
-    return {
+    return attach_usage({
         "id": "chatcmpl-proxy",
         "object": "chat.completion",
         "model": obj.get("model", ""),
         "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
-    }
+    }, _normalize_usage(obj.get("prompt_eval_count"), obj.get("eval_count")))
 
 
 def anthropic_to_openai(obj: dict) -> dict:
@@ -355,7 +457,8 @@ def anthropic_to_openai(obj: dict) -> dict:
         for c in obj.get("content", [])
         if isinstance(c, dict) and c.get("type") == "text"
     )
-    return {
+    u = obj.get("usage") or {}
+    return attach_usage({
         "id": "chatcmpl-proxy",
         "object": "chat.completion",
         "model": obj.get("model", ""),
@@ -366,7 +469,7 @@ def anthropic_to_openai(obj: dict) -> dict:
                 "finish_reason": "stop",
             }
         ],
-    }
+    }, _normalize_usage(u.get("input_tokens"), u.get("output_tokens")))
 
 
 def gemini_to_openai(obj: dict) -> dict:
@@ -379,7 +482,8 @@ def gemini_to_openai(obj: dict) -> dict:
     if cands:
         parts = (cands[0].get("content") or {}).get("parts") or []
         text = "".join(p.get("text", "") for p in parts)
-    return {
+    um = obj.get("usageMetadata") or {}
+    return attach_usage({
         "id": "chatcmpl-proxy",
         "object": "chat.completion",
         "model": obj.get("model", ""),
@@ -390,7 +494,9 @@ def gemini_to_openai(obj: dict) -> dict:
                 "finish_reason": "stop",
             }
         ],
-    }
+    }, _normalize_usage(
+        um.get("promptTokenCount"), um.get("candidatesTokenCount"), um.get("totalTokenCount")
+    ))
 
 
 # ── 请求构建（出站翻译）─────────────────────────────────────────────────
@@ -548,7 +654,13 @@ class OpenAiResponsesStream(StreamTranslator):
                     out += _openai_chunk(self.model, {"content": delta})
             elif ev_type == "response.completed":
                 # 结束信号交给 finish() 统一补 [DONE]，避免重复。
-                pass
+                # Responses API 的 usage 在 response 对象里（input_tokens/output_tokens/total_tokens）
+                resp = obj.get("response") or {}
+                u = resp.get("usage") or obj.get("usage") or {}
+                if isinstance(u, dict):
+                    self.note_usage(_normalize_usage(
+                        u.get("input_tokens"), u.get("output_tokens"), u.get("total_tokens")
+                    ))
         return out, buf
 
     def feed(self, chunk: bytes) -> bytes:
@@ -570,7 +682,8 @@ def openai_responses_to_openai(obj: dict) -> dict:
         for c in item.get("content", []) or []:
             if isinstance(c, dict) and c.get("type") == "output_text":
                 text += c.get("text", "")
-    return {
+    u = obj.get("usage") or {}
+    return attach_usage({
         "id": "chatcmpl-proxy",
         "object": "chat.completion",
         "model": obj.get("model", ""),
@@ -581,7 +694,7 @@ def openai_responses_to_openai(obj: dict) -> dict:
                 "finish_reason": "stop",
             }
         ],
-    }
+    }, _normalize_usage(u.get("input_tokens"), u.get("output_tokens"), u.get("total_tokens")))
 
 
 # ── 思考开关：统一契约 -> 各厂商原生参数 ─────────────────────────────────
