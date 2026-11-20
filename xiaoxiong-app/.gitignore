@@ -1,0 +1,2 @@
+# KWS 依赖：vendor 压缩包入库，解压物由 scripts/prepare-kws-assets.sh 幂等生成
+native/ios/app/Frameworks/sherpa-onnx.xcframework/
