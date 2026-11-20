@@ -216,6 +216,41 @@ def write_voice_config(patch: dict[str, str]) -> str | None:
     return None
 
 
+# 切 TTS 提供商时同步把音色归一化到该提供商的合法音色，避免存出「deepseek + edge 音色」
+# 这种必然 502 的组合（真机踩坑：health 探 TTS 失败 → 网关一直判「启动中/失败」）。
+# 放在服务端而不是前端：任何调用方（管理页 / curl API）切 provider 都受保护，且与前端加载时序无关。
+TTS_PROVIDER_MODEL_KEYS = {
+    "builtin": "TTS_BUILTIN_MODEL",
+    "dashscope": "TTS_UPSTREAM_MODEL",
+    "deepseek": "TTS_DEEPSEEK_MODEL",
+}
+
+
+def normalize_tts_voice_on_provider_change(patch: dict[str, str]) -> dict[str, str]:
+    """patch 改了 TTS_PROVIDER 且确实切换时，若 TTS_VOICE 不属于新提供商则重置为其默认音色。"""
+    if "TTS_PROVIDER" not in patch:
+        return patch
+    store = config_store.instance()
+    new_p = str(patch.get("TTS_PROVIDER") or "").strip().lower()
+    old_p = str(store.get("TTS_PROVIDER", "builtin") or "builtin").strip().lower()
+    if not new_p or new_p == old_p:
+        return patch
+    valid = {v["id"] for v in voice_db.list_voices(new_p, None)}
+    if not valid:
+        return patch  # 目录没数据（未播种）时不猜，保持原样
+    voice = str(patch.get("TTS_VOICE") or store.get("TTS_VOICE", "") or "").strip()
+    if voice in valid:
+        return patch  # 调用方显式选了合法音色，尊重
+    # 按新 provider 的当前 model 取默认音色（model 可能随 patch 一起更新）
+    model_key = TTS_PROVIDER_MODEL_KEYS.get(new_p, "")
+    model = str(patch.get(model_key) or store.get(model_key, "") or "").strip()
+    voices = voice_db.list_voices(new_p, model or None)
+    default = next((v["id"] for v in voices if v.get("is_default")), None) or (voices[0]["id"] if voices else None)
+    if default:
+        patch = {**patch, "TTS_VOICE": default}
+    return patch
+
+
 # ── 运行状态 / 日志 / 控制 ─────────────────────────────────────────
 def voice_port() -> int:
     # 配置真相源是本地 SQLite（经 config_store），voice.conf 仅在播种阶段被读。
@@ -3618,6 +3653,9 @@ def register_admin_routes(
         # 丢弃客户端回传的脱敏哨兵：UI 把密钥 / 地址池打码成 HIDDEN，若原样写回会
         # 把真实密钥 / 池 JSON 覆盖成星号。只有非哨兵的值才允许落地。
         patch = {k: v for k, v in patch.items() if v != HIDDEN}
+        # 切 TTS 提供商时若音色不匹配（如 deepseek + edge 音色），自动归一化为新提供商的默认音色，
+        # 从源头杜绝「TTS 502 → health 判失败 → 网关卡启动」（真机踩坑）。
+        patch = normalize_tts_voice_on_provider_change(patch)
         err = write_voice_config(patch)
         if err:
             raise HTTPException(status_code=500, detail=err)
