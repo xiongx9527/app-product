@@ -6,7 +6,7 @@
  *    试点阶段只有 preference，等价于默认开）；
  *  - 有 enabled → 按数组顺序取登记表中的模块，未知 id 打印 warn 跳过。
  *
- * 路径规则仿 asrCorrectionSeed.ts:15-38：优先 GATEWAY_HOME/skills.json，
+ * 路径规则：优先 GATEWAY_HOME/skills.json，
  * 回退 gateway 源码/打包目录同级（开发与打包都能找到，配置不存在时走默认全开）。
  */
 import { readFileSync } from 'node:fs'

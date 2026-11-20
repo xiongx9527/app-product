@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { pickDeals, preferenceKeywords } from '../../../src/service/memory/dealsPreference'
-import type { Deal } from '../../../src/service/deals'
+import { preferenceKeywords } from '../../../src/service/memory/preferenceKeywords'
+import { pickDeals } from '../../../src/service/skills/deals_skill/preference'
+import type { Deal } from '../../../src/service/skills/deals_skill/deals'
 import type { MemoryEntry } from '../../../src/service/dataService'
 
 const mem = (key: string, value: string): MemoryEntry => ({ key, value, createdAt: 0, updatedAt: 0 })

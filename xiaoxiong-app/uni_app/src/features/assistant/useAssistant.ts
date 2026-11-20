@@ -724,6 +724,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         if (sig === lastMediaPlaySig && now - lastMediaPlayAt < MEDIA_PLAY_DEDUP_MS) break
         lastMediaPlaySig = sig
         lastMediaPlayAt = now
+        // 每次新播放先清掉上一条内容的字幕数据，避免张冠李戴：从有字幕的百科/诗词切到无字幕的
+        // 新闻/音乐时，旧字幕会留在屏幕上。网关统一在 media.play 之后紧跟本条 media.subtitle，
+        // 所以这里清完会被本条字幕覆盖；无字幕内容则清完保持空（显示「暂无字幕」）。
+        // 不动 subtitleVisible——保留用户手动「关闭字幕」的意图，新字幕到达时现有逻辑会翻回显示。
+        subtitle.value = null
         // 播放方式分两类：能拿到「可下载的文件地址」就先下到本地再播，否则直接把 URL 交给播放器。
         // 之所以优先本地文件：DCloud AudioPlayer 直拉 HTTP 流不稳（实测 -99 且不发请求），本地文件 100% 可靠。
         // 下载 + 起播的细节全部封装在 playDownloadedMedia 里，这里只负责决定「下哪个地址、带什么选项」。

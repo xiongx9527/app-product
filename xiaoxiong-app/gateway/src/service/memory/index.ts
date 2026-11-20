@@ -1,4 +1,4 @@
-export { preferenceKeywords, rankByPreference, pickDeals } from './dealsPreference'
+export { preferenceKeywords } from './preferenceKeywords'
 export {
   createMemoryExtractor,
   formatExisting,

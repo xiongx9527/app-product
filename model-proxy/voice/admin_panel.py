@@ -277,7 +277,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
            justify-content:space-between; }
   header h1 { font-size:16px; margin:0; font-weight:600; }
   .who-wrap { display:flex; align-items:center; gap:12px; }
-  main { max-width:920px; margin:0 auto; padding:20px; }
+  main { width:100%; max-width:none; margin:0; padding:20px; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; transition:padding .15s ease; }
   .card h2 { font-size:14px; margin:0 0 12px; color:var(--mut); font-weight:600; text-transform:uppercase; letter-spacing:.04em; cursor:pointer; user-select:none; display:flex; justify-content:space-between; align-items:center; }
   .card h2::after { content:'▾'; font-size:13px; line-height:1; color:var(--fg); opacity:.6; transition:transform .15s ease; }
@@ -365,7 +365,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.cfg-table .asr-builtin td, table.cfg-table .tts-builtin td { text-align:center; }
   table.cfg-table tr.asr-builtin .mini, table.cfg-table tr.tts-builtin .mini { padding:3px 10px; font-size:12px; }
   table.cfg-table tr.asr-builtin .badge, table.cfg-table tr.tts-builtin .badge { margin:0; }
-  table.cfg-table td.env-cell { text-align:left; max-width:240px; }
+  table.cfg-table td.env-cell { text-align:left; width:300px; max-width:340px; }
   table.cfg-table .env-req { color:var(--mut); font-size:11px; margin-top:3px; line-height:1.5; text-align:left; }
   /* 模型子表：提供商拥有哪些模型（多选）、哪个是默认、逐个模型是否可用。
      固定布局 + 定宽列：无论模型名长短，ollama / 自定义 两个子表内部列宽完全一致（已对齐）。 */
@@ -377,8 +377,8 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.model-sub th { background:#10141b; color:var(--mut); font-weight:600; position:sticky; top:0; z-index:1; white-space:normal; line-height:1.15; }
   table.model-sub th:nth-child(1) { width:24px; }   /* 勾选 */
   table.model-sub th:nth-child(3) { width:58px; }   /* 默认（LLM/向量 通用） */
-  table.model-sub th:nth-child(4) { width:46px; }   /* 操作 */
-  table.model-sub th:nth-child(5) { width:54px; }   /* 状态 */
+  table.model-sub th:nth-child(4) { width:62px; }   /* 操作 */
+  table.model-sub th:nth-child(5) { width:74px; }   /* 状态 */
   table.model-sub td.mm { color:var(--fg); }         /* 模型列自适应，过长省略号（与上方定宽列配合，两表列宽一致） */
   table.model-sub td.avail-cell { padding:2px 3px; }
   table.model-sub .mini { padding:2px 7px; font-size:11px; }
@@ -519,7 +519,7 @@ const I18N = {
     "asr.detectFailed": "检测失败",
     "asr.detecting": "正在真实加载内置模型并跑一次推理…",
     "asr.detectingTitle": "真实加载内置模型并跑一次推理",
-    "asr.modelFile": "模型文件：model.int8.onnx + tokens.txt（~240MB）+ silero_vad.onnx（~2MB，幻觉拦截用），均由 install-voice 下载至 models/sensevoice/",
+    "asr.modelFile": "SenseVoice ~240MB + VAD 幻觉拦截 ~2MB，install-voice 自动下载至 models/sensevoice/",
     "asr.noAudio": "未内嵌音频",
     "asr.ok": "内置可用：模型加载与推理均正常",
     "asr.outPlaceholder": "识别结果将显示在这里。",
@@ -749,8 +749,7 @@ const I18N = {
     "test.tabTts": "语音合成 TTS",
     "tts.builtinNote": "内置 TTS 可选 edge-tts（在线）或 kokoro（纯本地）；勾选/设默认后保存即生效，点「测试可用」按需验证。",
     "tts.builtinSynth": "内置合成（edge-tts 在线 / kokoro 本地）",
-    "tts.ffmpeg": "ffmpeg：edge-tts 的 wav 输出需安装；kokoro 不需要",
-    "tts.needNetwork": "edge-tts 需联网；kokoro 纯本地，模型随安装脚本下载",
+    "tts.needNetwork": "edge-tts 需联网、依赖 ffmpeg；kokoro 纯本地免依赖",
     "tts.ok": "可用：合成成功",
     "tts.synthTitle": "真实合成一句验证内置 TTS 是否可用",
     "tts.synthcing": "正在按配置合成一句…",
@@ -769,7 +768,7 @@ const I18N = {
     "asr.detectFailed": "detection failed",
     "asr.detecting": "Loading the built-in model and running one inference…",
     "asr.detectingTitle": "Load the built-in model and run one inference",
-    "asr.modelFile": "Model files: model.int8.onnx + tokens.txt (~240MB) + silero_vad.onnx (~2MB, for hallucination gating), all downloaded by install-voice to models/sensevoice/",
+    "asr.modelFile": "SenseVoice ~240MB + VAD (hallucination gate) ~2MB, auto-downloaded by install-voice to models/sensevoice/",
     "asr.noAudio": "No embedded audio",
     "asr.ok": "Built-in OK: model loads and infers normally",
     "asr.outPlaceholder": "Recognition result will appear here.",
@@ -974,8 +973,7 @@ const I18N = {
     "test.tabTts": "Speech Synthesis TTS",
     "tts.builtinNote": "Built-in TTS offers edge-tts (online) or kokoro (fully local); pick a default and save to apply, use \"Test availability\" to verify on demand.",
     "tts.builtinSynth": "Built-in synthesis (edge-tts online / kokoro local)",
-    "tts.ffmpeg": "ffmpeg: needed for edge-tts wav output; kokoro does not need it",
-    "tts.needNetwork": "edge-tts needs internet; kokoro is fully local (model downloaded by install-voice)",
+    "tts.needNetwork": "edge-tts needs internet + ffmpeg; kokoro fully local, no deps",
     "tts.ok": "Available: synthesis succeeded",
     "tts.synthTitle": "Synthesize one sentence to verify built-in TTS",
     "tts.synthcing": "Synthesizing one sentence per config…",
@@ -2311,7 +2309,6 @@ function paintTtsTable(){
     <td class="env-cell">
       <span class="muted">${t('tts.builtinSynth')}</span>
       <div class="env-req">${t('tts.needNetwork')}</div>
-      <div class="env-req">${t('tts.ffmpeg')}</div>
     </td>
     <td class="model-cell">${buildUpstreamModelPick('ttsBuiltin')}</td>
   </tr>`;

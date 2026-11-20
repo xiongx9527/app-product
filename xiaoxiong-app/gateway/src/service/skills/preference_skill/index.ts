@@ -20,7 +20,8 @@ import {
   isAffirmative,
   isNegative,
   mergeMemoryValue,
-} from '../../control/memoryPrompt'
+} from './memoryPrompt'
+import { detectMemoryCommand } from './memoryControl'
 import type { Skill, SkillContext, SkillModule } from '../types'
 
 /** LLM 抽取不可用/归不出来时的兜底 key（存储约定，非业务词表）。 */
@@ -35,6 +36,29 @@ function createPreferenceSkill(ctx: SkillContext): Skill {
   let pending: PendingMemory | null = null
 
   return {
+    async onDirectCommand(text) {
+      // 记忆直连命令（记住 XX / 忘了 XX / 清空记忆）：确定性落地，不进 LLM。
+      // 只在句首有明确动词时命中（detectMemoryCommand 内部保证），不误伤「我忘了带钥匙」。
+      const cmd = detectMemoryCommand(text)
+      if (!cmd || !ctx.deviceId) return undefined
+      const m = messages(ctx.lang).memory
+      if (cmd.action === 'remember') {
+        await ctx.data.saveMemory(ctx.deviceId, cmd.key, cmd.value)
+        await ctx.speak(m.remembered(cmd.key, cmd.value))
+        return { consumed: true }
+      }
+      if (cmd.action === 'clear') {
+        await ctx.data.forgetMemory(ctx.deviceId)
+        await ctx.speak(m.cleared())
+        return { consumed: true }
+      }
+      const n = await ctx.data.forgetMemory(ctx.deviceId, cmd.topic)
+      await ctx.speak(n > 0 ? m.forgot(cmd.topic, n) : m.nothingToForget())
+      return { consumed: true }
+    },
+    matchesIntent(text) {
+      return detectMemoryCommand(text) !== null
+    },
     async onFinalize(text) {
       // 只在已问过（asked=true，即有上下文）时才把肯定/否定当成对「要不要记」的回答。
       // 绝不因超时清 pending——隔十几秒的「好的」也要能对上。
@@ -119,8 +143,9 @@ function createPreferenceSkill(ctx: SkillContext): Skill {
 export const preferenceSkill: SkillModule = {
   id: 'preference',
   name: '偏好记忆确认',
-  // 偏好确认走 onFinalize，不参与 onDirectCommand 的优先级竞争；给个靠后的占位值。
-  priority: 900,
+  // 记忆直连命令（记住/忘了/清空）原在 handleDirectCommand 最前，故给最小 priority 保证先消费；
+  // 偏好确认走 onFinalize/onAgentReply，与直连优先级无关。
+  priority: 5,
   // skill 提示词：只描述「你拥有这个能力」，不写「遇到喜欢就反问」这类硬规则——
   // 具体追问时机与确认判定由生命周期钩子确定性处理，提示词不掺业务分支。
   description: (lang) =>

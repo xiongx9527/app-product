@@ -106,11 +106,11 @@ npm run build:app
 find dist/build/app -type d \( -name "*-venv" -o -name "*_venv" -o -name ".venv" -o -name "__pycache__" \) -prune -exec rm -rf {} +
 
 # —— 2. 构建内嵌网关 bundle（与前端、原生一起出包）——
-# iOS dev-only USB 隧道开关：dev 注入 true 让网关在 127.0.0.1:9529 起 mux 端点，
-# 经 PeerTalk USB 转到 Mac 语音代理（等价 Android adb reverse，配置地址不变）。
-# 所有环境都显式传 define（dev=true / 其它=false），确保 test/pro 的 bundle 里整段
-# 隧道代码被 esbuild 常量折叠 + tree-shake 掉（grep 哨兵 [ios-dev-tunnel] 为零）。
-if [ "$ENV" = "dev" ]; then
+# iOS dev-only USB 隧道开关：仅 iOS + dev 注入 true，让网关在 127.0.0.1:9529 起 mux 端点，
+# 经 PeerTalk USB 转到 Mac 语音代理。Android 走 adb reverse（设备 9529 → Mac 9529），
+# 绝不能起这个隧道——否则它占住设备 9529，adb reverse 建不上、ASR/LLM/TTS 全连不通。
+# 所有非 (ios+dev) 组合都显式传 false，确保隧道代码被 tree-shake 掉（grep 哨兵为零）。
+if [ "$PLATFORM" = "ios" ] && [ "$ENV" = "dev" ]; then
   TUNNEL_DEFINE=true
   echo "==> [2/3] iOS dev USB 隧道: 启用 (XIAOXIONG_IOS_DEV_TUNNEL=true)"
 else

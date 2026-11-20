@@ -12,7 +12,8 @@ import type { Lang, ServerEvent } from '../../protocol'
 import type { DataService } from '../dataService'
 import type { MemoryStore } from '../tools'
 import type { AgentService } from '../agentService'
-import type { MediaPlaybackCapability } from '../media/MediaPlaybackCapability'
+import type { MediaPlaybackCapability } from '../media/mediaPlaybackCapability'
+import type { ContentCandidate } from '../content/types'
 import type { LocationInfo } from '../../protocol'
 
 /** 网关在每轮会话 start 时构造、注入给 skill 的运行时能力。 */
@@ -60,7 +61,37 @@ export interface SkillContext {
     recommend: (text: string) => Promise<boolean>
     /** 选第几条（跨轮候选）。 */
     select: (text: string) => Promise<boolean>
+    /** 挂起候选列表（多条结果时口播编号让用户语音选，跨音乐/新闻共用）。 */
+    setCandidates: (items: ContentCandidate[], query: string) => void
+    /** 与商品候选互斥：挂内容候选时清掉商品候选。 */
+    clearDeals: () => void
   }
+
+  /**
+   * 通用内容能力（系统能力，非某业务所有）：外部音频落本地短链 + 真实时长、dash 短链工具，
+   * 由装配层注入。百科/诗词/新闻等需要「播真实音频+同源字幕」的 skill 共用，不各自实现。
+   */
+  mediaTools?: {
+    /** 第三方音频落本地短链；失败返回 null（回退原 url）。 */
+    cacheAudio: (url: string) => Promise<string | null>
+    /** 已落盘音频的真实时长（秒）；拿不到返回 0（回退估算）。 */
+    audioDuration: (path: string) => number
+    /** dash 音轨后台预热（不 await）。 */
+    ensureAdts: (raw: string) => Promise<string>
+    /** dash 短链 key。 */
+    adtsKey: (raw: string) => string
+  }
+
+  /** 记住本次「文字转音频」媒体供「重新播放」（百科/诗词）：跨业务状态，核心持有。 */
+  rememberTtsMedia?: (media: {
+    url: string; title: string; audioPath?: string; cover?: string
+    lines: Array<{ time: number; text: string }>
+  }) => void
+
+  /** ASR 同音纠错学习（数据源把识别词纠成规范词时调用）：跨业务能力，核心持有。 */
+  autoLearn?: (wrong: string, correct: string) => void
+  /** 读设备长期记忆里的商品偏好关键词（好价 skill 据此挑 3 件，纯函数排序）。 */
+  getPreferenceKeywords?: () => Promise<string[]>
 }
 
 /** 一句定稿后 skill 的处理结果。 */
@@ -83,6 +114,31 @@ export interface DirectCommandResult {
 
 /** 每会话一个实例；状态放闭包里，天然按会话隔离。 */
 export interface Skill {
+  /**
+   * 这句短语音是否是本 skill 的有效意图（纯识别、不执行、不产生副作用）。
+   * 网关的幻觉兜底用它做「有效意图白名单」：极短语音命中任一 skill 意图即放行，
+   * 否则当打嗝/吸鼻子的 ASR 幻觉丢弃。业务判断归各 skill，网关不 import 具体 detect。
+   */
+  matchesIntent?(text: string): boolean
+  /**
+   * 裸内容查询兜底（如只报一个歌手/作品名「周杰伦」「稻香」，无可辨识动词）。
+   * 网关在直连命令与选号都未命中时按序询问；返回 true 表示已消费。
+   * 这样网关不 import 具体 skill 的裸查询识别逻辑。
+   */
+  onBareQuery?(text: string): Promise<boolean>
+  /**
+   * 播放「外部视频音轨」（新闻等）：用户语音选中一条带 bvid 的候选后，通用执行器据此回调本 skill
+   * 抽音轨下发。返回 true 表示本 skill 处理了这条。网关不 import 具体 skill。
+   */
+  playExternalVideo?(c: { bvid?: string; title: string; cover?: string }): Promise<boolean>
+  /** 通用媒体 stop 时通知：清掉本 skill 的跨轮播放上下文（如新闻待选列表）。 */
+  onMediaStop?(): void
+  /** 本 skill 是否挂起了一组「语音报号可选」的候选（幻觉判断据此放行单字数字）。 */
+  hasCandidates?(): boolean
+  /** 定稿时语音选择本 skill 的候选（如商品「第二个」）；须早于回声比对调用。返回 true=已消费。 */
+  onCandidateSelection?(text: string): Promise<boolean>
+  /** 清掉本 skill 挂起的候选（与内容候选互斥：设音乐候选时清商品候选）。 */
+  clearCandidates?(): void
   /**
    * 直连意图处理（绕开 LLM）：按网关固定顺序调用，先识别再执行。
    * 业务规则（detect+run+源适配）都在本 skill 内；返回 consumed=true 表示已处理。

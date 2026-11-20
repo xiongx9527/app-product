@@ -10,6 +10,10 @@ import type { GatewayConfig } from '../config'
 import type { DataService } from '../service/dataService'
 import type { ServerEvent } from '../protocol'
 import type { CorrectionSyncer } from '../service/asrCorrectionSync'
+// 内容能力工厂（具体实现收口在 service/content/assembly，controller 不 import 具体 skill）。
+import {
+  contentSourceFactory, contentResolverFactory, contentExecutorFactory, contentDashDeps,
+} from '../service/content/assembly'
 
 export interface VoiceControllerDeps {
   config: GatewayConfig
@@ -113,21 +117,14 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       resolveVoice: (voice) => resolveCapabilityConfig(voice, config),
       createAsr,
       createTts,
-      agentFactory: (llm, lang, timezone, locationProvider, getMusicSource, emit, memoryStore, memoryContext, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, getNowPlaying, autoMemory, mcpServers, autoLearnEngine, promptAddon) =>
+      agentFactory: (llm, lang, timezone, locationProvider, memoryStore, memoryContext, requestLocation, getNowPlaying, autoMemory, mcpServers, autoLearnEngine, promptAddon) =>
         createAgentService(
           { llm, timeZone: timezone },
           lang,
           locationProvider,
-          getMusicSource,
-          emit,
           memoryStore,
           memoryContext,
           requestLocation,
-          autoSubtitle,
-          defaultLoop,
-          defaultVolume,
-          autoLoop,
-          dealsCount,
           getNowPlaying,
           autoMemory,
           mcpServers,
@@ -137,6 +134,11 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       data,
       correctionSyncer: deps.correctionSyncer,
       skillModules: deps.skillModules,
+      // 内容能力装配：工厂由 service/content/assembly 提供，注入核心。
+      contentSourceFactory,
+      contentResolverFactory,
+      contentExecutorFactory,
+      contentDashDeps,
       send,
       sendAudio,
       asrEndpointMs: config.asr.endpointMs,

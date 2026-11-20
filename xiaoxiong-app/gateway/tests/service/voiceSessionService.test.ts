@@ -4,6 +4,14 @@ import { timeSkill } from '../../src/service/skills/time_skill'
 import { preferenceSkill } from '../../src/service/skills/preference_skill'
 import { createWeatherSkill } from '../../src/service/skills/weather_skill'
 import { auspiciousSkill } from '../../src/service/skills/auspicious_skill'
+import { musicSkill } from '../../src/service/skills/music_skill'
+import { createPoemSkill } from '../../src/service/skills/edu_skill'
+import { createBaikeSkill } from '../../src/service/skills/baike_skill'
+import { createNewsSkill } from '../../src/service/skills/news_skill'
+import { createDealsSkill } from '../../src/service/skills/deals_skill'
+import { createMusicResolver } from '../../src/service/skills/music_skill/resolver'
+import { MusicPlayer } from '../../src/service/skills/music_skill/player'
+import { createMusicSource, needsProxy } from '../../src/service/skills/music_skill/music'
 import { ChannelSplitter } from '../../src/service/channelSplitter'
 import type { VoiceSessionDeps } from '../../src/service/voiceSessionService'
 import type { AgentService } from '../../src/service/agentService'
@@ -14,10 +22,10 @@ import type { ResolvedCapabilities } from '../../src/voiceConfig'
 import type { ServerEvent } from '../../src/protocol'
 import type { HealthReport } from '../../src/service/health'
 import type { MusicSource } from '../../src/service/skills/music_skill/music/types'
-import type { PoemEntry } from '../../src/service/edu'
-import type { DealsSnapshot } from '../../src/service/tools/dealsTool'
-import type { Deal, DealDetail } from '../../src/service/deals'
-import type { BaikeEntry } from '../../src/service/baike'
+import type { PoemEntry } from '../../src/service/skills/edu_skill'
+import type { DealsSnapshot } from '../../src/service/skills/deals_skill/deals'
+import type { Deal, DealDetail } from '../../src/service/skills/deals_skill/deals'
+import type { BaikeEntry } from '../../src/service/skills/baike_skill/baike'
 
 /** 100ms 的方波人声帧（16k/16bit/mono），能量远高于自适应门限。 */
 function loudFrame(samples = 1600): Uint8Array {
@@ -78,7 +86,6 @@ interface Harness {
   /** 合并（摘要）被触发的次数（验证阈值/频率配置生效） */
   consolidateCalls: () => number
   /** 模拟工具层通过 emit 通道下发事件（如开源项目卡片） */
-  emitMedia: (m: ServerEvent) => void
 }
 
 function createHarness(
@@ -148,7 +155,6 @@ function createHarness(
   let factoryCalls = 0
   let textIdx = 0
   let finish: (() => void) | null = null
-  let emitFn: ((m: ServerEvent) => void) | undefined
   const replyText = opts.replyText ?? '好的，我来说一句。'
   let extractCalls = 0
   let lastExtractHistory: Array<string[]> = []
@@ -242,10 +248,9 @@ function createHarness(
     },
   } as unknown as DataService
   const deps: VoiceSessionDeps = {
-    agentFactory: (_llm, _lang, _tz, _loc, _music, emit, _store, memoryContext) => {
+    agentFactory: (_llm, _lang, _tz, _loc, _store, memoryContext) => {
       factoryCalls += 1
       lastMemoryContext = memoryContext
-      emitFn = emit
       return agent
     },
     createAsr: () => asr,
@@ -262,33 +267,11 @@ function createHarness(
     asrEndpointMs: opts.asrEndpointMs ?? 10,
     llmTimeoutMs: opts.llmTimeoutMs,
     ttsFrameGapMs: opts.ttsFrameGapMs,
-    musicSourceFactory: opts.musicSourceFactory,
+    contentSourceFactory: (kind) => opts.musicSourceFactory ? opts.musicSourceFactory() : createMusicSource({ source: kind }),
+    contentResolverFactory: (source) => createMusicResolver(source),
+    contentExecutorFactory: (executorDeps) => new MusicPlayer(executorDeps),
+    contentDashDeps: { needsProxy },
     candidateFetcher: opts.candidateFetcher,
-    dealsQuery: opts.dealsQuery,
-    // 百科查询桩：透传注入的 query（含关键词记录），缺省走默认工具
-    baikeQuery: opts.baikeQuery
-      ? async (query: string) => {
-          opts.baikeQuerySpy?.(query)
-          return opts.baikeQuery!(query)
-        }
-      : undefined,
-    // 百科音频直链桩：缺省给固定假 URL，避免测试真的调百度 getaudio 联网。
-    baikeAudioUrl: opts.baikeAudioUrl ?? (async () => 'https://tts.baidu.com/test.mp3'),
-    // 诗词查询桩：缺省返回 null（查不到），避免诗词用例真的联网抓百度。
-    poemQuery: opts.poemQuery ?? (async () => null),
-    // 新闻视频源桩：search 返回注入候选，resolveBvid 返回注入音轨（缺省 null→走兜底口播）
-    newsVideoSource: {
-      name: 'test-news-video',
-      searchKeyword: (keyword: string | null) => (keyword ? `${keyword} 新闻` : '今日新闻'),
-      search: async (keyword: string | null) => {
-        opts.newsKeywordSpy?.(keyword)
-        return opts.newsHits ?? []
-      },
-      resolveBvid: async (c: { bvid: string; title: string; cover?: string }) =>
-        opts.newsAudioUrl ? { url: opts.newsAudioUrl, title: c.title, bvid: c.bvid, ...(c.cover ? { cover: c.cover } : {}) } : null,
-    },
-    // 默认不抓详情页：单测不联网；需要验证补充信息合并时由用例注入
-    dealsDetail: opts.dealsDetail ?? (async () => null),
     locationRequestTimeoutMs: opts.locationRequestTimeoutMs ?? 50,
     consolidateThreshold: opts.consolidateThreshold,
     consolidateEvery: opts.consolidateEvery,
@@ -306,6 +289,37 @@ function createHarness(
         fetchCity: async (city: string) => ({ current: { temperature_2m: 25, weather_code: 0 }, city }),
       } as never),
       preferenceSkill,
+      // 诗词 skill 注入测试桩（查不到时返回 null，避免网络）；生产用默认 queryPoem。
+      createPoemSkill(opts.poemQuery ?? (async () => null)),
+      // 百科 skill 注入测试桩：透传 query（含关键词记录），音频缺省固定假 URL，避免联网。
+      createBaikeSkill({
+        query: opts.baikeQuery
+          ? async (query) => {
+              opts.baikeQuerySpy?.(query)
+              const r = await opts.baikeQuery!(query) as { entry: BaikeEntry | null; text: string; spoken?: string }
+              return { ...r, spoken: r.spoken ?? r.entry?.summary ?? '' }
+            }
+          : undefined,
+        audioUrl: opts.baikeAudioUrl ?? (async () => 'https://tts.baidu.com/test.mp3'),
+      }),
+      // 新闻 skill 注入源桩：search 返回注入候选，resolveBvid 返回注入音轨（缺省 null→兜底口播）。
+      createNewsSkill({
+        name: 'test-news-video',
+        searchKeyword: (keyword: string | null) => (keyword ? `${keyword} 新闻` : '今日新闻'),
+        search: async (keyword: string | null) => {
+          opts.newsKeywordSpy?.(keyword)
+          return opts.newsHits ?? []
+        },
+        resolveBvid: async (c: { bvid: string; title: string; cover?: string }) =>
+          opts.newsAudioUrl ? { url: opts.newsAudioUrl, title: c.title, bvid: c.bvid, ...(c.cover ? { cover: c.cover } : {}) } : null,
+      } as never),
+      // 生产默认加载全部 skill（含 music）；音乐意图由它经 ctx.content 委托核心执行。
+      musicSkill,
+      // 好价/商品 skill 注入查询/详情桩，避免联网。
+      createDealsSkill({
+        query: opts.dealsQuery ? () => opts.dealsQuery!() : undefined,
+        detail: opts.dealsDetail ?? (async () => null),
+      }),
     ],
   }
   service = new VoiceSessionService(deps)
@@ -326,7 +340,6 @@ function createHarness(
     },
     savedMemories: () => savedMemories,
     consolidateCalls: () => consolidateCalls,
-    emitMedia: (m) => emitFn?.(m),
   }
 }
 

@@ -1,7 +1,7 @@
 /**
  * 外部音频本地短链缓存：解决「DCloud AudioPlayer 直拉第三方 HTTP 流不稳（-99、不发请求）」。
  *
- * 音乐/新闻音轨走 musicStreamController 的 ADTS 短链（有 LRU=2 会清理），
+ * 音乐/新闻音轨走 mediaStreamController 的 ADTS 短链（有 LRU=2 会清理），
  * 百科/诗词的第三方 TTS mp3 不能塞进去（会被音乐播放挤掉），故用独立目录 + 独立短链。
  *
  * 流程：网关下发 media.play 前，先把外部 mp3 下载落盘 → 下发短链 /media/s/<key>.mp3
@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
 import { createReadStream, writeFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { mp3DurationSec } from './mp3Duration'
+import { mp3DurationSec } from './mediaMp3Duration'
 
 const CACHE_MAX = 12 // 最多留 12 个音频文件（百科/诗词量小），LRU 清理
 

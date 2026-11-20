@@ -173,7 +173,7 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
       }
     }
     if (pathname === '/api/admin/asr-corrections' && method === 'DELETE') {
-      // all=1：物理清空整张纠错词表（开发调试清污染数据用，seed 合法词会在下次 init 重建）
+      // all=1：物理清空整张纠错词表（开发调试清污染数据用；清空后靠本地学习/9529 同步重建）
       if (query.get('all') === '1') {
         try {
           const deleted = await data.clearAsrCorrections()

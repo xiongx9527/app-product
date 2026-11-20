@@ -55,6 +55,9 @@ const WEEKDAY_ZH: Record<string, string> = {
 
 function createTimeSkill(ctx: SkillContext): Skill {
   return {
+    matchesIntent(text) {
+      return isTimeQuery(text)
+    },
     async onDirectCommand(text) {
       const kind = detectTimeCommandKind(text)
       if (!kind) return undefined // 不是时间意图，交给后续 skill / LLM

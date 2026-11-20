@@ -91,6 +91,9 @@ async function queryWeather(
 
 function makeWeatherSkill(ctx: SkillContext, source: WeatherSource, fetcher?: WeatherFetcher): Skill {
   return {
+    matchesIntent(text) {
+      return detectWeatherCommand(text)
+    },
     async onDirectCommand(text) {
       if (!detectWeatherCommand(text)) return undefined
       const city = extractWeatherCity(text) ?? undefined

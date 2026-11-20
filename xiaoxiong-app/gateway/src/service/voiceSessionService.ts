@@ -2,52 +2,18 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode, SubtitleLine } from '../protocol'
-import type { GatewayConfig } from '../config'
-import type { AsrConfig, LlmConfig, TtsConfig } from '../config'
+import type { ClientMessage, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode } from '../protocol'
+import type { GatewayConfig, AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
-import { createMusicSource, needsProxy, type MusicSource } from './skills/music_skill/music'
-import { MusicSourceNotImplementedError } from './skills/music_skill/music/types'
-import { genreToKeyword, isGenericPlayPhrase, isSpokenContentRequest, detectContentType } from './skills/music_skill/music/types'
-import { formatMemories, formatDeals, type MemoryStore, type RequestLocation } from './tools'
-import { createDealsTool, enrichDeal, type DealsSnapshot } from './tools/dealsTool'
-import { createDealsSource, createDealsAllSources, toDetailItems, type Deal, type DealDetail } from './deals'
-import { detectDealsCommand } from './control/dealsControl'
-import {
-  searchCandidates,
-  needsCandidateList,
-  candidateQuery,
-  parseSelection,
-  looksLikeSelectionAttempt,
-  looksLikeBareMusicQuery,
-  contentWords,
-  filterByCurrentArtist,
-  isArtistBrowse,
-  type MusicCandidate,
-  type CandidateFetcher,
-} from './skills/music_skill/music/musicCandidates'
-import { detectMusicCommand, parseLoopCount, hasAgainMarker } from './skills/music_skill/detect'
-import { detectVolumeCommand } from './control/volumeControl'
-import { detectMemoryCommand } from './control/memoryControl'
-import { pickDeals, preferenceKeywords } from './memory'
-import { detectSubtitleCommand } from './control/subtitleControl'
-import { detectPlayModeCommand } from './control/playModeControl'
-import { isTimeQuery } from './skills/time_skill'
-import { ensureAdtsFile, adtsKeyFor, recordMusicDiag } from '../controller/musicStreamController'
-import { MediaPlaybackCapability, createMediaPlaybackDeps, type MediaResolver } from './media/MediaPlaybackCapability'
-import { MediaControl } from './media/mediaControl'
-import { createMusicResolver } from './skills/music_skill/resolver'
-import { MusicPlayer } from './skills/music_skill/player'
-import { detectWeatherCommand } from './skills/weather_skill'
-import { detectProductQuery } from './control/productCatalog'
-import { detectNewsCommand, detectNewsNextCommand } from './control/newsControl'
-import { detectBaikeCommand } from './control/baikeControl'
-import { detectPoemCommand } from './control/poemControl'
-import { createNewsVideoSource, cleanNewsTitle, type NewsVideoCandidate, type NewsVideoSourceLike } from './news'
-import { createBaikeTool } from './tools/baikeTool'
-import type { BaikeEntry } from './baike'
-import { queryPoem, type PoemEntry } from './edu'
-import { fetchBaikeAudioUrl, splitSummaryToLines } from './baike/baidu/baikeTts'
+import type {
+  ContentSource, ContentSourceFactory, ContentResolverFactory, ContentExecutor,
+  ContentExecutorDeps, ContentCandidateFetcher, ContentDashDeps,
+} from './content/types'
+import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
+import { preferenceKeywords } from './memory'
+import { ensureAdtsFile, adtsKeyFor } from './media/mediaAdts'
+import { MediaPlaybackCapability, createMediaPlaybackDeps, type MediaResolver } from './media/mediaPlaybackCapability'
+import { MediaControl, detectVolumeCommand, detectSubtitleCommand, detectPlayModeCommand } from './media/mediaDetect'
 import { cacheExternalAudio, getCachedAudioDuration, type MediaFetcher } from './media/mediaCache'
 import { messages } from '../i18n'
 import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho, pcmRms } from '../asr/noiseFilter'
@@ -125,16 +91,9 @@ export interface VoiceSessionDeps {
     lang: Lang,
     timezone?: string,
     locationProvider?: () => LocationInfo | null,
-    getMusicSource?: () => MusicSource | undefined,
-    emit?: (m: ServerEvent) => void,
     memoryStore?: MemoryStore,
     memoryContext?: string,
     requestLocation?: RequestLocation,
-    autoSubtitle?: boolean,
-    defaultLoop?: number,
-    defaultVolume?: number,
-    autoLoop?: boolean,
-    dealsCount?: number,
     getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null,
     autoMemory?: boolean,
     mcpServers?: McpServerConfig[],
@@ -154,34 +113,24 @@ export interface VoiceSessionDeps {
   send: (event: ServerEvent) => void
   sendAudio: (bytes: Uint8Array) => void
   asrEndpointMs: number
-  /** 构造音乐播放源；测试可注入桩避免联网，缺省用网关内置的无配置源 */
-  musicSourceFactory?: () => MusicSource
-  /** 检索候选歌曲（MusicBrainz）；测试可注入桩避免联网 */
-  candidateFetcher?: CandidateFetcher
-  /** 查询商品/好价：测试可注入桩避免联网。一次返回口播文本 + 结构化 Deal[]，
-   *  缺省用 createDealsTool.snapshot（工具与直连共用同一抓取缓存，零二次抓取）。 */
-  dealsQuery?: (keyword?: string | null) => Promise<DealsSnapshot>
-  /** 天气查询：测试可注入桩避免联网。缺省用 createWeatherTool.call（懒加载位置 + 自带超时）。 */
-  weatherQuery?: () => Promise<string>
-  /** 新闻视频音源：抓真实新闻视频并抽音轨。缺省用 B 站源；测试可注入桩避免联网。 */
-  newsVideoSource?: NewsVideoSourceLike
-  /** 百科查询：测试可注入桩避免联网。缺省用 createBaikeTool.snapshotWithText（多源可换）。 */
-  baikeQuery?: (query: string) => Promise<{ entry: BaikeEntry | null; text: string; spoken?: string }>
-  /** 诗词/古文查询：测试可注入桩避免联网。缺省用 queryPoem（edu/baidu）。 */
-  poemQuery?: (title: string) => Promise<PoemEntry | null>
+  /** 构造内容源（按客户端 playback.source）；测试可注入桩避免联网，缺省由装配层提供内置源。 */
+  contentSourceFactory: ContentSourceFactory
+  /** 把内容源适配成系统能力层 resolver；由装配层提供（核心不 import 具体源/resolver）。 */
+  contentResolverFactory: ContentResolverFactory
+  /** 构造内容执行器（音乐等业务）；由装配层提供，核心只认 ContentExecutor 接口。 */
+  contentExecutorFactory: (deps: ContentExecutorDeps) => ContentExecutor
+  /** dash 依赖（needsProxy 等）由装配层注入，核心不 import 具体内容域。 */
+  contentDashDeps: ContentDashDeps
+  /** 候选检索器（MusicBrainz）；测试可注入桩避免联网。 */
+  candidateFetcher?: ContentCandidateFetcher
   /** ASR 同音错字纠正（定稿时当场纠，让「我说」框显示正确文字）。测试可注入桩；缺省用内置 AsrCorrector。 */
   asrCorrect?: (text: string) => string
-  /** 百科播报音频直链：调百度百科 getaudio 拿 mp3 URL。测试可注入桩避免联网。 */
-  baikeAudioUrl?: (text: string) => Promise<string>
   /** 外部音频本地短链缓存：下载 mp3 落盘返回 /media/s/<key>.mp3。测试默认 no-op（返回 null→回退原 url）。 */
   mediaCache?: (url: string, fetcher?: MediaFetcher) => Promise<string | null>
   /** 单轮 LLM 超时（毫秒）：超时主动舍弃本轮、断开下行播放、立即播友好兜底。测试注入更小值。 */
   llmTimeoutMs?: number
   /** TTS 帧间看门狗（毫秒）：上游挂起不产帧时断开本句，对话链绝不卡死。测试注入更小值。 */
   ttsFrameGapMs?: number
-  /** 选中某件后补抓它的详情页（优惠说明/品牌/权威时间/大图）；测试可注入桩避免联网。
-   *  缺省走数据源自身的 detailUrl + parseDetail，拿不到就返回 null（卡片用列表数据照常展示）。 */
-  dealsDetail?: (deal: Deal) => Promise<DealDetail | null>
   /**
    * 设备稳定标识（来自客户端上报的 deviceId）；用于命令日志/会话落库归属设备。
    * 缺省空：旧客户端未上报，会话不进注册表、不复用。
@@ -203,28 +152,6 @@ export interface VoiceSessionDeps {
   consolidateThreshold?: number
   /** 自动记忆合并（摘要）频率：每这么多次抽取触发一次合并（缺省见模块常量） */
   consolidateEvery?: number
-}
-
-/**
- * “换一首 / 下一首 / 换个风格” 之类指令里，若用户没指定新的歌手/风格，返回 undefined
- * （让音乐源沿用当前上下文，放同歌手/同风格的下一首）；否则返回收敛后的关键词。
- * 这样「换一首」不会因没给风格而被路由到完全不相关的电台/歌曲。
- */
-function nextPreference(text: string): string | undefined {
-  if (!text) return undefined
-  let kw = text
-    .replace(
-      /换一?首|下一?首|换个?风格|换一?个风格|切歌|来点别的|换台|换一?段|换段|下一?段|换一?集|换集|下一?集|换一?部|换部|换一?回|换回|再来一?段|来段别的|来个别的|换一个|换个|换一下|再来一个/g,
-      ''
-    )
-    .replace(/的/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  kw = kw.replace(/^[放播唱听]\s*/, '')
-  if (!kw) return undefined
-  // 只剩泛化点歌词（歌/音乐/放首歌…）也算“没给具体新偏好”
-  if (isGenericPlayPhrase(kw)) return undefined
-  return genreToKeyword(kw)
 }
 
 export class VoiceSessionService {
@@ -251,13 +178,7 @@ export class VoiceSessionService {
   private locationRequestSent = false
   private locationRequestTimer: ReturnType<typeof setTimeout> | null = null
   /** 音乐播放源：无配置、始终可用（SomaFM 电台 + B 站搜索兜底），随会话构建 */
-  private musicSource: MusicSource | undefined = undefined
-  /**
-   * 最近一次下发的曲目，供「循环播放」复用同一首重播。
-   * contentType 记住当前播的是歌 / 评书 / 戏曲 / 电影…（歌曲为 undefined），
-   * 后续换内容、失败提示都据此措辞，避免一律当成「放歌」。
-   */
-  private lastTrack: { url: string; title: string; channel?: string; cover?: string; artist?: string; contentType?: string } | null = null
+  private musicSource: ContentSource | undefined = undefined
   /**
    * 最后一次播放的百科/诗词媒体（tts）：「重新播放」要重现它而不是找歌。
    * 记下重播所需的全部字段——音频 url/本地短链、封面、字幕行、标题；音乐重播仍走 lastTrack。
@@ -266,23 +187,9 @@ export class VoiceSessionService {
     url: string; title: string; audioPath?: string; cover?: string;
     lines: Array<{ time: number; text: string }>
   } | null = null
-  /** 自动字幕开关：播放音乐时同源字幕是否自动拉取并展示；来自客户端设置（缺省开启）。 */
-  private autoSubtitle = true
-  /** 上一次成功下发的同源字幕，供「循环播放」重播同一首时复用，避免重新拉取失败把字幕覆盖成「暂无字幕」 */
-  private lastSubtitleLines: SubtitleLine[] | null = null
-  /** 当前是否真的有字幕面板在显示：仅在成功下发非空字幕时为 true，用于「关闭字幕」时如实反馈 */
-  private subtitleActive = false
   /** 最近一次 session.start 带下来的语音来源配置：供 announceCapabilityProblems 按「实际会用的那套能力」
    *  探测就绪状态（而非永远探测网关默认的内置），与 /api/health 的 provider-aware 探测保持一致。 */
   private lastVoice: VoiceConfig | undefined = undefined
-  /** 新闻播报的视频音源：抓真实新闻视频、抽音轨，走与音乐相同的 dash 短链下发。 */
-  private newsVideoSource: NewsVideoSourceLike
-  /**
-   * 当前新闻播放上下文：本轮抓到的新闻候选 + 正在播的下标（未选时为 -1）+ 话题词。
-   * 有了它，「播放下一条 / 换一条」在新闻场景下接着切新闻，不会被音乐分支的「播放」当成点歌。
-   * 一旦开始播音乐 / 停止 / 会话结束就清空，避免跨场景串台。
-   */
-  private newsPlayback: { items: NewsVideoCandidate[]; index: number; keyword: string | null } | null = null
   /** 跨轮记忆相关引用（来自设备长期记忆），首次建连时拉取并缓存，重武装时复用，避免重复拉取。 */
   private memoryStore: MemoryStore | undefined = undefined
   private memoryContext: string | undefined = undefined
@@ -295,8 +202,8 @@ export class VoiceSessionService {
   private defaultVolume = 0.5
   /** 是否自动循环播放：开启后每次新播放默认按 defaultLoop 遍数循环；关闭（缺省）则只在显式「循环 N 遍」或手动循环时才循环。 */
   private autoLoop = false
-  /** 好价商品推荐条数：来自客户端设置页 session.start.recommend.dealsCount，缺省 3，范围 1–10。 */
-  private dealsCount = 3
+  /** 自动字幕开关：来自客户端设置页 session.start.playback.autoSubtitle，缺省开启。经 player deps 读取。 */
+  private autoSubtitle = true
   /** 自动记忆（自动抽取）开关：来自客户端设置页 session.start.memory.auto，缺省关。开启时助手才会主动沉淀长期记忆。 */
   private autoMemory = false
   /** 自动记忆合并（摘要）阈值：来自客户端设置页 session.start.memory.consolidateThreshold，缺省走模块常量/网关配置。 */
@@ -307,22 +214,6 @@ export class VoiceSessionService {
   private recentUserTurns: string[] = []
   /** 自动抽取累计次数：用于节流合并（摘要）触发频率。 */
   private autoExtractRuns = 0
-  /** 当前是否正在播放（播放/切歌/循环置真，停止置假）。决定「点歌按当前歌手优先」是否生效：
-   *  仅当用户正处于某个歌手的播放会话时才自动选同歌手版本；已停止则老老实实列选项让用户选。 */
-  private musicActive = false
-  /** 百科/诗词(tts)媒体是否在播：这类 media.play 不置 musicActive（不影响同歌手选歌/nowPlaying），
-   *  但说「暂停/继续/停掉」时它同样是有效媒体，不能谎答「没在播放」。下发 tts media.play 置真，
-   *  pause/stop 后清假；播完客户端无上行回执（与音乐一致），靠下次操作覆盖，不误用。 */
-  private ttsMediaActive = false
-  /** 待用户用语音选择的候选歌曲列表：口播编号后挂起，下一句解析「第几首 / 歌名」 */
-  private pendingCandidates: { items: MusicCandidate[]; query: string } | null = null
-  /**
-   * 待用户说编号选中的商品列表：口播编号后挂起，下一句解析「1 / 第二个 / 商品名」。
-   * 与音乐候选分开、生命周期独立：cancel()/重武装(re-arm)不清，仅 end()/全新 start 清空——
-   * 切语音来源（设置页 rearm 重发 session.start）不应让编号失效（「换源不出问题」）。
-   * 商品数据只经 media.detail 下发，绝不进 session.start.voice.params 共用通道。
-   */
-  private pendingDeals: { items: Deal[]; query: string } | null = null
   /**
    * 本次会话的 skill 实例（由 deps.skillModules 各 create 一个）。偏好追问等业务规则
    * 已迁进 skill，状态在实例闭包里；网关只在对应时机按序调用生命周期钩子。
@@ -330,8 +221,6 @@ export class VoiceSessionService {
   private skills: Skill[] = []
   /** 所有启用 skill 的提示词片段拼接结果（构造 agent 时一次算好，传给 agentFactory）。 */
   private skillPromptAddon = ''
-  /** 上一轮「换一首」没找到同类型的歌，正等用户确认是否换其它风格（不直接乱播） */
-  private pendingNextFallback = false
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
@@ -399,16 +288,15 @@ export class VoiceSessionService {
   private media: MediaPlaybackCapability
   /** 通用媒体控制（系统能力，非 skill）：音量/字幕/播放模式/pause/resume/stop/replay。 */
   private mediaControl!: MediaControl // start() 里按当前 lang 构造
-  /** 音乐播放业务（music_skill 的执行实现）：选曲/候选/口播，核心按 ctx.content 委托。 */
-  private musicPlayer!: MusicPlayer // start() 里构造
+  /** 内容播放执行器（由装配层注入实现）：选曲/候选/口播，核心只认通用接口。 */
+  private content!: ContentExecutor // start() 里构造
 
   constructor(private readonly deps: VoiceSessionDeps) {
     this.deviceId = deps.deviceId ?? null
-    this.newsVideoSource = deps.newsVideoSource ?? createNewsVideoSource()
     const mediaDeps = createMediaPlaybackDeps({
       send: (e) => this.deps.send(e),
       ensureAdtsFile,
-      needsProxy,
+      needsProxy: this.deps.contentDashDeps.needsProxy,
       adtsKeyFor,
     })
     // 媒体解析能力用 getter 延迟读当前 musicSource（session.playback.source 在 session.start 才确定，
@@ -421,18 +309,18 @@ export class VoiceSessionService {
     this.media = new MediaPlaybackCapability(mediaDeps)
   }
 
-  /** resolver 缓存：musicSource 变了（切换来源）才重建，其余时候复用。 */
-  private cachedMusicSource: MusicSource | undefined = undefined
+  /** resolver 缓存：源变了（切换来源）才重建，其余时候复用。 */
+  private cachedMusicSource: ContentSource | undefined = undefined
   private cachedMusicResolver: MediaResolver | undefined = undefined
 
-  /** 按当前 musicSource 取 MediaResolver（换源即时生效，能力层/skill 不感知）。 */
+  /** 按当前内容源取 MediaResolver（换源即时生效，能力层/skill 不感知）。 */
   private musicResolver(): MediaResolver {
     if (!this.musicSource) {
       // 无源：返回空 resolver，高层方法会解析失败、由调用方回退 LLM（不谎报「没这首歌」）
       return { resolve: async () => null }
     }
     if (this.cachedMusicSource !== this.musicSource || !this.cachedMusicResolver) {
-      const resolver = createMusicResolver(this.musicSource)
+      const resolver = this.deps.contentResolverFactory(this.musicSource)
       this.cachedMusicSource = this.musicSource
       this.cachedMusicResolver = resolver
       return resolver
@@ -462,9 +350,7 @@ export class VoiceSessionService {
         this.location = msg.location ?? null
         // 音乐播放源：来自客户端设置页（session.start.playback.source），缺省百度；
         // 始终可用（SomaFM 电台 + B 站搜索兜底），音乐工具始终注册。
-        this.musicSource = this.deps.musicSourceFactory
-          ? this.deps.musicSourceFactory()
-          : createMusicSource({ source: msg.playback?.source })
+        this.musicSource = this.deps.contentSourceFactory(msg.playback?.source)
         // 自动字幕开关：来自客户端设置页（session.start.playback.autoSubtitle），缺省开启。
         this.autoSubtitle = msg.playback?.autoSubtitle ?? true
         // 默认循环次数 / 默认音量：来自客户端设置页（session.start.playback），缺省 3 / 0.5；
@@ -475,13 +361,6 @@ export class VoiceSessionService {
         this.defaultVolume = typeof pb?.defaultVolume === 'number' ? Math.min(1, Math.max(0, pb.defaultVolume)) : 0.5
         this.autoLoop = typeof pb?.autoLoop === 'boolean' ? pb.autoLoop : false
         this.media.syncVolumeFromClient(this.defaultVolume)
-        // 推荐条数：来自客户端设置页（session.start.recommend），缺省各 3，收敛到 1–10 整数。
-        const rc = msg.recommend
-        const toCount = (v: unknown, fallback: number): number => {
-          const n = Number(v)
-          return Number.isFinite(n) ? Math.min(10, Math.max(1, Math.floor(n))) : fallback
-        }
-        this.dealsCount = toCount(rc?.dealsCount, 3)
         // 自动记忆开关：来自客户端设置页（session.start.memory.auto），缺省关。
         // 仅控制助手是否主动沉淀长期记忆；手动指令（记录下 / 帮我记 等）始终生效。
         this.autoMemory = typeof msg.memory?.auto === 'boolean' ? msg.memory.auto : false
@@ -515,10 +394,8 @@ export class VoiceSessionService {
         // 播放设置实时更新：设置页改了播放源后由客户端随本消息推来，
         // 立即按新 source 重建音乐源，无需重连/重唤醒即可生效（下次点歌/换一首就用新源）。
         // 缺省/未知值回退到百度，与 session.start 同一套解析逻辑。
-        this.musicSource = this.deps.musicSourceFactory
-          ? this.deps.musicSourceFactory()
-          : createMusicSource({ source: msg.source })
-        // 自动字幕开关也可实时切换：设置页打开/关闭后由客户端随本消息推来。
+        this.musicSource = this.deps.contentSourceFactory(msg.source)
+        // 自动字幕开关实时切换：设置页打开/关闭后由客户端随本消息推来。
         if (typeof msg.autoSubtitle === 'boolean') this.autoSubtitle = msg.autoSubtitle
         // 默认循环次数 / 默认音量同样可随设置页实时刷新，下次新播放（点歌/换一首）即生效。
         if (typeof msg.defaultLoop === 'number') this.defaultLoop = Math.max(0, Math.floor(msg.defaultLoop))
@@ -550,9 +427,8 @@ export class VoiceSessionService {
         )
         break
       case 'music.next':
-        // 客户端点「换一首 / 换个风格」：直接用当前音乐源解析下一首并下发 media.play，
-        // 不必走一轮 ASR→LLM（按钮已经是明确的指令）。
-        void this.nextMusic(msg.genre)
+        // 客户端点「换一首 / 换个风格」（协议消息名保留）：委托内容执行器解析下一首。
+        void this.content.nextFromClient(msg.genre)
         break
       case 'music.volume':
         // 客户端拖动滑块回执当前音量：保持网关音量状态同步，保证后续的「调大/调小」相对增减准确。
@@ -564,584 +440,29 @@ export class VoiceSessionService {
   }
 
   /**
-   * 用当前音乐源解析「下一首」：优先用显式关键词，否则退回当前歌手重新搜该歌手的其它作品。
-   * 若拿到的仍与当前同名（同一首的不同视频），再换一次，尽量给出不同歌名，
-   * 避免「换一首却还是同一首歌、像没反应」。解析失败返回 null，由调用方决定提示或静默。
-   */
-  private async nextTrack(query?: string): Promise<{ url: string; title: string; channel?: string } | null> {
-    const source = this.musicSource
-    if (!source) return null
-    try {
-      let track = source.next ? await source.next(query) : await source.resolve(query)
-      // 换一首若仍拿到与当前同名的那一首（同一首的不同视频 / 该歌手/类型只有这一首），
-      // 再换一次，尽量给出不同歌名。若第二次仍是同名（或没结果），说明实在换不出不同歌
-      // —— 返回 null 让调用方去问用户要不要换其它风格，而不是把同名歌重放一遍（像没反应）。
-      if (this.lastTrack && track?.title === this.lastTrack.title) {
-        const alt = source.next ? await source.next(query) : await source.resolve(query)
-        if (!alt?.url || alt.title === this.lastTrack.title) return null
-        track = alt
-      }
-      return track?.url ? track : null
-    } catch {
-      return null
-    }
-  }
-
-  /** 换一首实在找不到同类型时，可退回的「其它风格」池（风格电台，与当前歌手无关也能播）。 */
-  private static readonly FALLBACK_GENRES = ['轻音乐', '流行', '电子', '爵士', '民谣', '古典']
-
-  /**
-   * 换一首找不到同类型的其它歌时：从风格池里随机挑一个，直接播一首不同风格的歌并口播一句。
-   * 兜底保证「换一首」永远有去处（不静默、也不追问），用户想指定仍可说「放首XX」。
-   */
-  private async playOtherType(): Promise<void> {
-    const source = this.musicSource
-    if (!source) return
-    const genre =
-      VoiceSessionService.FALLBACK_GENRES[
-        Math.floor(Math.random() * VoiceSessionService.FALLBACK_GENRES.length)
-      ]
-    try {
-      const track = source.resolve ? await source.resolve(genre) : null
-      if (!track?.url) return
-      // 退回风格电台后不再绑死原歌手，后续「换一首」走电台换台而非继续找原歌手
-      await this.playTrack(track, messages(this.lang).music.switchedOther())
-      this.musicActive = true
-    } catch {
-      // 实在不行就静默，不再递归追问
-    }
-  }
-
-  /** 用户上一句「换一首」没找到同类型、正在等确认：这句是不是同意换其它风格？ */
-  private shouldAcceptOtherType(text: string): boolean {
-    // 再次说「换一首 / 来首其它的」这类没指定新偏好的换歌指令 = 同意换其它；
-    // 「换首刘德华的」带了具体偏好，应交回正常流程去放刘德华，不强行换风格。
-    if (detectMusicCommand(text) === 'next') return !nextPreference(text)
-    const t = (text ?? '').trim()
-    return /^(好|可以|行|嗯|要|就换|好的|好的呀|没问题|同意|是|对|换成|换个|换一个|再来一个|别的|其它|其他|换首其它的|来首其它的|来个其它的)$/.test(
-      t
-    )
-  }
-
-  /** 客户端点「换一首 / 换个风格」：解析下一首并下发 media.play；无音乐源或解析失败则静默忽略。 */
-  private async nextMusic(genre?: string): Promise<void> {
-    // 客户端点「换一首」即进入音乐场景，清掉新闻切条上下文
-    this.newsPlayback = null
-    const source = this.musicSource
-    if (!source) return
-    const m = messages(this.lang).music
-    // 没指定新风格/歌手时，用当前歌手重新搜该歌手的其它作品，而不是拿「歌手+歌名」原关键词
-    // 再搜——后者常只命中同一首（不同视频但同名），用户看到歌名没变会以为没换。
-    const query = genre || this.lastTrack?.artist || undefined
-    const track = await this.nextTrack(query)
-    if (!track) {
-      // 换一首实在找不到同类型的其它歌（如动画片主题曲只有一首）：不直接乱播、也不静默无响应，
-      // 反问用户、把选择权交给用户——用助手正常语音问要不要换其它风格（或直接点名想听的）。
-      this.pendingNextFallback = true
-      await this.speakReply(m.offerOtherType())
-      return
-    }
-    // 换一首时歌手通常不变（同歌手下一首），沿用上一首歌手，保持点歌上下文
-    this.lastTrack = {
-      url: track.url,
-      title: track.title,
-      channel: track.channel,
-      artist: this.lastTrack?.artist,
-    }
-    this.musicActive = true
-    // 音量以默认值为起点：每次新播放经能力层下发 media.volume，供后续「调大/调小」相对增减。
-    this.media.setVolume(this.defaultVolume)
-    // dash 音轨：后台预热，不阻塞 media.play（转封装要拉满整轨 9MB+，等它会让播放器
-    // 迟迟不出现）；客户端请求短链时网关会等同一 key 的 in-flight 转封装。
-    const dashNext = needsProxy(track.channel, track.url) && track.url.includes('.m4s')
-    if (dashNext) void this.prewarmDashAudio(track)
-    // 默认循环次数带入：仅当「自动循环播放」开启时换歌也默认循环，>1 才下发 loop。
-    this.deps.send({
-      type: 'media.play',
-      url: track.url,
-      title: track.title,
-      channel: track.channel,
-      // dash 走短链本地播放，不再给长代理 URL（长 URL 会被 DCloud 下载器截断）
-      proxy: dashNext ? false : needsProxy(track.channel, track.url),
-      ...(dashNext ? { audioPath: `music/s/${adtsKeyFor(track.url)}.aac` } : {}),
-      ...(this.autoLoop && this.defaultLoop > 1 ? { loop: this.defaultLoop } : {}),
-    })
-    // 自动字幕：开关开启时，「换一首」同样是一次播放，同源尽力拉取字幕下发，与 playTrack 一致。
-    void this.emitAutoSubtitle(track.title, this.lastTrack?.artist)
-  }
-
-  /**
-   * 执行已识别的音乐控制指令（绕开 LLM）：解析并下发 media.play，口播一句确认。
-   * 只负责动作本身；asr.final 由 finalizeUtterance 统一下发，保证「我说」卡片显示这句。
-   * 解析失败也只友好告知「没找到」，不报「操作失败」这类像系统故障的措辞。
-   */
-  /** 下发 media.play 并口播确认。 */
-  private async playTrack(
-    track: { url: string; title: string; channel?: string; cover?: string; artist?: string },
-    confirm: string,
-    loop?: number,
-    artist?: string,
-    reuseSubtitle = false,
-    contentType?: string
-  ): Promise<void> {
-    // 真正开始播音乐了：新闻切条上下文到此为止，之后「下一条」应走音乐换歌。
-    this.newsPlayback = null
-    // 记下当前曲目，供「循环播放」指令复用（不必重新检索就能把同一首再播 N 遍）；
-    // 同时记下歌手与内容类型，供后续点歌/换内容按当前上下文走、措辞不一律当成「歌」。
-    this.lastTrack = {
-      url: track.url,
-      title: track.title,
-      channel: track.channel,
-      cover: track.cover,
-      // 优先用源抠出的真实歌手（歌曲宝详情页），没有再退回语音点歌时口述的歌手
-      artist: track.artist ?? artist,
-      contentType: contentType ?? this.lastTrack?.contentType,
-    }
-    // 音量以默认值为起点：每次新播放经能力层下发 media.volume，供后续「调大/调小」相对增减。
-    this.media.setVolume(this.defaultVolume)
-    // 有效循环次数：语音「循环 N 遍」显式指定优先；否则仅当「自动循环播放」开启时用默认循环次数；>1 才下发 loop。
-    const effectiveLoop =
-      typeof loop === 'number' && loop > 1 ? loop : this.autoLoop ? this.defaultLoop : undefined
-    // dash 纯音轨预热与口播并行，且**不阻塞 media.play**：整轨 9MB+ 的拉取要好几秒，
-    // 等它会让播放器迟迟不出现（用户感知「播放器打开慢」）。先下发 media.play 让播放器
-    // 立刻出现，客户端请求短链时网关等同一 key 的 in-flight 转封装。
-    // 注意口播不能 await：空闲直连路径下 speakReply 会自建「等播完回执」的等待，
-    // await 它会阻塞到 playback_done（播放器永远出不来）；链内路径则由 runTurn 统一等。
-    void this.prewarmDashAudio(track)
-    const speak = this.speakReply(confirm)
-    // 自动字幕：开关开启时，播放这首歌后尽力同源拉取字幕并下发（无字幕则不显示，不弹面板）。
-    void this.emitAutoSubtitle(track.title, artist, reuseSubtitle)
-    const dashTrack = needsProxy(track.channel, track.url) && track.url.includes('.m4s')
-    this.deps.send({
-      type: 'media.play',
-      url: track.url,
-      title: track.title,
-      channel: track.channel,
-      // dash 走短链本地播放（长代理 URL 会被 DCloud 下载器截断，实测 936 字节即断）
-      proxy: dashTrack ? false : needsProxy(track.channel, track.url),
-      ...(dashTrack ? { audioPath: `music/s/${adtsKeyFor(track.url)}.aac` } : {}),
-      ...(effectiveLoop && effectiveLoop > 1 ? { loop: effectiveLoop } : {}),
-      ...(track.cover ? { cover: track.cover } : {}),
-    })
-    // 状态收敛到能力层：通用控制（暂停/重播/循环/字幕）读它，避免两套状态分裂。
-    this.media.adoptMusic({
-      source: 'music',
-      url: track.url,
-      title: track.title,
-      ...(track.channel ? { channel: track.channel } : {}),
-      ...(artist ?? track.artist ? { artist: artist ?? track.artist } : {}),
-      ...(track.cover ? { cover: track.cover } : {}),
-      ...(contentType ? { contentType } : {}),
-    })
-    void speak
-  }
-
-  /**
-   * dash 纯音轨（.m4s）预热：转封装进 /music/stream 的缓存，让客户端首次请求秒回。
-   * B站直链每次解析都变（签名/deadline），不预热则每次首播都要现场拉 11MB+转封装，
-   * DCloud AudioPlayer prepare 超时就无声。失败静默：预热失败时客户端请求会现场转（慢但能用）。
-   */
-  private prewarmDashAudio(track: { url: string; channel?: string }): Promise<void> {
-    if (!needsProxy(track.channel, track.url) || !track.url.includes('.m4s')) return Promise.resolve()
-    return ensureAdtsFile(track.url).then(() => undefined).catch(() => undefined)
-  }
-
-  /**
-   * 自动字幕：开关开启时，用当前音乐源拉取字幕并下发 media.subtitle。
-   * 尽力而为——拉取失败/超时不影响播放；取不到时也下发空 lyrics，让客户端显示「暂无字幕」而非什么都不提示。
-   */
-  private async emitAutoSubtitle(title: string, artist?: string, reuse = false): Promise<boolean> {
-    if (!this.autoSubtitle) {
-      recordMusicDiag(`subtitle skip: autoSubtitle=off title=${title.slice(0, 16)}`)
-      this.subtitleActive = false
-      this.media.adoptSubtitle(null)
-      return false
-    }
-    // 循环播放重播同一首：直接复用上一次成功下发的同源字幕，不再重新拉取。
-    // 否则缓存未命中 / 网络波动时 getSubtitle 返回 null，会把客户端已显示的歌词覆盖成「暂无字幕」。
-    if (reuse && this.lastSubtitleLines) {
-      this.deps.send({ type: 'media.subtitle', title, artist, lines: this.lastSubtitleLines })
-      this.subtitleActive = this.lastSubtitleLines.length > 0
-      this.media.adoptSubtitle(this.lastSubtitleLines)
-      return this.subtitleActive
-    }
-    const source = this.musicSource
-    if (!source?.getSubtitle) {
-      recordMusicDiag('subtitle skip: source has no getSubtitle')
-      this.subtitleActive = false
-      this.media.adoptSubtitle(null)
-      return false
-    }
-    try {
-      const lines = await source.getSubtitle(artist ?? '', title)
-      recordMusicDiag(`subtitle emit lines=${(lines ?? []).length} title=${title.slice(0, 16)}`)
-      this.lastSubtitleLines = lines ?? []
-      this.deps.send({ type: 'media.subtitle', title, artist, lines: lines ?? [] })
-      this.subtitleActive = (lines ?? []).length > 0
-      this.media.adoptSubtitle(lines ?? [])
-      return this.subtitleActive
-    } catch {
-      recordMusicDiag('subtitle fail: getSubtitle threw')
-      this.lastSubtitleLines = null
-      this.subtitleActive = false
-      this.media.adoptSubtitle(null)
-      // 字幕失败不影响播放
-      return false
-    }
-  }
-
-  /**
-   * 只给了歌手/歌名：用 MusicBrainz 检索候选。
-   * 多于 1 首 → 口播编号列表并挂起待选；正好 1 首 → 直接播；0 首 → 交回调用方按原逻辑处理。
-   * 返回 true 表示本次已处理（列表已给或已播），调用方不必再 resolve。
-   */
-  /**
-   * 点歌信息不足时给候选列表让用户选；forceList（推荐意图）时即使只有 1 首也只列不给播，
-   * 且没具体歌手/风格时不擅自乱播、改口播引导，保证「推荐」永远只出选项不直接播放。
-   * 多于 1 首 → 口播编号列表并挂起待选；正好 1 首且非强制列表 → 直接播；0 首 → 交回调用方。
-   * 返回 true 表示本次已处理（列表已给或已播），调用方不必再 resolve。
-   */
-  /**
-   * 点歌信息不足时给候选列表让用户选。
-   * @param forceList 即使检索到 1 首也只列不给播（推荐意图 / 按歌手浏览，绝不替用户直接播放）
-   * @param recommend 列表话术用「为你推荐」而非「找到几首」（推荐意图时用）
-   * @param allowContext 是否允许「按当前歌手优先」自动选同歌手版本；带「再」的请求关掉它
-   */
-  private async offerCandidates(
-    text: string,
-    forceList = false,
-    recommend = false,
-    allowContext = true
-  ): Promise<boolean> {
-    const genre = genreToKeyword(text)
-    if (!needsCandidateList(genre) && !forceList) return false
-    const query = candidateQuery(genre)
-    const m = messages(this.lang).music
-    if (!query) {
-      // 推荐/浏览但没具体歌手/风格：引导用户补充，绝不自动播放
-      if (forceList) {
-        await this.speakReply(m.recommendPrompt())
-        return true
-      }
-      return false
-    }
-    const items = await searchCandidates(query, this.deps.candidateFetcher)
-    if (items.length === 0) {
-      // 信息不足（只说了歌手/歌名）却搜不到：友好告知「没找到」，绝不退化成
-      // 「直接播一个裸歌手名」乱播（那样既没问用户、又可能播错版本）。
-      if (forceList || needsCandidateList(genre)) {
-        await this.speakReply(m.notFound(isSpokenContentRequest(text)))
-        return true
-      }
-      return false
-    }
-    if (items.length === 1 && !forceList) {
-      await this.playChosen(items[0], query)
-      return true
-    }
-    // 多候选：仅当正处于某个歌手的播放会话（musicActive）时，才优先挑同歌手的版本，
-    // 避免「正在听周杰伦、点七里香却让我选」；已停止则老老实实列选项。
-    // 仅当列表被「真正收窄」（过滤掉非同歌手候选）才直接播第一首；否则（含全部同歌手、
-    // 或都没匹配）照旧列出来让用户选，不替用户做主。
-    // 强制列表（推荐/按歌手浏览）一律不收窄、不自动播放，直接列出来。
-    const ranked = !forceList
-      ? filterByCurrentArtist(items, allowContext && this.musicActive ? this.lastTrack?.artist : undefined)
-      : items
-    if (ranked.length < items.length) {
-      await this.playChosen(ranked[0], query)
-      return true
-    }
-    this.pendingCandidates = { items: ranked, query }
-    // 点歌候选与商品候选互斥：同时挂着会让「第二个」到底选歌还是选商品产生歧义。
-    this.pendingDeals = null
-    const labels = items.map((c) => (c.artist ? `${c.title}，${c.artist}` : c.title))
-    await this.speakReply(
-      (recommend ? m.recommend(labels) : m.candidates(labels)) + m.chooseHint()
-    )
-    return true
-  }
-
-  /** 用「用户核心词 + 选中歌名」拼成歌手+歌名去抽音轨，接上严格匹配，避免乱播。 */
-  private async playChosen(chosen: MusicCandidate, query: string): Promise<void> {
-    // 新闻视频候选：和音乐共用选号流程，但选中后抽该视频音轨播放，不走点歌源。
-    if (chosen.newsBvid) {
-      await this.playNewsVideo({ bvid: chosen.newsBvid, title: chosen.title, cover: chosen.newsCover })
-      return
-    }
-    const source = this.musicSource
-    const m = messages(this.lang).music
-    if (!source) {
-      await this.speakReply(m.notFound(isSpokenContentRequest(query)))
-      return
-    }
-    const keyword = query && query !== chosen.title ? `${query} ${chosen.title}` : chosen.title
-    try {
-      const track = await source.resolve(keyword)
-      if (!track?.url) throw new Error('no track')
-      await this.playTrack(track, m.playing(track.title), undefined, chosen.artist)
-    } catch (e) {
-      // 占位播放源尚未实现：明确告知用户该源不可用，引导改用百度搜索，
-      // 绝不把「未实现」伪装成「没找到这首歌」误导用户。
-      if (e instanceof MusicSourceNotImplementedError) {
-        await this.speakReply(m.notImplemented(e.sourceKind))
-        return
-      }
-      await this.speakReply(m.notFound(isSpokenContentRequest(keyword)))
-    }
-  }
-
-  /**
-   * 处理用户对待选列表的语音选择。返回 true 表示这句已被当作选择消费。
-   * 必须在回声比对之前调用：用户说的「第二首」「稻香」正是刚口播过的词，
-   * 否则会被 resemblesSpoken 当回声丢掉。
-   */
-  private async handleCandidateSelection(text: string): Promise<boolean> {
-    const pending = this.pendingCandidates
-    if (!pending) return false
-    const idx = parseSelection(text, pending.items)
-    if (idx === null) {
-      // 与商品/开源选号同一套：候选歌单还在，不能因为一句没说清的话就清掉，
-      // 用户回头再说「第二首」必须还能选中。
-      // 像在报编号却没对上（含糊/听错/越界）时就地重问并消费这句，
-      // 不放行到 LLM / 音乐直连，避免被答成「推荐歌曲」或再列一次歌单。
-      if (looksLikeSelectionAttempt(text)) {
-        this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-        // 新闻候选与音乐候选共用选号，重问话术按候选类型区分（新闻说「第几条」）。
-        const isNews = pending.items.some((c) => c.newsBvid)
-        await this.speakReply(
-          isNews ? messages(this.lang).news.chooseAgain() : messages(this.lang).music.chooseAgain()
-        )
-        return true
-      }
-      return false
-    }
-    this.pendingCandidates = null
-    this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-    await this.playChosen(pending.items[idx], pending.query)
-    return true
-  }
-
-  private async runMusicCommand(action: NonNullable<ReturnType<typeof detectMusicCommand>>, text: string): Promise<void> {
-    // 只有「找新歌」类动作需要音乐源；pause/resume/stop/replay 操作的是已下发/已记住的媒体
-    // （音乐或百科/诗词），与音乐源无关——没配音乐源时这些也必须能执行，否则会交 LLM 乱答。
-    const needsSource = action === 'play' || action === 'next' || action === 'recommend' || action === 'loop'
-    const source = this.musicSource
-    if (needsSource && !source) return
-    const genre = genreToKeyword(text)
-    const m = messages(this.lang).music
-    try {
-      switch (action) {
-        case 'recommend': {
-          // 推荐：只给候选列表绝不自动播放，即使检索到 1 首也只列出来让用户选
-          await this.offerCandidates(text, true, true)
-          break
-        }
-        case 'play': {
-          // 只说「周杰伦」「稻香」：先给候选列表让用户选。
-          // 「周杰伦的歌 / 刘德华歌曲」是按歌手浏览，强制列清单、绝不自动播放；
-          // 「放一首稻香」靠当前歌手上下文自动选同歌手版本，不强制列表。
-          // 带「再」的请求（再放稻香…）关掉上下文，不当成「还是当前歌手的歌」直接播。
-          if (await this.offerCandidates(text, isArtistBrowse(text), false, !hasAgainMarker(text))) break
-          const track = await source!.resolve(genre)
-          if (!track?.url) throw new Error('no track')
-          // 「循环 N 遍」可作为点歌后缀（如「放稻香循环3遍」），一并下发给客户端循环
-          const loop = parseLoopCount(text)
-          // 关键词带了歌手（如「周杰伦 稻香」）→ 记下歌手，供后续点歌按当前歌手优先
-          const words = contentWords(genre)
-          const artistGuess = words.length >= 2 ? words[0] : this.lastTrack?.artist
-          await this.playTrack(
-            track,
-            m.playing(track.title),
-            loop > 1 ? loop : undefined,
-            artistGuess,
-            false,
-            detectContentType(text) ?? detectContentType(track.title)
-          )
-          this.musicActive = true
-          break
-        }
-        case 'next': {
-          // 没指定新歌手/风格（纯粹「换一首」）：用当前歌手重新搜该歌手的其它作品，
-          // 给出不同歌名的另一首，而不是拿「歌手+歌名」原关键词再搜（后者常只命中同名的同一首）；
-          // 明确说了新歌手/风格（「换首刘德华的」）才切到新偏好。
-          const req = nextPreference(text) || this.lastTrack?.artist || undefined
-          const track = await this.nextTrack(req)
-          if (!track) {
-            // 没找到同类型的其它歌：把选择权交给用户——问要不要换其它风格（或直接点名），由用户确认
-            this.pendingNextFallback = true
-            await this.speakReply(m.offerOtherType())
-            break
-          }
-          await this.playTrack(
-            track,
-            m.switched(track.title),
-            undefined,
-            undefined,
-            false,
-            detectContentType(track.title) ?? this.lastTrack?.contentType
-          )
-          this.musicActive = true
-          break
-        }
-        case 'loop': {
-          // 循环播放：把最近一次下发的曲目按指定遍数重播（不重新检索）。
-          // 没指定遍数时用「默认循环次数」（即设置里的 defaultLoop）；没在播的曲子则友好提示。
-          if (!this.lastTrack) {
-            await this.speakReply(m.loopNothing())
-            break
-          }
-          const explicitLoop = parseLoopCount(text)
-          const loop = explicitLoop > 1 ? explicitLoop : this.defaultLoop
-          await this.playTrack(this.lastTrack, m.looping(loop), loop > 1 ? loop : undefined, this.lastTrack.artist, true)
-          this.musicActive = true
-          break
-        }
-        case 'pause':
-          // 没在播放却说「暂停」是谎话：如实说当前没有可暂停的内容。
-          // 百科/诗词(tts)媒体在播也算——它不置 musicActive，得单独认 ttsMediaActive。
-          if (!this.musicActive && !this.ttsMediaActive) {
-            await this.speakReply(m.musicNotPlaying())
-            break
-          }
-          this.deps.send({ type: 'media.pause' })
-          // 暂停≠停止：媒体仍在（只是 paused），保留 ttsMediaActive，否则「继续/停止」会误判没在播。
-          // 与 music 一致——music 的 pause 从不清 musicActive，只有 stop 才清。
-          await this.speakReply(m.paused())
-          break
-        case 'resume':
-          if (!this.musicActive && !this.ttsMediaActive) {
-            await this.speakReply(m.musicNotPlaying())
-            break
-          }
-          this.deps.send({ type: 'media.resume' })
-          await this.speakReply(m.resumed())
-          break
-        case 'stop': {
-          // 新闻播报不置 musicActive，但它同样是媒体播放：「停掉」要真停并清掉切条上下文。
-          const wasNews = this.newsPlayback !== null
-          this.newsPlayback = null
-          if (!this.musicActive && !this.ttsMediaActive && !wasNews) {
-            await this.speakReply(m.musicNotPlaying())
-            break
-          }
-          this.deps.send({ type: 'media.stop' })
-          this.musicActive = false
-          this.ttsMediaActive = false
-          this.subtitleActive = false
-          await this.speakReply(m.stopped())
-          break
-        }
-        case 'replay': {
-          // 重新播放 = 把最后一次播放的内容从头再放一次（歌 / 百科 / 诗词），不是找歌。
-          // 优先 tts（最近一次百科/诗词），其次音乐曲目；都没播过就如实说没有可重播的。
-          if (this.lastTtsMedia) {
-            const last = this.lastTtsMedia
-            this.deps.send({ type: 'media.subtitle', title: last.title, lines: last.lines })
-            this.deps.send({
-              type: 'media.play',
-              url: last.url,
-              title: last.title,
-              source: 'tts',
-              ...(last.audioPath ? { audioPath: last.audioPath } : {}),
-              ...(last.cover ? { cover: last.cover } : {}),
-            })
-            this.ttsMediaActive = true
-            await this.speakReply(messages(this.lang).baike.playing(last.title))
-            break
-          }
-          if (this.lastTrack) {
-            await this.playTrack(this.lastTrack, m.playing(this.lastTrack.title), undefined, this.lastTrack.artist, true)
-            this.musicActive = true
-            break
-          }
-          await this.speakReply(m.musicNotPlaying())
-          break
-        }
-      }
-    } catch (e) {
-      // 占位播放源尚未实现：明确告知用户该源不可用，引导改用百度搜索
-      if (e instanceof MusicSourceNotImplementedError) {
-        await this.speakReply(m.notImplemented(e.sourceKind))
-        return
-      }
-      // 当前播的是评书/戏曲等非歌曲内容时，即使这句指令里没带类型词也不能说「没找到这首歌」
-      await this.speakReply(m.notFound(isSpokenContentRequest(text) || !!this.lastTrack?.contentType))
-    }
-  }
-
-  /**
    * 音乐/音量/记忆等「意图明确」的指令直连拦截，确定性落地、绕开大模型。
    * 复用于两处：
    *  - finalizeUtterance 的空闲实时定稿；
-   *  - runTurn 里排队句的回放（否则排队句会被丢给大模型，由 play_music 自动播放，
+   *  - runTurn 里排队句的回放（否则排队句会被丢给大模型，由 skill 提示引导大模型播放，
    *    破坏「按歌手浏览要给候选列表让用户选」的直连行为）。
    * 调用方负责保证「不在播报中」（playbackPending=false）并自行下发 asr.final；
    * 不在此处再判 playbackPending/processing——回放时 processing 仍为 true 属正常。
    * 返回 true 表示已被直连命令消费。
    */
   private async handleDirectCommand(text: string): Promise<boolean> {
-    const memCmd = detectMemoryCommand(text)
-    if (memCmd && this.deviceId) {
-      await this.runMemoryCommand(memCmd)
-      return true
-    }
     // 通用媒体控制（音量/字幕/播放模式/pause/resume/stop/replay/loop）由系统能力层处理，
     // 与内容 skill 无关；内部 detect 顺序已保证 playMode/pause/stop 不被音乐 play 抢匹配。
     if (await this.mediaControl.handle(text)) return true
-    // 新闻播放中的「下一条 / 换一条」必须先于新闻重搜与音乐指令拦截：
-    // 这句本身没有新闻词，detectNewsCommand 命中不了；musicControl 的「播放」会把它当点歌
-    // 去搜「下一条」这首歌。只有确实在播新闻时才拦，音乐场景照旧走 music.next。
-    if (this.newsPlayback && detectNewsNextCommand(text)) {
-      await this.playNextNews()
-      return true
-    }
-    // 新闻播报含「播放新闻 / 播放资讯」，musicControl 的 play 正则含裸「播放/放」会当点歌，
-    // 故新闻检测必须排在音乐指令之前（同类于上面的 playMode）。
-    const news = detectNewsCommand(text)
-    if (news) {
-      await this.runNewsCommand(news.keyword)
-      return true
-    }
-    // 百科查询：「百科XX / XX的事迹 / 介绍下XX / XX人物生平」等，抓真实词条摘要显示+播报。
-    // 放在好价（detectProductQuery）之前——「查百科」含「查」会被好价误中。
-    const baike = detectBaikeCommand(text)
-    if (baike) {
-      await this.runBaikeCommand(baike.keyword)
-      return true
-    }
-    // 诗词/古文朗读：背诵/朗诵/念/读 + 作品名，走 edu 数据源（原文+百度朗读音频），
-    // 不让 LLM 自己背全文。放在百科之后、音乐之前。
-    const poem = detectPoemCommand(text)
-    if (poem && await this.runPoemCommand(poem.title)) {
-      return true
-    }
-    // 诗词意图但没查到：runPoemCommand 返回 false，继续往下走交 LLM（受 ≤100 字闸门兜底）
-    // skill 调度放在这里（mediaControl/新闻/百科/诗词之后）：music_skill 的 play 正则含裸
-    // 「播放/放」，若提前会抢走「播放新闻/切换播放模式/百科…」；放在这些守卫之后才安全。
-    // time/weather/auspicious skill 不含播放词，放这里不影响它们被识别。
+    // skill 调度放在这里（mediaControl 之后）：内容 skill 的 play 正则含裸
+    // 「播放/放」，若提前会抢走「播放新闻/切换播放模式…」；放在这些守卫之后才安全。
+    // 百科(33)/诗词(35) skill 排在音乐(40)之前，time/weather/auspicious 不含播放词不受影响。
+    // 百科 skill 在好价（detectProductQuery，调度之后）之前被消费——「查百科」含「查」不会被好价误中。
     if (await this.dispatchDirectCommand(text)) return true
-    const action = detectMusicCommand(text)
-    const effectiveAction: NonNullable<ReturnType<typeof detectMusicCommand>> | null =
-      action ?? (this.musicSource && looksLikeBareMusicQuery(text) ? 'play' : null)
-    // pause/resume/stop/replay 操作当前/上次媒体（含百科/诗词 tts），不依赖 musicSource；
-    // 只有找歌类（play/next/recommend/loop）才要求已配置音乐源，否则会漏给 LLM 乱答「没这首歌」。
-    const mediaOnlyAction = effectiveAction === 'pause' || effectiveAction === 'resume' || effectiveAction === 'stop' || effectiveAction === 'replay'
-    if (effectiveAction && (mediaOnlyAction || this.musicSource)) {
-      await this.runMusicCommand(effectiveAction, text)
-      return true
-    }
-    // 商品/好价查询放最后：不抢记忆/音量/字幕/播放模式/音乐等既有直连命令。
-    // 实物商品名/交易词（推荐一款空调、买卖…）→ 带关键词走站内真搜索；
-    // 好价信号句（有什么折扣、便宜的东西…）→ 限定好价 feed；都绕开 LLM 直接查。
-    const product = detectProductQuery(text)
-    if (product) {
-      await this.runDealsCommand(product.keyword)
-      return true
-    }
-    if (detectDealsCommand(text)) {
-      await this.runDealsCommand()
-      return true
-    }
+    // 裸内容兜底（"周杰伦"）：detect 未覆盖的单一名词，交 skill 的 onBareQuery。
+    // 通用控制（pause/resume/stop/replay/loop）已由 mediaControl 在此前消费。
+    if (await this.dispatchBareQuery(text)) return true
+    // 商品/好价由 deals skill（priority 950，最靠后）在 dispatchDirectCommand 里消费，
+    // 不抢记忆/音量/字幕/播放模式/音乐等既有直连命令。
     return false
   }
 
@@ -1173,398 +494,6 @@ export class VoiceSessionService {
   }
 
   /**
-   * 百科查询直连（绕开 LLM）：抓真实百科词条摘要 → 助手框显示 + TTS 播报。
-   * keyword 为空（纯「百科」）时提示用户说查谁；有词时用注入的 query 或默认工具。
-   * 与新闻一样走 media.play 播真实音频（百度百科自己的 TTS 直链），文字不进助手框；
-   * 只有查询失败/音频接口失败降级为网关文字口播时才显示文字。
-   */
-  private async runBaikeCommand(keyword: string | null): Promise<void> {
-    if (!keyword) {
-      await this.speakReply(messages(this.lang).baike.prompt())
-      return
-    }
-    const query =
-      this.deps.baikeQuery ??
-      (async () => createBaikeTool(this.lang).snapshotWithText(keyword))
-    let text: string
-    let title: string
-    /** 真正会被播报的正文（与音频同源）；字幕必须用它，不能用完整 summary。 */
-    let spoken: string
-    let image: string | undefined
-    try {
-      const r = await query(keyword)
-      if (!r.entry) {
-        // 没查到词条：只有兜底文案、没有可播报的百科内容，照常文字口播
-        await this.speakReply(r.text)
-        return
-      }
-      text = r.text
-      title = r.entry.title || keyword
-      // 数据源已替我们做了同音纠错（如"李存旭"→返回"李存勖"词条）。
-      // 若输入词与返回标题同音但字面不同，说明这是一个 ASR 同音错词对——自动学进本地
-      // 词表，下次识别该错词就能直接纠正，不必再依赖数据源侧的联想。零网络、立即生效。
-      void this.autoLearnCorrection(keyword, title)
-      // 桩/旧实现可能不带 spoken：退回完整摘要（行为同旧版，不炸）
-      spoken = r.spoken ?? r.entry.summary ?? ''
-      image = r.entry.image
-    } catch {
-      await this.speakReply(messages(this.lang).llmUnavailable())
-      return
-    }
-    // 百科音频必须用百度百科自己的语音（用户明确要求不要网关文字转语音）：
-    // 调 getaudio 拿 mp3 直链，media.play 下发让客户端边下边播。URL 只用一次、随即下发，
-    // 不做长期缓存（百度音频直链约一百多分钟有效）。
-    try {
-      const audioUrl = this.deps.baikeAudioUrl
-        ? await this.deps.baikeAudioUrl(text)
-        : await fetchBaikeAudioUrl(text)
-      // 第三方 mp3 直链 DCloud AudioPlayer 直拉不稳（-99、不发请求）——先落盘成本地短链再下发。
-      // 缓存失败就回退原始 url（至少有可能播），audioPath 有值时客户端走下载本地播的稳定链路。
-      const mediaPath = await (this.deps.mediaCache ?? cacheExternalAudio)(audioUrl)
-      // 用落盘音频的真实时长生成字幕 time：网关按字数估算的语速（4.5字/秒）远慢于百度 TTS 实际
-      // （实测 6.5字/秒），不按真实时长铺会让字幕走不完/走太快。拿不到时长就回退估算。
-      const durationSec = mediaPath ? getCachedAudioDuration(mediaPath) : 0
-      // 确认句走 speakReply：既在助手框显示、也 TTS 播报出来（同音乐/新闻点歌确认）。
-      // 不 await，避免阻塞 media.play；百科全文不进助手框、只在字幕面板逐句展示。
-      void this.speakReply(messages(this.lang).baike.playing(title))
-      // 字幕转成歌词格式：只切「真正被播报的正文」并按真实音频时长铺满。
-      // 不能用完整 summary——音频只念 trimSummary(≤300 字)，用 500 字摘要铺 66 秒会让字幕
-      // 每秒推进 7.6 字而语音只有 4.3 字/秒（真机实测第 2 行提前 11 秒翻、末尾还显示没播的内容）。
-      const subtitleLines = splitSummaryToLines(spoken, durationSec || undefined)
-      this.deps.send({ type: 'media.subtitle', title, lines: subtitleLines })
-      // 封面用百科卡片的词条配图（同源），无图则不覆盖（客户端会按 cover 缺省清空）。
-      // audioPath 是相对路径（media/s/<key>.mp3），客户端自己拼 httpBase 下载后本地播；
-      // url 保留原始直链作兼容（客户端有 audioPath 时优先用它）。
-      const audioPath = mediaPath ? mediaPath.replace(/^\//, '') : undefined
-      this.deps.send({
-        type: 'media.play',
-        url: audioUrl,
-        title,
-        source: 'tts',
-        ...(audioPath ? { audioPath } : {}),
-        ...(image ? { cover: image } : {}),
-      })
-      // 记住这次播的百科，供「重新播放」原样重播（不重新查百度、不找歌）。
-      this.lastTtsMedia = { url: audioUrl, title, ...(audioPath ? { audioPath } : {}), ...(image ? { cover: image } : {}), lines: subtitleLines }
-      this.ttsMediaActive = true // 百科音频在播，「暂停/停掉」要认它
-    } catch {
-      // getaudio 是百度非公开接口，失败就不播——不用网关文字转语音兜底（用户明确不要自己合成）。
-      // 只补 llm.done 收尾思考态，避免卡在「思考中」；字幕/封面都没下发，界面保持原样。
-      this.deps.send({ type: 'llm.done' })
-    }
-  }
-
-  /**
-   * 诗词/古文朗读直连（绕开 LLM）：走 edu 数据源（百度汉语原文 + 百度朗读音频），
-   * 不让 LLM 自己背全文（用户明确「长文本不经过 LLM/TTS」）。文字进字幕面板、音频走 media.play，
-   * 助手框只播一句简短确认。提不到作品 sid 就诚实回退 LLM（受 ≤100 字闸门约束）。
-   */
-  /** @returns 是否命中并处理（没查到返回 false，交回调用方走 LLM） */
-  private async runPoemCommand(title: string | null): Promise<boolean> {
-    if (!title) {
-      await this.speakReply(this.lang.toLowerCase().startsWith('en') ? 'Which poem would you like?' : '想背哪首？说个诗词名，比如「背诵滕王阁序」。')
-      return true
-    }
-    const query = this.deps.poemQuery ?? ((t: string) => queryPoem(t))
-    let entry: PoemEntry | null = null
-    try {
-      entry = await query(title)
-    } catch {
-      entry = null
-    }
-    if (!entry) {
-      // 没查到（百度搜索无该作品 aladdin 卡片）：明确告知没找到，不再往下走别的直连分支
-      // （否则「背诵回乡偶书」会被后面的好价分支抢走、答非所问），也不让 LLM 自己背全文。
-      await this.speakReply(
-        this.lang.toLowerCase().startsWith('en')
-          ? `Sorry, I couldn't find "${title}".`
-          : `暂时没找到《${title}》的诗词内容。`
-      )
-      return true
-    }
-    // edu 数据源把识别词纠成规范标题（如"滕王格世"→"滕王阁序"）：同音错字对自动学进词表
-    void this.autoLearnCorrection(title, entry.title)
-    // 与百科同理：先落盘音频拿真实时长，再按字数比例铺字幕 time（固定 3.2 秒/行会走太快/太慢）。
-    let durationSec = 0
-    let mediaPath: string | null = null
-    if (entry.audioUrl) {
-      mediaPath = await (this.deps.mediaCache ?? cacheExternalAudio)(entry.audioUrl)
-      if (mediaPath) durationSec = getCachedAudioDuration(mediaPath)
-    }
-    const weights = entry.lines.map((t) => t.replace(/[，。！？、\s]/g, '').length)
-    const totalWeight = weights.reduce((a, b) => a + b, 0)
-    let acc = 0
-    const lines = entry.lines.map((text, i) => {
-      const line = { time: Math.round(acc * 10) / 10, text }
-      acc += durationSec && totalWeight > 0 ? durationSec * weights[i] / totalWeight : 3.2
-      return line
-    })
-    this.deps.send({ type: 'media.subtitle', title: entry.title, lines })
-    if (entry.audioUrl) {
-      // 第三方 mp3 直链直拉不稳，下发 local 短链 audioPath 走下载本地播。
-      const audioPath = mediaPath ? mediaPath.replace(/^\//, '') : undefined
-      this.deps.send({
-        type: 'media.play',
-        url: entry.audioUrl,
-        title: entry.title,
-        source: 'tts',
-        ...(audioPath ? { audioPath } : {}),
-      })
-      // 记住这次播的诗词，供「重新播放」原样重播。
-      this.lastTtsMedia = { url: entry.audioUrl, title: entry.title, ...(audioPath ? { audioPath } : {}), lines }
-      this.ttsMediaActive = true // 诗词音频在播，「暂停/停掉」要认它
-    }
-    const confirm = this.lang.toLowerCase().startsWith('en')
-      ? `Found "${entry.title}".`
-      : `找到${entry.author ? entry.author + '的' : ''}《${entry.title}》，正在为你朗读。`
-    await this.speakReply(confirm)
-    return true
-  }
-
-  /**
-   * 新闻播报直连（绕开 LLM）：抓真实新闻视频、抽音轨走 media.play 播放，不发文字合成音频。
-   * 单条直接播；多条和音乐一样列编号候选让用户语音选一条（newsBvid 标记分流到新闻音轨）。
-   */
-  private async runNewsCommand(keyword: string | null): Promise<void> {
-    const m = messages(this.lang).news
-    // 新一轮新闻先清掉旧上下文：抓取失败时不留下过期列表，否则「下一条」会播上一批的残留。
-    this.newsPlayback = null
-    try {
-      // 抓真实新闻视频候选（B 站），标题已清洗（去下划线/特殊符号）。音频不从文字合成。
-      const hits = await this.newsVideoSource.search(keyword)
-      const candidates = hits.slice(0, 3)
-      if (!candidates.length) {
-        await this.speakReply(m.none(keyword ?? undefined))
-        return
-      }
-      // 记住本批候选（index=-1 表示还没开始播）：「下一条」据此接着切，不再掉进音乐点歌。
-      this.newsPlayback = { items: candidates, index: -1, keyword }
-      // 只有一条：直接抽这条的音轨播放，不必让用户选。
-      if (candidates.length === 1) {
-        await this.playNewsVideo(candidates[0])
-        return
-      }
-      // 多条：和音乐一样列编号候选、让用户语音选一条（pendingCandidates + parseSelection）。
-      // 候选项带 newsBvid，handleCandidateSelection 选中后据此走新闻音轨而非点歌。
-      this.pendingCandidates = {
-        items: candidates.map((c) => ({ title: c.title, artist: '', newsBvid: c.bvid, newsCover: c.cover })),
-        query: keyword ?? '',
-      }
-      this.pendingDeals = null // 与商品候选互斥，「第二条」不能产生歧义
-      await this.speakReply(m.candidates(candidates.map((c) => c.title)) + m.chooseHint())
-    } catch {
-      await this.speakReply(m.unavailable())
-    }
-  }
-
-  /**
-   * 播放一条选中（或唯一）的新闻视频：抽它的真实音轨 → 与音乐相同的 dash 短链下发。
-   * 文本标题清洗后仅作为助手框显示 + 播放器标题，不做 TTS 合成。
-   */
-  private async playNewsVideo(candidate: { bvid: string; title: string; cover?: string }): Promise<void> {
-    const m = messages(this.lang).news
-    const video = await this.newsVideoSource.resolveBvid(candidate)
-    if (!video?.url) {
-      await this.speakReply(m.unavailable())
-      return
-    }
-    const title = cleanNewsTitle(video.title) || candidate.title
-    // 同步「正在播第几条」：后续「下一条」从这条往后切（选中多条候选时也会走到这里）。
-    if (this.newsPlayback) {
-      const idx = this.newsPlayback.items.findIndex((c) => c.bvid === candidate.bvid)
-      if (idx >= 0) this.newsPlayback.index = idx
-    }
-    // 后台预热转封装（纯 JS fmp4→ADTS，无 ffmpeg），不阻塞 media.play；客户端取短链时等同一 key 完成。
-    void ensureAdtsFile(video.url).catch(() => undefined)
-    // 确认句走 speakReply：既在助手框显示、也 TTS 播报出来（同音乐点歌确认，用户要「有文字也要播报」）。
-    // 不 await，避免阻塞 media.play（同 playTrack 模式）；llm.done 由 speakReply 内部收尾。
-    void this.speakReply(messages(this.lang).news.playing(title))
-    this.deps.send({
-      type: 'media.play',
-      url: '',
-      title,
-      ...(video.cover ? { cover: video.cover } : {}),
-      audioPath: `music/s/${adtsKeyFor(video.url)}.aac`,
-    })
-  }
-
-  /**
-   * 新闻播放中用户说「播放下一条 / 换一条」：从当前下标的后一条接着抽音轨播放。
-   * 播到最后一条就如实告知并清掉上下文，让用户再说「播放新闻」抓一批新的——
-   * 不静默从头循环，否则用户分不清是重播还是真换了一条。
-   */
-  private async playNextNews(): Promise<void> {
-    const ctx = this.newsPlayback
-    if (!ctx?.items.length) return
-    const next = ctx.index + 1
-    if (next >= ctx.items.length) {
-      this.newsPlayback = null
-      await this.speakReply(messages(this.lang).news.noMore())
-      return
-    }
-    await this.playNewsVideo(ctx.items[next])
-  }
-
-  /**
-   * 处理「查商品 / 找好价」直接指令（绕开 LLM）：一次查询同时拿到口播文本与结构化 Deal[]。
-   * 留住列表供下一轮语音选号；详情只走 media.detail 展示、不进 TTS；商品数据不进 voice.params。
-   * dealsQuery 可由测试注入桩避免联网；缺省用 createDealsTool.snapshot（共用抓取缓存，零二次抓取）。
-   */
-  private async runDealsCommand(keyword?: string | null): Promise<void> {
-    const query =
-      this.deps.dealsQuery ??
-      (async (): Promise<DealsSnapshot> => {
-        // DealsOptions.source 必需（数据源由调用方注入，工具本身不绑定站点）。
-        const primary = createDealsSource()
-        const tool = createDealsTool(this.lang, {
-          source: primary,
-          // 内置源才补备用源（自动降级）；测试注入桩源不补
-          fallbackSources: createDealsAllSources().some((s) => s.name === primary.name)
-            ? createDealsAllSources().filter((s) => s.name !== primary.name)
-            : [],
-        })
-        // 具体商品名（推荐一款空调）→ 带关键词走站内真搜索，能搜到普通商品、不限定好价；
-        // 好价信号句（打折/优惠/便宜…）→ 限定好价 feed。
-        // 多抓一些候选：下面要按长期记忆偏好挑 3 条，只取 3 条就没有挑选余地。
-        return keyword
-          ? tool.snapshot({ keyword, limit: 10 })
-          : tool.snapshot({ limit: 10, dealsOnly: true })
-      })
-    try {
-      const { text, deals } = await query(keyword)
-      // 「推荐几件」按用户长期记忆里的偏好排序（确定性纯函数，不调 LLM）；
-      // 没有记忆或都没命中时等价于取前 3 条，与没有个性化时行为一致。
-      const picked = pickDeals(deals, await this.dealPreferenceKeywords(), 3)
-      const m = messages(this.lang).deals
-      if (picked.length) {
-        // 有结果：记住候选供选号、下发编号列表卡片（全量快照），口播编号让用户选。
-        this.pendingDeals = { items: picked, query: '' }
-        this.deps.send({ type: 'media.detail', kind: 'deals', items: toDetailItems(picked, this.lang) })
-        const spoken = `${m.candidates(picked.map((d) => d.title))}${m.chooseHint()}`
-        await this.speakReply(spoken)
-      } else {
-        // 没找到：清除旧卡片（close）、清掉候选列表，只如实口播兜底，
-        // 不下发空 items 快照（否则前端显示空的「为你找到」框）。
-        this.pendingDeals = null
-        this.deps.send({ type: 'media.detail', kind: 'deals', items: [], close: true })
-        await this.speakReply(text)
-      }
-    } catch {
-      await this.speakReply(formatDeals(this.lang, []))
-    }
-  }
-
-  /** 读长期记忆抽商品偏好关键词；没有记忆或读取失败就返回空（不做个性化，行为同以前）。 */
-  private async dealPreferenceKeywords(): Promise<string[]> {
-    try {
-      const entries = (await this.memoryStore?.list()) ?? []
-      return preferenceKeywords(entries)
-    } catch {
-      return []
-    }
-  }
-
-  /**
-   * 处理用户对商品编号列表的语音选择。返回 true 表示这句已被消费。
-   * 同 handleCandidateSelection，必须在回声比对之前调用：「第二个」正是刚口播过的词，
-   * 否则会被 resemblesSpoken 当播报回声丢掉、永远选不中。
-   * parseSelection 只读候选的 .title，用 {title, artist:''} 适配 Deal[]，零改动音乐模块。
-   */
-  private async handleDealSelection(text: string): Promise<boolean> {
-    const pending = this.pendingDeals
-    if (!pending || !pending.items.length) return false
-    const idx = parseSelection(
-      text,
-      pending.items.map((d) => ({ title: d.title, artist: '' })),
-    )
-    if (idx === null) {
-      // 卡片还在屏幕上，选号状态就不该丢：一句没说清的话不清列表，用户回头再说「第三件」仍要能选中。
-      // 但「像是在报编号」却没对上（含糊 / 听错 / 越界）时，就地口播重问并消费这句，
-      // 绝不放行到 LLM / 音乐直连，否则会被当成点歌或推荐歌曲，用户就再也选不回来了。
-      if (looksLikeSelectionAttempt(text)) {
-        this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-        await this.speakReply(messages(this.lang).deals.chooseAgain())
-        return true
-      }
-      return false
-    }
-    this.pendingDeals = null
-    this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-
-    // 先开口播确认（不复述商品内容），详情页补充信息与播报并行拉取：
-    // 用户听到「已为你打开第 N 件」时卡片正好切过去，感知不到这次额外抓取。
-    const spoken = this.speakReply(messages(this.lang).deals.detailIntro(idx + 1))
-    const detail = await this.lookupDealDetail(pending.items[idx])
-    // 源无关的补充信息合并进该条；合并后仍走同一个 toDetailItems 映射成统一 fields[]，
-    // 客户端不知道详情来自列表页还是详情页、来自哪个站点。
-    const items = detail
-      ? pending.items.map((d, i) => (i === idx ? { ...d, ...detail } : d))
-      : pending.items
-    // 同一 kind 的全量快照 + selectedIndex（对应 DetailItem.index，1 起），客户端切成该商品详情。
-    this.deps.send({
-      type: 'media.detail',
-      kind: 'deals',
-      items: toDetailItems(items, this.lang),
-      selectedIndex: idx + 1,
-    })
-    await spoken
-    return true
-  }
-
-  /** 工具层下发的事件统一走这里透传客户端（商品/天气/时间等都是直连，不旁听）。 */
-  /** LLM 工具（poemTool/baikeTool）路径刚下发的字幕行，供随后的 media.play(source:tts) 一并记入 lastTtsMedia。 */
-  private toolPendingSubtitle: { title: string; lines: Array<{ time: number; text: string }> } | null = null
-
-  private readonly emitToClient = (m: ServerEvent): void => {
-    // LLM 工具路径的 tts 媒体也纳入状态管理：之前只有直连(runPoemCommand/runBaikeCommand)记
-    // ttsMediaActive/lastTtsMedia，LLM 直接说作品名走 query_poem 工具时不记 → 「暂停/停止」说没在播、
-    // 「重新播放」找不到。这里在统一出口补记（直连走 deps.send 不经此，不会重复）。
-    if (m.type === 'media.subtitle' && !m.close) {
-      this.toolPendingSubtitle = { title: m.title, lines: m.lines }
-    } else if (m.type === 'media.play' && m.source === 'tts') {
-      const lines = this.toolPendingSubtitle?.title === m.title ? this.toolPendingSubtitle.lines : []
-      this.lastTtsMedia = {
-        url: m.url, title: m.title,
-        ...(m.audioPath ? { audioPath: m.audioPath } : {}),
-        ...(m.cover ? { cover: m.cover } : {}),
-        lines,
-      }
-      this.ttsMediaActive = true
-      this.toolPendingSubtitle = null
-    }
-    this.deps.send(m)
-  }
-
-  /** 补抓选中商品的详情页；任何失败都返回 null，卡片退回列表数据照常展示。 */
-  private async lookupDealDetail(deal: Deal): Promise<DealDetail | null> {
-    if (!deal) return null
-    const lookup = this.deps.dealsDetail ?? ((d: Deal) => enrichDeal(createDealsSource(), d))
-    try {
-      return await lookup(deal)
-    } catch {
-      return null
-    }
-  }
-
-  /** 处理「忘了XX / 清空记忆」直接指令：落地删除并口播确认，不进 LLM。 */
-  private async runMemoryCommand(cmd: ReturnType<typeof detectMemoryCommand>): Promise<void> {
-    if (!cmd || !this.deviceId) return
-    const m = messages(this.lang).memory
-    if (cmd.action === 'remember') {
-      await this.deps.data.saveMemory(this.deviceId, cmd.key, cmd.value)
-      await this.speakReply(m.remembered(cmd.key, cmd.value))
-      return
-    }
-    if (cmd.action === 'clear') {
-      await this.deps.data.forgetMemory(this.deviceId)
-      await this.speakReply(m.cleared())
-      return
-    }
-    const n = await this.deps.data.forgetMemory(this.deviceId, cmd.topic)
-    await this.speakReply(n > 0 ? m.forgot(cmd.topic, n) : m.nothingToForget())
-  }
-
-  /**
    * 首次 start 时构造 skill 实例（含提示词片段）。ctx 用 getter 读会话的当前值——
    * skill 生命周期可能跨重武装（agent/memoryStore 会变），getter 保证它总拿到最新的。
    * 已在 onSessionReset('cancel'/'end') 里清状态，但实例本身保留（重武装不丢跨轮上下文，
@@ -1589,13 +518,33 @@ export class VoiceSessionService {
       requestClientLocation: () => self.requestClientLocation(),
       // 媒体播放系统能力：skill 与工具共用这一个实例，状态唯一。
       media: self.media,
-      // 内容播放请求：music_skill 识别意图后委托 player（音乐业务实现在 skill 目录）。
+      // 内容播放请求：内容 skill 识别意图后委托通用执行器（实现由装配层注入）。
       content: {
-        play: async (text) => { await self.musicPlayer.run('play', text); return true },
-        next: async (text) => { await self.musicPlayer.run('next', text); return true },
-        recommend: async (text) => { await self.musicPlayer.run('recommend', text); return true },
+        play: async (text) => { await self.content.run('play', text); return true },
+        next: async (text) => { await self.content.run('next', text); return true },
+        recommend: async (text) => { await self.content.run('recommend', text); return true },
         // 选号由核心在 finalizeUtterance 的回声比对前调 player.selectCandidate，这里返回 false 避免重复消费。
         select: async () => false,
+        setCandidates: (items, query) => self.content.setCandidates(items, query),
+        clearDeals: () => self.dispatchClearOtherCandidates(),
+      },
+      // 通用内容能力（音频落盘/时长/dash 短链）：skill 只调能力，不自己实现。
+      mediaTools: {
+        cacheAudio: (url) => (self.deps.mediaCache ?? cacheExternalAudio)(url),
+        audioDuration: (path) => getCachedAudioDuration(path),
+        ensureAdts: (raw) => ensureAdtsFile(raw),
+        adtsKey: (raw) => adtsKeyFor(raw),
+      },
+      // 跨业务状态由核心持有：百科/诗词的「重新播放」记忆 + ASR 同音纠错学习。
+      rememberTtsMedia: (media) => { self.lastTtsMedia = media },
+      autoLearn: (wrong, correct) => self.autoLearnCorrection(wrong, correct),
+      // 商品偏好关键词来自设备长期记忆（纯读取），好价 skill 据此挑 3 件。
+      getPreferenceKeywords: async () => {
+        try {
+          return preferenceKeywords((await self.memoryStore?.list()) ?? [])
+        } catch {
+          return []
+        }
       },
     }
     this.skills = modules.map((m) => m.create(ctx))
@@ -1618,6 +567,68 @@ export class VoiceSessionService {
       }
     }
     return false
+  }
+
+  /** 裸内容查询兜底：按 priority 依次询问 skill 的 onBareQuery（网关不 import 具体裸查询识别）。 */
+  private async dispatchBareQuery(text: string): Promise<boolean> {
+    for (const skill of this.skills) {
+      try {
+        if (await skill.onBareQuery?.(text)) return true
+      } catch (err) {
+        console.warn('[skills] onBareQuery 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+    return false
+  }
+
+  /** 通用执行器选中带 bvid 的候选后，按序问 skill 谁能播这条外部视频音轨。 */
+  private async dispatchExternalVideo(c: { bvid?: string; title: string; cover?: string }): Promise<void> {
+    for (const skill of this.skills) {
+      try {
+        if (await skill.playExternalVideo?.(c)) return
+      } catch (err) {
+        console.warn('[skills] playExternalVideo 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+  }
+
+  /** 通用媒体 stop 时通知所有 skill 清跨轮播放上下文（新闻待选列表等）。 */
+  private dispatchMediaStop(): void {
+    for (const skill of this.skills) {
+      try {
+        skill.onMediaStop?.()
+      } catch (err) {
+        console.warn('[skills] onMediaStop 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+  }
+
+  /** 是否有 skill 挂起了语音报号可选候选（商品列表等），供幻觉判断放行单字数字。 */
+  private anySkillHasCandidates(): boolean {
+    return this.skills.some((s) => s.hasCandidates?.() === true)
+  }
+
+  /** 定稿时语音选择某 skill 的候选（商品「第二件」），须早于回声比对调用。 */
+  private async dispatchCandidateSelection(text: string): Promise<boolean> {
+    for (const skill of this.skills) {
+      try {
+        if (await skill.onCandidateSelection?.(text)) return true
+      } catch (err) {
+        console.warn('[skills] onCandidateSelection 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+    return false
+  }
+
+  /** 设置内容候选时清掉其它 skill 的候选（商品/音乐互斥）。 */
+  private dispatchClearOtherCandidates(): void {
+    for (const skill of this.skills) {
+      try {
+        skill.clearCandidates?.()
+      } catch (err) {
+        console.warn('[skills] clearCandidates 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
   }
 
   /**
@@ -1963,17 +974,19 @@ export class VoiceSessionService {
    * 不是为噪声堆字黑名单，真人任何正常指令都不误伤。
    */
   private isHallucinationShort(text: string, speechDuration: number, hasSelectionContext = false): boolean {
+    // skill 意图判断走各 skill 的 matchesIntent；确保实例已构造（正常在 start 里，此处兜底幂等）。
+    this.ensureSkills()
     if (!Number.isFinite(speechDuration) || speechDuration < 0 || speechDuration >= 0.6) return false
     const t = text.trim()
     // 多字句一律放行：真人正常说话/选号（第二首）都是多字，打嗝幻觉是单字或纯数字。
     // 注意纯数字单独处理（见下）——「8」既可能是选号也可能是打嗝幻觉，靠上下文区分。
     if (Array.from(t).length > 1 && !/^\d+$/.test(t)) return false
-    // 命中任何已知有效意图 → 放行（音乐/诗词/百科/音量/字幕/记忆/时间/天气/新闻/商品/好价）
+    // 命中任何已知有效意图 → 放行。内容/商品 skill（音乐/时间/天气/百科/诗词/新闻/好价等）走各 skill 的
+    // matchesIntent（网关不 import 具体 skill）；剩余通用控制（音量/字幕/记忆/播放模式）保留其 detect。
     if (
-      detectMusicCommand(t) || detectPoemCommand(t) || detectBaikeCommand(t) ||
-      detectVolumeCommand(t) || detectSubtitleCommand(t) || detectMemoryCommand(t) ||
-      isTimeQuery(t) || detectWeatherCommand(t) || detectNewsCommand(t) ||
-      detectProductQuery(t) || detectDealsCommand(t) || detectPlayModeCommand(t)
+      this.skills.some((s) => s.matchesIntent?.(t)) ||
+      detectVolumeCommand(t) || detectSubtitleCommand(t) ||
+      detectPlayModeCommand(t)
     ) return false
     // 纯数字选号：只有在「刚给过候选列表/编号列表」的上下文里才是有效输入；
     // 否则单字数字（8/9）和打嗝/吸鼻子幻觉文本相同，短语音一律当幻觉拦。
@@ -2028,7 +1041,7 @@ export class VoiceSessionService {
 
     // VAD 幻觉二级判断：短语音 + 无有效意图 → 噪声丢弃（打嗝/吸鼻子/回声脑补的单字）。
     // 内置 SenseVoice 才有 speechDuration；上游 ASR（-1）跳过此判断，行为不变。
-    if (this.isHallucinationShort(text, this.asr.speechDuration ?? -1, !!(this.pendingCandidates || this.pendingDeals))) {
+    if (this.isHallucinationShort(text, this.asr.speechDuration ?? -1, !!(this.content.hasPendingCandidates() || this.anySkillHasCandidates()))) {
       bargeDiag(`HALLUCINATION-DROP text="${text}" vd=${this.asr.speechDuration}`)
       return
     }
@@ -2043,24 +1056,13 @@ export class VoiceSessionService {
     // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。
     // 必须在下面的回声比对之前：用户说的「第二首」「稻香」正是刚口播过的词，
     // 否则会被 resemblesSpoken 当成播报回声丢掉，导致永远选不中。
-    if (this.pendingCandidates && await this.handleCandidateSelection(text)) return
+    if (this.content.hasPendingCandidates() && await this.content.selectCandidate(text)) return
     // 上一轮给过商品编号列表，这一句优先当作「说编号 / 点商品名」解析。
     // 同样必须早于回声比对：「第二个」正是刚口播过的词。
-    if (this.pendingDeals && await this.handleDealSelection(text)) return
+    if (await this.dispatchCandidateSelection(text)) return
 
-    // 上一轮「换一首」没找到同类型的其它歌，正等用户确认是否换其它风格：
-    // 把决定权交还给用户。这句优先判定为「接受换其它 / 点名想听什么」。
-    if (this.pendingNextFallback) {
-      this.pendingNextFallback = false
-      // 用户同意换其它风格（好/换其他的/来首其它的…）→ 直接播一首不同风格的并口播一句。
-      if (this.shouldAcceptOtherType(text)) {
-        this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
-        await this.playOtherType()
-        return
-      }
-      // 用户没说「换其它的」：可能是点名想听的（放首XX / 换首刘德华的），或无关闲聊。
-      // 不消费这句、也不替用户做主——清掉待确认标记后照常走下面的音乐/LLM 分支处理。
-    }
+    // 上一轮「换一首」没找到同类型的其它歌，正等确认是否换其它风格（委托内容执行器）。
+    if (await this.content.consumeNextFallback(text)) return
 
     // 播报（TTS）进行中：不放行成新轮次，但插话要排队——与思考阶段一致，
     // 当前句播完（或被「小熊小熊」跳过后）由 runTurn 依次消费。
@@ -2091,7 +1093,7 @@ export class VoiceSessionService {
 
     // 当前轮还没跑完（未在应答 / 思考中）：不打断、不消费，仅把这句排进队列；
     // 排队句会在本轮播完后由 runTurn 回放，并同样走下面的直连拦截，
-    // 避免被丢给大模型由 play_music 自动播放（破坏「按歌手浏览要给候选列表让用户选」）。
+    // 避免被丢给大模型由 skill 提示引导大模型播放（破坏「按歌手浏览要给候选列表让用户选」）。
     if (this.processing) {
       this.enqueueDuringBusy(text)
       return
@@ -2539,29 +1541,32 @@ export class VoiceSessionService {
       lang: this.lang,
       send: (e) => this.deps.send(e),
       speak: (t) => this.speakReply(t),
-      onStop: () => { this.newsPlayback = null },
+      onStop: () => this.dispatchMediaStop(),
       defaultLoop: () => this.defaultLoop,
     })
-    // 音乐播放业务（music_skill 实现）：依赖用 getter 读会话当前值，切源/重武装即时生效。
-    this.musicPlayer = new MusicPlayer({
-      lang: () => this.lang,
-      speak: (t) => this.speakReply(t),
-      send: (e) => this.deps.send(e),
-      queueRemaining: () => this.queue.length,
-      media: this.media,
-      getMusicSource: () => this.musicSource,
-      candidateFetcher: this.deps.candidateFetcher,
-      defaultLoop: () => this.defaultLoop,
-      autoLoop: () => this.autoLoop,
-      clearNewsContext: () => { this.newsPlayback = null },
-      hasPendingDeals: () => this.pendingDeals !== null,
-      clearPendingDeals: () => { this.pendingDeals = null },
-      getLastTtsMedia: () => this.lastTtsMedia,
-      playNewsVideo: async (c) => {
-        if (!c.bvid) return
-        await this.playNewsVideo({ bvid: c.bvid, title: c.title, cover: c.cover })
-      },
-    })
+    // 内容播放执行器（装配层注入实现）：依赖用 getter 读会话当前值，切源/重武装即时生效。
+    // 只构造一次——它持有跨轮 pendingCandidates/nextFallback，重武装（复用会话）时重建会丢候选歌单。
+    if (!this.content) {
+      const executorDeps: ContentExecutorDeps = {
+        lang: () => this.lang,
+        speak: (t) => this.speakReply(t),
+        send: (e) => this.deps.send(e),
+        queueRemaining: () => this.queue.length,
+        media: this.media,
+        getSource: () => this.musicSource,
+        candidateFetcher: this.deps.candidateFetcher,
+        defaultLoop: () => this.defaultLoop,
+        defaultVolume: () => this.defaultVolume,
+        autoLoop: () => this.autoLoop,
+        autoSubtitle: () => this.autoSubtitle,
+        clearNewsContext: () => this.dispatchMediaStop(),
+        hasPendingDeals: () => this.anySkillHasCandidates(),
+        clearPendingDeals: () => this.dispatchClearOtherCandidates(),
+        getLastTtsMedia: () => this.lastTtsMedia,
+        playNewsVideo: (c) => this.dispatchExternalVideo(c),
+      }
+      this.content = this.deps.contentExecutorFactory(executorDeps)
+    }
     // 用户没带时区或带的是非法值就退回东 8 区
     this.timezone = timezone?.trim() || 'Asia/Shanghai'
     this.mode = mode
@@ -2611,17 +1616,10 @@ export class VoiceSessionService {
             lang,
             this.timezone,
             () => this.getLocation(),
-            () => this.musicSource,
-            this.emitToClient,
             this.memoryStore,
             this.memoryContext,
             () => this.requestClientLocation(),
-            this.autoSubtitle,
-            this.defaultLoop,
-            this.defaultVolume,
-            this.autoLoop,
-            this.dealsCount,
-            () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
+            () => this.media.getNowPlaying(),
             this.autoMemory,
             this.mcpServers,
             this.deps.correctionSyncer?.engine,
@@ -2632,10 +1630,8 @@ export class VoiceSessionService {
     }
 
     // 全新会话：清空跨轮状态并重建 LLM（重武装/re-arm 走上面的早返回，不清商品候选）
-    this.pendingCandidates = null
-    this.pendingDeals = null
-    this.pendingNextFallback = false
-    this.newsPlayback = null
+    this.content.reset('start')
+    this.dispatchSessionReset('start')
     this.recentUserTurns = []
     this.autoExtractRuns = 0
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
@@ -2662,17 +1658,10 @@ export class VoiceSessionService {
             lang,
             this.timezone,
             () => this.getLocation(),
-            () => this.musicSource,
-            this.emitToClient,
             memoryStore,
             memoryContext,
             () => this.requestClientLocation(),
-            this.autoSubtitle,
-            this.defaultLoop,
-            this.defaultVolume,
-            this.autoLoop,
-            this.dealsCount,
-            () => (this.musicActive && this.lastTrack ? { title: this.lastTrack.title, artist: this.lastTrack.artist, contentType: this.lastTrack.contentType } : null),
+            () => this.media.getNowPlaying(),
             this.autoMemory,
             this.mcpServers,
             this.deps.correctionSyncer?.engine,
@@ -2758,10 +1747,7 @@ export class VoiceSessionService {
     this.playbackPending = false
     this.echoUntil = 0
     this.queue.length = 0
-    this.pendingCandidates = null
-    this.pendingDeals = null
-    this.pendingNextFallback = false
-    this.newsPlayback = null
+    this.content.reset('end')
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)

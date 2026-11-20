@@ -13,11 +13,24 @@
  * 逐步再把执行实现搬进能力层/skill，保证每步行为不变、全量测试绿。
  */
 import type { Skill, SkillContext, SkillModule } from '../types'
+import type { ContentSource, ContentSourceFactory, ContentResolverFactory, ContentExecutor, ContentExecutorDeps, ContentDashDeps } from '../../content/types'
 import { detectMusicCommand } from './detect'
-import { parseSelection, looksLikeSelectionAttempt } from './music/musicCandidates'
+import { parseSelection, looksLikeSelectionAttempt, looksLikeBareMusicQuery } from './music/musicCandidates'
+import { createMusicSource, needsProxy } from './music'
+import { createMusicResolver } from './resolver'
+import { MusicPlayer } from './player'
 
 function createMusicSkill(ctx: SkillContext): Skill {
   return {
+    matchesIntent(text) {
+      // 幻觉兜底：点歌/换一首/推荐等有效意图放行；含裸歌名（"周杰伦"）也算。
+      return detectMusicCommand(text) !== null || looksLikeBareMusicQuery(text)
+    },
+    async onBareQuery(text) {
+      // 只报一个歌手/作品名（无可辨识动词）：按点歌处理，交给能力层列候选或直接播。
+      if (!ctx.content || !looksLikeBareMusicQuery(text)) return false
+      return ctx.content.play(text)
+    },
     async onDirectCommand(text) {
       const action = detectMusicCommand(text)
       if (!action) return undefined
@@ -60,3 +73,19 @@ export const musicSkill: SkillModule = {
 
 /** 导出给核心/单测：选号尝试判断（避免对普通句子误问核心）。 */
 export { parseSelection, looksLikeSelectionAttempt }
+
+/**
+ * 本 skill 提供的「内容播放能力工厂」——由 registry 自动收集后装配给核心。
+ * skill 最了解自己的源/解析器/执行器实现，装配层与核心都不 import 具体 skill。
+ */
+export const contentFactories: {
+  contentSourceFactory: ContentSourceFactory
+  contentResolverFactory: ContentResolverFactory
+  contentExecutorFactory: (deps: ContentExecutorDeps) => ContentExecutor
+  contentDashDeps: ContentDashDeps
+} = {
+  contentSourceFactory: (kind) => createMusicSource({ source: kind }),
+  contentResolverFactory: (source: ContentSource) => createMusicResolver(source),
+  contentExecutorFactory: (deps) => new MusicPlayer(deps),
+  contentDashDeps: { needsProxy },
+}

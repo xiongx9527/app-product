@@ -8,7 +8,8 @@ import { loadAsrCorrections } from './service/voiceSessionService'
 import { createCorrectionSyncer } from './service/asrCorrectionSync'
 import { createApiController } from './controller/apiController'
 import { createDocsController } from './controller/docsController'
-import { handleMusicStream, handleAdtsByKey, getMusicDiagnostics } from './controller/musicStreamController'
+import { handleMediaStream, handleAdtsByKey } from './controller/mediaStreamController'
+import { getStreamDiagnostics } from './service/media/mediaAdts'
 import { handleMediaByKey } from './service/media/mediaCache'
 import { createVoiceConnection } from './controller/voiceController'
 import { loadSkillModules } from './service/skills/loader'
@@ -69,7 +70,7 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       // 运行期诊断（只读、本机）：NodeMobile 的 console 不进 logcat，统一从这里查转封装/短链错误。
       // 必须排在 apiBase catch-all 之前，否则会被通用 api 路由抢走。
       if (url.pathname === '/api/diag') {
-        writeJson(res, 200, { errors: getMusicDiagnostics() }, { 'access-control-allow-origin': '*' })
+        writeJson(res, 200, { errors: getStreamDiagnostics() }, { 'access-control-allow-origin': '*' })
         return
       }
       if (url.pathname === '/api/health' || url.pathname === '/health') {
@@ -161,7 +162,7 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       // B 站音轨代理：客户端播放器无法自带 Referer，由网关代拉转发。
       // 路由带 .m4a 后缀，便于部分按扩展名判定格式的播放器识别为音频。
       if (url.pathname === '/music/stream' || url.pathname === '/music/stream.m4a') {
-        await handleMusicStream(req, res, url.searchParams)
+        await handleMediaStream(req, res, url.searchParams)
         return
       }
       // dash 音轨短链（/music/s/<16hex>.aac）：media.play 只下发短链，客户端下载后本地播放。

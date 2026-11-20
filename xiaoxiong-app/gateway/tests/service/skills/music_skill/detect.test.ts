@@ -51,27 +51,22 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
     expect(detectMusicCommand('看情况再说')).toBeNull()
   })
 
-  it('暂停类优先于停止类：避免「暂停播放」被「停播」子串误判成停止', () => {
-    // 用户反馈：说「暂停播放」结果被关掉了（误判 stop）。
-    expect(detectMusicCommand('暂停播放')).toBe('pause')
-    expect(detectMusicCommand('暂停音乐')).toBe('pause')
-    expect(detectMusicCommand('先停一下')).toBe('pause')
+  it('通用媒体控制（暂停/停止/重播/继续/循环）不归本 skill，返回 null（由 mediaControl 先消费）', () => {
+    // 用户定稿：pause/stop/resume/replay/loop 跟播什么内容无关，归系统能力层 mediaControl，
+    // music skill 只识别「播什么」（play/next/recommend）。这些句子即使含「播放」也不该命中 play。
+    expect(detectMusicCommand('暂停播放')).toBeNull()
+    expect(detectMusicCommand('暂停音乐')).toBeNull()
+    expect(detectMusicCommand('先停一下')).toBeNull()
+    expect(detectMusicCommand('停止播放')).toBeNull()
+    expect(detectMusicCommand('关闭播放')).toBeNull()
+    expect(detectMusicCommand('关掉播放')).toBeNull()
+    expect(detectMusicCommand('重新播放')).toBeNull()
+    expect(detectMusicCommand('重播')).toBeNull()
+    expect(detectMusicCommand('重放')).toBeNull()
+    expect(detectMusicCommand('继续播放')).toBeNull()
   })
 
-  it('明确停止类仍识别为 stop，且先于 play（「停止播放」含「播放」不能误触发 play）', () => {
-    expect(detectMusicCommand('停止播放')).toBe('stop')
-    expect(detectMusicCommand('关闭播放')).toBe('stop')
-    expect(detectMusicCommand('关掉播放')).toBe('stop')
-    // 重新播放=重播最后内容，不是找歌（曾在 play 前被「播放」抢中→答「没有这首歌」）
-    expect(detectMusicCommand('重新播放')).toBe('replay')
-    expect(detectMusicCommand('重播')).toBe('replay')
-    expect(detectMusicCommand('重放')).toBe('replay')
-    expect(detectMusicCommand('关掉音乐')).toBe('stop')
-    expect(detectMusicCommand('别放了')).toBe('stop')
-  })
-
-  it('继续 / 换一首 / 非音乐闲聊', () => {
-    expect(detectMusicCommand('继续播放')).toBe('resume')
+  it('换一首 / 非音乐闲聊', () => {
     expect(detectMusicCommand('换一首')).toBe('next')
     expect(detectMusicCommand('今天天气怎么样')).toBeNull()
   })
@@ -96,21 +91,14 @@ describe('detectMusicCommand 音乐控制指令识别', () => {
     expect(detectMusicCommand('推荐一家餐厅')).toBeNull()
   })
 
-  it('循环播放类：识别为 loop（单曲循环 / 重复播放 / 再放 N 遍）', () => {
-    expect(detectMusicCommand('循环播放')).toBe('loop')
-    expect(detectMusicCommand('单曲循环')).toBe('loop')
-    expect(detectMusicCommand('列表循环')).toBe('loop')
-    expect(detectMusicCommand('重复播放')).toBe('loop')
-    expect(detectMusicCommand('循环播放3遍')).toBe('loop')
-    expect(detectMusicCommand('再放一遍')).toBe('loop')
-    expect(detectMusicCommand('回放一遍')).toBe('loop')
-  })
-
-  it('「再放一遍」不会被「继续/再放(resume)」抢先识别成 resume', () => {
-    // loop 模式含「遍」字，必须排在 resume 之前命中；否则会被 resume 的「再放」先截走
-    expect(detectMusicCommand('再放一遍')).toBe('loop')
-    // 但「再放」（不带遍）仍是继续播放
-    expect(detectMusicCommand('再放')).toBe('resume')
+  it('循环/重播类归 mediaControl，本 skill 不识别（避免含「播放」被当点歌）', () => {
+    expect(detectMusicCommand('循环播放')).toBeNull()
+    expect(detectMusicCommand('单曲循环')).toBeNull()
+    expect(detectMusicCommand('列表循环')).toBeNull()
+    expect(detectMusicCommand('重复播放')).toBeNull()
+    expect(detectMusicCommand('循环播放3遍')).toBeNull()
+    expect(detectMusicCommand('再放一遍')).toBeNull()
+    expect(detectMusicCommand('回放一遍')).toBeNull()
   })
 
   it('parseLoopCount：解析显式「N 遍」；不带遍数交回设置默认(1)；「再放一遍」固定 2；超界收敛', () => {

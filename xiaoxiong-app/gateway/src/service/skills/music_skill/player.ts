@@ -14,44 +14,30 @@
  *  - 问句「谁唱的歌/这首歌叫什么」不触发点歌，交 LLM 从正在播放上下文回答；
  *  - 措辞按 contentType：评书/戏曲/影视不说「这首歌」。
  */
-import type { ServerEvent } from '../../../protocol'
-import type { MediaPlaybackCapability, MediaAsset } from '../../media/MediaPlaybackCapability'
+import type { MediaAsset } from '../../media/mediaPlaybackCapability'
+import type { ContentSource, ContentExecutor, ContentExecutorDeps, ContentAction, ContentCandidate } from '../../content/types'
 import { pickI18n } from './i18n_player'
-import { detectMusicCommand, type MusicAction } from './detect'
+import { detectMusicCommand } from './detect'
 import { parseLoopCount, hasAgainMarker } from '../../media/mediaIntent'
 import { messages } from '../../../i18n'
 import {
   searchCandidates, needsCandidateList, candidateQuery,
   contentWords, filterByCurrentArtist, isArtistBrowse,
   parseSelection, looksLikeSelectionAttempt,
-  type MusicCandidate, type CandidateFetcher,
 } from './music/musicCandidates'
 import {
   genreToKeyword, isSpokenContentRequest, detectContentType,
-  MusicSourceNotImplementedError, type MusicSource,
+  MusicSourceNotImplementedError,
 } from './music/types'
 
 const FALLBACK_GENRES = ['轻音乐', '流行', '电子', '爵士', '民谣', '古典']
 type Track = { url: string; title: string; channel?: string; cover?: string; artist?: string }
-type LastTtsMedia = { url: string; title: string; audioPath?: string; cover?: string; lines: Array<{ time: number; text: string }> }
 
-export interface MusicPlayerDeps {
-  lang: () => string
-  speak: (t: string) => Promise<void>
-  send: (e: ServerEvent) => void
-  queueRemaining: () => number
-  media: MediaPlaybackCapability
-  getMusicSource: () => MusicSource | undefined
-  candidateFetcher?: CandidateFetcher
-  defaultLoop: () => number
-  autoLoop: () => boolean
-  // 跨业务协调
-  clearNewsContext: () => void
-  hasPendingDeals: () => boolean
-  clearPendingDeals: () => void
-  getLastTtsMedia: () => LastTtsMedia | null
-  playNewsVideo: (c: { bvid?: string; title: string; cover?: string }) => Promise<void>
-}
+/** 执行器依赖 = 通用契约，无额外字段（内容业务类型不进核心）。 */
+export type MusicPlayerDeps = ContentExecutorDeps
+
+/** 内容源在本模块内的业务别名：结构等同 ContentSource，保留可读性。 */
+type MusicSource = ContentSource
 
 /** “换一首/换个风格”没给新偏好 → undefined（沿用当前歌手/风格）。 */
 function nextPreference(text: string): string | undefined {
@@ -66,14 +52,21 @@ function nextPreference(text: string): string | undefined {
   return genreToKeyword(kw)
 }
 
-export class MusicPlayer {
-  private pendingCandidates: { items: MusicCandidate[]; query: string } | null = null
+export class MusicPlayer implements ContentExecutor {
+  private pendingCandidates: { items: ContentCandidate[]; query: string } | null = null
   private pendingNextFallback = false
 
   constructor(private readonly d: MusicPlayerDeps) {}
 
   hasPendingCandidates(): boolean { return this.pendingCandidates !== null }
   hasNextFallback(): boolean { return this.pendingNextFallback }
+  /** 挂起候选列表（新闻搜索等多候选场景也共用选号机制）。 */
+  setCandidates(items: ContentCandidate[], query: string): void {
+    this.pendingCandidates = { items, query }
+  }
+  clearCandidates(): void {
+    this.pendingCandidates = null
+  }
   currentTitle(): string | undefined { return this.d.media.getLastMusic()?.title }
   currentArtist(): string | undefined { return this.d.media.getLastMusic()?.artist }
   currentContentType(): string | undefined { return this.d.media.getLastMusic()?.contentType }
@@ -88,7 +81,7 @@ export class MusicPlayer {
   /** 客户端「换一首」按钮。 */
   async nextFromClient(genre?: string): Promise<void> {
     this.d.clearNewsContext()
-    const source = this.d.getMusicSource()
+    const source = this.d.getSource()
     if (!source) return
     const m = messages(this.d.lang()).music
     const query = genre || this.d.media.getLastMusic()?.artist || undefined
@@ -103,9 +96,10 @@ export class MusicPlayer {
   }
 
   /** 执行音乐动作（play/next/recommend/loop 内容类；通用控制归 mediaControl）。 */
-  async run(action: MusicAction, text: string): Promise<void> {
-    if (!['play', 'next', 'recommend', 'loop'].includes(action)) return
-    const source = this.d.getMusicSource()
+  async run(action: ContentAction, text: string): Promise<void> {
+    // 只处理内容意图；通用控制（含 loop）由 media/mediaControl 先消费
+    if (!['play', 'next', 'recommend'].includes(action)) return
+    const source = this.d.getSource()
     if (!source) return
     const m = messages(this.d.lang()).music
     try {
@@ -114,7 +108,8 @@ export class MusicPlayer {
           await this.offer(source, text, true, true)
           break
         case 'play': {
-          if (await this.offer(source, text, isArtistBrowse(text), !hasAgainMarker(text))) break
+          // recommend=false（点歌不是推荐口吻）；allowContext=!hasAgainMarker——「再放稻香」关上下文、列候选让用户选。
+          if (await this.offer(source, text, isArtistBrowse(text), false, !hasAgainMarker(text))) break
           const genre = genreToKeyword(text)
           const track = await source.resolve(genre)
           if (!track?.url) throw new Error('no track')
@@ -135,14 +130,6 @@ export class MusicPlayer {
           }
           await this.playTrack(track, m.switched(track.title), undefined, undefined,
             detectContentType(track.title) ?? this.d.media.getLastMusic()?.contentType)
-          break
-        }
-        case 'loop': {
-          const last = this.d.media.getLastMusic()
-          if (!last) { await this.d.speak(m.loopNothing()); break }
-          const explicit = parseLoopCount(text)
-          const loop = explicit > 1 ? explicit : this.d.defaultLoop()
-          this.playAsset(this.assetOf(last, loop), m.looping(loop), true)
           break
         }
       }
@@ -173,7 +160,7 @@ export class MusicPlayer {
     this.d.send({ type: 'asr.final', text, queueRemaining: this.d.queueRemaining() })
     const chosen = pending.items[idx]
     if (chosen.newsBvid) { await this.d.playNewsVideo({ bvid: chosen.newsBvid, title: chosen.title, cover: chosen.newsCover }); return true }
-    const source = this.d.getMusicSource()
+    const source = this.d.getSource()
     if (!source) return true
     const keyword = pending.query && pending.query !== chosen.title ? `${pending.query} ${chosen.title}` : chosen.title
     try {
@@ -213,7 +200,7 @@ export class MusicPlayer {
   }
 
   private async playOtherType(): Promise<void> {
-    const source = this.d.getMusicSource()
+    const source = this.d.getSource()
     if (!source) return
     const genre = FALLBACK_GENRES[Math.floor(Math.random() * FALLBACK_GENRES.length)]
     try {
@@ -224,7 +211,7 @@ export class MusicPlayer {
   }
 
   /** 候选（只有标题/歌手，无 url）→ resolve 出真 track 再播。 */
-  private async playChosen(source: MusicSource, chosen: MusicCandidate, query: string): Promise<void> {
+  private async playChosen(source: MusicSource, chosen: ContentCandidate, query: string): Promise<void> {
     const m = pickI18n(this.d.lang())
     const keyword = query && query !== chosen.title ? `${query} ${chosen.title}` : chosen.title
     try {
@@ -237,7 +224,7 @@ export class MusicPlayer {
     }
   }
 
-  private async offer(source: MusicSource, text: string, forceList: boolean, recommend: boolean): Promise<boolean> {
+  private async offer(source: MusicSource, text: string, forceList: boolean, recommend: boolean, allowContext = true): Promise<boolean> {
     const genre = genreToKeyword(text)
     if (!needsCandidateList(genre) && !forceList) return false
     const query = candidateQuery(genre)
@@ -255,7 +242,9 @@ export class MusicPlayer {
       await this.playChosen(source, items[0], query)
       return true
     }
-    const ranked = forceList ? items : filterByCurrentArtist(items, this.d.media.getLastMusic()?.artist)
+    // 「再」关掉上下文（allowContext=false）时不按当前歌手收窄，全部列出让用户选；
+    // 只有在某个歌手的播放会话里（allowContext=true）才优先挑同歌手版本直接播。
+    const ranked = forceList || !allowContext ? items : filterByCurrentArtist(items, this.d.media.getLastMusic()?.artist)
     if (ranked.length < items.length) {
       await this.playChosen(source, ranked[0], query)
       return true
@@ -292,11 +281,13 @@ export class MusicPlayer {
 
   /** 真正下发播放：dash 预热/短链/字幕/状态机走系统能力层。 */
   private playAsset(asset: MediaAsset, confirm: string, reuseSubtitle = false): void {
-    this.d.media.setVolume(this.d.media.getVolume()) // 设备侧音量状态保持（协议层已下发）
+    // 每次新播放都按最新默认音量下发（设置页可实时刷新，下次播放生效）；media.volume 在 play 之前。
+    this.d.media.setVolume(this.d.defaultVolume())
     this.d.media.play(asset, { confirm, speak: this.d.speak, reuseSubtitle })
   }
 
   private async emitAutoSubtitle(title: string, artist?: string, reuse = false): Promise<boolean> {
+    if (!this.d.autoSubtitle()) return false
     return this.d.media.ensureSubtitle(title, artist, reuse)
   }
 }

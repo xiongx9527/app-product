@@ -6,6 +6,9 @@ import type { AsrProvider } from '../../../../../src/asr'
 import type { TtsProvider } from '../../../../../src/tts'
 import type { DataService } from '../../../../../src/service/dataService'
 import type { MusicSource } from '../../../../../src/service/skills/music_skill/music/types'
+import { createMusicSource, needsProxy } from '../../../../../src/service/skills/music_skill/music'
+import { createMusicResolver } from '../../../../../src/service/skills/music_skill/resolver'
+import { MusicPlayer } from '../../../../../src/service/skills/music_skill/player'
 import type { ResolvedCapabilities } from '../../../../../src/voiceConfig'
 
 function sleep(ms: number): Promise<void> {
@@ -45,10 +48,7 @@ function createHarness(): Harness {
     insertCommandLog: () => {},
   } as unknown as DataService
   const deps: VoiceSessionDeps = {
-    agentFactory: (_lang, _tz, _loc, _locProvider, getMusicSource) => {
-      captured.push(getMusicSource ? getMusicSource() : undefined)
-      return agent
-    },
+    agentFactory: () => agent,
     createAsr: () => asr,
     createTts: () => tts,
     resolveVoice: () => ({}) as unknown as ResolvedCapabilities,
@@ -56,6 +56,15 @@ function createHarness(): Harness {
     send: () => {},
     sendAudio: () => {},
     asrEndpointMs: 10,
+    // 内容能力由装配层注入；测试在这里捕获构造的源，验证「始终可用」。
+    contentSourceFactory: () => {
+      const source = createMusicSource()
+      captured.push(source)
+      return source
+    },
+    contentResolverFactory: (source) => createMusicResolver(source),
+    contentExecutorFactory: (executorDeps) => new MusicPlayer(executorDeps),
+    contentDashDeps: { needsProxy },
   }
   return { service: new VoiceSessionService(deps), captured }
 }

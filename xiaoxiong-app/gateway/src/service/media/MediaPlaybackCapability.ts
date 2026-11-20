@@ -158,11 +158,9 @@ export class MediaPlaybackCapability {
     // await 它会阻塞到 playback_done，播放器永远出不来。
     if (opts.confirm && opts.speak) void opts.speak(opts.confirm)
 
-    // 字幕尽力而为：reuse=true 时复用上次成功的行（网络波动别把歌词覆盖成暂无字幕）。
-    if (asset.lines || opts.reuseSubtitle) {
-      this.emitSubtitle(asset.title, asset.artist, asset.lines ?? [], opts.reuseSubtitle)
-    }
-
+    // 先下发 media.play：客户端据此切到新内容，并清掉上一条内容的字幕。
+    // 顺序很关键——字幕必须在 play 之后发（紧跟本条），否则会被下一次 play 清掉、
+    // 或从有字幕内容切到无字幕内容时旧字幕串台（张冠李戴）。客户端不靠 title 匹配字幕。
     this.deps.send({
       type: 'media.play',
       url: asset.url,
@@ -179,6 +177,15 @@ export class MediaPlaybackCapability {
       ...(asset.cover ? { cover: asset.cover } : {}),
       ...(asset.loop && asset.loop > 1 ? { loop: asset.loop } : {}),
     })
+
+    // 字幕在 play 之后下发，只属于刚才这条内容；无字幕就清状态（客户端已在 play 时清掉显示）。
+    // reuse=true 时复用上次成功的行（网络波动别把歌词覆盖成暂无字幕）。
+    if (asset.lines || opts.reuseSubtitle) {
+      this.emitSubtitle(asset.title, asset.artist, asset.lines ?? [], opts.reuseSubtitle)
+    } else {
+      this.subtitleLines = null
+      this.subtitleActive = false
+    }
   }
 
   /** 是否是需要转 ADTS 本地短链的 dash 音轨（纯机制判断，与业务无关）。 */

@@ -37,7 +37,7 @@ export interface FlatCorrection {
 /**
  * ASR 纠错词表 Mapper（两表）：主表热词 + 字表错词。
  * - listFlat：联表返回所有启用的 {wrong, pinyin, correct}，供纠正器加载。
- * - 主表/字表 upsert 与软删除，供 seed 与管理接口维护。
+ * - 主表/字表 upsert 与软删除，供管理接口维护。
  */
 export function asrCorrectionMapper(db: AppDb) {
   async function findMain(correct: string) {

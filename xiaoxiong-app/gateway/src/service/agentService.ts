@@ -8,9 +8,8 @@ import { EventType } from '@agentscope-ai/agentscope/event'
 import { messages } from '../i18n'
 import type { Lang, McpServerConfig } from '../protocol'
 import type { LlmConfig } from '../config'
-import { createToolkit, registerMcpServers, type LocationProvider, type MediaEmitter, type MemoryStore, type McpClientHandle, type RequestLocation } from './tools'
+import { createToolkit, registerMcpServers, type LocationProvider, type MemoryStore, type McpClientHandle, type RequestLocation } from './tools'
 import type { AutoLearnEngine } from './autoLearn'
-import type { MusicSource } from './skills/music_skill/music/types'
 import { ChannelSplitter } from './channelSplitter'
 import { createMemoryExtractor, type ExtractedMemory, type MemoryExtractor } from './memory'
 import type { MemoryEntry } from './dataService'
@@ -61,16 +60,9 @@ export async function createAgentService(
   config: { llm: LlmConfig; timeZone?: string },
   lang: Lang,
   locationProvider: LocationProvider = () => null,
-  getMusicSource?: () => MusicSource | undefined,
-  emit?: MediaEmitter,
   memoryStore?: MemoryStore,
   memoryContext?: string,
   requestLocation?: RequestLocation,
-  autoSubtitle?: boolean,
-  defaultLoop?: number,
-  defaultVolume?: number,
-  autoLoop?: boolean,
-  dealsCount?: number,
   getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null,
   /** 自动记忆（自动抽取）开关：透传给 createToolkit，控制助手是否主动沉淀长期记忆。 */
   autoMemory?: boolean,
@@ -95,7 +87,7 @@ export async function createAgentService(
   const baseSysPrompt = m.systemPrompt + (addon ? `\n${addon}` : '') + (memoryContext ?? '')
   // 工具箱先同步建好（保持 createToolkit 同步签名，4 个工具单测直接调用它）；
   // MCP 连接是异步的，必须在 Agent 构造之前 await 完，否则工具在首轮对话里尚未就绪。
-  const toolkit = createToolkit(lang, config.timeZone, locationProvider, getMusicSource, emit, memoryStore, requestLocation, autoSubtitle, defaultLoop, defaultVolume, autoLoop, dealsCount, undefined, autoMemory ?? false, undefined, undefined, autoLearnEngine)
+  const toolkit = createToolkit(lang, locationProvider, memoryStore, requestLocation, autoMemory ?? false, autoLearnEngine)
   const mcpClients = await registerMcpServers(toolkit, mcpServers)
   const agent = new Agent({
     name: 'Xiong',

@@ -121,8 +121,12 @@ async function probe(baseUrl: string, apiKey?: string, timeoutMs = 3000): Promis
   if (apiKey) headers['authorization'] = `Bearer ${apiKey}`
   if (await probeOne(baseUrl, timeoutMs, headers)) return true
   const base = baseUrl.replace(/\/$/, '')
+  // fallback 路径自带 /v1（如 /v1/models），而 builtin LLM 的 baseUrl 已含 /llm/v1、
+  // dashscope 已含 /compatible-mode/v1。直接拼会得到 /llm/v1/v1/models（重复 /v1）恒 404，
+  // 让真正可用的 /llm/v1/models=200 永远探不到。baseUrl 以 /v1 结尾时先去掉再拼。
+  const baseForFallback = /\/v1$/i.test(base) ? base.slice(0, -3) : base
   for (const p of HEALTH_FALLBACK_PATHS) {
-    if (await probeOne(`${base}${p}`, Math.min(timeoutMs, 1500), headers)) return true
+    if (await probeOne(`${baseForFallback}${p}`, Math.min(timeoutMs, 1500), headers)) return true
   }
   return false
 }
@@ -413,26 +417,33 @@ export async function buildHealth(
     typeof resolved.asr.params?.model === 'string' && (resolved.asr.params.model as string)
       ? (resolved.asr.params.model as string)
       : 'sensevoice-small'
-  const asr = await buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, deep, asrModel)
-  const tts = await buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey, deep)
-  const network = await probeExternal()
+  // 四项探测彼此无依赖，并行执行。原因：iOS 内嵌网关经 USB 隧道转发时每次 fetch 都有额外
+  // 延迟，串行累加（ASR 真发音频 4s + TTS 真合成 4s + network 2.5s + LLM deep 8s+）可超
+  // 18s，超过前端 waitForEmbeddedGateway 的 15s 超时 → 隧道数据面明明全通、health 仍判失败。
+  // 并行后总耗时≈最慢单项，稳在 15s 窗口内。
+  const asrPromise = buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, deep, asrModel)
+  const ttsPromise = buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey, deep)
+  const networkPromise = probeExternal()
   // LLM：deep（一键检测）走真正调用模型，能暴露欠费 / 模型名 / 密钥这类「连通但不可用」故障；
   // 其余（30s 轮询）只做连通探测，避免每次轮询都真打模型烧额度。
   // 一键检测（deep）对 LLM 走真实对话调用；内置来源若没选模型（沿用来源默认），
   // 解析出 9529 实际可服务的模型来验证真实可用性（能解析出就真调，验证更准）；
   // 解析不出则 probeLlmDeep 按地址可达性给状态——模型非必填，不算故障。
-  let llmDeepModel = resolved.llm.model
-  if (deep && !llmDeepModel && resolved.llm.provider === 'builtin') {
-    try {
-      const root = resolved.llm.baseUrl.replace(/\/llm\/v1\/?$/, '')
-      const models = await listLlmModels('builtin', config, resolved.llm.apiKey, root)
-      if (models.length) llmDeepModel = models[0]
-    } catch {
-      // 解析失败则维持空，probeLlmDeep 按地址可达性给状态
+  const llmPromise = (async () => {
+    let llmDeepModel = resolved.llm.model
+    if (deep && !llmDeepModel && resolved.llm.provider === 'builtin') {
+      try {
+        const root = resolved.llm.baseUrl.replace(/\/llm\/v1\/?$/, '')
+        const models = await listLlmModels('builtin', config, resolved.llm.apiKey, root)
+        if (models.length) llmDeepModel = models[0]
+      } catch {
+        // 解析失败则维持空，probeLlmDeep 按地址可达性给状态
+      }
     }
-  }
-  const llm = deep
-    ? await probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, llmDeepModel)
-    : await buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey, deep)
+    return deep
+      ? probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, llmDeepModel)
+      : buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey, deep)
+  })()
+  const [asr, tts, network, llm] = await Promise.all([asrPromise, ttsPromise, networkPromise, llmPromise])
   return { asr, llm, tts, network }
 }

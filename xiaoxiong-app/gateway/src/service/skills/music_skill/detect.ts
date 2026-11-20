@@ -6,7 +6,8 @@
 // 通用媒体意图（循环遍数/「再」上下文）归系统能力层 media/mediaIntent，这里 re-export 兼容既有引用。
 export { parseLoopCount, hasAgainMarker } from '../../media/mediaIntent'
 
-export type MusicAction = 'play' | 'next' | 'pause' | 'resume' | 'stop' | 'recommend' | 'loop' | 'replay'
+/** 内容意图（音乐业务）：play/next/recommend。pause/resume/stop/replay/loop 是通用媒体控制，归 media/mediaControl。 */
+export type MusicAction = 'play' | 'next' | 'recommend'
 
 /**
  * 问句不应被「的歌 / 听歌」误判成点歌：像「这是谁唱的歌 / 这首歌叫什么」这类疑问，
@@ -16,23 +17,6 @@ export type MusicAction = 'play' | 'next' | 'pause' | 'resume' | 'stop' | 'recom
 const MUSIC_QUESTION_RE = /[谁什么怎]|为什么|为何|吗|呢|\?|？/
 
 const ACTION_PATTERNS: Array<{ action: MusicAction; re: RegExp }> = [
-  // 暂停类：必须排最前——「暂停播放 / 暂停音乐」里的「暂停」先命中，避免被下面的
-  // stop / play 抢匹配（用户反馈「暂停播放被关掉」就是 stop 的「停播」子串误中）。
-  { action: 'pause', re: /(暂停|先停|停一下|歇一下)/ },
-  // 停止类：排在 play 之前——「停止播放 / 关掉播放」含「播放」会触发 play 词，
-  // 必须先于 play 命中停止；且不含「暂停」，不会与上面的暂停冲突。
-  { action: 'stop', re: /(停止播放|关闭播放|关掉(音乐|播放)|别放了|停(掉)?音乐|关闭音乐|不(要|放)了)/ },
-  // 重播：把「最后一次播放的内容」（歌/百科/诗词）从头再放一次，不是找新歌。
-  // 必须在 play 之前——「重新播放」含「播放」，否则会被 play 抢去点歌、答「没有这首歌」。
-  // 不含「再放一遍」（那是 loop 的口语，语义是循环当前曲 N 次）。
-  { action: 'replay', re: /(重新播放|重播|重放|重新来(一遍|一次)?|再来一遍)/ },
-  // 循环播放类：排在 resume 之前——「再放一遍」里的「再放」会被 resume 抢中，
-  // 必须先用带「遍」的循环模式截住。「N 遍」记遍数，缺省则整个当前曲循环一次（再播一遍）。
-  { action: 'loop', re: /(循环播放|单曲循环|列表循环|重复播放|再放(一|这|那)?遍|循环(播|放)?|回放(一|这)?遍)/ },
-  // 继续类：只认「继续 / 接着 / 恢复 / 再播放」，以及句末的「再放」（如「再放。」）。
-  // 注意：不能写裸「再放」——「再放稻香」是按「再」关掉上下文的「全新点歌」，会被下面的
-  // play 动词截住；裸「再放」只在该词就是句尾（不再跟歌名）时才算「继续播放」。
-  { action: 'resume', re: /(继续(播放|放)?|接着(放|播|听)|恢复(播放)?|再播放|再放(?=$|[\s，。！？、]))/ },
   // 换一首 / 换个风格 / 下一首；评书/相声/影视类口语用「段 / 集 / 部 / 回」等量词，也要识别成换内容。
   // 「来首其它的 / 来个其它的」同样是「换一首」的意思（要一个不同的）。
   { action: 'next', re: /(换一?首|下一?首|换个?风格|换首|切歌|来点别的|换一?个风格|换台|来首(其它|别的|另外)|来个(其它|别的|另外)|换一?段|换段|下一?段|换一?集|换集|下一?集|换一?部|换部|换一?回|换回|再来一?段|来段别的)/ },
@@ -62,10 +46,19 @@ const ACTION_PATTERNS: Array<{ action: MusicAction; re: RegExp }> = [
 const BARE_NEXT_RE =
   /^(换个|换一个|换一下|换一段|换段|再来一个|再来一段|下一段|换集|下一集|换部|换一回|来个别的|来段别的)$/
 
+/**
+ * 通用媒体控制（暂停/停止/重播/循环/继续）归系统能力层 mediaControl，不在内容 skill 识别。
+ * 核心调度里 mediaControl 先消费这些句子；这里再挡一道，防止孤立调用把「暂停播放」等
+ * 含「播放」字样的控制句误当成点歌。正则与 media/mediaControl 的 CONTROL_PATTERNS 对齐。
+ */
+const GENERIC_CONTROL_RE =
+  /(暂停|先停|停一下|歇一下|停止播放|关闭播放|关掉(音乐|播放)|别放了|停掉音乐|关闭音乐|不(要|放)了|重新播放|重播|重放|重新来|循环播放|单曲循环|列表循环|重复播放|再放(一|这|那)?遍|回放(一|这)?遍|继续(播放|放)?|接着(放|播|听)|恢复(播放)?|再播放)/
+
 /** 返回匹配到的音乐动作；非音乐指令返回 null。 */
 export function detectMusicCommand(text: string): MusicAction | null {
   const t = (text || '').trim()
   if (!t) return null
+  if (GENERIC_CONTROL_RE.test(t)) return null
   if (BARE_NEXT_RE.test(t)) return 'next'
   for (const { action, re } of ACTION_PATTERNS) {
     if (re.test(t)) {
