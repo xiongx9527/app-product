@@ -360,6 +360,8 @@ const enUS: Messages = {
 
   'hint.idle': 'Turn on the assistant to start listening',
   'hint.standby': 'Say “Xiaoxiong Xiaoxiong”, or tap the orb to start',
+  'hint.wakeLoading': 'Voice wake is loading, or tap the orb to start',
+  'hint.wakeFailed': 'Voice wake unavailable. Tap the orb to start',
   'hint.listening': 'I am listening. Pause when you finish',
   'hint.listeningSpeaking': 'The assistant is speaking. You can interrupt anytime',
   'hint.confirming': 'Still there? I will leave if you stay silent',

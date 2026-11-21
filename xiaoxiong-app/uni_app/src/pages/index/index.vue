@@ -40,6 +40,7 @@ const {
   errorMessage,
   gatewayPreparing,
   gatewayFailed,
+  wakeReady,
   wake,
   enable,
   interrupt,
@@ -408,7 +409,11 @@ const hint = computed(() => {
     case 'done':
       return t('hint.done')
     default:
-      return state.value === 'idle' ? t('hint.idle') : t('hint.standby')
+      if (state.value === 'idle') return t('hint.idle')
+      // 待唤醒态按 KWS 就绪情况给不同提示：加载中别让用户白喊，失败则引导点圆球
+      if (wakeReady.value === 'loading') return t('hint.wakeLoading')
+      if (wakeReady.value === 'failed') return t('hint.wakeFailed')
+      return t('hint.standby')
   }
 })
 
