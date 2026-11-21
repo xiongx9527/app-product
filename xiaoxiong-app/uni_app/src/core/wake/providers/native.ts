@@ -18,6 +18,10 @@ interface NativeWakeModule {
   /** 原生 KWS 命中回调：payload 形如 { word: '小熊小熊' }，也可能无参（旧基座） */
   onWake?(callback: (payload?: { word?: string } | string) => void): void
   onError?(callback: (payload: { message?: string } | string) => void): void
+  /** KWS 就绪回调：payload { ready: boolean } 或布尔值 */
+  onReady?(callback: (payload: { ready?: boolean } | boolean) => void): void
+  /** 待唤醒态上行静音（唤醒前不调 ASR）：iOS 实现，Android 可缺省 */
+  setStandbyMuted?(muted: boolean): void
 }
 
 function wakeWordOf(payload?: { word?: string } | string): string | undefined {
@@ -56,45 +60,68 @@ export function createNativeWakeProvider(
   function bind(instance: NativeWakeModule): void {
     if (bound) return
     bound = true
-    instance.onWake?.((payload) => {
-      if (running) wakeHandler?.(wakeWordOf(payload))
-    })
-    instance.onError?.((payload) => {
-      // 原生层错误只记录，不打断会话；界面会展示最近一条错误
-      const message =
-        typeof payload === 'string' ? payload : payload?.message ?? '原生唤醒异常'
-      console.warn('[wake]', message)
-    })
+    // 每个回调注册独立容错：DCloud 桥接下某个方法调用失败不应阻断其余绑定，
+    // 更不能让 start() 因此跳过（KWS 引擎在原生侧，回调注册失败只影响事件接收）。
+    try {
+      instance.onWake?.((payload) => {
+        if (running) wakeHandler?.(wakeWordOf(payload))
+      })
+    } catch (e) { console.warn('[wake] onWake 绑定失败', e) }
+    try {
+      instance.onError?.((payload) => {
+        // 原生层错误只记录，不打断会话；界面会展示最近一条错误
+        const message =
+          typeof payload === 'string' ? payload : payload?.message ?? '原生唤醒异常'
+        console.warn('[wake]', message)
+      })
+    } catch (e) { console.warn('[wake] onError 绑定失败', e) }
   }
 
   return {
     name: '原生 KWS',
 
     isSupported() {
-      // 插件存在 ≠ 支持 KWS：iOS 插件 app-product-wake 只有 PCM 采集方法（startPcm 等），
-      // 没有 KWS 的 start/onWake。若仅凭插件存在就认定支持，start() 调 instance.onWake()
-      // 会抛 TypeError（且 bind 在 try 外），错误冒泡到 enable()（无 catch）→
-      // gatewayPreparing 永远卡 true → 界面永远「网关启动中」。故必须校验方法齐全。
-      const instance = resolvePlugin()
-      return !!instance && typeof instance.start === 'function' && typeof instance.onWake === 'function'
+      // 插件存在即视为支持 KWS。app-product-wake 在 Android/iOS 都已补齐 start/onWake/stop。
+      // 注意：DCloud weex 桥接暴露的方法用 `typeof instance.start === 'function'` 判断不可靠
+      // （真机实测方法列表里有 start/onWake，但 typeof 不为 function），会导致 KWS 被误判为不支持、
+      // 永不启动。安全兜底交给 start() 的 try/catch + useAssistant.enable() 的 catch，
+      // 方法真缺失时也不会再卡死。
+      return resolvePlugin() !== null
     },
 
     start(onWake, onError) {
       wakeHandler = onWake
       const instance = resolvePlugin()
-      if (!instance || typeof instance.start !== 'function' || typeof instance.onWake !== 'function') {
-        // 插件不支持 KWS（如 iOS 走网关 ASR 唤醒）：安全跳过，不抛错、不卡 enable。
-        return
-      }
+      if (!instance) return
       try {
         bind(instance)
         if (running) return
         running = true
-        instance.start({ words: [...wakeWords], lang: options.lang })
+        instance.start?.({ words: [...wakeWords], lang: options.lang })
       } catch {
         running = false
         onError?.('原生唤醒启动失败')
       }
+    },
+
+    onReady(callback) {
+      // 原生 KWS 异步加载完成/失败会回调；必须在 start() 之前绑定（原生侧也有"已 ready 立即兑现"保护）
+      const instance = resolvePlugin()
+      if (!instance?.onReady) return
+      try {
+        instance.onReady((payload) => {
+          const ready = typeof payload === 'boolean' ? payload : !!payload?.ready
+          callback(ready)
+        })
+      } catch (e) { console.warn('[wake] onReady 绑定失败', e) }
+    },
+
+    setStandbyMuted(muted: boolean) {
+      // 待唤醒态把上行 PCM 置静音，避免采集音频被网关当用户输入（唤醒前不调 ASR）。
+      // iOS 原生实现；Android 暂缺省（无该方法时静默跳过）。
+      try {
+        resolvePlugin()?.setStandbyMuted?.(muted)
+      } catch (e) { console.warn('[wake] setStandbyMuted 失败', e) }
     },
 
     stop() {

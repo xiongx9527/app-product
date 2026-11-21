@@ -44,23 +44,22 @@ key 即时生效。无引用时用默认策略。沿用 `rate_store` 门面：�
 - **身份来源**：现有 `request.state.api_key_id` / `api_key_name`（HTTP `security_middleware` 与 WS `_ws_auth_ok` 已记录）。无 key 的请求（鉴权关闭时）不限流。
 - 已登录管理会话、环回地址、健康探测路径豁免（见第六节）。
 
-### 开关与策略（已拍板，两者正交）
+### 开关与策略（v12 调整：全局统一控制）
 
-**"是否限流"由开关决定，"限多严"由策略决定**——这是两个独立维度：
+**"是否限流"只由全局开关决定，"限多严"由策略决定**：
 
-| 开关 | 绑定策略 | 结果 |
+| 全局 RATE_LIMIT_ENABLED | 绑定策略 | 结果 |
 |---|---|---|
-| 关 | 任意 | **不限流**（完全跳过，即使绑了策略也不生效） |
+| 关 | 任意 | **不限流**（完全跳过） |
 | 开 | 有绑定 | 用绑定的策略（多个取最严格） |
 | 开 | 无绑定 | 用**默认策略** |
 
-- **停用/启动三层控制**：
-  1. **全局** `RATE_LIMIT_ENABLED`（`voice.conf`）——关时全部跳过，紧急逃生
-  2. **key 开关**（`admin_api_keys.rate_limit_enabled`）——单个 key 的停用/启动
-  3. **策略** `enabled`——停用某条策略用于灰度（停用的策略即使被绑定也不参与合并，key 回退到其余策略或默认）
+- **两层控制**：
+  1. **全局** `RATE_LIMIT_ENABLED`（`voice.conf` / 管理面板安全设置页）——关时全部跳过，紧急逃生；开时所有 key 都限流
+  2. **策略** `enabled`——停用某条策略用于灰度（停用的策略即使被绑定也不参与合并，key 回退到其余策略或默认）
+- **per-key 开关已废弃**（v12 删除 `admin_api_keys.rate_limit_enabled` 列）：绑定策略即生效，全解绑则回退默认策略，不再有单个 key 的启用开关。
 - **默认策略**：初始化播种一条默认策略，没绑策略的 key 用它。
-- **开关默认值 = 关闭**：新增 key 默认不限流，需显式打开才生效。理由：当前真机联调（`adb reverse` / iOS 隧道）依赖不限速，默认开会打断现有链路；且"先只观察再启用"更稳。
-  （如需改成默认开，改一处播种默认值即可。）
+- **开关默认值 = 关闭**：默认不限流，需显式打开全局开关才生效。理由：当前真机联调（`adb reverse` / iOS 隧道）依赖不限速，默认开会打断现有链路；且"先只观察再启用"更稳。
 
 ### 策略绑定规则（已拍板）
 
@@ -144,10 +143,16 @@ Content-Type: application/json
 | asr_seconds_per_min | INTEGER NOT NULL | 音频秒/min |
 | tts_chars_per_min | INTEGER NOT NULL | 字符/min |
 | enabled | INTEGER NOT NULL DEFAULT 1 | 停用用于灰度 |
-| is_default | INTEGER NOT NULL DEFAULT 0 | 默认策略（没绑时用），部分唯一索引保证最多一条 |
+| is_default | INTEGER NOT NULL DEFAULT 0 | 默认标记，允许多个 |
+| is_builtin | INTEGER NOT NULL DEFAULT 0 | 内置策略（唯一、不可删/禁），没绑策略的 Key 用它兜底 |
+| period | TEXT NOT NULL DEFAULT 'minute' | v14：限流单位 minute/hour/day/week/month |
 | created_at / updated_at | INTEGER NOT NULL | 秒 |
 
-**默认策略**：初始化播种一条 `is_default=1`（阈值取第二节那套），没绑策略的 key 用它。
+**v14 时间单位**：阈值列名仍为 `*_per_min`（历史名），实际含义是"每 period"。
+`period` 对应秒数：minute=60 / hour=3600 / day=86400 / week=604800 / month=2592000（固定秒数近似，月=30天）。
+令牌桶补充速率 = 阈值 / 周期秒数；多策略 period 不同时按"每秒速率"归一化取最严，再换算到最短 period。存量策略默认 minute，行为不变。
+
+**默认策略**：初始化播种一条内置策略（`is_builtin=1`，阈值取第二节那套），没绑策略的 key 用它。
 
 **默认策略保护**（类似内置管理员）：`is_default=1` 的策略**不可删除、不可禁用**
 （`enabled` 恒为 1），也不允许取消默认标记（除非先把另一条设为默认，保证始终有一条）。
@@ -164,10 +169,10 @@ Content-Type: application/json
 
 一个 key 可绑多条策略 → 合并时每维取最小值（最严格）。删策略/删 key 时级联清绑定，key 自动回退默认策略。
 
-**3. 开关**：`admin_api_keys` 加一列 `rate_limit_enabled INTEGER NOT NULL DEFAULT 0`
-（0=不限流，显式开才生效）；全局总开关 `RATE_LIMIT_ENABLED` 走 `voice.conf`（关时全部跳过）。
+**3. 开关**：只有全局 `RATE_LIMIT_ENABLED`（`voice.conf` / 安全设置页）——关时全部跳过，开时所有 key 按绑定策略限流。
+（v12 起不再有 per-key 的 `rate_limit_enabled` 列。）
 
-**判定流程**：全局关 → 放行；全局开 → 查 key 开关，关 → 放行；开 → 取绑定策略（多则取最严格，无则用默认策略）→ 计数判断。
+**判定流程**：全局关 → 放行；全局开 → 取该 key 的绑定策略（多则取最严格，无则用默认策略）→ 计数判断。
 
 **面板：独立「限流策略」管理页**
 
@@ -238,7 +243,7 @@ stats() -> dict                                    # 面板展示
 
 **阶段 1：次数限流 + 策略框架**（性价比最高）
 1. `voice/rate_store.py`：新建门面 + `_MemoryBackend`（令牌桶），`configure()` 按配置选后端；门面接收"有效策略"阈值
-2. `voice_db.py`：schema v11，新建 `rate_policies` / `rate_policy_bindings` 两表 + `admin_api_keys.rate_limit_enabled` 列 + 迁移；幂等播种一条默认策略（带保护）
+2. `voice_db.py`：schema v11，新建 `rate_policies` / `rate_policy_bindings` 两表 + 迁移；幂等播种一条默认策略（带保护）。v12 又删除了 v11 曾加的 `rate_limit_enabled` 列（见下）
 3. `admin_panel.py`：新增独立「限流策略」管理页——策略列表（默认标记/阈值/启用，默认策略禁删禁停）+ key 绑定区（开关 + 策略多选）
 4. `openai_voice_server.py`：`security_middleware` 鉴权后查 key 开关→取有效策略→调 `rate_store.check_and_consume(...)`；全局开关 `RATE_LIMIT_ENABLED`；429 + Retry-After
 5. 测试：令牌桶补充/突发/超限、豁免、并发、多策略取最严格、默认策略不可删禁、内存/Redis 后端切换

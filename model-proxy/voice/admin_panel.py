@@ -20,8 +20,12 @@ import asyncio
 import hmac
 import json
 import os
+import platform
 import re
+import resource
 import secrets
+import socket
+import sqlite3
 import subprocess
 import time
 from typing import Any
@@ -29,11 +33,14 @@ from typing import Any
 import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库，调用方无感
 import upstream_pool  # 上游地址池：配置变更后需要清掉池缓存（见 admin_config_save）
 import voice_db  # 本地库：配置真相源 + 事件 / 审计 + 会话（落库，跨重启一致）
+import rate_store  # 限流门面：删 key 时清计数
 import voice_correction_store  # ASR 纠错词表（管理端维护；对外同步接口在 openai_voice_server）
 import httpx  # 探测上游连通性（/admin/api/probe）
 import llm_protocols  # 由协议名推导模型列表接口地址（prepare_models）
 
 from fastapi import Cookie, Depends, Form, HTTPException, Request
+
+_START_TS = time.time()  # 面板模块加载时间，供概览页算 uptime
 
 # 热词词性校验：jieba 懒加载（首次调用才载入词典，避免拖慢服务启动）。
 # 返回 [(词, 词性标记)]；依赖缺失返回 None，调用方据此降级为只做字数校验。
@@ -412,6 +419,143 @@ def voice_status() -> dict[str, Any]:
     }
 
 
+def _system_overview() -> dict[str, Any]:
+    """概览页系统信息（db/redis/内存/缓存/日志/磁盘/CPU/网络），只读、容错、秒回。
+
+    全部用标准库 + 现成 status()，不引入 psutil 等新依赖；任一采集失败给 "—"，
+    不影响其它项，更不影响面板。
+    """
+    def safe(fn, default="—"):
+        try:
+            v = fn()
+            return v if v not in (None, "") else default
+        except Exception:
+            return default
+
+    def fmt_bytes(n: int) -> str:
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024:
+                return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+            n /= 1024
+        return f"{n:.1f} TB"
+
+    # ── 进程 / CPU / 内存 ──
+    pid = os.getpid()
+    cpu_pct, rss_kb = "—", "—"
+    def ps_info():
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "%cpu=", "-o", "rss="],
+                             capture_output=True, text=True, timeout=2).stdout.split()
+        return (out[0], out[1]) if len(out) >= 2 else ("—", "—")
+    cpu_pct, rss_kb = safe(ps_info, ("—", "—"))
+    try:
+        rss_mb = f"{int(rss_kb)/1024:.1f} MB" if rss_kb != "—" else "—"
+    except (ValueError, TypeError):
+        rss_mb = "—"
+    load1 = safe(lambda: f"{os.getloadavg()[0]:.2f}")
+    ncpu = safe(os.cpu_count, "—")
+    os_info = safe(lambda: f"{platform.system()} {platform.release()} ({platform.machine()})")
+    python_ver = safe(lambda: platform.python_version())
+
+    # ── 磁盘（voice home 所在盘）──
+    disk_total = disk_free = disk_pct = "—"
+    def disk_info():
+        st = os.statvfs(VOICE_HOME_DIR)
+        total = st.f_blocks * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        pct = (total - free) / total * 100 if total else 0
+        return fmt_bytes(total), fmt_bytes(free), f"{pct:.1f}%"
+    disk_total, disk_free, disk_pct = safe(disk_info, ("—", "—", "—"))
+
+    # ── 网络（监听端口 + 本机 IP）──
+    def local_ip():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    ip = safe(local_ip, "127.0.0.1")
+
+    # ── DB ──
+    db_path = os.path.join(VOICE_HOME_DIR, "voice.db")
+    db_size = safe(lambda: fmt_bytes(os.path.getsize(db_path))) if os.path.isfile(db_path) else "—"
+    db_version = safe(lambda: voice_db._conn_get().execute("SELECT MAX(version) FROM schema_version").fetchone()[0])
+    db_stats = safe(voice_db.stats, {})
+    db_rows = "—"
+    if isinstance(db_stats, dict):
+        db_rows = f"{sum(v for v in db_stats.values() if isinstance(v, int))} 行"
+
+    # ── 存储的"类型 + 类型特定详情"─────────────────────────────────
+    # 每个组件带 type + details，前端按 type 自然显示不同字段（内存/Redis、SQLite/PG 各有各的）。
+    store = safe(lambda: config_store.instance().status(), {}) or {}
+    remote = store.get("remote", {}) if isinstance(store, dict) else {}
+    if not isinstance(remote, dict):
+        remote = {}
+    remote_dsn = os.environ.get("VOICE_REMOTE_DSN", "").strip()
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+
+    # 从 DSN 解析 host/port/database（脱敏，不含密码）
+    def dsn_info(dsn: str) -> tuple[str, str, str]:
+        try:
+            from urllib.parse import urlparse, unquote
+            u = urlparse(dsn)
+            return u.hostname or "—", str(u.port or ""), unquote((u.path or "").lstrip("/")) or "—"
+        except Exception:
+            return "—", "—", "—"
+
+    # ② 纠错词表库类型（默认 sqlite，与主库同一个 voice.db）
+    try:
+        corr_type = voice_correction_store.get_store().backend_name
+    except Exception:
+        corr_type = "sqlite"
+    # 数据库类型：主库 SQLite；纠错库可能另配 mysql/pgsql
+    db_type = "SQLite" if corr_type == "sqlite" else ("PostgreSQL" if corr_type == "postgresql" else corr_type.upper())
+    db_ver = sqlite3.sqlite_version if corr_type == "sqlite" else "—"
+    # 健康：SELECT 1 计时
+    def db_health():
+        t0 = time.time()
+        voice_db._conn_get().execute("SELECT 1").fetchone()
+        return f"正常（{(time.time()-t0)*1000:.1f}ms）"
+    databases = {
+        "type": db_type,
+        "version": db_ver,
+        "health": safe(db_health, "异常"),
+        "size": db_size,
+        "schema_version": db_version,
+    }
+
+    # 缓存：极简——类型 + key 数量。
+    # 本地真相源是 voice_db._cache（进程内存 dict）；配了 REDIS_URL 则走 Redis 缓存。
+    rate_stats = safe(rate_store.stats, {})
+    rate_backend = rate_stats.get("backend", "memory") if isinstance(rate_stats, dict) else "memory"
+    cache_type = "Redis" if (redis_url or rate_backend == "redis") else "内存"
+    cfg_keys = safe(lambda: len(voice_db._cache), 0)
+    cache_keys = cfg_keys if isinstance(cfg_keys, int) else 0
+    if cache_type == "Redis":
+        rook = remote.get("redis_ok")
+        cache_health = "正常" if rook else ("异常" if rook is False else "未知")
+        if remote.get("redis_error"):
+            cache_health += f"（{str(remote['redis_error'])[:40]}）"
+    else:
+        cache_health = "正常（进程内存）"
+    caches = {"type": cache_type, "keys": cache_keys, "health": cache_health}
+
+    # ── 日志 ──
+    log_path = os.path.join(VOICE_HOME_DIR, "voice.log")
+    log_size = safe(lambda: fmt_bytes(os.path.getsize(log_path))) if os.path.isfile(log_path) else "—"
+    log_mtime = safe(lambda: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(log_path)))) if os.path.isfile(log_path) else "—"
+
+    return {
+        "process": {"pid": pid, "cpu": f"{cpu_pct}%", "memory": rss_mb, "load1": load1, "cpu_cores": ncpu,
+                    "uptime": f"{int(time.time()-_START_TS)}s", "os": os_info, "python": python_ver},
+        "disk": {"total": disk_total, "free": disk_free, "used_pct": disk_pct, "home": VOICE_HOME_DIR},
+        "network": {"ip": ip, "port": voice_port(), "host": "0.0.0.0"},
+        "database": databases,
+        "cache": caches,
+        "log": {"size": log_size, "last_write": log_mtime},
+    }
+
+
 def voice_logs(n: int = 200) -> str:
     path = os.path.join(VOICE_HOME_DIR, "voice.log")
     if not os.path.isfile(path):
@@ -458,10 +602,41 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   header h1 { font-size:16px; margin:0; font-weight:600; }
   .who-wrap { display:flex; align-items:center; gap:12px; }
   main { width:100%; max-width:none; margin:0; padding:20px; }
+  /* 左侧导航 + 独立页面布局 */
+  .layout { display:flex; gap:0; min-height:calc(100vh - 60px); }
+  .sidebar { width:200px; flex-shrink:0; border-right:1px solid var(--line); padding:18px 12px; background:#12151c; transition:width .18s ease; }
+  .sidebar.collapsed { width:56px; padding:18px 6px; }
+  .sidebar.collapsed .nav-label { display:none; }
+  .sidebar.collapsed .nav-item { justify-content:center; }
+  .side-collapse { background:transparent; border:1px solid var(--line); color:var(--mut); border-radius:6px;
+                   width:100%; padding:4px; cursor:pointer; font-size:13px; margin-bottom:10px; }
+  .side-collapse:hover { color:var(--fg); }
+  .nav-ico { display:inline-block; width:18px; text-align:center; margin-right:6px; }
+  .sidebar.collapsed .nav-ico { margin-right:0; }
+  .nav-item { text-align:left; background:transparent; border:0; color:var(--mut); padding:10px 12px; border-radius:8px; font-size:13px; cursor:pointer; }
+  .side-title { font-size:12px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; padding:0 10px 12px; }
+  .nav-items { display:flex; flex-direction:column; gap:4px; }
+  .nav-item { text-align:left; background:transparent; border:0; color:var(--mut); padding:10px 12px; border-radius:8px; font-size:13px; cursor:pointer; }
+  .nav-item:hover { background:#1b1f27; color:var(--fg); }
+  .nav-item.active { background:var(--acc); color:#0b0d11; font-weight:600; }
+  .pages { flex:1; min-width:0; padding:20px; }
+  .page[hidden] { display:none !important; }
+  .as-pane[hidden], .cfgpane[hidden], .tabpane[hidden] { display:none !important; }
+  .page-section { margin-top:4px; }
+  .page-section h3 { font-size:13px; color:var(--mut); margin:14px 0 8px; }
+  .subtabs { display:flex; gap:6px; border-bottom:1px solid var(--line); margin-bottom:14px; }
+  .nav-toggle { background:transparent; border:1px solid var(--line); color:var(--fg); border-radius:8px;
+                padding:6px 10px; font-size:16px; cursor:pointer; margin-right:10px; }
+  @media(max-width:760px){
+    .nav-toggle { display:inline-block !important; }
+    .sidebar { position:fixed; z-index:30; top:0; left:0; height:100vh; transform:translateX(-100%);
+               transition:transform .18s ease; box-shadow:4px 0 20px rgba(0,0,0,.4); }
+    .sidebar.open { transform:none; }
+    .pages { padding:14px; }
+    table.admin-table { display:block; overflow-x:auto; }
+  }
   .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; transition:padding .15s ease; }
-  .card h2 { font-size:14px; margin:0 0 12px; color:var(--mut); font-weight:600; text-transform:uppercase; letter-spacing:.04em; cursor:pointer; user-select:none; display:flex; justify-content:space-between; align-items:center; }
-  .card h2::after { content:'▾'; font-size:13px; line-height:1; color:var(--fg); opacity:.6; transition:transform .15s ease; }
-  .card#login h2 { cursor:default; }
+  .card h2 { font-size:14px; margin:0 0 12px; color:var(--mut); font-weight:600; text-transform:uppercase; letter-spacing:.04em; user-select:none; display:flex; justify-content:space-between; align-items:center; }
   .card#login h2::after { content:''; }
   .card.collapsed { padding-top:12px; padding-bottom:12px; }
   .card.collapsed > *:not(h2) { display:none; }
@@ -574,6 +749,10 @@ ADMIN_HTML = r"""<!DOCTYPE html>
   table.admin-table td { text-align:left; }
   table.admin-table td.col-name { min-width:160px; word-break:break-all; }
   table.admin-table td.col-actions { white-space:nowrap; text-align:right; }
+  /* 概览页只读表：固定列宽，让各分组卡片的「值列」横向对齐 */
+  table.overview-table { table-layout:fixed; }
+  table.overview-table td:first-child { width:160px; }
+  table.overview-table td { word-break:break-all; }
   /* 勾选/单选去掉浏览器默认外边距，否则在单元格里看着偏左不居中 */
   table.model-sub input[type=checkbox], table.model-sub input[type=radio] { margin:0; vertical-align:middle; }
   /* 只读子表（内置模型）的 disabled 控件：Chrome 会把 disabled+checked 渲染成灰色，
@@ -622,7 +801,7 @@ ADMIN_HTML = r"""<!DOCTYPE html>
 </style>
 </head>
 <body>
-<header><h1 data-i18n="app.title">模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><span id="roleTag" class="muted" style="margin-left:6px"></span><button class="sec" id="changePwd" data-i18n="users.changePwd" style="display:none">修改密码</button><a class="sec" id="docsLink" data-i18n="common.docs" href="/docs" target="_blank" rel="noopener">文档</a><a class="sec" id="wsDocsLink" data-i18n="common.wsDocs" href="/docs/ws" target="_blank" rel="noopener">WS 文档</a><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
+<header><button id="navToggle" class="nav-toggle" aria-label="menu" style="display:none">☰</button><h1 data-i18n="app.title">模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><span id="roleTag" class="muted" style="margin-left:6px"></span><button class="sec" id="changePwd" data-i18n="users.changePwd" style="display:none">修改密码</button><a class="sec" id="docsLink" data-i18n="common.docs" href="/docs" target="_blank" rel="noopener">文档</a><a class="sec" id="wsDocsLink" data-i18n="common.wsDocs" href="/docs/ws" target="_blank" rel="noopener">WS 文档</a><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
 <main id="app"></main>
 <div id="panelLoading"><div class="loading-box"><span class="spinner"></span><span data-i18n="common.loading">请求中…</span></div></div>
 
@@ -722,6 +901,7 @@ const I18N = {
     "users.oldPwd": "旧密码",
     "users.changePwd": "修改密码",
     "apikey.title": "API Key 管理",
+    "apikey.tabShort": "API Key",
     "apikey.add": "新增 Key",
     "apikey.hint": "哈希存储，明文仅创建时显示一次；生效/失效留空表示不限",
     "apikey.name": "备注名",
@@ -911,6 +1091,7 @@ const I18N = {
     "config.hotwordDupMain": "该正确词已存在，未重复添加",
     "config.hotwordDupVariant": "该错词已存在，未重复添加",
     "config.hotwordPage": "第 {p}/{n} 页，共 {total} 条",
+    "page.size": "每页 {n} 条",
     "config.hotwordBadLen": "正确词和错词都必须是 2-6 个字（汉字）",
     "config.hotwordLenMismatch": "正确词与错词字数必须相等",
     "config.hotwordMustBeName": "正确词必须是名词（人名/地名/作品名等），不能是动词或形容词",
@@ -992,6 +1173,105 @@ const I18N = {
     "tts.voiceNote": "音色说明：",
     "tts.voiceParam": "　·　参数：音色语言须与文本一致（含方言：台湾腔/粤语配对应文本），否则上游 502",
     "vendor.custom": "自定义",
+    "rate.title": "限流策略",
+    "rate.hint": "开启后：未绑定用默认策略，绑定用所选策略（多选取最严）。默认策略无需选。",
+    "rate.addPolicy": "新增策略",
+    "rate.name": "策略名",
+    "rate.description": "备注",
+    "rate.req": "次数/分",
+    "rate.reqShort": "次/分",
+    "rate.period": "时间单位",
+    "rate.period.minute": "每分钟",
+    "rate.period.hour": "每小时",
+    "rate.period.day": "每天",
+    "rate.period.week": "每周",
+    "rate.period.month": "每月",
+    "rate.seconds": "秒",
+    "rate.chars": "字符",
+    "rate.default": "默认",
+    "rate.setDefault": "设为默认",
+    "rate.unsetDefault": "取消默认",
+    "rate.builtin": "内置",
+    "rate.empty": "暂无策略（将使用默认策略）",
+    "rate.bindTitle": "Key 限流开关与策略绑定",
+    "rate.noKeys": "暂无 API Key",
+    "rate.limitSwitch": "启用限流",
+    "rate.bindPolicy": "绑定策略（多选，不含默认策略）",
+    "rate.noExtraPolicies": "暂无其它策略。全局开关开启后，该 Key 会自动使用默认策略限流。",
+    "rate.confirmDelete": "确认删除策略",
+    "nav.overview": "概览",
+    "nav.models": "模型配置",
+    "nav.accounts": "账号管理",
+    "nav.access": "访问控制",
+    "nav.security": "安全设置",
+    "nav.test": "连通测试",
+    "nav.logs": "运行日志",
+    "nav.collapse": "折叠/展开侧栏",
+    "ov.process": "进程与资源",
+    "ov.uptime": "运行时长",
+    "ov.cpu": "CPU",
+    "ov.load": "系统负载(1min)",
+    "ov.memory": "内存(RSS)",
+    "ov.disk": "磁盘",
+    "ov.usage": "使用率",
+    "ov.total": "总容量",
+    "ov.free": "可用",
+    "ov.path": "路径",
+    "ov.network": "网络",
+    "ov.ip": "本机 IP",
+    "ov.port": "监听端口",
+    "ov.database": "数据库",
+    "ov.size": "大小",
+    "ov.schemaVersion": "Schema 版本",
+    "ov.rows": "记录数",
+    "ov.cache": "缓存",
+    "ov.ttsCache": "TTS 缓存",
+    "ov.rateBackend": "限流后端",
+    "ov.log": "日志",
+    "ov.lastWrite": "最后写入",
+    "ov.os": "操作系统",
+    "ov.python": "Python",
+    "ov.dbConfig": "配置库",
+    "ov.dbCorrections": "纠错词表库",
+    "ov.sqliteNote": "单文件本地库，无需服务进程",
+    "ov.host": "主机",
+    "ov.port": "端口",
+    "ov.note": "说明",
+    "ov.dbRemote": "远端同步库",
+    "ov.dbRemoteHint": "未配置 VOICE_REMOTE_DSN",
+    "ov.driver": "驱动",
+    "ov.configured": "已配置",
+    "ov.lastSync": "最近同步",
+    "ov.lastResult": "同步结果",
+    "ov.lastError": "最近错误",
+    "ov.hint": "说明",
+    "ov.backend": "后端",
+    "ov.memory": "内存",
+    "ov.multiInstance": "多实例共享计数",
+    "ov.restartClears": "进程内存，重启清零",
+    "ov.local": "本地",
+    "ov.redis": "Redis",
+    "ov.notConfigured": "未配置",
+    "ov.disabled": "未启用",
+    "ov.key": "缓存 Key",
+    "ov.rateCount": "限流计数",
+    "ov.configCache": "配置缓存",
+    "ov.correctionsCache": "纠错词表缓存",
+    "ov.entries": "条目数",
+    "ov.hits": "命中/未命中",
+    "ov.status": "状态",
+    "ov.type": "类型",
+    "ov.version": "版本",
+    "ov.health": "健康",
+    "ov.keys": "Key 数",
+    "ov.localMem": "本地内存",
+    "ov.ttl": "缓存有效期",
+    "ov.redisStatus": "Redis 层",
+    "ov.noCache": "未启用缓存，直接读数据库",
+    "sec.rateGlobalHint": "全局限流开关在 voice.conf 的 RATE_LIMIT_ENABLED 配置；单个 Key 的限流开关与策略绑定见「访问控制 → 限流」。",
+    "sec.rateSwitch": "启用限流（全局）",
+    "sec.rateSwitchHint": "开启后所有 API Key 都按绑定的限流策略生效（未绑定则用默认策略）；策略在「访问控制 → 限流策略」配置、在「API Key 管理」里为 Key 绑定。",
+    "access.hint": "账号与 API Key 管理在「模型配置 → 安全」页签内；本页管理 API Key 的限流策略与绑定。",
   },
   'en': {
     "users.title": "Users",
@@ -1013,6 +1293,7 @@ const I18N = {
     "users.oldPwd": "Old password",
     "users.changePwd": "Change password",
     "apikey.title": "API Key Management",
+    "apikey.tabShort": "API Key",
     "apikey.add": "Add Key",
     "apikey.hint": "Hash stored, plaintext shown once; empty window = unlimited",
     "apikey.name": "Name",
@@ -1198,6 +1479,7 @@ const I18N = {
     "config.hotwordDupMain": "This correct word already exists; nothing was added",
     "config.hotwordDupVariant": "This typo already exists; nothing was added",
     "config.hotwordPage": "Page {p}/{n}, {total} entries",
+    "page.size": "{n} per page",
     "config.hotwordBadLen": "Correct and wrong words must both be 2-6 Chinese characters",
     "config.hotwordLenMismatch": "Correct and wrong words must have the same character count",
     "config.hotwordMustBeName": "Correct word must be a noun (person/place/work), not a verb or adjective",
@@ -1279,6 +1561,106 @@ const I18N = {
     "tts.voiceNote": "Voice note: ",
     "tts.voiceParam": " · Params: voice language must match the text (incl. dialects: Taiwanese/Cantonese need matching text), otherwise upstream returns 502",
     "vendor.custom": "Custom",
+    "rate.title": "Rate limit policies",
+    "rate.hint": "When on: unbound Keys use the default policy; bound Keys use selected policies (strictest wins). No need to select the default.",
+    "rate.addPolicy": "Add policy",
+    "rate.name": "Policy name",
+    "rate.description": "Description",
+    "rate.req": "Req/min",
+    "rate.reqShort": "/min",
+    "rate.period": "Time unit",
+    "rate.period.minute": "per minute",
+    "rate.period.hour": "per hour",
+    "rate.period.day": "per day",
+    "rate.period.week": "per week",
+    "rate.period.month": "per month",
+    "rate.seconds": "seconds",
+    "rate.chars": "chars",
+    "rate.default": "Default",
+    "rate.setDefault": "Set default",
+    "rate.unsetDefault": "Unset default",
+    "rate.builtin": "Built-in",
+    "rate.empty": "No policies (default policy will be used)",
+    "rate.bindTitle": "Key rate-limit switch & policy binding",
+    "rate.noKeys": "No API keys yet",
+    "rate.limitSwitch": "Enable limit",
+    "rate.bindPolicy": "Bind policies (multi-select, excludes default)",
+    "rate.noExtraPolicies": "No other policies. With the global switch on, this Key automatically uses the default policy.",
+    "rate.confirmDelete": "Delete policy",
+    "nav.overview": "Overview",
+    "nav.models": "Model config",
+    "nav.accounts": "Accounts",
+    "nav.access": "Access control",
+    "nav.security": "Security",
+    "nav.test": "Connectivity test",
+    "nav.logs": "Logs",
+    "nav.collapse": "Collapse / expand sidebar",
+    "ov.process": "Process & resources",
+    "ov.uptime": "Uptime",
+    "ov.cpu": "CPU",
+    "ov.load": "Load (1min)",
+    "ov.memory": "Memory (RSS)",
+    "ov.disk": "Disk",
+    "ov.usage": "Used",
+    "ov.total": "Total",
+    "ov.free": "Free",
+    "ov.path": "Path",
+    "ov.network": "Network",
+    "ov.ip": "Local IP",
+    "ov.port": "Listen port",
+    "ov.database": "Database",
+    "ov.size": "Size",
+    "ov.schemaVersion": "Schema version",
+    "ov.rows": "Rows",
+    "ov.cache": "Cache",
+    "ov.ttsCache": "TTS cache",
+    "ov.rateBackend": "Rate backend",
+    "ov.log": "Log",
+    "ov.lastWrite": "Last write",
+    "ov.os": "OS",
+    "ov.python": "Python",
+    "ov.dbConfig": "Config DB",
+    "ov.dbCorrections": "Corrections DB",
+    "ov.sqliteNote": "Single-file local DB, no server process",
+    "ov.host": "Host",
+    "ov.port": "Port",
+    "ov.database": "Database",
+    "ov.note": "Note",
+    "ov.dbRemote": "Remote sync DB",
+    "ov.dbRemoteHint": "VOICE_REMOTE_DSN not configured",
+    "ov.driver": "Driver",
+    "ov.configured": "Configured",
+    "ov.lastSync": "Last sync",
+    "ov.lastResult": "Sync result",
+    "ov.lastError": "Last error",
+    "ov.hint": "Note",
+    "ov.backend": "Backend",
+    "ov.memory": "Memory",
+    "ov.multiInstance": "Shared counters across instances",
+    "ov.restartClears": "Process memory, cleared on restart",
+    "ov.local": "Local",
+    "ov.redis": "Redis",
+    "ov.notConfigured": "Not configured",
+    "ov.disabled": "Disabled",
+    "ov.key": "Cache key",
+    "ov.rateCount": "Rate counters",
+    "ov.configCache": "Config cache",
+    "ov.correctionsCache": "Corrections cache",
+    "ov.entries": "Entries",
+    "ov.hits": "Hits / misses",
+    "ov.status": "Status",
+    "ov.type": "Type",
+    "ov.version": "Version",
+    "ov.health": "Health",
+    "ov.keys": "Keys",
+    "ov.localMem": "Local memory",
+    "ov.ttl": "Cache TTL",
+    "ov.redisStatus": "Redis layer",
+    "ov.noCache": "No cache, reads DB directly",
+    "sec.rateGlobalHint": "Global rate-limit switch is RATE_LIMIT_ENABLED in voice.conf; per-Key switch and policy binding are under Access control → Rate limit.",
+    "sec.rateSwitch": "Enable rate limit (global)",
+    "sec.rateSwitchHint": "When on, all API Keys are limited by their bound policies (unbound keys use the default). Configure policies under Access control → Rate limit, and bind them to Keys under API Key management.",
+    "access.hint": "User & API Key management lives under Model config → Security tab; this page manages rate-limit policies and Key bindings.",
   }
 };
 let curLang = localStorage.getItem('admin_lang') || 'zh-CN';
@@ -1398,13 +1780,12 @@ function buildConfigCard(){
     const secret = isSecret(k);
     return `<label>${t(CFG_LABEL[k]||k)}</label><input id="cfg_${k}"${secret?` type="password" placeholder="${t('config.blankNoChange')}"`:''} />`;
   }).join('') + `<div class="row" style="margin-top:12px"><button id="cfgSave_${id}">${t('common.save')}</button><span class="hint" id="cfgStat_${id}" style="margin-left:10px"></span></div>`;
-  return el(`<div class="card collapsed" id="cfgCard"><h2>${t('config.title')}</h2>
+  return el(`<div class="card" id="cfgCard"><h2>${t('config.title')}</h2>
     <div class="tabs" id="cfgTabs">
       <button class="tab active" data-ctab="llm">LLM</button>
       <button class="tab" data-ctab="embed">${t('config.embed')}</button>
       <button class="tab" data-ctab="asr">ASR</button>
       <button class="tab" data-ctab="tts">TTS</button>
-      <button class="tab" data-ctab="sec">${t('config.security')}</button>
     </div>
     <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">${t('common.loadingX')}</div>
       <div class="row" style="margin-top:12px"><button id="cfgSave_llm">${t('common.save')}</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
@@ -1849,8 +2230,10 @@ function wireConfig(){
   // 安全 tab：鉴权开关与 IP 白名单都提交（IP 留空=清空，必须显式发空串）。
   // API Key 已改为表管理（下方「API Key 管理」子 tab），不再有文本输入框。
   const saveSec = ()=>{
+    const rlEl=document.getElementById('cfg_RATE_LIMIT_ENABLED');
     const patch={ VOICE_API_KEY_AUTH: document.getElementById('cfg_VOICE_API_KEY_AUTH').value,
                   VOICE_IP_ALLOW: document.getElementById('cfg_VOICE_IP_ALLOW').value };
+    if(rlEl) patch.RATE_LIMIT_ENABLED=rlEl.value;
     return postConfig(patch, 'cfgStat_sec');
   };
   ['tts'].forEach(t=>{ const b=document.getElementById('cfgSave_'+t); if(b) b.onclick=()=>save(t,CFG_TABS[t],'cfgStat_'+t); });
@@ -2751,6 +3134,7 @@ function renderSecTable(){
   const wrap=document.getElementById('secWrap'); if(!wrap) return;
   const auth = (cfgOrig['VOICE_API_KEY_AUTH']||'off');
   const ipVal = (cfgOrig['VOICE_IP_ALLOW']||'');
+  const rl = (cfgOrig['RATE_LIMIT_ENABLED']||'off');
   wrap.innerHTML = `
     <div class="row"><label>${t(CFG_LABEL['VOICE_API_KEY_AUTH'])}</label>
       <select id="cfg_VOICE_API_KEY_AUTH">
@@ -2758,6 +3142,13 @@ function renderSecTable(){
         <option value="on"${auth==='on'?' selected':''}>${t('sec.on')}</option>
       </select>
       <span class="hint-warn">${t('sec.onHint')}</span>
+    </div>
+    <div class="row"><label>${t('sec.rateSwitch')}</label>
+      <select id="cfg_RATE_LIMIT_ENABLED">
+        <option value="off"${rl==='off'?' selected':''}>${t('sec.offDefault')}</option>
+        <option value="on"${rl==='on'?' selected':''}>${t('sec.on')}</option>
+      </select>
+      <span class="hint-warn">${t('sec.rateSwitchHint')}</span>
     </div>
     <div class="row"><label>${t(CFG_LABEL['VOICE_IP_ALLOW'])}</label>
       <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('sec.ipHint')}">${escapeHtml(ipVal)}</textarea>
@@ -3017,11 +3408,93 @@ async function renderDashboard(){
   const isAdmin = currentRole === 'admin';
   const canTest = currentRole === 'operator' || isAdmin;
 
+  // 左侧导航 + 独立页面骨架。页面 DOM 一次性建好常驻，切页只切 hidden，
+  // 不重建——测试卡那批 onclick 绑定 / testKey 闭包 / 录音 blob 必须存活。
+  const NAV = [
+    {id:'overview', label:t('nav.overview'), icon:'◈', roles:''},
+    {id:'models',   label:t('nav.models'),   icon:'⚙', roles:'admin'},
+    {id:'accounts', label:t('nav.accounts'), icon:'☻', roles:'admin'},
+    {id:'access',   label:t('nav.access'),   icon:'⚿', roles:'admin'},
+    {id:'security', label:t('nav.security'), icon:'⛨', roles:'admin'},
+    {id:'test',     label:t('nav.test'),     icon:'◎', roles:'operator,admin'},
+    {id:'logs',     label:t('nav.logs'),     icon:'▤', roles:''},
+  ];
+  let sidebarCollapsed=false;
+  try{ sidebarCollapsed=localStorage.getItem('admin_sidebar_collapsed')==='1'; }catch(e){}
+  const layout = el(`<div class="layout">
+    <nav class="sidebar${sidebarCollapsed?' collapsed':''}" id="sidebar">
+      <button class="side-collapse" id="sideCollapse" title="${t('nav.collapse')}">${sidebarCollapsed?'»':'«'}</button>
+      <div class="nav-items" id="navItems"></div></nav>
+    <main class="pages" id="pages">
+      <section class="page" data-page="overview" hidden><div class="card"><h2>${t('nav.overview')}</h2><div id="overviewBody"></div></div></section>
+      <section class="page" data-page="models" hidden></section>
+      <section class="page" data-page="accounts" hidden><div class="card"><h2>${t('nav.accounts')}</h2><div id="accountPage"></div></div></section>
+      <section class="page" data-page="access" hidden>
+        <div class="subtabs" id="accessSubTabs">
+          <button class="tab active" data-astab="keys">${t('apikey.tabShort')}</button>
+          <button class="tab" data-astab="rates">${t('rate.title')}</button>
+        </div>
+        <div id="as-keys" class="as-pane"></div>
+        <div id="as-rates" class="as-pane" hidden></div>
+      </section>
+      <section class="page" data-page="security" hidden><div class="card"><h2>${t('nav.security')}</h2><div id="securityBody"></div></div></section>
+      <section class="page" data-page="test" hidden></section>
+      <section class="page" data-page="logs" hidden></section>
+    </main>
+  </div>`);
+  app.appendChild(layout);
+  const navItems=layout.querySelector('#navItems');
+  NAV.forEach(n=>{
+    // 角色过滤：roles 为空=所有角色可见
+    if(n.roles && !n.roles.split(',').includes(currentRole)) return;
+    const b=el(`<button class="nav-item" data-nav="${n.id}" title="${n.label}"><span class="nav-ico">${n.icon}</span><span class="nav-label">${n.label}</span></button>`);
+    b.onclick=()=>showPage(n.id);
+    navItems.appendChild(b);
+  });
+  // 侧栏折叠按钮（桌面端）
+  const sideCollapse=layout.querySelector('#sideCollapse');
+  if(sideCollapse) sideCollapse.onclick=()=>{
+    const sb=layout.querySelector('#sidebar');
+    const now=sb.classList.toggle('collapsed');
+    sideCollapse.textContent=now?'»':'«';
+    try{ localStorage.setItem('admin_sidebar_collapsed', now?'1':'0'); }catch(e){}
+  };
+  const sections={};
+  layout.querySelectorAll('.page').forEach(s=> sections[s.dataset.page]=s);
+
+  // showPage：切 hidden + 记忆 + 窄屏关菜单
+  function showPage(id){
+    layout.querySelectorAll('.page').forEach(s=> s.hidden=(s.dataset.page!==id));
+    layout.querySelectorAll('.nav-item').forEach(b=> b.classList.toggle('active', b.dataset.nav===id));
+    try{ localStorage.setItem('admin_page', id); }catch(e){}
+    layout.querySelector('#sidebar').classList.remove('open');
+  }
+  let startPage='overview';
+  try{ startPage=localStorage.getItem('admin_page')||'overview'; }catch(e){}
+  // 越权回退：不可见的页面回退到 overview
+  if(!NAV.some(n=> n.id===startPage && (!n.roles || n.roles.split(',').includes(currentRole)))) startPage='overview';
+  showPage(startPage);
+
+  // 窄屏汉堡菜单
+  const navToggle=document.getElementById('navToggle');
+  if(navToggle) navToggle.onclick=()=> layout.querySelector('#sidebar').classList.toggle('open');
+
+  // 访问控制子页签切换
+  layout.querySelectorAll('#accessSubTabs .tab').forEach(btn=>{
+    btn.onclick=()=>{
+      layout.querySelectorAll('#accessSubTabs .tab').forEach(x=>x.classList.remove('active'));
+      btn.classList.add('active');
+      layout.querySelectorAll('.as-pane').forEach(p=> p.hidden=(p.id!=='as-'+btn.dataset.astab));
+    };
+  });
   // 配置卡：仅 admin（含密钥/配置/安全 tab）；viewer/operator 看不到
-  if(isAdmin) app.appendChild(buildConfigCard());
+  if(isAdmin) sections.models.appendChild(buildConfigCard());
+
+  // 限流策略卡：仅 admin（策略列表 + key 绑定区）→ 访问控制页的「限流」子页
+  if(isAdmin) sections.access.querySelector('#as-rates').appendChild(buildRateCard());
 
   // 测试卡：operator 及以上
-  if(canTest){ app.appendChild(el(`<div class="card collapsed" id="testCard"><h2>${t('common.test')}</h2>
+  if(canTest){ sections.test.appendChild(el(`<div class="card" id="testCard"><h2>${t('common.test')}</h2>
     <label>${t('common.authHint')}</label>
     <input id="testKey" type="password" placeholder="${t('common.apiKeyOptional')}" />
     <div class="tabs">
@@ -3153,27 +3626,36 @@ async function renderDashboard(){
   }
   } // end if(canTest)
 
-  app.appendChild(el(`<div class="card"><h2>${t('log.title')}</h2>
+  sections.logs.appendChild(el(`<div class="card"><h2>${t('log.title')}</h2>
     <div class="row" style="margin-bottom:10px">
       <button class="sec" id="logRefresh">${t('log.refresh')}</button>
       <span class="muted">${t('log.last200')}</span></div>
     <pre id="logs">${t('common.loadingX')}</pre>
   </div>`));
 
-  // 用户管理：已并入配置卡「安全」tab 的第 3 个子 tab，不再单独挂卡
+  // 概览页：服务状态（只读，调 status 填 overviewBody）
+  loadOverview();
 
   document.getElementById('logout').onclick = async ()=>{
     await api('/admin/logout',{method:'POST'}); boot();
   };
   const logRefreshEl = app.querySelector('#logRefresh'); if(logRefreshEl) logRefreshEl.onclick = loadLogs;
 
-  if(isAdmin){ wireConfig(); loadConfig(); }
+  // ── 节点搬迁：账号→账号管理页，Key/限流→访问控制页，安全配置→安全设置页 ──
+  if(isAdmin){
+    const um=document.getElementById('userManage'), akm=document.getElementById('apiKeyManage');
+    const accountPage=document.getElementById('accountPage'), asKeys=sections.access.querySelector('#as-keys');
+    if(um && accountPage){ accountPage.appendChild(um); }
+    if(akm && asKeys){ asKeys.appendChild(akm); }
+    // 安全配置（sec-sub-cfg）移到安全设置页
+    const secCfg=document.getElementById('sec-sub-cfg'), secBody=document.getElementById('securityBody');
+    if(secCfg && secBody){ secBody.appendChild(secCfg); }
+    const cSec=document.getElementById('c-sec'); if(cSec) cSec.hidden=true;
+  }
 
-  // 卡片可折叠：点击标题（配置 / 测试 / 日志）展开或收起；登录卡片不可折叠
-  app.querySelectorAll('.card > h2').forEach(h=>{
-    if(h.parentElement.id==='login') return;
-    h.onclick=()=>h.parentElement.classList.toggle('collapsed');
-  });
+  if(isAdmin){ wireConfig(); loadConfig(); loadRatePolicies(); }
+
+  // 卡片折叠已由左侧导航页面切换取代（见 showPage），此处不再绑定 h2 点击。
 
   // ---- 测试面板逻辑 ----
   const authHdr = ()=>{ const k=(document.getElementById('testKey').value||'').trim(); return k?{'Authorization':'Bearer '+k}:{}; };
@@ -3778,24 +4260,31 @@ function epochLocal(v){ return v ? Math.floor(new Date(v).getTime()/1000) : null
 
 function buildUserManage(box){
   box.innerHTML=`<div class="row" style="margin-bottom:10px"><button id="userAdd">${t('users.add')}</button><span class="muted">${t('users.hint')}</span></div>
-    <div id="userList"><span class="muted">${t('common.loadingX')}</span></div>`;
+    <div id="userList"><span class="muted">${t('common.loadingX')}</span></div>
+    <div class="row" id="userPager" style="align-items:center;margin-top:10px"></div>`;
 }
-async function loadUsers(){
+let userPage = 1;
+async function loadUsers(page){
+  if(page) userPage=page;
   const box=document.getElementById('userList'); if(!box) return;
   const r=await api('/admin/api/users');
   if(!r.ok){ box.textContent=t('common.loadFailed'); return; }
-  const users=(await r.json()).users||[];
+  const all=(await r.json()).users||[];
+  const pages=Math.max(1, Math.ceil(all.length/PAGE_SIZE));
+  if(userPage>pages) userPage=pages;
+  const users=all.slice((userPage-1)*PAGE_SIZE, userPage*PAGE_SIZE);
   box.innerHTML='<table class="admin-table"><thead><tr><th>'+t('users.name')+'</th><th>'+t('users.role')+'</th><th>'+t('common.status')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody>'+
-    users.map(u=>'<tr><td class="col-name">'+esc(u.username)+(u.is_builtin?' <span class="hint">内置</span>':'')+'</td><td>'+u.role+'</td><td>'+(u.enabled?t('users.enabled'):t('users.disabled'))+'</td><td class="col-actions">'+
+    (users.length? users.map(u=>'<tr><td class="col-name">'+esc(u.username)+(u.is_builtin?' <span class="hint">内置</span>':'')+'</td><td>'+u.role+'</td><td>'+(u.enabled?t('users.enabled'):t('users.disabled'))+'</td><td class="col-actions">'+
       (u.is_builtin? '<span class="hint">—</span>' :
         '<button class="sec" data-u="'+esc(u.username)+'" data-op="role">'+t('users.changeRole')+'</button> '+
         '<button class="sec" data-u="'+esc(u.username)+'" data-op="pw">'+t('users.resetPwd')+'</button> '+
         '<button class="sec" data-u="'+esc(u.username)+'" data-op="toggle">'+(u.enabled?t('users.disable'):t('users.enable'))+'</button> '+
         '<button class="sec" data-u="'+esc(u.username)+'" data-op="del">'+t('common.delete')+'</button>')+
-      '</td></tr>').join('')+'</tbody></table>';
+      '</td></tr>').join('') : '<tr><td colspan="4" class="hint">'+t('rate.empty')+'</td></tr>')+'</tbody></table>';
   box.querySelectorAll('button[data-u]').forEach(b=>{
     b.onclick=()=>userAction(b.dataset.u, b.dataset.op);
   });
+  renderPager('userPager', userPage, pages, all.length, p=>loadUsers(p));
   const add=document.getElementById('userAdd'); if(add) add.onclick=()=>userAddModal();
 }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -3858,24 +4347,45 @@ function wireChangePwd(){
 }
 
 function buildApiKeyManage(box){
-  box.innerHTML='<h3>'+t('apikey.title')+'</h3>'+
-    '<div class="row" style="margin-bottom:8px"><button id="akAdd">'+t('apikey.add')+'</button><span class="hint">'+t('apikey.hint')+'</span></div>'+
-    '<div id="akList"><span class="muted">'+t('common.loadingX')+'</span></div>';
+  box.innerHTML='<div class="row" style="margin-bottom:8px"><button id="akAdd">'+t('apikey.add')+'</button><span class="hint">'+t('apikey.hint')+'</span></div>'+
+    '<div id="akList"><span class="muted">'+t('common.loadingX')+'</span></div>'+
+    '<div class="row" id="akPager" style="align-items:center;margin-top:10px"></div>';
   document.getElementById('akAdd').onclick=()=>apiKeyAddModal();
 }
-async function loadApiKeys(){
+// 通用前端分页控件（users / api-keys 复用）
+const PAGE_SIZE = 20;
+function renderPager(containerId, page, totalPages, total, onNav){
+  const el=document.getElementById(containerId); if(!el) return;
+  // 始终显示分页信息（即使只有 1 页），让用户看到总数与每页条数
+  el.style.justifyContent='flex-end';
+  el.innerHTML='<button class="mini" id="'+containerId+'Prev" '+(page<=1?'disabled':'')+'>'+t('config.prevPage')+'</button>'+
+    '<span class="hint" style="margin:0 10px">'+t('config.hotwordPage').replace('{p}',page).replace('{n}',totalPages).replace('{total}',total)+' · '+t('page.size').replace('{n}',PAGE_SIZE)+'</span>'+
+    '<button class="mini" id="'+containerId+'Next" '+(page>=totalPages?'disabled':'')+'>'+t('config.nextPage')+'</button>';
+  const prev=document.getElementById(containerId+'Prev'), next=document.getElementById(containerId+'Next');
+  if(prev) prev.onclick=()=>{ if(page>1) onNav(page-1); };
+  if(next) next.onclick=()=>{ if(page<totalPages) onNav(page+1); };
+}
+
+let apiKeyPage = 1;
+async function loadApiKeys(page){
+  if(page) apiKeyPage=page;
   const box=document.getElementById('akList'); if(!box) return;
   const r=await api('/admin/api/api-keys');
   if(!r.ok){ box.textContent=t('common.loadFailed'); return; }
-  const keys=(await r.json()).keys||[];
-  if(!keys.length){ box.innerHTML='<span class="muted">'+t('apikey.empty')+'</span>'; return; }
+  const all=(await r.json()).keys||[];
+  const pages=Math.max(1, Math.ceil(all.length/PAGE_SIZE));
+  if(apiKeyPage>pages) apiKeyPage=pages;
+  const keys=all.slice((apiKeyPage-1)*PAGE_SIZE, apiKeyPage*PAGE_SIZE);
+  if(!all.length){ box.innerHTML='<span class="muted">'+t('apikey.empty')+'</span>'; renderPager('akPager',1,1,0,()=>{}); return; }
   box.innerHTML='<table class="admin-table"><thead><tr><th>'+t('apikey.name')+'</th><th>Key</th><th>'+t('apikey.window')+'</th><th>'+t('apikey.ip')+'</th><th>'+t('common.status')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody>'+
     keys.map(k=>'<tr><td class="col-name">'+esc(k.name||'—')+'</td><td><code>'+esc(k.key_prefix)+'…</code></td><td>'+
       (k.not_before?isoLocal(k.not_before):'—')+' ~ '+(k.expires_at?isoLocal(k.expires_at):'—')+'</td><td>'+esc((JSON.parse(k.allowed_ips||'[]')||[]).join(', ')||'—')+'</td><td>'+(k.enabled?t('users.enabled'):t('users.disabled'))+'</td><td class="col-actions">'+
       '<button class="sec" data-k="'+k.id+'" data-op="edit">'+t('common.edit')+'</button> '+
+      '<button class="sec" data-k="'+k.id+'" data-op="rate">'+t('rate.title')+'</button> '+
       '<button class="sec" data-k="'+k.id+'" data-op="toggle">'+(k.enabled?t('users.disable'):t('users.enable'))+'</button> '+
       '<button class="sec" data-k="'+k.id+'" data-op="del">'+t('common.delete')+'</button></td></tr>').join('')+'</tbody></table>';
   box.querySelectorAll('button[data-k]').forEach(b=> b.onclick=()=>apiKeyAction(Number(b.dataset.k), b.dataset.op));
+  renderPager('akPager', apiKeyPage, pages, all.length, p=>loadApiKeys(p));
 }
 function apiKeyFieldsHtml(k){
   k=k||{};
@@ -3923,6 +4433,149 @@ async function apiKeyAction(id, op){
       const r=await api('/admin/api/api-keys/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify(apiKeyBodyFromModal(m))});
       if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; } loadApiKeys(); return true; });
   }
+  if(op==='rate'){ await openKeyRateModal(id); }
+}
+
+// 单个 key 的限流设置弹窗（默认策略不用选：全局开了就自动兜底，只勾选其它策略）
+async function openKeyRateModal(keyId){
+  const [bindingsRes, policiesRes] = await Promise.all([
+    api('/admin/api/rate/bindings').then(r=>r.json()),
+    api('/admin/api/rate/policies').then(r=>r.json()),
+  ]);
+  const b=(bindingsRes.bindings||[]).find(x=>x.key_id===keyId)||{};
+  // 默认策略是兜底（没绑任何策略时自动生效），不出现在勾选列表里。
+  const policies=(policiesRes.policies||[]).filter(p=>p.enabled && !p.is_default);
+  const bound=(b.policy_ids||[]).filter(id=> policies.some(p=>p.id===id));  // 忽略历史误绑的默认策略
+  if(!ratePolicies.length) ratePolicies=policiesRes.policies||[];
+  const html='<label style="margin-top:0">'+t('rate.bindPolicy')+'</label>'+
+    (policies.length
+      ? '<div class="rate-policy-picks" style="display:flex;flex-direction:column;gap:8px;margin:6px 0 4px">'+
+        policies.map(p=>'<label class="row" style="margin:0;gap:8px;cursor:pointer">'+
+          '<input type="checkbox" class="kr-pol" value="'+p.id+'" '+(bound.includes(p.id)?'checked':'')+' />'+
+          '<span>'+esc(p.name)+'</span><span class="hint" style="margin:0">'+p.req_per_min+' '+t('rate.period.'+(p.period||'minute'))+' · LLM '+p.llm_tokens_per_min+' · ASR '+p.asr_seconds_per_min+' · TTS '+p.tts_chars_per_min+'</span></label>').join('')+
+        '</div>'
+      : '<div class="hint">'+t('rate.noExtraPolicies')+'</div>')+
+    '<div class="hint" style="margin-top:8px">'+t('rate.hint')+'</div>';
+  showModal(t('rate.title')+' — '+esc(b.name||''), html, async(m)=>{
+    const ids=Array.from(m.querySelectorAll('.kr-pol:checked')).map(o=>+o.value);
+    // 只绑定勾选项；一个都不勾 = 回退默认策略。
+    const r=await api('/admin/api/rate/bindings/'+keyId,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({policy_ids:ids})});
+    if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; } return true;
+  });
+}
+
+// ── 限流策略管理页（仅 admin）────────────────────────────────────
+let ratePolicies = [];
+function buildRateCard(){
+  return el(`<div class="card" id="rateCard"><h2>${t('rate.title')}</h2>
+    <div class="row" style="margin-bottom:8px"><button id="ratePolicyAdd">${t('rate.addPolicy')}</button>
+      <span class="hint">${t('rate.hint')}</span></div>
+    <div id="ratePolicyList"><span class="muted">${t('common.loadingX')}</span></div>
+    <div class="row" id="ratePager" style="align-items:center;margin-top:10px"></div>
+  </div>`);
+}
+let ratePolicyPage = 1;
+async function loadRatePolicies(page){
+  if(page) ratePolicyPage=page;
+  const box=document.getElementById('ratePolicyList'); if(!box) return;
+  const r=await api('/admin/api/rate/policies');
+  if(!r.ok){ box.textContent=t('common.loadFailed'); return; }
+  ratePolicies=(await r.json()).policies||[];
+  const pages=Math.max(1, Math.ceil(ratePolicies.length/PAGE_SIZE));
+  if(ratePolicyPage>pages) ratePolicyPage=pages;
+  const list=ratePolicies.slice((ratePolicyPage-1)*PAGE_SIZE, ratePolicyPage*PAGE_SIZE);
+  if(!ratePolicies.length){ box.innerHTML='<span class="muted">'+t('rate.empty')+'</span>'; renderPager('ratePager',1,1,0,()=>{}); return; }
+  box.innerHTML='<table class="admin-table"><thead><tr><th>'+t('rate.name')+'</th><th>'+t('rate.period')+'</th><th>'+t('rate.req')+'</th><th>LLM</th><th>ASR</th><th>TTS</th><th>'+t('common.status')+'</th><th>'+t('rate.default')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody>'+
+    list.map(p=>'<tr><td class="col-name">'+esc(p.name)+(p.is_builtin?' <span class="hint">'+t('rate.builtin')+'</span>':'')+(p.description?' <span class="hint">'+esc(p.description)+'</span>':'')+'</td>'+
+      '<td>'+t('rate.period.'+(p.period||'minute'))+'</td>'+
+      '<td>'+p.req_per_min+'</td><td>'+p.llm_tokens_per_min+'</td><td>'+p.asr_seconds_per_min+'</td><td>'+p.tts_chars_per_min+'</td>'+
+      '<td>'+(p.enabled?t('users.enabled'):t('users.disabled'))+'</td><td>'+(p.is_default?'★':'—')+'</td>'+
+      '<td class="col-actions">'+
+        '<button class="sec" data-p="'+p.id+'" data-op="edit">'+t('common.edit')+'</button> '+
+        (p.is_builtin ? '' :
+          '<button class="sec" data-p="'+p.id+'" data-op="default">'+(p.is_default?t('rate.unsetDefault'):t('rate.setDefault'))+'</button> '+
+          '<button class="sec" data-p="'+p.id+'" data-op="toggle">'+(p.enabled?t('users.disable'):t('users.enable'))+'</button> '+
+          '<button class="sec" data-p="'+p.id+'" data-op="del">'+t('common.delete')+'</button>')+
+      '</td></tr>').join('')+'</tbody></table>';
+  box.querySelectorAll('button[data-p]').forEach(b=> b.onclick=()=>ratePolicyAction(Number(b.dataset.p), b.dataset.op));
+  renderPager('ratePager', ratePolicyPage, pages, ratePolicies.length, p=>loadRatePolicies(p));
+  const add=document.getElementById('ratePolicyAdd'); if(add) add.onclick=()=>ratePolicyModal(null);
+}
+// 时间单位（与后端 RATE_PERIODS 对齐）
+const RATE_PERIODS = {minute:60, hour:3600, day:86400, week:604800, month:2592000};
+function rateUnitSel(id, cur){
+  return '<label>'+t('rate.period')+'</label><select id="'+id+'">'+
+    Object.keys(RATE_PERIODS).map(k=>'<option value="'+k+'"'+((cur||'minute')===k?' selected':'')+'>'+t('rate.period.'+k)+'</option>').join('')+'</select>';
+}
+function rateFieldsHtml(p){
+  p=p||{};
+  const per=p.period||'minute';
+  return '<label>'+t('rate.name')+'</label><input id="rpName" type="text" value="'+esc(p.name||'')+'" />'+
+    '<label>'+t('rate.description')+'</label><input id="rpDesc" type="text" value="'+esc(p.description||'')+'" />'+
+    rateUnitSel('rpPeriod', per)+
+    '<label>'+t('rate.req')+'</label><input id="rpReq" type="number" min="0" value="'+(p.req_per_min||0)+'" />'+
+    '<label>LLM token / '+per+'</label><input id="rpLlm" type="number" min="0" value="'+(p.llm_tokens_per_min||0)+'" />'+
+    '<label>ASR '+t('rate.seconds')+' / '+per+'</label><input id="rpAsr" type="number" min="0" value="'+(p.asr_seconds_per_min||0)+'" />'+
+    '<label>TTS '+t('rate.chars')+' / '+per+'</label><input id="rpTts" type="number" min="0" value="'+(p.tts_chars_per_min||0)+'" />';
+}
+function rateBodyFromModal(m){
+  return {name:m.querySelector('#rpName').value.trim(), description:m.querySelector('#rpDesc').value.trim(),
+    period:m.querySelector('#rpPeriod')?.value||'minute',
+    req_per_min:+m.querySelector('#rpReq').value, llm_tokens_per_min:+m.querySelector('#rpLlm').value,
+    asr_seconds_per_min:+m.querySelector('#rpAsr').value, tts_chars_per_min:+m.querySelector('#rpTts').value};
+}
+function ratePolicyModal(p){
+  showModal(p?t('common.edit'):t('rate.addPolicy'), rateFieldsHtml(p), async(m)=>{
+    const body=rateBodyFromModal(m);
+    const path=p? '/admin/api/rate/policies/'+p.id : '/admin/api/rate/policies';
+    const r=await api(path,{method:p?'PATCH':'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; }
+    loadRatePolicies(); return true;
+  });
+}
+async function ratePolicyAction(id, op){
+  const p=ratePolicies.find(x=>x.id===id)||{};
+  if(op==='edit'){ ratePolicyModal(p); return; }
+  if(op==='default'){
+    const r=await api('/admin/api/rate/policies/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({is_default:!p.is_default})});
+    if(!r.ok) alert(fmtErr((await r.json()).detail)); else loadRatePolicies(); return; }
+  if(op==='toggle'){
+    const r=await api('/admin/api/rate/policies/'+id,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:!p.enabled})});
+    if(!r.ok) alert(fmtErr((await r.json()).detail)); else loadRatePolicies(); return; }
+  if(op==='del'){
+    if(!confirm(t('rate.confirmDelete')+': '+p.name)) return;
+    const r=await api('/admin/api/rate/policies/'+id,{method:'DELETE'});
+    if(!r.ok) alert(fmtErr((await r.json()).detail)); else loadRatePolicies(); return; }
+}
+// 概览页：系统运行信息（进程/CPU/内存/磁盘/网络/DB/缓存/日志）
+async function loadOverview(){
+  const box=document.getElementById('overviewBody'); if(!box) return;
+  box.textContent=t('common.loadingX');
+  const r=await api('/admin/api/overview');
+  if(!r.ok){ box.textContent=t('common.loadFailed'); return; }
+  const d=await r.json();
+  const group=(title,rows)=>'<div class="card" style="margin-bottom:12px"><h3 style="margin:0 0 8px">'+esc(title)+'</h3>'+
+    '<table class="admin-table overview-table"><tbody>'+rows.map(x=>'<tr><td class="col-name">'+esc(x[0])+'</td><td>'+esc(String(x[1]))+'</td></tr>').join('')+'</tbody></table></div>';
+  const p=d.process||{}, k=d.disk||{}, n=d.network||{}, db=d.database||{}, ca=d.cache||{}, lg=d.log||{};
+  box.innerHTML=
+    group(t('ov.process'), [
+      [t('ov.os'), p.os||'—'], [t('ov.python'), p.python||'—'],
+      ['PID', p.pid||'—'], [t('ov.uptime'), p.uptime||'—'],
+      [t('ov.cpu'), (p.cpu||'—')+' ('+(p.cpu_cores||'—')+' cores)'],
+      [t('ov.load'), p.load1||'—'], [t('ov.memory'), p.memory||'—'],
+    ])+
+    group(t('ov.disk'), [
+      [t('ov.usage'), k.used_pct||'—'], [t('ov.total'), k.total||'—'], [t('ov.free'), k.free||'—'], [t('ov.path'), k.home||'—'],
+    ])+
+    group(t('ov.network'), [[t('ov.ip'), n.ip||'—'], [t('ov.port'), n.port||'—']])+
+    group(t('ov.database'), [
+      [t('ov.type'), db.type||'—'], [t('ov.version'), db.version||'—'],
+      [t('ov.health'), db.health||'—'], [t('ov.size'), db.size||'—'], [t('ov.schemaVersion'), db.schema_version||'—'],
+    ])+
+    group(t('ov.cache'), [
+      [t('ov.type'), ca.type||'—'], [t('ov.keys'), ca.keys??'—'], [t('ov.health'), ca.health||'—'],
+    ])+
+    group(t('ov.log'), [[t('ov.size'), lg.size||'—'], [t('ov.lastWrite'), lg.last_write||'—']]);
 }
 
 async function loadLogs(){
@@ -4206,13 +4859,96 @@ def register_admin_routes(
     @app.delete("/admin/api/api-keys/{key_id}", dependencies=[Depends(require_admin)])
     def admin_api_keys_delete(request: Request, key_id: int):
         voice_db.api_key_delete(key_id)
+        rate_store.reset(key_id)  # 删 key 时清限流计数，避免 id 复用残留
         client = request.client.host if request.client else "unknown"
         voice_db.append_audit(client, "api_key_delete", f"id={key_id}")
+        return {"ok": True}
+
+    # ── 限流策略管理（仅 admin）────────────────────────────────────
+    @app.get("/admin/api/rate/policies", dependencies=[Depends(require_admin)])
+    def rate_policies_list():
+        return {"policies": voice_db.rate_policies_list()}
+
+    @app.post("/admin/api/rate/policies", dependencies=[Depends(require_admin)])
+    def rate_policy_add(request: Request, body: dict[str, Any]):
+        b = body or {}
+        try:
+            row = voice_db.rate_policy_add(
+                b.get("name") or "", int(b.get("req_per_min") or 0),
+                int(b.get("llm_tokens_per_min") or 0), int(b.get("asr_seconds_per_min") or 0),
+                int(b.get("tts_chars_per_min") or 0), (b.get("description") or "").strip(),
+                period=(b.get("period") or "minute"),
+            )
+        except (ValueError, TypeError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        voice_db.append_audit(request.client.host if request.client else "unknown",
+                              "rate_policy_add", f"id={row['id']},name={row['name']}")
+        return {"ok": True, "policy": row}
+
+    @app.patch("/admin/api/rate/policies/{policy_id}", dependencies=[Depends(require_admin)])
+    def rate_policy_patch(request: Request, policy_id: int, body: dict[str, Any]):
+        b = body or {}
+        fields = {k: b[k] for k in ("name", "description", "enabled", "req_per_min",
+                  "llm_tokens_per_min", "asr_seconds_per_min", "tts_chars_per_min", "period") if k in b}
+        for k in ("req_per_min", "llm_tokens_per_min", "asr_seconds_per_min", "tts_chars_per_min", "enabled"):
+            if k in fields:
+                try:
+                    fields[k] = int(fields[k])
+                except (ValueError, TypeError):
+                    raise HTTPException(status_code=400, detail=f"{k} 必须是数字")
+        try:
+            if "is_default" in b:
+                voice_db.rate_policy_set_default(policy_id, bool(b["is_default"]))
+            row = voice_db.rate_policy_update(policy_id, **fields) if fields else voice_db.rate_policy_get(policy_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        voice_db.append_audit(request.client.host if request.client else "unknown",
+                              "rate_policy_update", f"id={policy_id}")
+        return {"ok": True, "policy": row}
+
+    @app.delete("/admin/api/rate/policies/{policy_id}", dependencies=[Depends(require_admin)])
+    def rate_policy_delete(request: Request, policy_id: int):
+        try:
+            voice_db.rate_policy_delete(policy_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        voice_db.append_audit(request.client.host if request.client else "unknown",
+                              "rate_policy_delete", f"id={policy_id}")
+        return {"ok": True}
+
+    @app.get("/admin/api/rate/bindings", dependencies=[Depends(require_admin)])
+    def rate_bindings_list():
+        rows = voice_db._conn_get().execute(
+            "SELECT id AS key_id, key_prefix, name FROM admin_api_keys ORDER BY id"
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["name"] = d["name"] or d["key_prefix"]
+            d["policy_ids"] = voice_db.rate_binding_list(d["key_id"])
+            out.append(d)
+        return {"bindings": out}
+
+    @app.patch("/admin/api/rate/bindings/{key_id}", dependencies=[Depends(require_admin)])
+    def rate_bindings_patch(request: Request, key_id: int, body: dict[str, Any]):
+        b = body or {}
+        try:
+            # 只接受 policy_ids：绑定即启用，全解绑即用默认；没有 per-key 开关。
+            if "policy_ids" in b:
+                voice_db.rate_binding_set(key_id, [int(x) for x in (b["policy_ids"] or [])])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        voice_db.append_audit(request.client.host if request.client else "unknown",
+                              "rate_binding_update", f"key_id={key_id}")
         return {"ok": True}
 
     @app.get("/admin/api/status", dependencies=[Depends(require_viewer)])
     def admin_status():
         return voice_status()
+
+    @app.get("/admin/api/overview", dependencies=[Depends(require_viewer)])
+    def admin_overview():
+        return _system_overview()
 
     @app.get("/admin/api/config", dependencies=[Depends(require_admin)])
     def admin_config():

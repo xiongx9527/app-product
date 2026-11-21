@@ -49,9 +49,11 @@ dl_android() {
 }
 
 dl_ios() {
-  echo "[iOS] sherpa-onnx static xcframework"
-  fetch_gh "xcframework/sherpa-onnx-v$SHERPA_VER-ios-static.xcframework.zip" \
-        "$OUT/sherpa-onnx-v$SHERPA_VER-ios-static.xcframework.zip"
+  # 用 shared-onnxruntime-static 版：sherpa 为 dynamic framework、onnxruntime（含 CoreML EP）
+  # 已静态链入其中。普通 ios-static 版缺 OrtGetApiBase / CoreML EP 符号，单独 link 会失败。
+  echo "[iOS] sherpa-onnx xcframework (with onnxruntime)"
+  fetch_gh "xcframework/sherpa-onnx-v$SHERPA_VER-ios-shared-onnxruntime-static.xcframework.zip" \
+        "$OUT/sherpa-onnx-v$SHERPA_VER-ios-shared-onnxruntime-static.xcframework.zip"
 }
 
 dl_model() {

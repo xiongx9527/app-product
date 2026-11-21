@@ -109,6 +109,32 @@ CREATE TABLE IF NOT EXISTS admin_api_keys (
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON admin_api_keys(key_hash);
 
+-- 【v11 新增】限流策略（仅按 api-key；计数在 rate_store，不落库）
+CREATE TABLE IF NOT EXISTS rate_policies (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                TEXT NOT NULL UNIQUE,
+    description         TEXT,
+    req_per_min         INTEGER NOT NULL,
+    llm_tokens_per_min  INTEGER NOT NULL,
+    asr_seconds_per_min INTEGER NOT NULL,
+    tts_chars_per_min   INTEGER NOT NULL,
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    is_default          INTEGER NOT NULL DEFAULT 0,   -- 允许多个
+    is_builtin          INTEGER NOT NULL DEFAULT 0,   -- 内置兜底（唯一、不可删/禁）
+    period              TEXT NOT NULL DEFAULT 'minute',  -- 限流单位 minute/hour/day/week/month
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_policies_builtin
+    ON rate_policies(is_builtin) WHERE is_builtin = 1;
+
+CREATE TABLE IF NOT EXISTS rate_policy_bindings (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_id    INTEGER NOT NULL REFERENCES admin_api_keys(id) ON DELETE CASCADE,
+    policy_id INTEGER NOT NULL REFERENCES rate_policies(id) ON DELETE CASCADE,
+    UNIQUE(key_id, policy_id)
+);
+
 -- 音色目录（由 seed/*.json + init_catalog.py 幂等灌入，保存配置不写它）
 CREATE TABLE IF NOT EXISTS voices (
     id         TEXT PRIMARY KEY,
@@ -241,6 +267,22 @@ CREATE TABLE IF NOT EXISTS admin_api_keys (
     updated_at  BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON admin_api_keys(key_hash);
+
+-- v11 限流策略（结构同本地，可按需开启同步；计数不落库）
+CREATE TABLE IF NOT EXISTS rate_policies (
+    id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT,
+    req_per_min INTEGER NOT NULL, llm_tokens_per_min INTEGER NOT NULL,
+    asr_seconds_per_min INTEGER NOT NULL, tts_chars_per_min INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
+    is_builtin INTEGER NOT NULL DEFAULT 0, period TEXT NOT NULL DEFAULT 'minute',
+    created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_policies_builtin
+    ON rate_policies(is_builtin) WHERE is_builtin = 1;
+CREATE TABLE IF NOT EXISTS rate_policy_bindings (
+    id BIGSERIAL PRIMARY KEY,
+    key_id INTEGER NOT NULL REFERENCES admin_api_keys(id) ON DELETE CASCADE,
+    policy_id INTEGER NOT NULL REFERENCES rate_policies(id) ON DELETE CASCADE,
+    UNIQUE(key_id, policy_id));
 
 -- 纠错词表可选 PG 存储（VOICE_CORRECTION_DB=postgresql 时）
 CREATE TABLE IF NOT EXISTS asr_corrections (

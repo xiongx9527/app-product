@@ -93,6 +93,22 @@ nbf = embed.add_file_reference(node_ref, true)
 nbf.settings = { 'ATTRIBUTES' => %w[CodeSignOnCopy RemoveHeadersOnCopy] }
 puts '[integrate] NodeMobile.xcframework 已接入 link + Embed'
 
+# ── 4b) 系统 framework：AudioQueue 播放需要 AudioToolbox（系统库只 link，不 Embed）──
+%w[AudioToolbox.framework AVFoundation.framework].each do |sysfw|
+  next if app_target.frameworks_build_phase.files.any? { |bf| bf.file_ref&.path == sysfw || bf.display_name == sysfw }
+  sys_ref = proj.files.find { |f| f.path == sysfw }
+  unless sys_ref
+    group = proj.main_group['Frameworks'] || proj.main_group.new_group('Frameworks')
+    sys_ref = group.new_reference(sysfw)
+    sys_ref.last_known_file_type = 'wrapper.framework'
+    sys_ref.name = sysfw
+    sys_ref.source_tree = 'SDKROOT'
+    sys_ref.path = "System/Library/Frameworks/#{sysfw}"
+  end
+  app_target.frameworks_build_phase.add_file_reference(sys_ref, true)
+  puts "[integrate] 系统库 #{sysfw} 已 link"
+end
+
 # ── 5) gateway/ 文件夹引用（folder reference，Copy Bundle Resources；新壳兜底）──
 gw_ref = find_ref(proj, 'gateway') || find_ref(proj, '../gateway')
 unless gw_ref
@@ -108,7 +124,8 @@ puts '[integrate] gateway/ 文件夹引用已在 Copy Bundle Resources'
 #   Sources，并在 bridging header 暴露 DCUniModule.h。全部幂等。
 wake_group = proj.main_group['HBuilder-Hello'] || proj.main_group
 wake_src = File.expand_path('../native/ios/app/XiaoxiongGateway.xcodeproj', __dir__)
-%w[AppProductWakeModule.h AppProductWakeModule.m].each do |fname|
+# AppProductWakeModule + KwsEngine（iOS KWS 常驻唤醒，sherpa-onnx 封装）一并拷入主 target
+%w[AppProductWakeModule.h AppProductWakeModule.m KwsEngine.h KwsEngine.m PcmUploader.h PcmUploader.m].each do |fname|
   dst = File.join(shell_root, 'HBuilder-Hello', fname)
   src = File.join(wake_src, fname)
   if File.exist?(src)
@@ -142,6 +159,80 @@ app_target.build_configurations.each do |c|
     c.build_settings['HEADER_SEARCH_PATHS'] = hsp
     puts "[wake] HEADER_SEARCH_PATHS += uniapp headers (#{c.name})"
   end
+end
+
+# ── 5c) iOS KWS：sherpa-onnx xcframework（dynamic，Embed & Sign）+ 模型 folder reference ──
+# 用 sherpa-onnx-v2.0.2-ios-shared-onnxruntime-static：sherpa 为 dynamic framework，
+# onnxruntime 已静态链入其中（含 CoreML EP），解决单独 link 时的 OrtGetApiBase 未定义。
+# dynamic framework 必须 Embed & Sign（CodeSignOnCopy）。
+factory_root = File.expand_path('../native/ios/app', __dir__)   # native/ios/app（工厂源）
+sherpa_src = File.join(factory_root, 'Frameworks', 'SherpaOnnxC.xcframework')
+sherpa_dst = File.join(shell_root, 'Frameworks', 'SherpaOnnxC.xcframework')
+
+# 清理旧的 static 版 sherpa-onnx.xcframework 引用（之前构建加过，残留会重复定义）
+proj.files.select { |f| f.path.to_s.include?('sherpa-onnx.xcframework') }.each do |ref|
+  ref.build_files.each(&:remove_from_project)
+  ref.remove_from_project
+end
+FileUtils.rm_rf(File.join(shell_root, 'Frameworks', 'sherpa-onnx.xcframework'))
+
+if File.directory?(sherpa_src)
+  unless File.exist?(File.join(sherpa_dst, 'Info.plist'))
+    FileUtils.mkdir_p(File.dirname(sherpa_dst))
+    FileUtils.cp_r(sherpa_src, sherpa_dst)
+    puts "[kws] 已拷贝 SherpaOnnxC.xcframework -> #{sherpa_dst}"
+  end
+
+  sherpa_fw_rel = 'Frameworks/SherpaOnnxC.xcframework'
+  sherpa_ref = ensure_ref(proj, sherpa_fw_rel, 'SherpaOnnxC.xcframework')
+  sherpa_ref.last_known_file_type = 'wrapper.xcframework'
+  app_target.frameworks_build_phase.add_file_reference(sherpa_ref, true)
+  # dynamic framework：Embed & Sign
+  unless embed.files.any? { |bf| bf.file_ref&.path == sherpa_fw_rel }
+    sbf = embed.add_file_reference(sherpa_ref, true)
+    sbf.settings = { 'ATTRIBUTES' => %w[CodeSignOnCopy RemoveHeadersOnCopy] }
+  end
+  puts '[kws] SherpaOnnxC.xcframework 已 link + Embed & Sign'
+
+  # 头文件搜索路径：device + simulator 两个 slice 的 SherpaOnnxC.framework/Headers
+  app_target.build_configurations.each do |c|
+    hsp = c.build_settings['HEADER_SEARCH_PATHS'] || ['$(inherited)']
+    hsp = hsp.is_a?(Array) ? hsp : [hsp]
+    # 先清掉旧 static 版的 header path（含 sherpa-onnx.xcframework），否则去重判断误命中
+    hsp.reject! { |x| x.to_s.include?('sherpa-onnx.xcframework') }
+    ['ios-arm64', 'ios-arm64_x86_64-simulator'].each do |slice|
+      p = "$(PROJECT_DIR)/Frameworks/SherpaOnnxC.xcframework/#{slice}/SherpaOnnxC.framework/Headers"
+      hsp << p unless hsp.include?(p)
+    end
+    c.build_settings['HEADER_SEARCH_PATHS'] = hsp
+    puts "[kws] HEADER_SEARCH_PATHS += sherpa C headers (#{c.name})"
+  end
+else
+  puts "[kws] 警告：sherpa xcframework 不存在 #{sherpa_src}（先跑 scripts/prepare-kws-assets.sh）"
+end
+
+# KwsResources 模型目录：拷进壳工程并建 folder reference（Copy Bundle Resources）
+KWS_MODEL = 'sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01'
+kws_res_src = File.join(factory_root, 'KwsResources', KWS_MODEL)
+kws_res_dst = File.join(shell_root, 'HBuilder-Hello', 'KwsResources', KWS_MODEL)
+if File.directory?(kws_res_src)
+  unless File.exist?(File.join(kws_res_dst, 'tokens.txt'))
+    FileUtils.mkdir_p(File.dirname(kws_res_dst))
+    FileUtils.cp_r(kws_res_src, kws_res_dst)
+    puts "[kws] 已拷贝模型资源 -> #{kws_res_dst}"
+  end
+  kws_parent_ref = proj.main_group['HBuilder-Hello'] || proj.main_group
+  # folder reference 用 kws_parent_ref 下相对路径（裸 KwsResources），确保 bundle 内保留目录结构
+  kws_ref = kws_parent_ref.files.find { |fr| fr.path == 'KwsResources' || fr.display_name == 'KwsResources' }
+  unless kws_ref
+    kws_ref = kws_parent_ref.new_reference('KwsResources')
+    kws_ref.last_known_file_type = 'folder'
+    kws_ref.name = 'KwsResources'
+  end
+  app_target.resources_build_phase.add_file_reference(kws_ref, true)
+  puts '[kws] KwsResources folder reference 已加入 Copy Bundle Resources'
+else
+  puts "[kws] 警告：模型资源不存在 #{kws_res_src}"
 end
 
 proj.save

@@ -387,8 +387,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         void enable()
         return
       }
-      // 原则：网关恢复后若处于待机，按待唤醒语义重武装会话（掉线时已退回待机）
-      if (enabled.value && state.value === 'standby') transport.startSession('wake')
+      // 连接恢复后无需额外补 session.start：建连（含自动重连）在 onopen 里已按
+      // pendingMode 下发一次。待唤醒态不再需要 ASR 会话，重复下发只会让网关重建会话。
       return
     }
     // 掉线瞬间静默：自动重连马上会尝试，连不上由「重连耗尽」统一播报。
@@ -516,16 +516,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         trace: `RECV ${event.type}${event.type.startsWith('tts') ? '' : ' text=' + ((event as { text?: string }).text ?? '')}`,
       })
     }
+    // 待唤醒态不消费任何 ASR 事件：唤醒只认端侧 KWS（「唤醒前不调 ASR」是硬原则）。
+    // 待唤醒态上行已静音，正常不会有识别结果；这里再兜一层，防止模式切换瞬间的滞后
+    // 事件（切换前已在链路上的识别结果）被当成用户输入，造成「一唤醒就冒出一堆文字」。
+    if (mode === 'wake' && event.type.startsWith('asr.')) return
     switch (event.type) {
       case 'asr.partial':
-        // 待唤醒阶段用流式识别结果实时匹配唤醒词，不等整句定稿——
-        // 网关 asr.final 要等 VAD 静音 endpointMs(默认 2.5s) 才下发，那样「说完了还得等一下」
-        // 才唤醒。asr.partial 在说话过程中就随缓冲重识别下发，命中即唤醒；asr.final 仍作兜底。
-        if (mode === 'wake') {
-          // 回声窗口内的命中由 handleWakeHit 统一忽略（助手自己话里的「小熊小熊」）。
-          if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) handleWakeHit()
-          break
-        }
         // confirming（T2 倒计时）下用户一开口就要取消退下：partial 是说话过程中的流式识别，
         // 比等 asr.final（endpointMs 静音 + 识别链 2.5s+）早得多——否则 T2 先炸、话被吞
         //（用户实测「刚好卡在要退下的时机就退下了」）。listening 态下重置 T1 同理早触发。
@@ -595,11 +591,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         }
         break
       case 'asr.final':
-        if (mode === 'wake') {
-          // 待唤醒阶段回声窗内的命中由 handleWakeHit 统一忽略（见 asr.partial 说明）
-          if (matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) handleWakeHit()
-          break
-        }
         // 刚被 KWS 消费掉的唤醒词，ASR 兜底链路的 final 又到了：静默窗内清掉草稿、忽略，
         // 绝不二次 reWake / 二次招呼（用户实测「喊一遍却招呼两次」「文字留在草稿区」）。
         if (isKwsWakeEcho(event.text)) {
@@ -1027,9 +1018,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     }
   }
 
-  /** 待唤醒：连网关（wake 模式，只做 ASR）并开启麦克风上行。 */
+  /** 待唤醒：连网关（wake 模式）并开启麦克风上行；上行静音，只靠端侧 KWS 唤醒。 */
   async function enterWake(): Promise<void> {
     mode = 'wake'
+    // 唤醒前不调 ASR（硬原则）：待唤醒态把上行 PCM 置静音，网关收不到有效音频就不会触发识别。
+    // 端侧 KWS 在本地跑，不依赖上行，照常能唤醒。
+    kwsService.setStandbyMuted(true)
     // 回到待唤醒态：停掉 30s 健康轮询（KWS 常驻，唤醒前不调 ASR，无需重复探测）。
     stopHealthPolling()
     // 每次开启唤醒重新武装掉线播报，让一次新的「开启」能重新提示一次
@@ -1055,6 +1049,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 命中唤醒：在同一条连接上切到 dialog 模式，进入 LLM/TTS。 */
   async function enterDialog(): Promise<void> {
     mode = 'dialog'
+    // 进入对话态必须恢复上行：用户说的话要送 ASR。静音只属于待唤醒态。
+    kwsService.setStandbyMuted(false)
     // 进入对话态才启动 30s 健康轮询：对话中要用 ASR/LLM/TTS，需持续掌握可用性。
     startHealthPolling()
     if (transport.isConnected()) {
@@ -1086,23 +1082,24 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   async function ensureCapture(): Promise<void> {
     if (capturing) return
-    // 上行掐麦只在「待唤醒」态生效：待唤醒时播 greeting「我在」，若不清零会被 ASR 收回
-    // 造成自己唤醒自己。一旦进入对话（listening/thinking/replying/speaking/done），
-    // 用户随时可能说话，**绝不能掐麦**——回声交给 App 端 AEC + 网关文本层 resemblesSpoken +
-    // 唤醒回声窗口处理。
+    // 上行掐麦只在「待唤醒」态生效（mode==='wake'）：唤醒前不调 ASR 是硬原则，唤醒只靠端侧 KWS。
+    // 一旦进入对话（mode==='dialog'），用户随时可能说话，**绝不能掐麦**——回声交给 App 端 AEC +
+    // 网关文本层 resemblesSpoken + 唤醒回声窗口处理。
     //
     // 血泪：旧条件是 isPromptCuePlaying() && !isSpeaking.value。播报期 isSpeaking 一旦被
     // 状态机误置 false，又恰逢 cue 窗口（greeting/thinking/asr-error 提示音）——而 asr-error
     // 因上行静音→识别失败→下发 asr-error→延长 cue 窗口 3.4s——形成恶性循环，播报全程上行
     // 被清零（真机铁证：采集端 rms 0.137，网关收到 0.0001），插话永远识别不到。
-    // 改为「仅 standby 掐麦」后，对话态永不掐麦，从根上斩断循环。
+    // 改为「仅待唤醒态掐麦」后，对话态永不掐麦，从根上斩断循环。
     // 临时诊断：每 2s 把 onPcm 的真实状态经 WS 文本消息上报网关落盘（定位后移除）
     let diagFrames = 0
     let diagRms = 0
     let diagAt = Date.now()
     const onPcm = (pcm: ArrayBuffer): void => {
       const cue = isPromptCuePlaying()
-      const muted = state.value === 'standby' && cue
+      // 与原生 _standbyMuted 同一判据：只有待唤醒态静音上行（Android 走 JS 这条路，
+      // iOS 走 PcmUploader 原生直连、由原生侧静音，两边等价）。
+      const muted = mode === 'wake'
       diagFrames += 1
       {
         const dv = new DataView(pcm)
@@ -1405,18 +1402,33 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   // ── 端侧 KWS 唤醒 ─────────────────────────────────────────────────
   // 命中回调复用 handleWakeHit（与 ASR 文本匹配同一节流点），避免双重招呼/双跳。
-  // 插件缺失/未就绪时 isSupported=false，wakeService.start 静默跳过，ASR 文本匹配照常兜底。
+  // 唤醒只认端侧 KWS：唤醒前绝不把音频送 ASR（硬原则）。待唤醒态上行被静音，
+  // 网关拿不到有效音频，自然不会产生识别请求；KWS 不可用时退化为「点圆球」。
+  /**
+   * KWS 就绪态（界面据此告诉用户「能不能喊词」）：
+   * - loading：模型加载中（约 1–3s），此时喊词可能没反应，提示可点圆球兜底
+   * - ready：可喊「小熊小熊」唤醒
+   * - failed：引擎不可用（插件缺失/加载失败），只能点圆球
+   */
+  const wakeReady = ref<'loading' | 'ready' | 'failed'>('loading')
   const kwsService: WakeService = createWakeService({
     wakeWords: DEFAULT_WAKE_WORDS,
     lang: getLanguage(),
     onWake: (word) => { handleWakeHit(word, true) },
     onError: (msg) => { console.warn('[kws]', msg) },
+    onReady: (ok) => { wakeReady.value = ok ? 'ready' : 'failed' },
   })
   function startKws(): void {
+    if (!kwsService.isSupported()) {
+      wakeReady.value = 'failed'
+      return
+    }
     kwsService.start()
   }
   function stopKws(): void {
     kwsService.stop()
+    // 下次开启会重新加载模型，回到「加载中」
+    wakeReady.value = 'loading'
   }
   // KWS 插件可用时展示端侧唤醒；不可用时仍可唤醒（ASR 文本兜底），故 wakeSupported 恒 true。
   const wakeSupported = true
@@ -1604,6 +1616,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     gatewayFailed,
     wakeSupported,
     wakeProviderName,
+    wakeReady,
     wsConnected,
     connecting,
     retry,

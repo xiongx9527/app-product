@@ -22,11 +22,17 @@ if [ ! -s "$VENDOR/$MODEL/tokens.txt" ]; then
   "$ROOT/scripts/download-kws-deps.sh" model
 fi
 
-# 1b) iOS sherpa-onnx static xcframework：从 vendor zip 幂等解压（SPM 并未配置，必须手动解压）
-IOS_FW_ZIP="$(find "$VENDOR" -maxdepth 1 -name 'sherpa-onnx-*-ios-static.xcframework.zip' 2>/dev/null | head -1)"
-IOS_FW_DIR="$ROOT/native/ios/app/Frameworks/sherpa-onnx.xcframework"
+# 1b) iOS sherpa-onnx xcframework：从 vendor zip 幂等解压（SPM 未配置，必须手动）
+#     用 shared-onnxruntime-static 版：dynamic framework + ORT(含 CoreML EP) 静态链入。
+#     若缺该 zip，尝试下载；解压产物名为 SherpaOnnxC.xcframework。
+IOS_FW_ZIP="$(find "$VENDOR" -maxdepth 1 -name 'sherpa-onnx-*-ios-shared-onnxruntime-static.xcframework.zip' 2>/dev/null | head -1)"
+IOS_FW_DIR="$ROOT/native/ios/app/Frameworks/SherpaOnnxC.xcframework"
+if [ -z "$IOS_FW_ZIP" ]; then
+  "$ROOT/scripts/download-kws-deps.sh" ios
+  IOS_FW_ZIP="$(find "$VENDOR" -maxdepth 1 -name 'sherpa-onnx-*-ios-shared-onnxruntime-static.xcframework.zip' 2>/dev/null | head -1)"
+fi
 if [ -n "$IOS_FW_ZIP" ] && [ ! -d "$IOS_FW_DIR" ]; then
-  echo "==> [KWS] 解压 iOS sherpa-onnx xcframework"
+  echo "==> [KWS] 解压 iOS sherpa-onnx xcframework (含 onnxruntime)"
   mkdir -p "$(dirname "$IOS_FW_DIR")"
   unzip -oq "$IOS_FW_ZIP" -d "$(dirname "$IOS_FW_DIR")"
 fi

@@ -122,6 +122,7 @@ public class WakeModule extends UniModule {
     private UniJSCallback pcmErrorCb;
     private UniJSCallback wakeCb;
     private UniJSCallback wakeErrCb;
+    private UniJSCallback readyCb;
     private UniJSCallback playbackIdleCb;
     private UniJSCallback cueEndCb;
 
@@ -560,7 +561,15 @@ public class WakeModule extends UniModule {
         startCapture();
         initKws();
         kwsEnabled = (kws != null);
-        Log.i(TAG, "KWS start: " + (kwsEnabled ? "ok" : "unavailable (ASR 文本兜底继续)"));
+        Log.i(TAG, "KWS start: " + (kwsEnabled ? "ok" : "unavailable (点圆球兜底)"));
+        // KWS 就绪回调：模型加载完成才可常驻听唤醒词，前端据此显示"可喊词"
+        if (readyCb != null) {
+            try {
+                Map<String, Object> payload = new HashMap<>();
+                payload.put("ready", kwsEnabled);
+                readyCb.invokeAndKeepAlive(new org.json.JSONObject(payload));
+            } catch (Throwable ignored) { }
+        }
     }
 
     @UniJSMethod(uiThread = false)
@@ -666,6 +675,11 @@ public class WakeModule extends UniModule {
     @UniJSMethod(uiThread = false)
     public void onError(UniJSCallback cb) {
         if (cb != null) wakeErrCb = cb;
+    }
+
+    @UniJSMethod(uiThread = false)
+    public void onReady(UniJSCallback cb) {
+        if (cb != null) readyCb = cb;
     }
 
     // ---- 采集实现 ----

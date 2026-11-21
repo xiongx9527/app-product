@@ -41,6 +41,16 @@ VOICE_PORT=9529
 # 留空 / off 关闭。管理面板走自己的会话 Cookie，不受此项影响。
 # VOICE_API_KEY_AUTH=off
 
+# ── 限流（按 api-key，策略在管理面板配置）─────────────────────────
+# RATE_LIMIT_ENABLED=off   总开关：on 才按各 key 的开关+策略限流；off 全部跳过（默认）
+# RATE_LIMIT_BACKEND=auto  后端：auto=配了 REDIS_URL 就用 Redis，连不上降级内存；
+#                          memory=纯内存（默认）；redis=强制 Redis
+# 默认策略阈值（仅首次播种，之后在面板「限流策略」里改）：
+# RATE_LIMIT_DEFAULT_REQ=100
+# RATE_LIMIT_DEFAULT_LLM_TOKENS=20000
+# RATE_LIMIT_DEFAULT_ASR_SECONDS=300
+# RATE_LIMIT_DEFAULT_TTS_CHARS=50000
+
 # ── 本地数据库目录 ───────────────────────────────────────────────
 # 本地 SQLite（voice.db）所在的目录；本文件不在这里写任何业务配置，
 # 只决定数据库文件放在哪。留空使用默认目录：

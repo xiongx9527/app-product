@@ -108,6 +108,32 @@
 
 鉴权两层 IP 叠加：全局 `VOICE_IP_ALLOW` 与 key 级 `allowed_ips` 都过才放行；key 级为空=不限。鉴权开关三态：显式 on/off，未设置时表内有 enabled key 即开启。旧 `VOICE_API_KEY` 配置/auto key 文件存量迁移一次进表后不再参与鉴权（迁移标记 `api_keys_migrated` 存 `config_kv`）。
 
+**`rate_policies`**（v11 新增）— 限流策略（阈值模板，仅按 api-key）
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | INTEGER PK AUTO | |
+| name | TEXT NOT NULL UNIQUE | 策略名 |
+| description | TEXT | 备注 |
+| req_per_min | INTEGER NOT NULL | 次数/min |
+| llm_tokens_per_min / asr_seconds_per_min / tts_chars_per_min | INTEGER NOT NULL | 三类计量阈值/min |
+| enabled | INTEGER NOT NULL DEFAULT 1 | 停用用于灰度 |
+| is_default | INTEGER NOT NULL DEFAULT 0 | 默认标记，**允许多个** |
+| is_builtin | INTEGER NOT NULL DEFAULT 0 | 内置策略（唯一、不可删/禁），没绑策略的 Key 用它兜底；部分唯一索引保证最多一条 |
+| period | TEXT NOT NULL DEFAULT 'minute' | 限流单位：minute/hour/day/week/month；阈值含义随单位变 |
+| created_at / updated_at | INTEGER NOT NULL | 秒 |
+
+**`rate_policy_bindings`**（v11 新增）— key ↔ 策略多对多
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | INTEGER PK AUTO | |
+| key_id | INTEGER NOT NULL | → admin_api_keys.id ON DELETE CASCADE |
+| policy_id | INTEGER NOT NULL | → rate_policies.id ON DELETE CASCADE |
+| UNIQUE(key_id, policy_id) | | 同一 key 不重复绑同一策略 |
+
+一个 key 可绑多策略，取每维阈值最小值（最严格）；无绑定/全停用 → 用默认策略。限流只由**全局开关** `RATE_LIMIT_ENABLED`（voice.conf/安全设置页）控制：开 → 所有 key 按绑定策略限流（没绑用默认），关 → 全部放行；没有 per-key 开关（v12 已删除该列）。计数在 `rate_store`（内存/Redis 由配置决定），不落库。数据统计/审计仍保留 IP 与 key 身份（`audit.actor`），与限流无关。
+
 **`schema_version`** — 表结构变更留痕
 
 | 列 | 类型 | 说明 |
@@ -208,6 +234,10 @@
 | v8 | 新增 asr_corrections + asr_correction_variants 纠错词表 |
 | v9 | 新增 admin_credentials 管理面板凭据表（独立表，不进 config_kv）；SCHEMA_VERSION 常量与 SCHEMA_CHANGES 对齐 |
 | v10 | 新增 admin_users（多账号+角色+内置标记）与 admin_api_keys（哈希+时间窗口+IP 绑定+owner 预留）两表；存量账号/api-key 幂等迁移 |
+| v11 | 新增 rate_policies + rate_policy_bindings 两表（限流策略，仅按 key）；幂等播种默认策略 |
+| v12 | 删除 admin_api_keys.rate_limit_enabled 列（per-key 开关废弃，限流改由全局开关 + 策略绑定控制） |
+| v13 | rate_policies 加 is_builtin 列（内置兜底策略、不可删/禁）；is_default 允许多个 |
+| v14 | rate_policies 加 period 列（限流单位 minute/hour/day/week/month，默认 minute） |
 
 > 完整可执行 DDL 见 `model-proxy/schema.sql`（含本地 SQLite / 远端 Postgres / Redis KEY 三段）。
 > v8 及之前的历史：纠错两表由 `ensure_schema()` 的 `CREATE TABLE IF NOT EXISTS` 直接建出，

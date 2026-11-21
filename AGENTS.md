@@ -54,6 +54,12 @@ xiaoxiong-app/uni_app/src/
 
 ## 硬性约定
 
+### 公共代码两端一致（2026-11-21 用户明令）
+- **除 `native/` 下的平台原生代码外，前端 TS/Vue 是 iOS / Android 同一套代码**。任何公共代码改动必须**同时考虑两端**，不能只顾一端能跑。
+- 典型坑（今晚实测）：`core/audio/appCapture.ts` 的 `toArrayBuffer` 原来只认 number[]（Android byte[] 经 weex 桥转 number[] 正常），但 iOS 的 NSData 经 weex 桥变成 `[object NSData]`，前端不认识 → 每帧 PCM 丢弃 → 唤醒后无法对话。修公共代码时要问「另一端的数据格式是什么、会不会被破坏」。
+- 端到端能力（采集上行、TTS 播放）在两端实现路径不同：Android 走原生 PcmUploader/AudioTrack，iOS 需对应实现；判断能力用 `isSupported()` 探测原生方法，缺失才降级，且降级路径两端都要验证。
+- 排查顺序：改公共代码前先理清两端各自的原生实现与数据契约，改完 must 两端都验证（至少确认另一端行为不变）。
+
 ### 条件编译
 
 - uni-app 的 `APP-PLUS` 命中 Android / iOS，即本项目的目标端；鸿蒙与小程序确定不支持，不写它们的条件编译分支。
@@ -343,6 +349,14 @@ xiaoxiong-app/uni_app/src/
     - **`AVAudioSession setCategory failed`**：iOS 采集原来用 `CategoryRecord + ModeVoiceChat` 是非法组合，setCategory 直接失败。改 `CategoryPlayAndRecord + ModeVoiceChat` + options `DefaultToSpeaker|AllowBluetooth`，并把 NSError 详情 emit 出来。真机验证红字消失。
     - **「asr/llm/tts 不可用」误报**：一键检测（deep=1 真功能探测）全绿、手动点球正常，但语音唤醒报能力不可用。根因 = `useAssistant.ts` 首次 health 报告里某项 `down`（公网隧道下 ASR/TTS 功能探测偶发超时造成的短暂 down）就 `setTimeout` 逐条安排播报「XX 不可用」提示音（间隔 4.6s），后续探测恢复 ok 也不取消 → 误播。修复：`initialCueTimers` 从数组改 `Map<key,timer>`，后续报告 down→ok 时 `clearInitialCueTimer(key)` 取消还没播的提示音；`report=null` 时清全部。
     - ** capability 探测口径**：`/api/health` 非 deep（前端就绪判定/首页轮询）的 ASR 用 `probeAsr` 真发音频、TTS 用 `probeTts` 真发文本、LLM 仅连通探测；deep=1（一键检测）LLM 才真调模型。所以「health 全绿」只证明连通/探测时可用，不等于功能绝对正常；排查要用一键检测（deep）交叉验证。
+  - **✅ 2026-11-21 iOS 端 KWS 常驻唤醒打通 + 对话链路根因**（iPad iOS16.7 真机）：
+    - **iOS KWS 已实现**：`native/ios/app/XiaoxiongGateway.xcodeproj/KwsEngine.h/.m` 用 sherpa-onnx C API（xcframework 从 vendor zip 解压到 `Frameworks/SherpaOnnxC.xcframework`，**static 库只 link 不 Embed**，dynamic 版要 Embed & Sign）做 3.3M 中文唤醒词常驻识别；`AppProductWakeModule` 导出 `start:/stop/onWake:/onError:`，复用 PCM 帧喂 KWS。**关键 bug**：`p_drainLocked` 不能无条件 `ResetKeywordStream`——空结果 reset 会让 IsReady 恒 true、decode 恒空死循环刷屏、永远检不出词；只在识别到有效 keyword 后 reset（对齐 Android WakeModule.java）。真机铁证：`KWS HIT: 小熊小熊`。
+    - **唤醒后不能对话根因**：iOS weex 桥把原生 `NSData` 回调转成 `[object NSData]`（既非 ArrayBuffer/ArrayBufferView、也非 number[]），前端 `appCapture.ts` 的 `toArrayBuffer` 全部返回 null → 每帧 PCM 丢弃 → 网关 ASR 收不到音频 → 无 LLM/TTS。Android 传 `byte[]`→weex 转 `number[]` 正常，所以这是 iOS 专属。**改传 base64 仍无法验证生效**。
+    - **性能优先的正解**：移植 Android `PcmUploader`（`native/android/.../wake/PcmUploader.java`）——iOS 用 `NSURLSessionWebSocketTask` 连 `ws://127.0.0.1:8787/ws?deviceId=X&role=pcm` 原生直推 PCM、绕开 JS 桥。role=pcm 是**双向**的：网关 TTS 帧也走该连接下发，故必须同步补原生 TTS 播放（AudioQueue 写 24k int16）+ playback_done 回执，否则 TTS 无声。
+    - **iOS TTS 现状（"声音小"根因）**：iOS 插件此前**无任何 TTS 播放方法**，`isAppPlaybackSupported()` 探测 false → 走 h5Audio/WebAudio，而 App 逻辑层无 WebAudio → 实际不可播。补 `playPcm/stopPlayback` 后自动切原生播放。
+    - **提示音会话冲突**：iOS 提示音若走 `uni.createInnerAudioContext`（DCloud SDK）会切换 AVAudioSession category、打断 KWS 采集（实测采集 1.6s 后停）。修复：`AppProductWakeModule` 原生实现 `playCue:` 用 AVAudioPlayer **复用采集的 PlayAndRecord 会话、不 setCategory**，采集持续。
+    - **采集格式坑**：`installTapOnBus` 不能硬编码 16k 格式（VoiceChat 模式下与 inputNode 硬件格式冲突会 `SetOutputFormat` 抛异常崩 App），改用 `input.outputFormatForBus:0` 实际格式、在 `onPcmBuffer` 里线性插值重采样到 16k。
+    - **PCM 桥传帧诊断法**：在 onPcmFrame 回调里 `console.warn(Object.prototype.toString.call(frame))`（前端 console.warn 会进 idevicesyslog 的 jsLog），真机看到 `[object NSData]` 即定位桥传帧格式问题。
 - **设备访问本机服务连不通**：先排查 macOS 防火墙丢弃 LAN 入站（localhost 200 但 LAN IP 000），以及 WiFi AP 隔离（ping 不通但能上外网，用 adb reverse 或关 AP 隔离）。
 - **设备要上网就用 `scripts/usb-net.sh`（USB 联网 / reverse tethering），别靠热点或改 WiFi**：本机起 HTTP 代理（默认 `127.0.0.1:8899`，`--port` 可换）→ `adb reverse tcp:8899` → 写设备全局 `http_proxy`，设备上遵守系统代理的 App（浏览器 / WebView / OkHttp 等）经 USB 走电脑网络。`up` 默认对**所有 USB 在线设备**逐台建链（模拟器 / WiFi adb 不算），`--serial A,B` 只处理指定台；`down` 逐台清代理并停本机代理；`status` 看每台状态。日志 `xiaoxiong-app/logs/usb-net.log`，pid `logs/.usb-net.pid`。
   - **只覆盖读系统代理的 App**：不读代理的原生 socket、以及设备内嵌网关（Node 直连）不走这里——网关访问本机 9529 仍靠 `adb reverse tcp:9529`，它自己发出的外网请求（B站/百度等）仍要设备自身有网；要让网关也走电脑网络得用 gnirehtet 这类 VPN 全量隧道方案。

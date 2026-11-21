@@ -47,6 +47,8 @@ const zhCN: Messages = {
 
   'hint.idle': '打开语音助手，开始待唤醒',
   'hint.standby': '说「小熊小熊」唤醒，或点一下中间的开始',
+  'hint.wakeLoading': '语音唤醒加载中，也可以点一下中间开始',
+  'hint.wakeFailed': '语音唤醒不可用，请点一下中间开始',
   'hint.listening': '我在听，说完可以停一下',
   'hint.listeningSpeaking': '助手正在回答，可随时打断',
   'hint.confirming': '还在吗？再不出声我就先退下了',

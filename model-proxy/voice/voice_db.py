@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 14
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -117,8 +117,13 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         "admin_api_keys（API Key 哈希管理 + 启停 + 生效/失效时间 + 绑定 IP + owner 预留）两表；"
         "存量 admin_credentials 迁为内置管理员、存量 VOICE_API_KEY/auto key 哈希入库", []),
     11: ("新增 rate_policies（限流策略：4 维阈值 + 默认标记）与 rate_policy_bindings（key↔策略多对多）两表；"
-        "admin_api_keys 加 rate_limit_enabled 列（默认 0=不限流）",
-        ["col:admin_api_keys:rate_limit_enabled:INTEGER NOT NULL DEFAULT 0"]),
+        "admin_api_keys 曾加 rate_limit_enabled 列（v12 已废弃删除，改由全局 RATE_LIMIT_ENABLED 统一控制）", []),
+    12: ("删除 admin_api_keys.rate_limit_enabled 列（per-key 限流开关废弃；限流只由全局开关 + 策略绑定控制）", []),
+    13: ("rate_policies 加 is_builtin 列（内置策略，不可删/禁，作没绑策略时的唯一兜底）；"
+        "is_default 允许多个（去掉其唯一索引），改给 is_builtin 加唯一索引",
+        ["col:rate_policies:is_builtin:INTEGER NOT NULL DEFAULT 0"]),
+    14: ("rate_policies 加 period 列（限流时间单位 minute/hour/day/week/month，默认 minute）",
+        ["col:rate_policies:period:TEXT NOT NULL DEFAULT 'minute'"]),
 }
 
 
@@ -202,12 +207,12 @@ def ensure_schema() -> None:
             allowed_ips TEXT NOT NULL DEFAULT '[]',
             owner_type  TEXT NOT NULL DEFAULT '',
             owner_id    TEXT NOT NULL DEFAULT '',
-            rate_limit_enabled INTEGER NOT NULL DEFAULT 0,  -- v11：0=不限流，显式开才生效
             created_at  INTEGER NOT NULL,
             updated_at  INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON admin_api_keys(key_hash);
-        -- 限流策略（v11）：阈值模板，多个 key 可复用；is_default 为没绑策略时的兜底。
+        -- 限流策略（v13）：阈值模板，多个 key 可复用；is_builtin 为内置兜底策略（唯一、不可删/禁）。
+        -- is_default 仅作标记，允许多个。
         CREATE TABLE IF NOT EXISTS rate_policies (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             name                TEXT NOT NULL UNIQUE,
@@ -218,17 +223,18 @@ def ensure_schema() -> None:
             tts_chars_per_min   INTEGER NOT NULL,
             enabled             INTEGER NOT NULL DEFAULT 1,
             is_default          INTEGER NOT NULL DEFAULT 0,
+            is_builtin          INTEGER NOT NULL DEFAULT 0,
+            period              TEXT NOT NULL DEFAULT 'minute',  -- 限流单位 minute/hour/day/week/month
             created_at          INTEGER NOT NULL,
             updated_at          INTEGER NOT NULL
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_policies_default
-            ON rate_policies(is_default) WHERE is_default = 1;
+        -- is_builtin 唯一索引在 _migrate() 补列后创建（老库补列前建索引会报 no such column）。
         -- 限流策略绑定（v11）：key ↔ 策略多对多；取所有启用策略的阈值最小值。
         CREATE TABLE IF NOT EXISTS rate_policy_bindings (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            username  TEXT NOT NULL REFERENCES admin_api_keys(username) ON DELETE CASCADE,
+            key_id    INTEGER NOT NULL REFERENCES admin_api_keys(id) ON DELETE CASCADE,
             policy_id INTEGER NOT NULL REFERENCES rate_policies(id) ON DELETE CASCADE,
-            UNIQUE(username, policy_id)
+            UNIQUE(key_id, policy_id)
         );
         -- 音色目录：每条带 provider / model 与中英描述，供 /voice/v1/audio/voices 查询。
         -- 用表维护（不再硬编码），首次初始化时播种内置(edge-tts) + 全部 dashscope 音色。
@@ -374,6 +380,32 @@ def _migrate() -> None:
     _migrate_admin_users()
     # v11：播种默认限流策略（幂等，库里没有 is_default=1 的策略时建一条）。
     _seed_default_rate_policy()
+    # v12：删除废弃的 admin_api_keys.rate_limit_enabled 列（SQLite 3.35+ DROP COLUMN）。
+    # 不支持时忽略——该列留着物理存在但代码不再读写，无害。
+    try:
+        if _has_column("admin_api_keys", "rate_limit_enabled"):
+            c.execute("ALTER TABLE admin_api_keys DROP COLUMN rate_limit_enabled")
+            c.commit()
+    except Exception:  # noqa: BLE001  老 SQLite 不支持 DROP COLUMN 时跳过
+        pass
+    # v13：限流策略支持多个默认 + 内置标识。
+    # 1) 删旧的 is_default 唯一索引（允许多个默认）；2) 把现有 is_default=1 那条标为内置；
+    # 3) 建 is_builtin 唯一索引（最多一个内置）。
+    if _has_column("rate_policies", "is_builtin"):
+        try:
+            c.execute("DROP INDEX IF EXISTS idx_rate_policies_default")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # 现有默认策略（v11 播种的那条）升级为内置；若没有则不动（新种植入由 seed 负责）
+            row = c.execute("SELECT id FROM rate_policies WHERE is_default=1 ORDER BY id LIMIT 1").fetchone()
+            if row and not c.execute("SELECT 1 FROM rate_policies WHERE is_builtin=1").fetchone():
+                c.execute("UPDATE rate_policies SET is_builtin=1, is_default=1 WHERE id=?", (row["id"],))
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_policies_builtin "
+                      "ON rate_policies(is_builtin) WHERE is_builtin = 1")
+            c.commit()
+        except Exception:  # noqa: BLE001
+            pass
     # 音色 / 模型基础库首次建好后播种（内置 + dashscope + deepseek；表已有数据则跳过）。
     if _auto_seed:
         _seed_voices()
@@ -392,22 +424,23 @@ def _seed_default_rate_policy() -> None:
         except (ValueError, TypeError):
             return default
 
+    # 配置读取必须在拿 _lock 之前完成：get_config → _load_cache 也会拿 _lock（不可重入）。
+    req = _int_cfg("RATE_LIMIT_DEFAULT_REQ", 100)
+    llm = _int_cfg("RATE_LIMIT_DEFAULT_LLM_TOKENS", 20000)
+    asr = _int_cfg("RATE_LIMIT_DEFAULT_ASR_SECONDS", 300)
+    tts = _int_cfg("RATE_LIMIT_DEFAULT_TTS_CHARS", 50000)
     now = int(time.time())
     with _lock:
         c = _conn_get()
-        if c.execute("SELECT 1 FROM rate_policies WHERE is_default=1").fetchone():
+        # 有多条默认策略，但内置兜底只能有一条：按 is_builtin 判断
+        if c.execute("SELECT 1 FROM rate_policies WHERE is_builtin=1").fetchone():
             return
         c.execute(
             "INSERT OR IGNORE INTO rate_policies"
             "(name, description, req_per_min, llm_tokens_per_min, asr_seconds_per_min, "
-            "tts_chars_per_min, enabled, is_default, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,1,1,?,?)",
-            ("默认策略", "系统内置，不可删除或停用",
-             _int_cfg("RATE_LIMIT_DEFAULT_REQ", 100),
-             _int_cfg("RATE_LIMIT_DEFAULT_LLM_TOKENS", 20000),
-             _int_cfg("RATE_LIMIT_DEFAULT_ASR_SECONDS", 300),
-             _int_cfg("RATE_LIMIT_DEFAULT_TTS_CHARS", 50000),
-             now, now),
+            "tts_chars_per_min, enabled, is_default, is_builtin, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,1,1,1,?,?)",
+            ("默认策略", "系统内置，不可删除或停用", req, llm, asr, tts, now, now),
         )
         c.commit()
 
@@ -843,9 +876,17 @@ def api_keys_has_enabled() -> bool:
     return row is not None
 
 
-# ── 限流策略（v11，仅按 key）─────────────────────────────────────────
+# ── 限流策略（v14，仅按 key，周期可配）──────────────────────────────
 _RATE_POLICY_FIELDS = ("name", "description", "req_per_min", "llm_tokens_per_min",
-                       "asr_seconds_per_min", "tts_chars_per_min", "enabled", "is_default")
+                       "asr_seconds_per_min", "tts_chars_per_min", "enabled", "is_default", "period")
+# 时间单位 → 秒数（固定秒数近似，月=30天）
+RATE_PERIODS: dict[str, int] = {
+    "minute": 60, "hour": 3600, "day": 86400, "week": 604800, "month": 2592000,
+}
+
+
+def rate_period_seconds(period: str | None) -> int:
+    return RATE_PERIODS.get((period or "minute").strip().lower(), 60)
 
 
 def rate_policy_get(policy_id: int) -> dict[str, Any] | None:
@@ -857,16 +898,19 @@ def rate_policy_get(policy_id: int) -> dict[str, Any] | None:
 
 def rate_policies_list() -> list[dict[str, Any]]:
     rows = _conn_get().execute(
-        "SELECT * FROM rate_policies ORDER BY is_default DESC, id"
+        "SELECT * FROM rate_policies ORDER BY is_builtin DESC, is_default DESC, id"
     ).fetchall()
     return [dict(r) for r in rows]
 
 
 def rate_policy_add(name: str, req: int, llm: int, asr: int, tts: int,
-                    description: str = "") -> dict[str, Any]:
+                    description: str = "", period: str = "minute") -> dict[str, Any]:
     name = (name or "").strip()
     if not name:
         raise ValueError("策略名不能为空")
+    period = (period or "minute").strip().lower()
+    if period not in RATE_PERIODS:
+        raise ValueError(f"非法时间单位: {period}")
     now = int(time.time())
     with _lock:
         c = _conn_get()
@@ -874,23 +918,28 @@ def rate_policy_add(name: str, req: int, llm: int, asr: int, tts: int,
             raise ValueError("策略名已存在")
         cur = c.execute(
             "INSERT INTO rate_policies(name, description, req_per_min, llm_tokens_per_min, "
-            "asr_seconds_per_min, tts_chars_per_min, enabled, is_default, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,1,0,?,?)",
-            (name, description, req, llm, asr, tts, now, now),
+            "asr_seconds_per_min, tts_chars_per_min, enabled, is_default, period, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,1,0,?,?,?)",
+            (name, description, req, llm, asr, tts, period, now, now),
         )
         c.commit()
         return rate_policy_get(cur.lastrowid)
 
 
 def rate_policy_update(policy_id: int, **fields) -> dict[str, Any]:
-    """改阈值/备注/启用；默认策略不可停用（enabled=0）。"""
+    """改阈值/备注/启用；内置策略不可停用。"""
     old = rate_policy_get(policy_id)
     if not old:
         raise ValueError("策略不存在")
-    if old["is_default"] and fields.get("enabled") == 0:
-        raise ValueError("默认策略不可停用")
+    if old["is_builtin"] and fields.get("enabled") == 0:
+        raise ValueError("内置策略不可停用")
     patch = {k: v for k, v in fields.items() if k in ("name", "description", "req_per_min",
-             "llm_tokens_per_min", "asr_seconds_per_min", "tts_chars_per_min", "enabled")}
+             "llm_tokens_per_min", "asr_seconds_per_min", "tts_chars_per_min", "enabled", "period")}
+    if "period" in patch:
+        p = (patch["period"] or "minute").strip().lower()
+        if p not in RATE_PERIODS:
+            raise ValueError(f"非法时间单位: {p}")
+        patch["period"] = p
     if "name" in patch:
         patch["name"] = (patch["name"] or "").strip()
         if not patch["name"]:
@@ -907,93 +956,95 @@ def rate_policy_update(policy_id: int, **fields) -> dict[str, Any]:
 
 
 def rate_policy_delete(policy_id: int) -> None:
-    """默认策略不可删；删普通策略时级联清绑定（外键 ON DELETE CASCADE）。"""
+    """内置策略不可删；删其它策略时级联清绑定（外键 ON DELETE CASCADE）。"""
     old = rate_policy_get(policy_id)
     if not old:
         return
-    if old["is_default"]:
-        raise ValueError("默认策略不可删除")
+    if old["is_builtin"]:
+        raise ValueError("内置策略不可删除")
     with _lock:
         c = _conn_get()
         c.execute("DELETE FROM rate_policies WHERE id=?", (policy_id,))
         c.commit()
 
 
-def rate_policy_set_default(policy_id: int) -> None:
-    """把指定策略设为默认（原默认自动取消）；目标必须启用。"""
+def rate_policy_set_default(policy_id: int, value: bool = True) -> None:
+    """设/取消默认标记；默认策略允许多个，互不影响。目标必须启用（取消时不限）。"""
     target = rate_policy_get(policy_id)
     if not target:
         raise ValueError("策略不存在")
-    if not target["enabled"]:
+    if value and not target["enabled"]:
         raise ValueError("停用的策略不能设为默认")
+    if target["is_builtin"] and not value:
+        raise ValueError("内置策略不能取消默认")
     with _lock:
         c = _conn_get()
-        now = int(time.time())
-        c.execute("UPDATE rate_policies SET is_default=0, updated_at=? WHERE is_default=1", (now,))
-        c.execute("UPDATE rate_policies SET is_default=1, updated_at=? WHERE id=?", (now, policy_id))
+        c.execute("UPDATE rate_policies SET is_default=?, updated_at=? WHERE id=?",
+                  (1 if value else 0, int(time.time()), policy_id))
         c.commit()
 
 
-def rate_binding_list(username: str) -> list[int]:
+def rate_binding_list(key_id: int) -> list[int]:
     rows = _conn_get().execute(
-        "SELECT policy_id FROM rate_policy_bindings WHERE username=? ORDER BY policy_id",
-        (username,)
+        "SELECT policy_id FROM rate_policy_bindings WHERE key_id=? ORDER BY policy_id",
+        (key_id,)
     ).fetchall()
     return [r["policy_id"] for r in rows]
 
 
-def rate_binding_set(username: str, policy_ids: list[int]) -> None:
+def rate_binding_set(key_id: int, policy_ids: list[int]) -> None:
     """整体替换某 key 的绑定策略列表（先删后插）。"""
     with _lock:
         c = _conn_get()
-        c.execute("DELETE FROM rate_policy_bindings WHERE username=?", (username,))
+        c.execute("DELETE FROM rate_policy_bindings WHERE key_id=?", (key_id,))
         for pid in set(policy_ids or []):
             if c.execute("SELECT 1 FROM rate_policies WHERE id=?", (pid,)).fetchone():
                 c.execute(
-                    "INSERT OR IGNORE INTO rate_policy_bindings(username, policy_id) VALUES(?,?)",
-                    (username, pid),
+                    "INSERT OR IGNORE INTO rate_policy_bindings(key_id, policy_id) VALUES(?,?)",
+                    (key_id, pid),
                 )
         c.commit()
 
 
-def rate_binding_effective(username: str) -> dict[str, Any] | None:
-    """取该 key 绑定策略的启用项中，每维阈值的最小值（最严格）；无绑定/全停用则用默认策略。
+def rate_binding_effective(key_id: int) -> dict[str, Any] | None:
+    """取该 key 绑定策略的最严格有效阈值；无绑定/全停用则用内置策略。
 
-    返回 {req_per_min, llm_tokens_per_min, asr_seconds_per_min, tts_chars_per_min, policy_name}。
+    多策略 period 可能不同：按「每秒速率」归一化后取最小速率，再换算到所选 period
+    （取各策略中最短的 period，即最频繁检查的周期）对应的阈值。
+    返回 {req_per_min, llm_tokens_per_min, asr_seconds_per_min, tts_chars_per_min,
+          period, period_seconds, policy_name}。
     """
+    FIELDS = ("req_per_min", "llm_tokens_per_min", "asr_seconds_per_min", "tts_chars_per_min")
     rows = _conn_get().execute(
         "SELECT p.req_per_min, p.llm_tokens_per_min, p.asr_seconds_per_min, "
-        "p.tts_chars_per_min, p.name, p.is_default "
+        "p.tts_chars_per_min, p.name, p.period "
         "FROM rate_policy_bindings b JOIN rate_policies p ON p.id=b.policy_id "
-        "WHERE b.username=? AND p.enabled=1", (username,)
+        "WHERE b.key_id=? AND p.enabled=1", (key_id,)
     ).fetchall()
     if not rows:
+        # 没绑策略 → 用内置的兜底策略（唯一、不可删禁）
         row = _conn_get().execute(
             "SELECT req_per_min, llm_tokens_per_min, asr_seconds_per_min, "
-            "tts_chars_per_min, name FROM rate_policies WHERE is_default=1 AND enabled=1 LIMIT 1"
+            "tts_chars_per_min, name, period FROM rate_policies "
+            "WHERE is_builtin=1 AND enabled=1 LIMIT 1"
         ).fetchone()
-        return dict(row) if row else None
-    return {
-        "req_per_min": min(r["req_per_min"] for r in rows),
-        "llm_tokens_per_min": min(r["llm_tokens_per_min"] for r in rows),
-        "asr_seconds_per_min": min(r["asr_seconds_per_min"] for r in rows),
-        "tts_chars_per_min": min(r["tts_chars_per_min"] for r in rows),
-        "policy_name": "+".join(r["name"] for r in rows),
-    }
-
-
-def admin_api_key_set_rate_enabled(username: str, enabled: bool) -> None:
-    if not _conn_get().execute(
-        "SELECT 1 FROM admin_api_keys WHERE username=?", (username,)
-    ).fetchone():
-        raise ValueError("账号不存在")
-    with _lock:
-        c = _conn_get()
-        c.execute(
-            "UPDATE admin_api_keys SET rate_limit_enabled=?, updated_at=? WHERE username=?",
-            (1 if enabled else 0, int(time.time()), username),
-        )
-        c.commit()
+        if not row:
+            return None
+        d = dict(row)
+        d["period"] = d.get("period") or "minute"
+        d["period_seconds"] = rate_period_seconds(d["period"])
+        return d
+    # 选最短 period（秒数最小）作为输出周期
+    shortest = min(rows, key=lambda r: rate_period_seconds(r["period"]))
+    period = shortest["period"] or "minute"
+    period_sec = rate_period_seconds(period)
+    out: dict[str, Any] = {"period": period, "period_seconds": period_sec,
+                           "policy_name": "+".join(r["name"] for r in rows)}
+    # 每维：取最小每秒速率，再换算成该 period 的阈值
+    for f in FIELDS:
+        min_rate = min(r[f] / rate_period_seconds(r["period"]) for r in rows)
+        out[f] = max(1, round(min_rate * period_sec))
+    return out
 
 
 def seed_from_conf(conf: dict[str, str]) -> int:

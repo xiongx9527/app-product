@@ -115,6 +115,7 @@ import voice_sync  # 远程数据库同步（Postgres）
 import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库的门面
 import voice_correction_store  # ASR 纠错词表统一存储（SQLite/MySQL/PgSQL + Redis 缓存）
 import upstream_pool  # 上游地址池：多地址 + 账号池，健康探测 + 轮询
+import rate_store  # 限流门面：按 api-key 计数，内存/Redis 由配置决定
 import model_catalog  # 统一模型目录（LLM / TTS / STT 三端口，对齐 fw-plus-ai-native）
 from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -172,6 +173,8 @@ DEFAULTS = {
     "VOICE_API_KEY": "off",
     "VOICE_API_KEY_AUTH": "off",
     "VOICE_IP_ALLOW": "",
+    "RATE_LIMIT_ENABLED": "off",     # 限流总开关（紧急逃生）；开时再看每个 key 的开关
+    "RATE_LIMIT_BACKEND": "auto",    # auto | memory | redis；auto=配了 REDIS_URL 用 Redis
     "LLM_ENABLED": "auto",
 }
 
@@ -728,9 +731,43 @@ app.add_middleware(
 )
 
 
+def _rate_limit_check(key_id: int) -> tuple[bool, int, int]:
+    """对已鉴权的 key 做次数限流；(是否放行, retry_after秒, 次数阈值)。
+
+    只由全局 RATE_LIMIT_ENABLED 控制：开 → 所有 key 都限流（按各自绑定策略，
+    没绑用默认策略）；关 → 全部放行。没有 per-key 的启用开关。
+    """
+    if config_value("RATE_LIMIT_ENABLED", "off").strip().lower() not in ENABLED_VALUES:
+        return True, 0, 0
+    policy = voice_db.rate_binding_effective(key_id)
+    if not policy:
+        return True, 0, 0  # 没有可用策略（如默认策略被删）→ 放行，不误伤
+    limit = policy["req_per_min"]
+    period_sec = policy.get("period_seconds", 60)
+    ok, retry = rate_store.check_and_consume(key_id, "requests", limit, period_seconds=period_sec)
+    return ok, retry, limit
+
+
+def _rate_limit_response(key_id: int) -> JSONResponse | None:
+    """HTTP 限流超限 → 429；否则 None。"""
+    ok, retry, limit = _rate_limit_check(key_id)
+    if ok:
+        return None
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "请求次数超限，请稍后重试",
+            "kind": "requests",
+            "limit": limit,
+            "reset_at": int(time.time()) + retry,
+        },
+        headers={"Retry-After": str(retry)},
+    )
+
+
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
-    """对外数据接口统一过滤：IP 白名单 + API-Key 鉴权。
+    """对外数据接口统一过滤：IP 白名单 + API-Key 鉴权 + 限流。
 
     - IP 白名单（VOICE_IP_ALLOW 非空时）：作用于所有路径，含 /admin 管理面板；
       本机环回地址恒放行——网关 / 面板都在本机，环回不算「对外」来源，
@@ -768,6 +805,10 @@ async def security_middleware(request: Request, call_next):
             )
         request.state.api_key_id = matched["id"]
         request.state.api_key_name = matched["name"]
+        # 限流：仅带有效 key 的数据接口；全局开关/key 开关关闭时自动放行
+        limited = _rate_limit_response(matched["id"])
+        if limited is not None:
+            return limited
     return await call_next(request)
 
 
@@ -1396,6 +1437,8 @@ def voice_health() -> dict:
     return {
         "status": "ok",
         "auth_enabled": auth_enabled(),
+        "rate_limit_enabled": config_value("RATE_LIMIT_ENABLED", "off").strip().lower() in ENABLED_VALUES,
+        "rate_limit_backend": rate_store.backend_name(),
         "stt_backend": "sensevoice",
         "stt_ready": sensevoice_ready(),
         "stt_upstream": None,
@@ -2641,6 +2684,9 @@ def _ws_auth_ok(websocket: WebSocket, path: str) -> bool:
             return False
         websocket.state.api_key_id = matched["id"]
         websocket.state.api_key_name = matched["name"]
+        # 限流：WS 握手也按 key 查次数桶（与 HTTP 同逻辑）
+        if not _rate_limit_check(matched["id"])[0]:
+            return False
     return True
 
 
@@ -3983,6 +4029,17 @@ def main(argv=None) -> None:
         _startup_log(f"[local-ai] 鉴权 : 开启（表内 {n_keys} 个 Key）", flush=True)
     else:
         _startup_log("[local-ai] 鉴权 : 关闭", flush=True)
+
+    # 限流门面：按配置选内存/Redis 后端（配了 Redis 连不上自动降级内存）
+    _rl_backend = rate_store.configure(
+        config_value("RATE_LIMIT_BACKEND", "auto"),
+        config_value("REDIS_URL", "") or None,
+    )
+    _rl_on = config_value("RATE_LIMIT_ENABLED", "off").strip().lower() in ENABLED_VALUES
+    _startup_log(
+        f"[local-ai] 限流 : {'开启' if _rl_on else '关闭'}（后端 {_rl_backend}）",
+        flush=True,
+    )
     allow = _parse_ip_allow()
     if allow:
         _startup_log(f"[local-ai] IP白名单: 启用（{len(allow)} 条）", flush=True)

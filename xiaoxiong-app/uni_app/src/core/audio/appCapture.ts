@@ -75,13 +75,33 @@ export function isAppCaptureSupported(): boolean {
   return ok
 }
 
+/** base64 解码（App 逻辑层无 atob/Buffer，手写纯位运算；与 appPlayback.ts 的 B64_CHARS 同表） */
+const PCM_B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+function decodePcmBase64(s: string): Uint8Array {
+  const len = s.length
+  const outLen = Math.floor((len * 3) / 4)
+  const bytes = new Uint8Array(outLen)
+  let out = 0
+  for (let i = 0; i < len; i += 4) {
+    const c0 = PCM_B64_CHARS.indexOf(s[i])
+    const c1 = PCM_B64_CHARS.indexOf(s[i + 1])
+    const c2 = s[i + 2] === '=' ? 0 : PCM_B64_CHARS.indexOf(s[i + 2])
+    const c3 = s[i + 3] === '=' ? 0 : PCM_B64_CHARS.indexOf(s[i + 3])
+    if (out < outLen) bytes[out++] = ((c0 << 2) | (c1 >> 4)) & 0xff
+    if (out < outLen) bytes[out++] = ((c1 << 4) | (c2 >> 2)) & 0xff
+    if (out < outLen) bytes[out++] = ((c2 << 6) | c3) & 0xff
+  }
+  return bytes
+}
+
 /**
  * 原生回调统一成 ArrayBuffer。
  *
- * 关键：DCloud/weex 桥不认识裸 byte[]，会把原生 byte[] 转成「普通 JS number[]」回传
- * （真机实测 ctor=Array / len=1024 / 非 ArrayBuffer 非 TypedArray），而不是 ArrayBuffer。
- * 只认 ArrayBuffer/ArrayBufferView 会把每一帧都丢掉 → 网关收不到任何音频 → 无法唤醒。
- * 因此必须兼容 number[]：按字节灌进 Uint8Array。
+ * 两端原生回传格式不同（公共代码必须都兼容）：
+ * - Android：byte[] 经 DCloud weex 桥转成「普通 JS number[]」→ 走 Array.isArray 分支。
+ * - iOS：NSData 经 weex 桥是 [object NSData]（既非 ArrayBuffer 也非 number[]，toArrayBuffer 拿到会
+ *   返回 null → 每帧丢弃 → 网关收不到音频、唤醒后无法对话）。iOS 原生改传 base64 标量字符串
+ *   （标量字符串过桥可靠，与 TTS playPcm 同款），这里走 string 分支解码。
  */
 function toArrayBuffer(frame: unknown): ArrayBuffer | null {
   if (frame instanceof ArrayBuffer) return frame
@@ -89,7 +109,12 @@ function toArrayBuffer(frame: unknown): ArrayBuffer | null {
     const view = frame as ArrayBufferView
     return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer
   }
+  if (typeof frame === 'string' && frame.length > 0) {
+    // iOS base64 帧（标量字符串过桥可靠）
+    return decodePcmBase64(frame).buffer as ArrayBuffer
+  }
   if (Array.isArray(frame)) {
+    // Android number[] 帧（weex 桥对 byte[] 的转换结果）
     const bytes = new Uint8Array(frame.length)
     for (let i = 0; i < frame.length; i += 1) {
       const b = (frame as unknown[])[i]

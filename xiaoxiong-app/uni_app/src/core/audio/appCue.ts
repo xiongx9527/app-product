@@ -45,7 +45,12 @@ function loadModule(): NativeCueModule | null {
 /** 原生是否实现了提示音播放接口；否则调用方降级到 InnerAudioContext。 */
 export function isAppCueSupported(): boolean {
   const mod = loadModule()
-  return !!mod && typeof mod.playCue === 'function'
+  // 注意：DCloud/weex 桥接暴露的方法用 `typeof mod.playCue === 'function'` 判断不可靠
+  // （真机方法列表里有 playCue，但 typeof 不为 function），会让提示音错误降级到
+  // InnerAudioContext——后者切换 AVAudioSession category 打断 KWS 采集（喊词无反应）。
+  // 插件存在即视为支持；app-product-wake 在 Android/iOS 均已实现 playCue。
+  // 真缺失时 appPlayCue 内部 `if (!mod?.playCue) return false` 仍安全降级。
+  return !!mod
 }
 
 /** 播空/出错回调只绑一次。keepAlive 原生回调，转发给当前等待者。 */
@@ -68,12 +73,21 @@ function bindEndOnce(mod: NativeCueModule): void {
  */
 export function appPlayCue(file: string, onEnd?: (completed: boolean) => void): boolean {
   const mod = loadModule()
-  if (!mod?.playCue) return false
+  // 不用 `!mod?.playCue` 判断（DCloud 桥接下 typeof 不可靠，见 isAppCueSupported 注释）；
+  // 插件不存在时才降级。真正缺失 playCue 时原生调用会抛错，下面 try/catch 兜底降级。
+  if (!mod) return false
   bindEndOnce(mod)
   if (onEnd) endListeners.add(onEnd)
   // 必须传标量字符串：DCloud/weex 桥对 JSONObject 参数会丢字段（真机实测 arg={}）
-  mod.playCue(file)
-  return true
+  try {
+    if (!mod.playCue) return false
+    mod.playCue(file)
+    return true
+  } catch {
+    // 原生真缺失 playCue 时降级：清掉刚加的等待者，让调用方走 InnerAudioContext
+    if (onEnd) endListeners.delete(onEnd)
+    return false
+  }
 }
 
 /** 打断当前提示音（新一轮提示 / 会话结束时），并兑现所有等待者。 */

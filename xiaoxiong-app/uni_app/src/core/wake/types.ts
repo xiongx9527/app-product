@@ -8,6 +8,10 @@ export interface WakeProvider {
    * 上层据此把命中路由到「唤醒」或「播报期打断」。
    */
   start(onWake: (word?: string) => void, onError?: (message: string) => void): void
+  /** 绑定 KWS 就绪回调（模型加载完成才可喊词；未就绪时可点圆球兜底） */
+  onReady?(callback: (ready: boolean) => void): void
+  /** 待唤醒态上行静音（唤醒前不调 ASR）；iOS 实现，Android 可缺省 */
+  setStandbyMuted?(muted: boolean): void
   stop(): void
 }
 
