@@ -375,6 +375,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     console.info('[da] SETTLED phase=' + phase.value + ' speaking=' + isSpeaking.value + ' notify=' + notifyGateway)
     clearLlmWatchdog()
     clearSpeechWatchdog()
+    clearPreciseIdle()
     if (playbackDoneFallback) {
       clearTimeout(playbackDoneFallback)
       playbackDoneFallback = null
@@ -443,6 +444,19 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 说明还没播完，取消收尾。只在真正静默后才把 phase 设回 done。
   let lastTtsAudioAt = 0
   let idleSettleTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 精确收尾 timer（iOS 网关停滞兜底）：tts.end 到达时网关已带 durationMs（按实际音频字节估算的
+   * 播完时长）。若网关在播报期 DATA_STALL、tts.idle 下发不出来，前端不能干等 60s watchdog
+   * （真机铁证：卡「正在播报」→T1/T2→退下→「唤醒后只能聊一次」）。用它到点直接本地收尾。
+   * tts.idle 正常到达会走 onPlaybackSettled → clear 掉它，对回执正常的 Android 零影响。
+   */
+  let preciseIdleTimer: ReturnType<typeof setTimeout> | null = null
+  function clearPreciseIdle(): void {
+    if (preciseIdleTimer) {
+      clearTimeout(preciseIdleTimer)
+      preciseIdleTimer = null
+    }
+  }
   /**
    * 收到 tts.idle（上一句已播空）到前端 600ms 延迟收尾（isSpeaking 置 false）之间的窗口内，
    * 网关收到 playback_done 会立即推进队列、下发下一句 tts.start。此时 isSpeaking 还是 true，
@@ -894,6 +908,28 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 更短的播报看门狗：原生播空检测偶发失效时（tts.idle 永不到、300s 兜底太慢），
         // 25s 内强制收尾，避免界面卡「正在播报」、音乐音量一直被 duck。tts.idle 到达会 clear。
         armSpeechWatchdog()
+        // 【iOS 网关停滞兜底】用网关按实际音频字节估算的播完时长设精确收尾 timer：
+        // iOS 网关 DATA_STALL 时 tts.idle 下发不出来，前端不能干等 60s watchdog（真机铁证
+        // 卡「正在播报」→T1/T2→退下→重新唤醒→「只能聊一次」死循环）。到点时若仍在等这轮
+        // 播完（playbackDoneFallback 未被清）就本地收尾。tts.idle 正常到达会走 onPlaybackSettled
+        // → clearPreciseIdle，对回执正常的 Android 零影响。
+        clearPreciseIdle()
+        const exactMs = event.durationMs
+        if (exactMs && exactMs > 0) {
+          console.info('[da] PRECISE-IDLE arm durationMs=' + exactMs)
+          preciseIdleTimer = setTimeout(() => {
+            preciseIdleTimer = null
+            // playbackDoneFallback 未清 = 这轮还没收尾（tts.idle 没来）；已清=已经收尾，幂等跳过
+            if (playbackDoneFallback === null) return
+            console.info('[da] PRECISE-IDLE fire (tts.idle 未到，按时长强制收尾 + 回执网关)')
+            // 【关键】必须通知网关（true）：精确 timer 触发说明 tts.idle 没来=网关没收到播完回执，
+            // 网关 playbackPending 仍为 true、回声门控一直开着 → 用户后续说话的帧被当回声过滤、
+            // 无法识别（真机铁证：收尾后 235s 内 FRAME 全 rms=0.0000、ASR 0 条）。前端 WS 是通的
+            // （ASR 上行/tts.idle 下行都走它），notifyPlaybackDone 能让网关清 playbackPending、关回声
+            // 门控、用户立刻可被识别。正常 tts.idle 到达仍走 false（网关已有回执，避免回执循环）。
+            onPlaybackSettled(true)
+          }, exactMs)
+        }
         break
       }
       case 'tts.idle': {

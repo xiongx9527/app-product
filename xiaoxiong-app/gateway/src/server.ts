@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFileSync } from 'node:fs'
+import { readDiagTail } from './diagLog'
 import { WebSocketServer } from 'ws'
 import { loadConfig } from './config'
 import { createDb } from './db/client'
@@ -80,13 +80,10 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       if (url.pathname === '/api/diag/log') {
         const raw = Number(url.searchParams.get('lines') ?? 300)
         const lines = Math.min(2000, Math.max(1, Number.isFinite(raw) ? raw : 300))
-        let text = ''
-        try {
-          const home = process.env.GATEWAY_HOME ?? '.'
-          text = readFileSync(`${home}/barge-diag.log`, 'utf8').split('\n').slice(-lines).join('\n')
-        } catch {
-          text = ''
-        }
+        // 【关键·长期保留】从 diagLog 的内存环形缓冲读，零文件 I/O、零阻塞：
+        // 旧实现同步读/写 barge-diag.log（数 MB）会阻塞 iOS NodeMobile 事件循环数秒~数十秒，
+        // 把 health/WS 全卡住。日志仍由 diagLog 异步落盘长期留存，这里只从内存取尾部即时可见。
+        const text = readDiagTail(lines)
         res.writeHead(200, {
           'content-type': 'text/plain; charset=utf-8',
           'access-control-allow-origin': '*',

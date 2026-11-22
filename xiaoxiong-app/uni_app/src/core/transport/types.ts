@@ -46,7 +46,8 @@ export type ServerEvent =
   | { type: 'llm.done' }
   | { type: 'tts.start'; format: string; sampleRate: number }
   | { type: 'tts.stop' }
-  | { type: 'tts.end' }
+  /** durationMs=网关按实际音频字节估算的播完时长；iOS 网关停滞 tts.idle 不来时，客户端据此精确收尾 */
+  | { type: 'tts.end'; durationMs?: number }
   /** 原生直连播空回执（经网关下发），客户端据此收尾，替代播报期不可靠的 weex idle 回调 */
   | { type: 'tts.idle' }
   | { type: 'audio.duplex'; mode: 'half' | 'full' }

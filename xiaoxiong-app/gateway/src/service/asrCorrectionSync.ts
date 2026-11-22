@@ -7,18 +7,16 @@
  *
  * 水位 lastPullAt 存内存：进程重启后从 0 拉全量（9529 幂等 upsert，安全）。
  */
-import { appendFileSync } from 'node:fs'
 import type { DataService } from './dataService'
+import { bargeDiag as diagBargeDiag } from '../diagLog'
 import { loadAsrCorrections } from './voiceSessionService'
 import { toPinyin } from './asr/asrCorrector'
 import { createAutoLearnEngine, longestSharedSubstring, normalizePronunciation, isProperNounTarget, type AutoLearnContext, type AutoLearnEngine, type AutoLearnRule } from './autoLearn'
 
-/** 与 voiceSessionService 的 bargeDiag 同款落盘：记录自动学习命中及来源。 */
+/** 与 voiceSessionService 的 bargeDiag 同款落盘：记录自动学习命中及来源。
+ *  【异步】统一走 diagLog 的内存缓冲 + 异步落盘，零同步 I/O、不丢日志。 */
 function autoLearnDiag(line: string): void {
-  try {
-    const home = process.env.GATEWAY_HOME ?? '.'
-    appendFileSync(`${home}/barge-diag.log`, `${new Date().toISOString()} ${line}\n`)
-  } catch { /* 写失败不影响主流程 */ }
+  diagBargeDiag(line)
 }
 
 const PULL_INTERVAL_MS = 30 * 60 * 1000 // 低频兜底轮询，30 分钟（审核是人工操作）

@@ -17,6 +17,10 @@ static const NSTimeInterval kReconnectInterval = 1.0; // 限频重连，采集�
     NSTimeInterval _lastConnectAttempt;
     BOOL _connected;
     dispatch_queue_t _queue; // 串行队列保护上述状态
+    // 【关键日志·长期保留】断连期间暂存的文本回执（播空回执绝不能丢）。
+    // 真机铁证：checkTtsIdle 16:35:14 调 sendText，网关 16:38:34(晚200s)才收到；
+    // 旧实现在 _connected==NO 时静默丢弃且无任何日志，这段完全不可观测。禁止定位后删除。
+    NSMutableArray<NSData *> *_pendingTexts;
 }
 @end
 
@@ -39,6 +43,7 @@ static const NSTimeInterval kReconnectInterval = 1.0; // 限频重连，采集�
         _enabled = NO;
         _connected = NO;
         _lastConnectAttempt = 0;
+        _pendingTexts = [NSMutableArray array];
     }
     return self;
 }
@@ -142,10 +147,27 @@ static const NSTimeInterval kReconnectInterval = 1.0; // 限频重连，采集�
 
 - (void)sendText:(NSString *)text {
     if (!text) return;
+    // 【关键日志·长期保留】记录调用时刻；出队后打印排队延迟，判断 200s 卡在「队列排队」还是「sendMessage 本身」。
+    NSTimeInterval callAt = CFAbsoluteTimeGetCurrent();
+    NSData *body = [text dataUsingEncoding:NSUTF8StringEncoding];
     dispatch_async(_queue, ^{
-        if (!_task || !_connected) return;
+        NSTimeInterval deqAt = CFAbsoluteTimeGetCurrent();
+        BOOL ready = (_task != nil && _connected);
+        NSLog(@"%@ sendText queued=%.3fms connected=%d hasTask=%d", kTag,
+              (deqAt - callAt) * 1000, _connected, _task != nil);
+        if (!ready) {
+            // 【关键日志·长期保留】旧实现这里静默 return 直接丢回执；改为暂存待连上补发。
+            NSLog(@"%@ sendText PENDING (not connected, will flush on open)", kTag);
+            if (body) [_pendingTexts addObject:body];
+            return;
+        }
         NSURLSessionWebSocketMessage *msg = [[NSURLSessionWebSocketMessage alloc] initWithString:text];
+        NSTimeInterval sendAt = CFAbsoluteTimeGetCurrent();
         [_task sendMessage:msg completionHandler:^(NSError * _Nullable error) {
+            NSTimeInterval doneAt = CFAbsoluteTimeGetCurrent();
+            // 【关键日志·长期保留】completion 时延即回执真正写进 WS 的时刻；200s 若在这里就是 WS 层阻塞。
+            NSLog(@"%@ sendText completion=%.3fms error=%@", kTag,
+                  (doneAt - sendAt) * 1000, error ? error.localizedDescription : @"nil");
             if (error) NSLog(@"%@ sendText failed: %@", kTag, error.localizedDescription);
         }];
     });
@@ -154,6 +176,7 @@ static const NSTimeInterval kReconnectInterval = 1.0; // 限频重连，采集�
 - (void)stop {
     dispatch_async(_queue, ^{
         _enabled = NO;
+        [_pendingTexts removeAllObjects];
         if (_task) {
             [_task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];
             _task = nil;
@@ -170,6 +193,16 @@ static const NSTimeInterval kReconnectInterval = 1.0; // 限频重连，采集�
         if (webSocketTask == _task) {
             _connected = YES;
             NSLog(@"%@ connected", kTag);
+            // 【关键日志·长期保留】连上后立刻补发断连期间暂存的文本回执（播空回执不能丢）。
+            NSUInteger pending = _pendingTexts.count;
+            if (pending > 0) NSLog(@"%@ flush pending text=%lu", kTag, (unsigned long)pending);
+            for (NSData *body in _pendingTexts) {
+                NSURLSessionWebSocketMessage *msg = [[NSURLSessionWebSocketMessage alloc] initWithData:body];
+                [_task sendMessage:msg completionHandler:^(NSError * _Nullable error) {
+                    NSLog(@"%@ flush text completion error=%@", kTag, error ? error.localizedDescription : @"nil");
+                }];
+            }
+            [_pendingTexts removeAllObjects];
         }
     });
 }

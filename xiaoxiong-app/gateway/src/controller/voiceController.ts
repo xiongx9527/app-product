@@ -4,7 +4,7 @@ import { createAgentService } from '../service/agentService'
 import { createAsr } from '../asr'
 import { createTts } from '../tts'
 import { resolveCapabilityConfig } from '../voiceConfig'
-import { VoiceSessionService } from '../service/voiceSessionService'
+import { VoiceSessionService, bargeDiag } from '../service/voiceSessionService'
 import { getSession, setSession, removeSession } from '../service/sessionRegistry'
 import type { GatewayConfig } from '../config'
 import type { DataService } from '../service/dataService'
@@ -56,17 +56,32 @@ const pcmConnections = new Map<string, WebSocket>()
  */
 function createPcmUploadConnection(ws: WebSocket, req: IncomingMessage): () => void {
   const deviceId = deviceIdFromRequest(req)
+  bargeDiag(`PCM-CONN open deviceId=${deviceId ?? '(null)'} url=${req.url ?? ''}`)
   if (deviceId) pcmConnections.set(deviceId, ws)
   const onMessage = (data: RawData, isBinary: boolean): void => {
-    if (!deviceId) return
+    if (!deviceId) {
+      bargeDiag(`PCM-TEXT dropped no-deviceId raw=${data.toString().slice(0, 120)}`)
+      return
+    }
     const session = getSession(deviceId)
-    if (!session) return // 主连接还没建 session，丢弃这几帧
     if (!isBinary) {
       // 原生直连上行的文本控制帧（TTS 播完回执 session.playback_done）：走 handleText，
       // 不经 weex 下行回调（播报期不可靠，铁证：客户端只能靠 12s 兜底）。
-      try { session.handleText(data.toString()) } catch { /* 忽略非法文本帧 */ }
+      const raw = data.toString()
+      if (!session) {
+        // 主连接 session 还没建好就把回执丢了——这是 iOS 播空回执消失的可疑点之一，必须记下来
+        bargeDiag(`PCM-TEXT DROPPED no-session deviceId=${deviceId} raw=${raw.slice(0, 120)}`)
+        return
+      }
+      bargeDiag(`PCM-TEXT recv deviceId=${deviceId} raw=${raw.slice(0, 160)}`)
+      try {
+        session.handleText(raw)
+      } catch (err) {
+        bargeDiag(`PCM-TEXT HANDLE-ERROR deviceId=${deviceId} err=${(err as Error).message} raw=${raw.slice(0, 120)}`)
+      }
       return
     }
+    if (!session) return // 主连接还没建 session，丢弃这几帧（音频帧量大，不逐帧打日志）
     const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
     session.handleBinary(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
   }
@@ -74,6 +89,7 @@ function createPcmUploadConnection(ws: WebSocket, req: IncomingMessage): () => v
   const cleanup = (): void => {
     ws.off('message', onMessage)
     if (deviceId && pcmConnections.get(deviceId) === ws) pcmConnections.delete(deviceId)
+    bargeDiag(`PCM-CONN close deviceId=${deviceId ?? '(null)'}`)
   }
   ws.on('close', cleanup)
   ws.on('error', cleanup)

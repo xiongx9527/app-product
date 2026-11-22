@@ -177,7 +177,10 @@ export type ServerEvent =
   | { type: 'llm.done' }
   | { type: 'tts.start'; format: string; sampleRate: number }
   | { type: 'tts.stop' }
-  | { type: 'tts.end' }
+  /** durationMs=按实际下发音频字节估算的播完时长，供客户端设「精确收尾 timer」：
+   *  iOS 网关 DATA_STALL 时 tts.idle 下发不出来，客户端靠它在正确时刻本地收尾、
+   *  不再干等 60s watchdog 导致「唤醒后只能聊一次」。tts.idle 正常到达会清掉该 timer。 */
+  | { type: 'tts.end'; durationMs?: number }
   /** 原生 PCM 直连播空的权威回执（经 role=pcm 到网关再下发），客户端据此收尾。
    *  播报期 weex 的 onPlaybackIdle 回调不可靠（铁证：只能靠 12s 兜底），用它替代。 */
   | { type: 'tts.idle' }

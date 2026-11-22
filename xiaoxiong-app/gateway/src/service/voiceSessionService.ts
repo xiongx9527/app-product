@@ -27,21 +27,18 @@ import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
 import { buildHealth } from './health'
 import { EchoCanceller } from './echoCanceller'
-import { appendFileSync } from 'node:fs'
-
-// ===== 临时诊断：播报期插话识别链路（定位后移除）=====
+import { appendFile } from 'node:fs'
+// ===== 关键链路日志（长期保留，不因定位完成而删除）=====
+// 【2026-11-22】bargeDiag 迁到 diagLog.ts：同步 appendFileSync 改内存缓冲 + 异步落盘，
+// 消除播报期高频同步 I/O 阻塞 iOS NodeMobile 事件循环。re-export 保持 controller 调用不变。
+import { bargeDiag, setDiagStage } from '../diagLog'
+export { bargeDiag }
 let bargeDiagAt = 0
 /** 累计收到的音频帧数（每 50 帧落一条），与 pb 状态/节流无关，确认网关是否真的在收帧 */
 let bargeFrames = 0
 let bargeLoudFrames = 0
-function bargeDiag(line: string): void {
-  try {
-    const home = process.env.GATEWAY_HOME ?? '.'
-    appendFileSync(`${home}/barge-diag.log`, `${new Date().toISOString()} ${line}\n`)
-  } catch {
-    // 诊断写失败不影响主流程
-  }
-}
+/** 播报期全 0 静音帧跳过 AEC 的累计计数（每 500 条落一条日志，长期保留） */
+let silentAecSkipped = 0
 
 /** 播报期间最多排几句用户插话，超出直接拒收。 */
 const MAX_QUEUE = 3
@@ -285,8 +282,19 @@ export class VoiceSessionService {
   private echoUntil = 0
   /** 本轮已下发的音频字节数，用于估算播放时长做握手超时兜底。 */
   private downlinkBytes = 0
-  /** 等待客户端「播完」回执的 resolve；processing 会一直保持到它触发。 */
-  private playbackResolve: (() => void) | null = null
+  /**
+   * 本次播放窗口是否已发过 tts.idle。armPlaybackWait（每句开头）清零，emitTtsIdle 置位。
+   * 正常由原生 playback_done 回执发一次；iOS 曾出现原生打了「TTS idle detected」但回执没到网关
+   * （真机铁证：syslog 有 idle、网关 diag 无 PB-DONE），导致前端永远等不到 tts.idle、卡在
+   * 「正在播报」直到 watchdog 强制收尾，此时会话已被 T1/T2 退下 → 变成「正在听」却识别不了。
+   * 兜底：播放计时器按已下发字节估算音频播完后，若回执仍没来就补发一次。幂等保证一轮只发一次，
+   * Android 回执正常时兜底计时器已被清掉、永不触发——对 Android 零影响。
+   */
+  private ttsIdleSentForTurn = false
+  /** 等待客户端「播完」回执的 resolve；processing 会一直保持到它触发。
+   *  参数 fallback=true 表示计时器自然到期（回执可能丢失），需补发 tts.idle；
+   *  false 表示原生回执已到或主动取消，不要补发。 */
+  private playbackResolve: ((fallback: boolean) => void) | null = null
   private playbackTimer: ReturnType<typeof setTimeout> | null = null
   /** 定稿串行链：多个 endpoint 定时器重叠时逐句处理，不丢句也不抢同一段缓冲。 */
   private finalizeChain: Promise<void> = Promise.resolve()
@@ -352,6 +360,7 @@ export class VoiceSessionService {
     try {
       msg = JSON.parse(raw) as ClientMessage
     } catch {
+      bargeDiag(`CTRL-PARSE-FAIL raw=${raw.slice(0, 160)}`)
       this.sendError('LLM_ERROR', '无法解析控制消息')
       return
     }
@@ -428,12 +437,13 @@ export class VoiceSessionService {
         // 若 ttsDispatching=true（还有批次在合成/下发中），忽略它：不 resolvePlayback、不发 tts.idle，
         // 否则前端提前收尾（状态变"本轮完成/正在听"）、runTurn 提前推进、退下后掐掉剩余批次。
         if (this.ttsDispatching) {
-          bargeDiag(`PB-DONE IGNORED (分批间隙误判) pb=${this.playbackPending} queue=${this.queue.length}`)
+          bargeDiag(`PB-DONE IGNORED (分批间隙误判) pb=${this.playbackPending} queue=${this.queue.length} turn=${this.turn}`)
           break
         }
-        bargeDiag(`PB-DONE recv pb=${this.playbackPending} queue=${this.queue.length} speaking=${this.speaking} -> tts.idle`)
-        this.resolvePlayback()
-        this.deps.send({ type: 'tts.idle' })
+        bargeDiag(`PB-DONE recv pb=${this.playbackPending} queue=${this.queue.length} speaking=${this.speaking} ` +
+          `turn=${this.turn} cancelled=${this.cancelled} downlink=${this.downlinkBytes} -> tts.idle`)
+        this.resolvePlayback('pcm-done')
+        this.emitTtsIdle('pcm-done')
         break
       case 'session.diag':
         // 临时诊断：客户端 onPcm 真实状态落盘（定位后移除）
@@ -766,7 +776,7 @@ export class VoiceSessionService {
       await this.speakSentence(text, turn)
       if (this.turn === turn && !this.cancelled) {
         this.speaking = false
-        this.deps.send({ type: 'tts.end' })
+        this.deps.send({ type: 'tts.end', durationMs: this.estimatedSpeechMs() })
       }
       this.tightenPlaybackTimeout()
       await playback
@@ -781,7 +791,7 @@ export class VoiceSessionService {
     await this.speakSentence(text, this.turn)
     if (!this.skipRequested && !this.cancelled) {
       this.speaking = false
-      this.deps.send({ type: 'tts.end' })
+      this.deps.send({ type: 'tts.end', durationMs: this.estimatedSpeechMs() })
     }
   }
 
@@ -839,9 +849,30 @@ export class VoiceSessionService {
     // 软件 AEC：播报期把下发的 TTS 当参考，从这帧采集里减掉扬声器回声，只留真人插话。
     // 上面的 frameRms 用原始 chunk（要检测真人开口触发 duck），这里 VAD/ASR 用消除后的帧。
     // 没推过参考（非播报期）时 process 原样返回，零影响。
-    const cleanChunk = this.aecActive ? this.aec.process(chunk) : chunk
+    //
+    // 【2026-11-22 关键·长期保留】播报期全 0 静音帧跳过 AEC：
+    // iOS 原生在播报期(_playRunning)上行一律全 0 帧（AppProductWakeModule.m:480，约 100 帧/秒），
+    // 真人声根本不上行、只靠 KWS 原始帧打断。AEC.process 对每帧做 M=2048 阶 NLMS 卷积
+    // （~200 万次浮点运算/帧 ×100 帧/秒 = 2 亿次/秒），全 0 帧（d=0）算出来只是 -dot，
+    // 与全 0 同为静音、VAD 判定一致——跳过它数学上等价、零功能损失，却省掉最重的计算。
+    // 这是 iOS 单进程事件循环被帧处理冲垮（HB-GAP 215s）的关键减负。
+    // 【功能不缺失】真人插话帧(rms>=阈值)、非播报期帧、KWS 都完全不受影响：
+    // 只跳过 rms≈0 的全 0 帧的 AEC，VAD.push/endpoint/ASR 门控全部照常执行。
+    // 阈值收紧到 1e-6＝真正全 0 帧（iOS 上行全 0）；Android 真实静音帧 rms~0.0005 不会被跳过，
+    // 保证 Android 的 AEC 滤波器 w 仍靠真实静音帧持续收敛、插话回声消除不受影响。
+    const isAllSilentUplink = this.playbackPending && frameRms < 1e-6
+    setDiagStage(isAllSilentUplink ? 'aec-skip-silent' : 'aec-process') // 【心跳埋点·长期保留】
+    const cleanChunk = (this.aecActive && !isAllSilentUplink) ? this.aec.process(chunk) : chunk
+    if (isAllSilentUplink) {
+      silentAecSkipped += 1
+      if (silentAecSkipped % 500 === 0) {
+        bargeDiag(`AEC-SKIP-SILENT count=${silentAecSkipped} pb=true rms=${frameRms.toFixed(4)}`)
+      }
+    }
+    setDiagStage('vad-push') // 【心跳埋点·长期保留】
     // VAD/ASR 用消除回声后的帧，与思考/空闲期同一套门槛，不加 strict。
     const vad = this.vad.push(cleanChunk)
+    setDiagStage('frame-done') // 【心跳埋点·长期保留】
     // barge-in duck：播报期能量超过阈值（真人开口，非 TTS 底噪）就压低 TTS。
     // 不再依赖 vad.started——真人说话帧断续时 VAD 连续 2 帧门槛满足不了，started 几乎不触发。
     this.updateDuck(vad.voiced, frameRms > 0.02)
@@ -1229,7 +1260,7 @@ export class VoiceSessionService {
         if (ttsStarted || directHandled) {
           this.tightenPlaybackTimeout()
           await playback
-        } else this.cancelPlaybackWait()
+        } else this.cancelPlaybackWait('turn-no-tts')
         if (this.turn !== turn || this.cancelled) break
         // 一句播完后的 skill 兜底钩子（preference skill 在这里兜底追问「要不要记」；
         // 主路径是同链追问 onAgentReply，这里 asked 已 true 时自然 no-op）。
@@ -1268,9 +1299,14 @@ export class VoiceSessionService {
 
   /** 先建好「等播完」的 Promise，再开始下发，避免回执早于等待而丢失。 */
   private armPlaybackWait(): Promise<void> {
-    this.cancelPlaybackWait()
+    this.cancelPlaybackWait('arm-new-window')
+    // 新播放窗口：重置 tts.idle 幂等标志（每句各自收尾一次）
+    this.ttsIdleSentForTurn = false
     return new Promise<void>((resolve) => {
-      const done = () => {
+      const done = (fallback: boolean) => {
+        // 【关键日志·长期保留】播放等待处结：fallback=true 表示 timer 自然到期（回执丢了），
+        // false 表示回执到达/主动取消。必须能区分，禁止定位后删除。
+        bargeDiag(`PB-WAIT-DONE fallback=${fallback} turn=${this.turn} downlink=${this.downlinkBytes}`)
         if (this.playbackTimer) clearTimeout(this.playbackTimer)
         this.playbackTimer = null
         this.playbackResolve = null
@@ -1281,12 +1317,15 @@ export class VoiceSessionService {
           this.duckReleaseTimer = null
         }
         this.setDuck(false)
+        // 计时器自然到期（回执可能丢失）：补发一次 tts.idle，避免前端卡「正在播报」直到 watchdog。
+        // 原生回执正常到达时走不到这（timer 已被 resolvePlayback 清掉），对 Android 零影响。
+        if (fallback) this.emitTtsIdle('playback-timeout')
         resolve()
       }
       this.playbackResolve = done
       // 用固定上限兜底，客户端没回执也不会把队列卡死；
       // 下发完音频后会按实际时长收紧。
-      this.playbackTimer = setTimeout(done, 30_000)
+      this.playbackTimer = setTimeout(() => done(true), 30_000)
     })
   }
 
@@ -1302,8 +1341,17 @@ export class VoiceSessionService {
       this.playbackTimer = null
       this.playbackResolve = null
       this.setDuck(false)
-      done()
+      // 长播报整轮兜底计时器到期：回执大概率丢了，补发 tts.idle（幂等）
+      done(true)
     }, ms)
+  }
+
+  /** 按本窗口已下发的音频字节估算播完时长（24kHz/16bit/mono=48000 字节/秒=48 字节/ms）。
+   *  随 tts.end 下发给客户端设「精确收尾 timer」，专治 iOS 网关 DATA_STALL 时 tts.idle
+   *  下发不出来、客户端干等 60s watchdog 导致「唤醒后只能聊一次」。tts.idle 正常到达
+   *  客户端会清掉该 timer，故对 Android（回执正常）零影响。留 1.5s 余量覆盖句尾。 */
+  private estimatedSpeechMs(): number {
+    return Math.round((this.downlinkBytes / 48) + 1500)
   }
 
   /** 音频下发完后按实际时长收紧超时，避免客户端断线时白等 30 秒。 */
@@ -1313,22 +1361,51 @@ export class VoiceSessionService {
     if (this.playbackTimer) clearTimeout(this.playbackTimer)
     // 24kHz/16bit/mono = 48000 字节/秒，再留 1.5 秒余量
     const estimatedMs = (this.downlinkBytes / 48000) * 1000 + 1500
-    this.playbackTimer = setTimeout(resolve, Math.max(2000, estimatedMs))
+    const waitMs = Math.max(2000, estimatedMs)
+    bargeDiag(`PB-WAIT-ARM turn=${this.turn} downlink=${this.downlinkBytes} estimateMs=${waitMs}`)
+    // 这是最准的「应该已播完」时刻：回执到这里还没来基本可判定丢失，补发 tts.idle（幂等）。
+    // Android 回执远早于此时到达、timer 已被清，走不到这里。
+    this.playbackTimer = setTimeout(() => resolve(true), waitMs)
   }
 
-  private cancelPlaybackWait(): void {
+  private cancelPlaybackWait(source = '?'): void {
+    // 【关键日志·长期保留】记录谁清掉了 playback 兜底 timer。iOS 真机曾出现
+    // 25s playback-timeout 兜底未触发、回执晚 212s，怀疑 timer 被某条路径 clear。
+    // 只有看到这条日志才知道是哪个调用点清的，禁止定位后删除。
+    bargeDiag(`PB-TIMER-CLEAR cancel source=${source} hadTimer=${!!this.playbackTimer} turn=${this.turn}`)
     if (this.playbackTimer) clearTimeout(this.playbackTimer)
     this.playbackTimer = null
     // 让正在 await 的链立刻解除阻塞，链随后会检查 cancelled 自行退出
-    this.playbackResolve?.()
+    // 传 false：主动取消绝非「播完」，不能补发 tts.idle
+    this.playbackResolve?.(false)
     this.playbackResolve = null
   }
 
   // 【2026-11-22】原 scheduleAuthoritativeTtsIdle 已删除：tts.idle 统一由 playback_done 发，
   // 覆盖所有播报路径（runAgent + speakReply 直出），不再用只覆盖 runAgent 的定时器。
 
-  private resolvePlayback(): void {
-    this.playbackResolve?.()
+  private resolvePlayback(source = '?'): void {
+    // 【关键日志·长期保留】记录谁解除了播放等待。回执到达、TTS 失败、打断都会走这里，
+    // done(false) 内部会清 timer；必须能追溯，禁止定位后删除。
+    bargeDiag(`PB-TIMER-CLEAR resolve source=${source} hasResolve=${!!this.playbackResolve} turn=${this.turn}`)
+    // 传 false：这是「回执到了」触发的解除等待，tts.idle 由调用方走 emitTtsIdle 统一发。
+    // TTS 失败路径也调它解除等待，那些路径本就不该发 tts.idle。
+    this.playbackResolve?.(false)
+  }
+
+  /**
+   * 幂等下发 tts.idle：一个播放窗口（armPlaybackWait 之间）只发一次。
+   * 两个出口共用：原生 playback_done 回执（pcm-done）+ 播放计时器到期兜底（playback-timeout）。
+   * Android 回执正常时走 pcm-done 置位，兜底计时器已被 clear、永不触发——行为与改动前一致。
+   */
+  private emitTtsIdle(source: string): void {
+    if (this.ttsIdleSentForTurn) {
+      bargeDiag(`TTS-IDLE SKIP already-sent source=${source}`)
+      return
+    }
+    this.ttsIdleSentForTurn = true
+    bargeDiag(`TTS-IDLE SEND source=${source} pb=${this.playbackPending}`)
+    this.deps.send({ type: 'tts.idle' })
   }
 
   /**
@@ -1491,7 +1568,10 @@ export class VoiceSessionService {
       this.ttsDispatching = false
       if (ttsStarted && !stale()) {
         this.speaking = false
-        this.deps.send({ type: 'tts.end' })
+        // 所有批次音频已下发完毕、进入「等原生播空回执」阶段；downlinkBytes 用于估算应播完时刻。
+        // 若之后既无 PB-DONE、也无 playback-timeout 兜底日志，说明 merge 卡在这之后。
+        bargeDiag(`TTS-ALL-SENT turn=${this.turn} downlink=${this.downlinkBytes} -> await playback_done`)
+        this.deps.send({ type: 'tts.end', durationMs: this.estimatedSpeechMs() })
         // tts.idle 由 playback_done（原生播空回执）统一发，覆盖所有播报路径。
       } else if (!ttsStarted && !stale()) {
         // 整句都不可念（大模型泄漏的控制符 / 空回复 / 只剩符号）：绝不当作正文念出来，
@@ -1532,6 +1612,7 @@ export class VoiceSessionService {
    */
   private async speakSentence(sentence: string, turn: number): Promise<void> {
     if (this.turn !== turn || this.cancelled || this.skipRequested) return
+    setDiagStage('tts-synth') // 【心跳埋点·长期保留】
     this.spoken.push(sentence)
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
@@ -1549,7 +1630,7 @@ export class VoiceSessionService {
       this.deps.send({ type: 'client.cue', cue: 'tts-error' })
       // 立即兑现播放等待：不让队列等 30s 超时才推进下一条（用户要求出错不卡队列）
       this.playbackPending = false
-      this.resolvePlayback()
+      this.resolvePlayback('tts-synth-threw')
       return
     }
     let gotAnyFrame = false
@@ -1570,13 +1651,14 @@ export class VoiceSessionService {
             bargeDiag(`TTS-FAIL gap timeout no frame, text="${sentence}"`)
             this.deps.send({ type: 'client.cue', cue: 'tts-error' })
             this.playbackPending = false
-            this.resolvePlayback()
+            this.resolvePlayback('tts-gap-timeout')
           }
           break
         }
         const frame = next.value
         gotAnyFrame = true
         if (this.turn !== turn || this.cancelled || this.skipRequested) return
+        setDiagStage('tts-send-audio') // 【心跳埋点·长期保留】帧下发段
         this.downlinkBytes += frame.byteLength
         this.echo.onDownlink()
         // 每下发一帧就把回声保护窗口往后挪：窗口始终盖住「最后一帧之后的一小段余音」
@@ -1593,7 +1675,7 @@ export class VoiceSessionService {
       this.deps.send({ type: 'client.cue', cue: 'tts-error' })
       // 立即兑现播放等待，队列不等超时
       this.playbackPending = false
-      this.resolvePlayback()
+      this.resolvePlayback('tts-iter-threw')
     } finally {
       void iterator.return?.()
     }
@@ -1624,12 +1706,13 @@ export class VoiceSessionService {
     if (!report.llm.reachable) down.push('llm-down')
     if (!report.network.reachable) down.push('network-down')
     // 临时排查埋点：把探测结果落文件，真机上可经 run-as 读取，定位「发没发 cue」
+    // 【异步】同步写改为异步，避免阻塞事件循环
     try {
-      const { appendFileSync } = await import('node:fs')
       const home = process.env.GATEWAY_HOME ?? '.'
-      appendFileSync(
+      appendFile(
         `${home}/gateway-debug.log`,
         `${new Date().toISOString()} probe down=${JSON.stringify(down)} report=${JSON.stringify(report)}\n`,
+        () => {},
       )
     } catch {
       // 调试文件写失败不影响主流程
@@ -1706,7 +1789,7 @@ export class VoiceSessionService {
     this.echoUntil = 0
     this.queue.length = 0
     this.finalizeChain = Promise.resolve()
-    this.cancelPlaybackWait()
+    this.cancelPlaybackWait('reset')
     this.echo.release()
     this.syncDuplex()
     this.asr.reset()
@@ -1806,7 +1889,7 @@ export class VoiceSessionService {
     // 为保持一致，正在等你「选第几首」的候选列表也应保留，否则重唤醒会丢掉选歌状态。
     // 候选列表只在新会话(start 全新分支)与会话结束(end)时清空。
     this.finalizeChain = Promise.resolve()
-    this.cancelPlaybackWait()
+    this.cancelPlaybackWait('session-cancel')
     if (wasSpeaking) this.deps.send({ type: 'tts.stop' })
     // 手动打断证明是真人，解除回声兜底
     this.echo.release()
@@ -1846,7 +1929,7 @@ export class VoiceSessionService {
     this.echoUntil = 0
     // 解除「等播完」阻塞：runTurn 的 await playback 立即返回，随后检查 turn/cancelled
     // 均未变（不在 break 条件里加 skipRequested），于是继续 shift 队列下一句。
-    this.cancelPlaybackWait()
+    this.cancelPlaybackWait('skip-current')
     if (wasPlaying) this.deps.send({ type: 'tts.stop' })
     // 真人打断，解除回声兜底，恢复全双工拾音，让下一句能被正常识别
     this.echo.release()
@@ -1867,7 +1950,7 @@ export class VoiceSessionService {
     this.queue.length = 0
     this.content.reset('end')
     this.finalizeChain = Promise.resolve()
-    this.cancelPlaybackWait()
+    this.cancelPlaybackWait('session-end')
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
     if (this.sessionRowId) this.deps.data.endSession(this.sessionRowId, Date.now())
     this.asr.reset()
@@ -1890,7 +1973,7 @@ export class VoiceSessionService {
     this.echoUntil = 0
     this.queue.length = 0
     this.finalizeChain = Promise.resolve()
-    this.cancelPlaybackWait()
+    this.cancelPlaybackWait('close')
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
     this.asr.reset()
     this.vad.reset()
