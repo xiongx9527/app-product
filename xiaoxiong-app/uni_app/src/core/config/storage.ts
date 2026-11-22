@@ -24,15 +24,13 @@ const LEGACY_BUILTIN_URL = 'http://127.0.0.1:9529'
 const DEFAULT_VOICE: VoiceServiceConfig = {
   provider: 'builtin',
   builtin: { url: DEFAULT_BUILTIN_URL, apiKey: '', model: '', voice: '', voiceModel: '', asrModel: '', ttsModel: '' },
-  dashscope: { url: '', apiKey: '', model: '', voice: '', voiceModel: '', asrModel: '', ttsModel: '' },
 }
 
-/** 默认语音服务：内置、本地 9529、无需密钥 */
+/** 默认语音服务：内置、公网语音服务、无需密钥 */
 export function createDefaultVoice(): VoiceServiceConfig {
   return {
     provider: DEFAULT_VOICE.provider,
     builtin: { ...DEFAULT_VOICE.builtin },
-    dashscope: { ...DEFAULT_VOICE.dashscope },
   }
 }
 
@@ -190,7 +188,7 @@ function normalizeMcp(raw: unknown): McpConfig {
 
 function normalizeProviderSettings(
   raw: unknown,
-  fallback: { url: string; apiKey: string; model?: string; voice?: string; voiceModel?: string; asrModel?: string; ttsModel?: string }
+  fallback: { url: string; apiKey: string; model?: string; voice?: string; voiceModel?: string; asrModel?: string; ttsModel?: string; think?: boolean }
 ): VoiceProviderSettings {
   const source = isRecord(raw) ? raw : {}
   const url = typeof source.url === 'string' ? source.url.trim() : ''
@@ -200,6 +198,8 @@ function normalizeProviderSettings(
   const voiceModel = typeof source.voiceModel === 'string' ? source.voiceModel.trim() : ''
   const asrModel = typeof source.asrModel === 'string' ? source.asrModel.trim() : ''
   const ttsModel = typeof source.ttsModel === 'string' ? source.ttsModel.trim() : ''
+  // 深度思考开关：缺省 false；旧存档没有该字段时按 fallback（也是 false）处理。
+  const think = typeof source.think === 'boolean' ? source.think : (fallback.think ?? false)
   return {
     url: url || fallback.url,
     apiKey: apiKey || fallback.apiKey,
@@ -208,38 +208,29 @@ function normalizeProviderSettings(
     voiceModel: voiceModel || fallback.voiceModel || '',
     asrModel: asrModel || fallback.asrModel || '',
     ttsModel: ttsModel || fallback.ttsModel || '',
+    think,
   }
 }
 
 /**
- * 归一化语音服务配置：provider 只接受 builtin / dashscope，其余落回 builtin；
- * 两个来源各自独立保存地址与密钥。兼容旧的单份 url/apiKey 存档（迁移进当时选中的来源）。
+ * 归一化语音服务配置：provider 恒为 builtin（百炼来源已下线）。
+ * 兼容旧的单份 url/apiKey 存档（迁移进 builtin）；旧 dashscope 来源配置丢弃。
  */
 function normalizeVoice(raw: unknown): VoiceServiceConfig {
   const source = isRecord(raw) ? raw : {}
-  const provider: VoiceProviderKind =
-    source.provider === 'dashscope' || source.provider === 'builtin'
-      ? (source.provider as VoiceProviderKind)
-      : 'builtin'
-  // 旧格式：直接挂在 voice 上的 url / apiKey，迁移到当前 provider 这一份
+  const provider: VoiceProviderKind = 'builtin'
+  // 旧格式：直接挂在 voice 上的 url / apiKey，迁移到 builtin 这一份。
+  // 旧 dashscope 子配置随 provider 下线不再读取（provider 已下线，符合预期）。
   const legacyUrl = typeof source.url === 'string' ? source.url.trim() : ''
   const legacyApiKey = typeof source.apiKey === 'string' ? source.apiKey : ''
-  const builtin = normalizeProviderSettings(
-    source.builtin,
-    provider === 'builtin'
-      ? { url: legacyUrl || DEFAULT_VOICE.builtin.url, apiKey: legacyApiKey || DEFAULT_VOICE.builtin.apiKey }
-      : { url: DEFAULT_VOICE.builtin.url, apiKey: DEFAULT_VOICE.builtin.apiKey }
-  )
-  const dashscope = normalizeProviderSettings(
-    source.dashscope,
-    provider === 'dashscope'
-      ? { url: legacyUrl || DEFAULT_VOICE.dashscope.url, apiKey: legacyApiKey || DEFAULT_VOICE.dashscope.apiKey }
-      : { url: DEFAULT_VOICE.dashscope.url, apiKey: DEFAULT_VOICE.dashscope.apiKey }
-  )
+  const builtin = normalizeProviderSettings(source.builtin, {
+    url: legacyUrl || DEFAULT_VOICE.builtin.url,
+    apiKey: legacyApiKey || DEFAULT_VOICE.builtin.apiKey,
+  })
   // 存量配置迁移：builtin.url 若仍是出厂旧默认（用户没改过），升级到公网地址。
   // 只精准命中旧默认值，用户自填的其它地址（自建 LAN / 其它服务）一律不动。
   if (builtin.url === LEGACY_BUILTIN_URL) builtin.url = DEFAULT_BUILTIN_URL
-  return { provider, builtin, dashscope }
+  return { provider, builtin }
 }
 
 /**

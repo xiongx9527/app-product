@@ -139,8 +139,7 @@ let onErrorCurrent: (message: string) => void = () => {}
  */
 export function startAppCapture(
   onChunk: (pcm: ArrayBuffer) => void,
-  onError: (message: string) => void,
-  diag?: (message: string) => void
+  onError: (message: string) => void
 ): boolean {
   if (running) return true
   const instance = loadPcmModule()
@@ -167,16 +166,12 @@ export function startAppCapture(
     // 配置原生 PCM 直连网关上报：绕开播报期失效的 weex keepAlive 回调。
     // 失败不影响 startPcm（旧基座无此方法时只走 weex 回调，降级为原状）。
     const did = getDeviceId()
-    diag?.(`configureDirectUpload method=${typeof instance.configureDirectUpload} deviceIdLen=${did.length}`)
     try {
       if (typeof instance.configureDirectUpload === 'function') {
         instance.configureDirectUpload(did)
-        diag?.(`configureDirectUpload called ok`)
-      } else {
-        diag?.(`configureDirectUpload SKIPPED: method missing`)
       }
-    } catch (e) {
-      diag?.(`configureDirectUpload THREW: ${String(e)}`)
+    } catch {
+      // 旧基座无此方法或配置失败：降级走 weex 回调路径，不影响 startPcm。
     }
     instance.startPcm?.({ ...APP_PCM_CONFIG })
     running = true

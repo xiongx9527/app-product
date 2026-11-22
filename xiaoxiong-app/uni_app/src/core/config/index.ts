@@ -58,18 +58,8 @@ export function isPlatformMode(): boolean {
 }
 
 /**
- * 切换语音服务来源（内置 / DashScope）。只改 provider，两套来源的地址、密钥各自保留，
- * 不会互相清掉——切回内置时它之前填过的地址还在，切到 DashScope 也是。
- */
-export function setVoiceProvider(provider: VoiceProviderKind): void {
-  appConfig.voice.provider = provider
-}
-
-/**
- * 取当前来源这一份配置，压平成网关识别的扁平结构（provider / url / apiKey / model / voice）。
- * 各来源独立保存，这里只取「当前选中的那一份」；model / voice 缺省时留空，由网关用来源默认值。
- * voice 与它的所属模型（voiceModel）一起经 params 下发，网关据 params.model 决定真正请求的
- * TTS 模型——模型不再写死，从根本上避免「v1 音色名 + v2 模型」这类 418（见 ttsVoices.ts）。
+ * 取当前语音配置，压平成网关识别的扁平结构（provider / url / apiKey / model / voice）。
+ * 统一走内置来源；model / voice 缺省时留空，由网关用来源默认值。
  */
 export function activeVoiceConfig(): {
   provider: VoiceProviderKind
@@ -80,22 +70,14 @@ export function activeVoiceConfig(): {
   ttsModel: string
   voice: string
   /** 厂商级通用参数：language 来自通用设置的界面语言（zh-CN→zh / en-US→en），
-   *  走 params 下发，网关 asr/http.ts 从 params.language 读取（默认 zh）。 */
-  params?: { voice?: string; model?: string; language?: string }
+   *  走 params 下发，网关 asr/http.ts 从 params.language 读取（默认 zh）。
+   *  think 为 LLM 深度思考开关，网关透传到 LLM 请求体由语音服务按厂商翻译。 */
+  params?: { voice?: string; language?: string; think?: boolean }
 } {
-  const v = appConfig.voice
-  const active = v.provider === 'dashscope' ? v.dashscope : v.builtin
-  // 旧存档里 voice 有值但没记 voiceModel（新加字段）：那个音色来自旧版目录（v1/v2 音色名，
-  // 如 longxiang），与当前 cosyvoice-v3 模型不兼容，下发会被云端判 418 Invalid voice、整句静音。
-  // 这种脏配置不下发音色，让网关用来源默认音色；设置页重新拉目录时会自动补上合法音色与所属模型。
-  const staleDashscopeVoice =
-    v.provider === 'dashscope' && !!active.voice && !active.voiceModel
-  const voice = staleDashscopeVoice ? '' : (active.voice ?? '')
-  // 所属模型只随 DashScope 的 params 下发：只有百炼 TTS 用它决定 CosyVoice 版本，
-  // 内置（edge-tts）模型固定、且不希望把它错当成 ASR 的推理 model 字段。
-  const voiceModel = v.provider === 'dashscope' ? active.voiceModel || undefined : undefined
+  const active = appConfig.voice.builtin
+  const voice = active.voice ?? ''
   return {
-    provider: v.provider,
+    provider: appConfig.voice.provider,
     url: active.url,
     apiKey: active.apiKey,
     model: active.model ?? '',
@@ -107,13 +89,17 @@ export function activeVoiceConfig(): {
     // 语言走通用参数 params.language 下发：网关 asr/http.ts 从 params.language 读取。
     // 没有音色时也下发 params（只带 language），保证 ASR 始终拿到通用设置里的语言。
     params: {
-      ...(voice ? { voice, model: voiceModel } : {}),
+      ...(voice ? { voice } : {}),
       language: appConfig.language.toLowerCase().split(/[-_]/)[0] || 'zh',
+      // 深度思考开关随 params 下发：网关 sharedParams 只剥 TTS 专用字段（voice/model），
+      // think 会进 llm.params → presetGenParams → 请求 body → 9529 翻译成厂商原生思考参数。
+      // 只有开启时才带该字段，关闭/缺省不带，沿用上游默认行为（避免发出上游不认的字段）。
+      ...(active.think ? { think: true } : {}),
     },
   }
 }
 
-/** 语音服务恢复默认（内置 / 本地 9529 / 无密钥） */
+/** 语音服务恢复默认（内置 / 公网语音服务 / 无密钥） */
 export function resetVoice(): void {
   appConfig.voice = createDefaultVoice()
 }

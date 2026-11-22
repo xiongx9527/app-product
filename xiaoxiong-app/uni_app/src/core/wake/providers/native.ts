@@ -110,7 +110,13 @@ export function createNativeWakeProvider(
       if (!instance?.onReady) return
       try {
         instance.onReady((payload) => {
-          const ready = typeof payload === 'boolean' ? payload : !!payload?.ready
+          // 原生回调的 ready 经 DCloud/weex 桥可能是 boolean、number(1/0) 或 {ready}：
+          // iOS @YES/@NO 桥过来常是 number 1/0，旧逻辑只认 boolean 会把 1 误判成 false →
+          // wakeReady 卡在 failed、「已就绪」提示不播。三种格式都兼容。
+          let ready: boolean
+          if (typeof payload === 'boolean') ready = payload
+          else if (typeof payload === 'number') ready = payload !== 0
+          else ready = !!(payload as { ready?: boolean } | null)?.ready
           callback(ready)
         })
       } catch (e) { console.warn('[wake] onReady 绑定失败', e) }

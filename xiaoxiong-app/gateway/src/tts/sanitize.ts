@@ -44,5 +44,13 @@ export function sanitizeForSpeech(text: string): string {
   out = speakable
 
   // 连续空白收敛成一个空格，避免 TTS 把一大段空白念成异常停顿
-  return out.replace(/\s+/g, ' ').trim()
+  out = out.replace(/\s+/g, ' ').trim()
+
+  // 【2026-11-21 真机铁证】流式分句可能切出孤立标点（如单独一个「；」），白名单放行后
+  // clean="；" 非空 → 送 edge-tts 合成失败（iter threw）→ 误报「这段没能播报」。
+  // 若清洗后不含任何文字/字母/数字（只剩标点），返回空让 enqueue 跳过，不送 TTS。
+  if (!/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{L}\p{N}]/u.test(out)) {
+    return ''
+  }
+  return out
 }

@@ -413,9 +413,13 @@ export class VoiceSessionService {
         this.end()
         break
       case 'session.playback_done':
+        // 【2026-11-22 彻底修复】tts.idle 的唯一权威出口 = 原生播空回执。
+        // 之前改成「只在 runAgent 里用定时器发」，结果 speakReply 直出路径（天气/百科/音乐确认句）
+        // 根本走不到那个定时器 → 前端收不到 tts.idle → 只能干等 60s 看门狗 → 播完还卡播报几十秒。
+        // 攒段合成后音频是连续一段、无句间停顿，原生播空检测不会再误判，故 playback_done 可靠。
+        // 所有播报都经过这里，客户端播空即收尾，phase 正确退回。
+        bargeDiag(`PB-DONE recv pb=${this.playbackPending} queue=${this.queue.length} speaking=${this.speaking} -> tts.idle`)
         this.resolvePlayback()
-        // 原生直连播空回执：下发 tts.idle 让客户端据此收尾（替代播报期不可靠的 weex idle 回调，
-        // 铁证：客户端只能靠 12s 兜底）。onPlaybackSettled 幂等，重复触发无害。
         this.deps.send({ type: 'tts.idle' })
         break
       case 'session.diag':
@@ -1161,7 +1165,7 @@ export class VoiceSessionService {
     bargeDiag(`QUEUE-KICK runTurn text="${next}" remain=${this.queue.length}`)
     // 这条路径不经过 runTurn 的 while 顶部（那句 asr.final 在 runTurn 外部），
     // 这里补发让「你说」卡片切到这句插话，与正常 shift 路径一致。
-    this.deps.send({ type: 'asr.final', text: next, queueRemaining: this.queue.length })
+    this.deps.send({ type: 'asr.final', text: next, queueRemaining: this.queue.length, fromQueue: true })
     void this.runTurn(next)
   }
 
@@ -1227,7 +1231,7 @@ export class VoiceSessionService {
         const next = this.queue.shift()
         if (!next) break
         // 让客户端把界面切到这句，并同步权威剩余数（客户端不靠 ±1 猜测）
-        this.deps.send({ type: 'asr.final', text: next, queueRemaining: this.queue.length })
+        this.deps.send({ type: 'asr.final', text: next, queueRemaining: this.queue.length, fromQueue: true })
         current = next
       }
     } finally {
@@ -1241,6 +1245,10 @@ export class VoiceSessionService {
       // 两路不会重复消费、也不会把 shift 出的句子丢给一个正在跑的 runTurn。
       if (this.active && !this.cancelled && this.queue.length > 0) {
         setTimeout(() => this.kickQueueWhenIdle(), 0)
+      } else if (this.active && !this.cancelled && this.queue.length === 0) {
+        // 队列已全部消费完：通知客户端清掉排队角标。否则插话进队列后、最后一句播完，
+        // 前端 queuePending 卡在最后值不再归零（「队列没出」真机现象）。
+        this.deps.send({ type: 'queue.drained' })
       }
     }
   }
@@ -1287,6 +1295,9 @@ export class VoiceSessionService {
     this.playbackResolve = null
   }
 
+  // 【2026-11-22】原 scheduleAuthoritativeTtsIdle 已删除：tts.idle 统一由 playback_done 发，
+  // 覆盖所有播报路径（runAgent + speakReply 直出），不再用只覆盖 runAgent 的定时器。
+
   private resolvePlayback(): void {
     this.playbackResolve?.()
   }
@@ -1311,18 +1322,28 @@ export class VoiceSessionService {
     const MAX_LLM_SPOKEN_CHARS = 100
     let emittedChars = 0
     let lengthCapped = false
+    // 【2026-11-22 重构：攒段合成】原先按标点切一句就串行 synthesize 一次（多句回答=多次 HTTP，
+    // 真机"乔丹/科比十大瞬间"10句要 40-70 秒、句间停顿还触发原生播空误判）。改为先把句子攒起来，
+    // LLM 输出结束后合并成一段文本一次 synthesize（Mac 离线实测 21s→11.6s、无句间停顿）。
+    // llm.delta 仍逐句发界面展示，只是 TTS 不再逐句请求。
+    const pendingSentences: string[] = []
     const enqueue = (sentence: string) => {
       // 特殊符号/markdown/emoji 只留在界面，不送进 TTS 念出来
       const clean = sanitizeForSpeech(sentence)
       if (!clean) return
-      if (!ttsStarted) {
-        ttsStarted = true
-        this.speaking = true
-        // 从宣布播报起就进入「播放中」窗口，直到客户端回执播完
-        this.playbackPending = true
-        this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
-      }
-      ttsChain = ttsChain.then(() => this.speakSentence(clean, turn))
+      pendingSentences.push(clean)
+      bargeDiag(`TTS-ENQ(攒段) len=${clean.length} text="${clean.slice(0, 24)}"`)
+    }
+    /** LLM 输出结束后，把攒下的句子合并成一段，一次合成下发。 */
+    const flushTts = (): void => {
+      if (!pendingSentences.length) return
+      const merged = pendingSentences.join('')
+      ttsStarted = true
+      this.speaking = true
+      this.playbackPending = true
+      this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
+      bargeDiag(`TTS-MERGED sentences=${pendingSentences.length} len=${merged.length}`)
+      ttsChain = this.speakSentence(merged, turn)
     }
     // 超时看门狗：上游 LLM 卡住/冷启动慢时，主动舍弃本轮流式增量、断开下行播放，
     // 立即播友好兜底，不让用户干等、也不暴露技术故障（用户：「不要让用户觉得好慢」）。
@@ -1386,10 +1407,13 @@ export class VoiceSessionService {
       }
       this.deps.send({ type: 'llm.done' })
       this.deps.data.insertCommandLog(this.deviceId, text, full.slice(0, 200))
+      // 攒段合成：LLM 全部输出后一次性合成下发（替代逐句串行）
+      flushTts()
       await ttsChain
       if (ttsStarted && !stale()) {
         this.speaking = false
         this.deps.send({ type: 'tts.end' })
+        // tts.idle 由 playback_done（原生播空回执）统一发，覆盖所有播报路径。
       } else if (!ttsStarted && !stale()) {
         // 整句都不可念（大模型泄漏的控制符 / 空回复 / 只剩符号）：绝不当作正文念出来，
         // 给一句兜底口播，让人能自然重说一遍。兜底句有 TTS 下发，返回 true 让 runTurn
@@ -1431,7 +1455,10 @@ export class VoiceSessionService {
     this.spoken.push(sentence)
     // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
-    const gapMs = this.deps.ttsFrameGapMs ?? 15_000
+    // gapMs 必须 > TTS 单次合成超时（tts/http.ts 的 TTS_TIMEOUT_MS=20s），否则长文本合成
+    // 还没返回，gap 就先判超时、误报「这段没能播报」。真机 100+ 字文本合成 7.35s，
+    // 设 30s 给足余量（含偶发抖动重试）。
+    const gapMs = this.deps.ttsFrameGapMs ?? 30_000
     let iterator: AsyncIterator<Uint8Array>
     try {
       iterator = this.tts.synthesize(sentence)[Symbol.asyncIterator]()

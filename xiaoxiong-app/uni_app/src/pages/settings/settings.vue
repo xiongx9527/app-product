@@ -9,9 +9,7 @@ import {
   persistConfig,
   resetPlayback,
   resetVoice,
-  setVoiceProvider,
 } from '@/core/config'
-import { DEFAULT_DASHSCOPE_URL } from '@/core/config/constants'
 import { t } from '@/core/i18n'
 import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
@@ -187,13 +185,13 @@ function openMcpServers(): void {
   uni.navigateTo({ url: '/pages/mcpservers/mcpservers' })
 }
 
-/** LLM 模型下拉：选项来自来源配置（内置=已配置上游模型；百炼=带 key 拉真实目录）。 */
+/** LLM 模型下拉：选项来自内置来源已配置的上游模型。 */
 const llmModels = ref<{ value: string; label: string }[]>([])
 const llmModelHint = ref('')
 
+/** 当前语音服务配置（恒为内置来源）。 */
 function currentProviderSettings() {
-  const v = appConfig.voice
-  return v.provider === 'dashscope' ? v.dashscope : v.builtin
+  return appConfig.voice.builtin
 }
 
 async function loadLlmModels(): Promise<void> {
@@ -201,35 +199,19 @@ async function loadLlmModels(): Promise<void> {
   try {
     // 用纯字符串拼接，不依赖 URLSearchParams：App 逻辑层 JS 引擎对 Web API 支持不齐，
     // 早期在 try 外抛错会让整个 load 静默失败、数组停在 [] → 下拉 forever disabled。
-    const provider = appConfig.voice.provider
-    const settings = currentProviderSettings()
-    const parts = [`provider=${encodeURIComponent(provider)}`]
-    if (provider !== 'builtin') {
-      if (settings.url) parts.push(`url=${encodeURIComponent(settings.url)}`)
-      if (settings.apiKey) parts.push(`apiKey=${encodeURIComponent(settings.apiKey)}`)
-    }
-    const url = `${resolveGatewayHttpBase()}/api/admin/llm-models?${parts.join('&')}`
+    const url = `${resolveGatewayHttpBase()}/api/admin/llm-models?provider=builtin`
     const res = await secureRequest({ url, method: 'GET' })
     const data = res.data as { models?: string[] } | null
     if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.models) && data.models.length) {
-      const withDefault = provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
-      llmModels.value = [...withDefault, ...data.models.map((m) => ({ value: m, label: m }))]
+      llmModels.value = [USE_SOURCE_DEFAULT.value, ...data.models.map((m) => ({ value: m, label: m }))]
     } else {
-      llmModels.value = provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
+      llmModels.value = [USE_SOURCE_DEFAULT.value]
       llmModelHint.value = t('settings.voice.llmModelEmpty')
     }
   } catch (e) {
-    llmModels.value = appConfig.voice.provider === 'builtin' ? [USE_SOURCE_DEFAULT.value] : []
+    llmModels.value = [USE_SOURCE_DEFAULT.value]
     llmModelHint.value = t('settings.voice.llmModelFailed')
   }
-}
-
-function onSelectProvider(p: 'builtin' | 'dashscope'): void {
-  setVoiceProvider(p)
-  void loadLlmModels()
-  void loadTtsVoices()
-  void loadAsrModels()
-  void loadTtsModels()
 }
 
 /** ASR / TTS 模型下拉：「沿用来源默认」空选项 —— 空串表示跟随来源默认模型（推荐）。 */
@@ -244,13 +226,7 @@ async function loadAsrModels(): Promise<void> {
   try {
     // 前端只与网关通信：模型目录由网关持有来源地址并中转，前端只传 provider + capability。
     // 纯字符串拼接，不依赖 URLSearchParams（App 逻辑层 Web API 支持不齐）。
-    const provider = appConfig.voice.provider
-    const settings = currentProviderSettings()
-    const parts = [`provider=${encodeURIComponent(provider)}`, 'capability=asr']
-    if (provider !== 'builtin') {
-      if (settings.url) parts.push(`url=${encodeURIComponent(settings.url)}`)
-      if (settings.apiKey) parts.push(`apiKey=${encodeURIComponent(settings.apiKey)}`)
-    }
+    const parts = ['provider=builtin', 'capability=asr']
     const res = await secureRequest({
       url: `${resolveGatewayHttpBase()}/api/admin/voice-models?${parts.join('&')}`,
       method: 'GET',
@@ -278,13 +254,7 @@ const ttsModelHint = ref('')
 async function loadTtsModels(): Promise<void> {
   ttsModelHint.value = ''
   try {
-    const provider = appConfig.voice.provider
-    const settings = currentProviderSettings()
-    const parts = [`provider=${encodeURIComponent(provider)}`, 'capability=tts']
-    if (provider !== 'builtin') {
-      if (settings.url) parts.push(`url=${encodeURIComponent(settings.url)}`)
-      if (settings.apiKey) parts.push(`apiKey=${encodeURIComponent(settings.apiKey)}`)
-    }
+    const parts = ['provider=builtin', 'capability=tts']
     const res = await secureRequest({
       url: `${resolveGatewayHttpBase()}/api/admin/voice-models?${parts.join('&')}`,
       method: 'GET',
@@ -304,16 +274,11 @@ async function loadTtsModels(): Promise<void> {
   }
 }
 
-/** 一键检测：按当前选中的来源（内置 / DashScope）探测 LLM / ASR / TTS / 外网是否正常。
+/** 一键检测：探测内置来源的 LLM / ASR / TTS / 外网是否正常。
  *  结果反映未保存的编辑（url / apiKey 直接读 appConfig），可先测后存。 */
 const detecting = ref(false)
 const detectItems = ref<HealthItem[] | null>(null)
 const detectError = ref(false)
-const detectProviderName = computed(() =>
-  appConfig.voice.provider === 'dashscope'
-    ? t('settings.voice.dashscope')
-    : t('settings.voice.builtin'),
-)
 
 async function runDetection(): Promise<void> {
   if (detecting.value) return
@@ -332,7 +297,7 @@ async function runDetection(): Promise<void> {
   }
 }
 
-/** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用；百炼=官方 CosyVoice 标准），不实时拉取以便国际化。
+/** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用），不实时拉取以便国际化。
  *  每条带 model（所属模型），渲染成下拉里的次要列，并随选择下发网关决定真正请求的 TTS 模型。 */
 const ttsVoices = ref<{ value: string; label: string; subtitle?: string; desc?: string }[]>([])
 /** value -> 所属模型 的映射，选中时把对应模型写进配置，随 params.model 下发。 */
@@ -343,12 +308,8 @@ async function loadTtsVoices(): Promise<void> {
   ttsVoiceHint.value = ''
   voiceModelMap.clear()
   try {
-    const provider = appConfig.voice.provider
-    const settings = currentProviderSettings()
     // 纯字符串拼接，不依赖 URLSearchParams（App 逻辑层 Web API 支持不齐）。
-    const parts = [`provider=${encodeURIComponent(provider)}`, `lang=${encodeURIComponent(appConfig.language)}`]
-    // 内置来源不传密钥（由网关持有）；仅非内置才带当前选中的来源 api-key。
-    if (provider !== 'builtin' && settings.apiKey) parts.push(`apiKey=${encodeURIComponent(settings.apiKey)}`)
+    const parts = [`provider=builtin`, `lang=${encodeURIComponent(appConfig.language)}`]
     const res = await secureRequest({
       url: `${resolveGatewayHttpBase()}/api/admin/tts-voices?${parts.join('&')}`,
       method: 'GET',
@@ -372,7 +333,7 @@ async function loadTtsVoices(): Promise<void> {
       ttsVoices.value = data.voices.map((m) => {
         const id = m.id ?? m.value ?? ''
         voiceModelMap.set(id, m.model ?? '')
-        // 内置：主标签即 id，desc_zh / desc_en 作为描述副行展示；百炼：沿用名称标签，无独立描述。
+        // 主标签即 id/名称，desc_zh / desc_en 作为描述副行展示。
         const label = m.label ?? id
         const desc = en ? (m.descEn ?? '') : (m.descZh ?? '')
         return { value: id, label, subtitle: m.model || undefined, desc: desc || undefined }
@@ -418,10 +379,6 @@ onMounted(() => {
   // 播放源目前仅百度一种（隐藏选择器），旧配置若存过其它源（netease/tencent/kugou）静默回退到百度。
   if (appConfig.playback.source !== 'baidu') {
     appConfig.playback.source = 'baidu'
-  }
-  // 语音服务来源：内置 / DashScope 都是合法选择（页面已放开选择器），只把非法值兜底回内置。
-  if (appConfig.voice.provider !== 'builtin' && appConfig.voice.provider !== 'dashscope') {
-    appConfig.voice.provider = 'builtin'
   }
 })
 
@@ -530,6 +487,18 @@ watch(
           :searchable="llmModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.builtin.model = v)"
         />
+        <!-- 深度思考（推理链）：仅推理模型有效，开了随请求下发 think=true 由语音服务翻译 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.voice.think') }}</text>
+            <text class="hint">{{ t('settings.voice.thinkHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.voice.builtin.think ?? false"
+            color="#6c8cff"
+            @change="(e: any) => (appConfig.voice.builtin.think = e.detail.value)"
+          />
+        </view>
         <text class="row-label">{{ t('settings.voice.asrModel') }}</text>
         <SelectRow
           :options="asrModels"
@@ -556,59 +525,6 @@ watch(
         />
       </view>
 
-      <!-- 百炼：地址与密钥都可改；默认指向云端，也可填业务空间专属域名 -->
-      <template v-else>
-        <view class="row column">
-          <text class="row-label">{{ t('settings.voice.url') }}</text>
-          <input
-            class="input"
-            v-model="appConfig.voice.dashscope.url"
-            :placeholder="DEFAULT_DASHSCOPE_URL"
-          />
-          <text class="hint">{{ t('settings.voice.urlDashscopeHint') }}</text>
-        </view>
-        <view class="row column">
-          <text class="row-label">{{ t('settings.voice.apiKey') }}</text>
-          <input
-            class="input"
-            :password="true"
-            v-model="appConfig.voice.dashscope.apiKey"
-          />
-        </view>
-        <text class="row-label">{{ t('settings.voice.llmModel') }}</text>
-        <SelectRow
-          :options="llmModels"
-          :model-value="appConfig.voice.dashscope.model ?? ''"
-          :disabled="llmModels.length === 0"
-          :searchable="llmModels.length > 1"
-          @update:model-value="(v: string) => (appConfig.voice.dashscope.model = v)"
-        />
-        <text class="row-label">{{ t('settings.voice.asrModel') }}</text>
-        <SelectRow
-          :options="asrModels"
-          :model-value="appConfig.voice.dashscope.asrModel ?? ''"
-          :disabled="asrModels.length === 0"
-          :searchable="asrModels.length > 1"
-          @update:model-value="(v: string) => (appConfig.voice.dashscope.asrModel = v)"
-        />
-        <text class="row-label">{{ t('settings.voice.ttsModel') }}</text>
-        <SelectRow
-          :options="ttsModels"
-          :model-value="appConfig.voice.dashscope.ttsModel ?? ''"
-          :disabled="ttsModels.length === 0"
-          :searchable="ttsModels.length > 1"
-          @update:model-value="(v: string) => (appConfig.voice.dashscope.ttsModel = v)"
-        />
-        <text class="row-label">{{ t('settings.voice.ttsVoice') }}</text>
-        <SelectRow
-          :options="ttsVoices"
-          :model-value="appConfig.voice.dashscope.voice ?? ''"
-          :disabled="ttsVoices.length === 0"
-          :searchable="ttsVoices.length > 0"
-          @update:model-value="onSelectVoice"
-        />
-      </template>
-
       <!-- 恢复默认 + 一键检测同一行：检测按钮在最右侧 -->
       <view class="voice-actions">
         <button class="reset" @tap="onResetVoice">{{ t('settings.reset') }}</button>
@@ -616,7 +532,7 @@ watch(
           {{ detecting ? t('settings.voice.detecting') : t('settings.voice.detect') }}
         </button>
       </view>
-      <text class="hint">{{ t('settings.voice.detectHint', { provider: detectProviderName }) }}</text>
+      <text class="hint">{{ t('settings.voice.detectHint') }}</text>
       <text v-if="detectError" class="detect-error">{{ t('settings.voice.detectError') }}</text>
       <view v-if="detectItems" class="detect-result">
         <view v-for="item in detectItems" :key="item.key" class="detect-row">
@@ -929,54 +845,6 @@ watch(
 
 .group-chevron.open {
   transform: rotate(45deg);
-}
-
-.providers {
-  display: flex;
-  gap: 10px;
-}
-
-.provider {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 11px 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.provider.active {
-  border-color: rgba(var(--accent-rgb), 0.6);
-  background: rgba(var(--accent-rgb), 0.12);
-}
-
-.radio {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2px solid #6f7691;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.provider.active .radio {
-  border-color: var(--accent);
-}
-
-.radio-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.provider-name {
-  font-size: 13px;
-  color: #e8eaf6;
 }
 
 /* 恢复默认在左、一键检测在右，两端对齐 */

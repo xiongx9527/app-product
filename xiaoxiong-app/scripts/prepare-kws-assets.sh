@@ -10,7 +10,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENDOR="$ROOT/native/kws/vendor"
-MODEL="sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+MODEL="sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20"
 AAR="sherpa-onnx-2.0.2.aar"
 
 # 1) 缺依赖则下载（AAR + 模型）

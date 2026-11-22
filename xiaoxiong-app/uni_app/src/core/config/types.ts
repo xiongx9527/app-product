@@ -2,19 +2,19 @@ import type { FloatPositionKey } from '../adaptation/floatLayer'
 
 /**
  * 运行模式：
- * - byok：自带服务，用户自己选语音服务来源（内置 / DashScope）并填地址、Key（当前唯一可用）
+ * - byok：自带服务，用户填语音服务地址、Key（当前唯一可用）
  * - platform：平台托管，登录后付费用户直接使用平台 ASR / LLM / TTS，不需要任何配置
  */
 export type ServiceMode = 'byok' | 'platform'
 
-/** 语音服务来源：内置（本地 / 局域网 AI 服务）或 DashScope 云端 */
-export type VoiceProviderKind = 'builtin' | 'dashscope'
+/** 语音服务来源：仅内置（本地 / 局域网 AI 服务，如 9529）。百炼来源已下线。 */
+export type VoiceProviderKind = 'builtin'
 
-/** 单个来源的语音服务配置（地址 + 密钥 + 可选 LLM 模型），内置 / DashScope 各存一份，互不影响 */
+/** 语音服务配置（地址 + 密钥 + 可选模型） */
 export interface VoiceProviderSettings {
-  /** 服务根地址；内置默认 http://127.0.0.1:9529，DashScope 默认 https://dashscope.aliyuncs.com */
+  /** 服务根地址；默认公网语音服务地址 */
   url: string
-  /** 内置通常为空；DashScope 必填 */
+  /** 服务密钥（内置服务通常为空） */
   apiKey: string
   /**
    * 该来源的 LLM 模型名；留空则由网关用来源默认模型。
@@ -23,7 +23,7 @@ export interface VoiceProviderSettings {
   model?: string
   /**
    * 该来源的 TTS 音色（voice）；留空则由网关用来源默认音色。
-   * 下拉选项由设置页「音色」从来源配置实时拉取（内置=语音服务接口；百炼=官方标准目录）。
+   * 下拉选项由设置页「音色」从内置语音服务接口实时拉取。
    */
   voice?: string
   /**
@@ -42,17 +42,23 @@ export interface VoiceProviderSettings {
    * 留空则沿用音色所属模型（voiceModel）或来源默认；显式填写时优先于 voiceModel。
    */
   ttsModel?: string
+  /**
+   * 是否开启 LLM 深度思考（推理链）。随 session.start.voice.params.think 下发，
+   * 网关透传到 LLM 请求体，由语音服务（9529）按厂商翻译成原生思考参数
+   * （deepseek→thinking.type / ollama→think / dashscope→enable_thinking …）。
+   * 推理模型才有效；非推理模型忽略。缺省 false（不思考）。
+   */
+  think?: boolean
 }
 
 /**
- * 语音服务配置同时覆盖 ASR / LLM / TTS，按 provider 切换。
- * 各来源独立保存自己的地址、密钥与模型，切换来源只改 provider，不会清掉另一份数据。
+ * 语音服务配置同时覆盖 ASR / LLM / TTS，统一走内置来源（9529）。
+ * provider 字段保留（恒为 'builtin'）随 session.start 下发给网关。
  * 选中的 LLM 模型随会话下发，网关据此路由到来源对应的上游。
  */
 export interface VoiceServiceConfig {
   provider: VoiceProviderKind
   builtin: VoiceProviderSettings
-  dashscope: VoiceProviderSettings
 }
 
 export interface AppConfig {

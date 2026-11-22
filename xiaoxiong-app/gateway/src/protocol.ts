@@ -164,9 +164,11 @@ export type ClientMessage =
 export type ServerEvent =
   | { type: 'asr.partial'; text: string }
   /** queueRemaining=网关队列此刻还剩几句；由服务端给出，客户端据此同步而不靠猜测 */
-  | { type: 'asr.final'; text: string; queueRemaining: number }
+  | { type: 'asr.final'; text: string; queueRemaining: number; fromQueue?: boolean }
   /** 当前轮还没播完，这句只识别不回复，按序排队等本轮结束 */
   | { type: 'asr.queued'; text: string; position: number; size: number; message: string }
+  /** 队列已全部消费完：客户端据此清掉排队角标（否则最后一句播完后角标卡住不消失） */
+  | { type: 'queue.drained' }
   /** 这句没有被接收，message 为按 lang 本地化的原因 */
   /** reason 标记「队列满」拒收，客户端据此在固定提示区展示专用话术 */
   | { type: 'asr.rejected'; text: string; message: string; reason: 'queue-full' }

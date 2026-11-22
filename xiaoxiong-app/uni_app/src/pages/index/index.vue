@@ -393,6 +393,9 @@ watch(gatewayPreparing, (preparing, wasPreparing) => {
 const hint = computed(() => {
   // 网关加载状态最优先：让用户知道"正在启动/已就绪"，别对着没就绪的网关白喊
   if (gatewayPreparing.value) return t('gateway.preparing')
+  // 首次安装冷启动：网关先就绪、KWS 模型还在加载（约 1-3s）。此时即便显示"已就绪"
+  // 喊词也没用（KWS 还没 ready），要明确告诉用户"唤醒加载中"，别让他对着没准备好的模型白喊。
+  if (justReady.value && wakeReady.value === 'loading') return t('hint.wakeLoading')
   if (justReady.value) return t('gateway.ready')
   // 静默提示与退出优先，其余按对话阶段说明「现在在干嘛」，免得用户以为卡住
   if (state.value === 'confirming') return t('hint.confirming')

@@ -105,18 +105,39 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    */
   let doneToListeningTimer: ReturnType<typeof setTimeout> | null = null
   const DONE_TO_LISTENING_MS = 1000
+  // 前端 phase 变化经 sendDiag 落到网关 barge-diag.log（Android 无 jsLog，这是唯一可见通路）
+  function diagPhase(tag: string): void {
+    try {
+      transport.sendDiag?.({
+        state: state.value,
+        speaking: isSpeaking.value,
+        cue: false,
+        muted: mode === 'wake',
+        frames: 0,
+        rms: 0,
+        connected: transport.isConnected(),
+        trace: 'PHASE ' + tag + ' phase=' + phase.value,
+      })
+    } catch { /* 诊断失败不影响主流程 */ }
+  }
   function setPhaseDone(source: string): void {
-    transport.sendDiag?.({
-      state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
-      frames: 0, rms: 0, connected: transport.isConnected(),
-      trace: `PHASE-DONE by=${source} speaking=${isSpeaking.value}`,
-    })
+    // 定位「播报没完状态就变」：记录是谁把 phase 设成 done（speaking→done 的元凶）
+    if (phase.value === 'speaking' || phase.value === 'thinking' || phase.value === 'replying') {
+      console.info('[da] PHASE_DONE from=' + source + ' prevPhase=' + phase.value
+        + ' speaking=' + isSpeaking.value)
+    }
+    diagPhase('DONE from=' + source)
     phase.value = 'done'
     if (doneToListeningTimer) clearTimeout(doneToListeningTimer)
     doneToListeningTimer = setTimeout(() => {
       doneToListeningTimer = null
-      // 助手仍开启（非 idle）、且期间没有新活动改写 phase 时，才切回「正在听」
-      if (phase.value === 'done' && state.value !== 'idle') phase.value = 'listening'
+      // 本轮完成后停 1 秒 → 切回「正在听」（用户明确要的既有行为）。
+      // 条件：会话未结束（非 idle/standby）就切。收尾时 state 常是 confirming（T1 静默超时的
+      // 确认态），旧条件只认 listening 导致永远停 done「本轮完成」——放宽到 confirming 也切。
+      // 只有真正回到 standby/idle（会话退出）才不切——那时上行静音，显示「待唤醒」才对。
+      if (phase.value === 'done' && state.value !== 'idle' && state.value !== 'standby') {
+        phase.value = 'listening'
+      }
     }, DONE_TO_LISTENING_MS)
   }
   const isSpeaking = ref(false)
@@ -188,8 +209,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let cancelPlaybackIdle: (() => void) | null = null
   /** 播完回执兜底定时器：idle 回调链丢失时强制收尾，保证网关的队列持续推进 */
   let playbackDoneFallback: ReturnType<typeof setTimeout> | null = null
-  /** 临时诊断：最近一次 tts.end 到达时刻 */
-  let ttsEndAt = 0
   /**
    * 插话已入队：说话尾音晚到的 partial 不回填草稿，有排队角标就够了。
    * 早期用「入队后 2 秒内无条件挡所有 partial」，但会误伤紧接的新插话：上一句刚入队设下窗口，
@@ -257,17 +276,105 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       thinkingCueTimer = null
     }
   }
+
+  /**
+   * LLM 下行看门狗：网关的 llm.done / tts.start 若因下行 WS 丢失没到达前端，界面会永远卡在
+   * 「正在思考」（真机铁证：thinking.mp3 5s 响了，之后一小时都不退出）。网关侧虽有 15s 硬超时
+   * 会补发 llm.done，但下行链断了就白搭。这里在前端再兜一层：每收到任何 llm 事件就续命，
+   * 超过 30s 完全无活动、且仍未出声时强制收尾并播 llm-error 提示，不让用户干等。
+   * 正常 deepseek-r1 流式思考会持续产生 llm.thinking/delta，不断续命，不会误伤长回答。
+   */
+  let llmWatchdogTimer: ReturnType<typeof setTimeout> | null = null
+  const LLM_WATCHDOG_MS = 30_000
+  function clearLlmWatchdog(): void {
+    if (llmWatchdogTimer) {
+      clearTimeout(llmWatchdogTimer)
+      llmWatchdogTimer = null
+    }
+  }
+  function feedLlmWatchdog(): void {
+    lastLlmActivityAt = Date.now()
+    clearLlmWatchdog()
+    llmWatchdogTimer = setTimeout(() => {
+      llmWatchdogTimer = null
+      if ((phase.value === 'thinking' || phase.value === 'replying') && !isSpeaking.value && !replyDone.value) {
+        console.info('[da] LLM_WATCHDOG fire phase=' + phase.value + ' - force settle')
+        cancelPendingIdle()
+        disarmThinkingCue()
+        isSpeaking.value = false
+        setPhaseDone('llm-watchdog')
+        markAnswerDone()
+        void playPromptCue('llmError')
+      }
+    }, LLM_WATCHDOG_MS)
+  }
+
+  /**
+   * speaking 阶段播完看门狗：tts.start 后若原生播空检测失效（真机反复验证：checkTtsIdle 偶发
+   * 不触发、TTS idle detected 不打日志 → playback_done 不发 → tts.idle 不来 → 界面永久卡
+   * 「正在播报」，音乐音量也因 onPlaybackSettled 不执行而一直被 duck 到 0.2 倍），这里兜底：
+   * 超过阈值仍未收到 tts.idle 就强制停播 + 收尾（含恢复音乐音量、通知网关推进队列）。
+   * 时长要覆盖任意合理单句播报；tts.idle 正常到达会 clear 掉它，不会误伤。
+   */
+  let speechWatchdogTimer: ReturnType<typeof setTimeout> | null = null
+  const SPEECH_WATCHDOG_MS = 60_000
+  function clearSpeechWatchdog(): void {
+    if (speechWatchdogTimer) {
+      clearTimeout(speechWatchdogTimer)
+      speechWatchdogTimer = null
+    }
+  }
+  function armSpeechWatchdog(): void {
+    clearSpeechWatchdog()
+    speechWatchdogTimer = setTimeout(() => {
+      speechWatchdogTimer = null
+      if (isSpeaking.value || phase.value === 'speaking') {
+        console.info('[da] SPEECH_WATCHDOG fire phase=' + phase.value + ' - force settle')
+        stopAppPlayback() // 真正停掉原生 AudioQueue，避免继续占着播放态与上行静音
+        onPlaybackSettled(true) // 收尾 + duckMusic(false) 恢复音乐音量 + 通知网关推进队列
+      }
+    }, SPEECH_WATCHDOG_MS)
+  }
+
+  /**
+   * iOS 后台冻结兜底：iPad 锁屏/退后台时 WebView 连同 JS setTimeout、weex 回调一起被系统挂起，
+   * 播空的 tts.idle、播完兜底、thinking 看门狗、T1/T2 全部停摆 → 界面卡「正在播报/正在思考」，
+   * 解锁回前台才补触发（真机铁证：13:00:53 锁屏→13:05:41 解锁，SETTLED/TTS_IDLE 相隔 46ms 涌出）。
+   * JS 定时器自身冻住，靠看门狗救不了；只能在 App 回前台时用 onAppShow 主动检查并强制收尾。
+   * 判据：卡在 speaking/thinking 且距最近一次 llm/tts 活动已超过阈值——正常前台切页间隔很短，
+   * 不会误伤；只有经历过后台冻结（秒级空白）才会命中。
+   */
+  let lastLlmActivityAt = 0
+  const RESUME_STALE_MS = 3000
+  function resumeFromBackgroundCheck(): void {
+    const stale = Date.now() - lastLlmActivityAt
+    if (stale < RESUME_STALE_MS) return
+    if (isSpeaking.value || phase.value === 'speaking') {
+      console.info('[da] RESUME force settle speaking stale=' + stale + 'ms')
+      cancelPendingIdle()
+      stopAppPlayback()
+      duckMusic(false)
+      isSpeaking.value = false
+      setPhaseDone('app-resume-speech')
+      markAnswerDone()
+    } else if (phase.value === 'thinking' || phase.value === 'replying') {
+      console.info('[da] RESUME force settle thinking stale=' + stale + 'ms')
+      cancelPendingIdle()
+      disarmThinkingCue()
+      clearLlmWatchdog()
+      isSpeaking.value = false
+      setPhaseDone('app-resume-thinking')
+      markAnswerDone()
+    }
+  }
   /**
    * TTS 播完（或兜底超时）后的统一收尾：复位播报状态、记回声窗口、发播完回执。
    * idle 回调与 12s 兜底共用；重复触发无害（复位幂等，网关回执侧 resolve 幂等）。
    */
   function onPlaybackSettled(notifyGateway = true): void {
-    // 临时诊断： settled 距 tts.end 多久 —— 若仅几百 ms 说明 onAppPlaybackIdle 立即兑现（playbackInFlight=false）
-    transport.sendDiag?.({
-      state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
-      frames: 0, rms: 0, connected: transport.isConnected(),
-      trace: `SETTLED sinceTtsEnd=${ttsEndAt ? Date.now() - ttsEndAt : -1}ms`,
-    })
+    console.info('[da] SETTLED phase=' + phase.value + ' speaking=' + isSpeaking.value + ' notify=' + notifyGateway)
+    clearLlmWatchdog()
+    clearSpeechWatchdog()
     if (playbackDoneFallback) {
       clearTimeout(playbackDoneFallback)
       playbackDoneFallback = null
@@ -331,14 +438,31 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   // TTS PCM 播放门面：App 逻辑层没有 WebAudio，必须走原生 AudioTrack；H5 走 WebAudio。
   // 用能力探测分流而非条件编译，保证同一套代码两端都正确；探测读的是缓存模块，无额外开销。
+  // 多句 TTS：网关每句播空都发 tts.idle，但只有最后一句播空才该收尾。
+  // 记录最近一次音频帧到达时刻，tts.idle 到达后延迟确认——期间若又有新音频帧（下一句），
+  // 说明还没播完，取消收尾。只在真正静默后才把 phase 设回 done。
+  let lastTtsAudioAt = 0
+  let idleSettleTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 收到 tts.idle（上一句已播空）到前端 600ms 延迟收尾（isSpeaking 置 false）之间的窗口内，
+   * 网关收到 playback_done 会立即推进队列、下发下一句 tts.start。此时 isSpeaking 还是 true，
+   * 会被 tts.start 的「isSpeaking 抗重复」守卫当重复吞掉 → phase 卡 replying「正在回答」，
+   * 永远不切 speaking「正在播报」（真机铁证）。这个标志让守卫能区分「真重复」和「idle 后的合法新句」。
+   */
+  let ttsIdleSeen = false
   function playTts(chunk: ArrayBuffer): void {
+    lastTtsAudioAt = Date.now()
     if (isAppPlaybackSupported()) appPlayPcm(chunk, 24000)
     else playPcm(chunk, 24000)
   }
   function waitPlaybackIdle(fn: () => void): () => void {
-    // App 端 TTS 走 role=pcm 原生直连：原生 weex onPlaybackIdle 回调在播报期不可靠（铁证：
-    // 播报未结束就误触发 emitIdle → 假播完 → 提前显示本轮完成并停播）。播完只认网关从直连
-    // 下发的 tts.idle（真播空才发），故 App 端不注册 weex idle；H5 端仍用 onPlaybackIdle。
+    // 【2026-11-21 撤销接回 weex idle——多句 TTS 会在第一句播空就误判整轮完成】
+    // 曾把 App 端改成注册 onAppPlaybackIdle（想绕开 tts.idle 丢失），但真机铁证：
+    // 一句回答 gateway 切成多句连续播（原生 idle polling 每句播空都回调），weex idle 在
+    // 第 1 句播空就 emitIdle → onPlaybackSettled → phase 提前退出 speaking，而第 2/3 句还在播
+    // ——正是「播报没完、正在播报状态就变掉」的回归。播报只能认网关在整轮下发完后的 tts.idle
+    // （tts.end 才注册等待），tts.idle 万一丢失由 SPEECH_WATCHDOG 25s 兜底。故 App 端回到不注册。
+    // H5 端仍用 onPlaybackIdle（WebAudio 无原生直连、也无多句问题）。
     if (isAppPlaybackSupported()) return () => {}
     return onPlaybackIdle(fn)
   }
@@ -377,6 +501,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   }
   // 连接状态 / 重连耗尽 / 建连中 三个订阅同样要保存反订阅，避免 HMR 重挂载叠加
   const offStatus = transport.onStatusChange((connected) => {
+    console.info('[da] WS_STATUS connected=' + connected + ' state=' + state.value + ' phase=' + phase.value)
     wsConnected.value = connected
     if (connected) {
       resetGatewayDownAnnounce()
@@ -507,19 +632,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   })
 
   function handleServerEvent(event: ServerEvent): void {
-    // 临时诊断：客户端是否真的收到 asr.*/tts.* 事件，回报网关日志定位「提前显示本轮完成」断点
-    if (event.type === 'asr.partial' || event.type === 'asr.queued' || event.type === 'asr.final'
-        || event.type === 'asr.rejected' || event.type === 'tts.start' || event.type === 'tts.end' || event.type === 'tts.stop' || event.type === 'tts.idle') {
-      transport.sendDiag?.({
-        state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
-        frames: 0, rms: 0, connected: transport.isConnected(),
-        trace: `RECV ${event.type}${event.type.startsWith('tts') ? '' : ' text=' + ((event as { text?: string }).text ?? '')}`,
-      })
-    }
     // 待唤醒态不消费任何 ASR 事件：唤醒只认端侧 KWS（「唤醒前不调 ASR」是硬原则）。
     // 待唤醒态上行已静音，正常不会有识别结果；这里再兜一层，防止模式切换瞬间的滞后
     // 事件（切换前已在链路上的识别结果）被当成用户输入，造成「一唤醒就冒出一堆文字」。
     if (mode === 'wake' && event.type.startsWith('asr.')) return
+    // 定位「播完一轮后直接说话不识别」：记录识别事件是否到达前端及当前状态
+    if (event.type === 'asr.partial' || event.type === 'asr.final' || event.type === 'asr.rejected') {
+      console.info('[da] ASR_EVT ' + event.type + ' mode=' + mode + ' state=' + state.value
+        + ' phase=' + phase.value + ' text=' + ((event as { text?: string }).text ?? ''))
+    }
     switch (event.type) {
       case 'asr.partial':
         // confirming（T2 倒计时）下用户一开口就要取消退下：partial 是说话过程中的流式识别，
@@ -558,18 +679,25 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         if (mode === 'dialog' && matchWakeWord(event.text, DEFAULT_WAKE_WORDS)) {
           if (handleWakeHit(event.text)) break
         }
-        // 插话已入队：文字保留约 1 秒让用户看清（partial 与 queued 常只隔几 ms，
-        // 立即清就看不到），之后清掉交给右上角排队角标；这句播完轮到它时再由 asr.final 进正文。
+        // 插话已入队：草稿区显示完整定稿文本（和正常「正在听」一样显示全），保留约 1 秒
+        // 让用户看清，之后清掉交给右上角排队角标；这句播完轮到它时再由 asr.final 进正文。
+        // liveText 用 event.text（网关透传的完整识别原文），这样草稿区内容和出队列时
+        // 「我说」框显示的文本一致，不会出现「草稿区一截、出队列另一截」。
         if (mode === 'dialog') {
           queuePending.value = Math.max(queuePending.value, event.position)
           queuedHideUntil = Date.now() + QUEUED_HIDE_MS
           queuedText = event.text
+          liveText.value = event.text
           cancelQueuedClear()
           queuedClearTimer = setTimeout(() => {
             queuedClearTimer = null
             liveText.value = ''
           }, 1000)
         }
+        break
+      case 'queue.drained':
+        // 网关队列全部消费完：清掉排队角标（否则最后一句播完后角标卡住不消失）
+        queuePending.value = 0
         break
       case 'asr.rejected':
         // 队列已满时服务端拒收，但仍带回了识别原文：唤醒词即使发生在队列满时也要能打断
@@ -609,8 +737,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         //（插话原文已随 asr.queued 进队列角标）。但必须清掉监听草稿 liveText——
         // 这句插话若因定稿太晚、网关没当队列项处理（pb 已 false），前端就既收不到 queued
         // 又在这里丢弃 final，草稿会永远挂着清不掉（真机"一直在草稿区"）。
-        if (isSpeaking.value) {
-          liveText.value = ''
+        // 【fromQueue 例外】队列句回放的 asr.final 到达时，上一句刚播空、tts.idle 刚到、
+        // onPlaybackSettled 还没把 isSpeaking 置 false → 这条会被误挡，"我说"框不切成队列那句。
+        // 网关对回放句标了 fromQueue=true，跳过守卫正常处理（设 transcript/开新一轮）。
+        if (isSpeaking.value && !event.fromQueue) {
+          // 播报中的插话 final：草稿区同样显示完整定稿文本（与正常「正在听」一致），
+          // 约 1 秒后清掉交给队列角标。不立即清空——否则用户只看到不完整的 partial。
+          liveText.value = event.text
+          cancelQueuedClear()
+          queuedClearTimer = setTimeout(() => {
+            queuedClearTimer = null
+            liveText.value = ''
+          }, 1000)
           break
         }
         // 定稿后这一句进入队列成为「当前项」，你说始终显示队列当前项（不显示监听草稿）。
@@ -620,17 +758,22 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         queuedHideUntil = 0
         queuedText = ''
         cancelQueuedClear()
-        transcript.value = event.text
-        // 定稿时把草稿补全为完整文本并停留约 0.8 秒再清——partial 滚动识别常慢于语速，
-        // 草稿会停在「我喜欢打乒」半截字，用户看不全。这 0.8 秒草稿显示完整句（与「我说」
-        // 框短暂并存），让用户看清整句后草稿再消失。期间若用户开口说下一句，新 partial
-        // 会取消这个 timer，不会误清新草稿。
         cancelFinalClear()
-        liveText.value = event.text
-        finalClearTimer = setTimeout(() => {
-          if (liveText.value === event.text) liveText.value = ''
-          finalClearTimer = null
-        }, FINAL_DRAFT_HOLD_MS)
+        transcript.value = event.text
+        // 【插话出队列】这句在入队时（asr.queued）草稿区已经完整显示过了，回放进正文时
+        // 不要在草稿区再显示一遍（用户明确要求）。草稿区保持空，正文「我说」框显示这句。
+        if (event.fromQueue) {
+          liveText.value = ''
+        } else {
+          // 正常定稿：草稿补全为完整文本并停留约 0.8 秒再清——partial 滚动识别常慢于语速，
+          // 草稿会停在「我喜欢打乒」半截字，用户看不全。让用户看清整句后草稿再消失。
+          // 期间若用户开口说下一句，新 partial 会取消这个 timer，不会误清新草稿。
+          liveText.value = event.text
+          finalClearTimer = setTimeout(() => {
+            if (liveText.value === event.text) liveText.value = ''
+            finalClearTimer = null
+          }, FINAL_DRAFT_HOLD_MS)
+        }
         // 队列溢出提示这句轮到被处理，横幅自然失效
         queueFullMsg.value = ''
         // 新一轮说话：清掉上一轮的回答与思考，等模型重新流式输出
@@ -640,6 +783,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         replyDone.value = false
         phase.value = 'thinking'
         armThinkingCue()
+        feedLlmWatchdog()
         assistantTextStarted = false
         assistantBusy = true
         answerHasTts = false
@@ -650,19 +794,31 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'llm.thinking':
         thinking.value += event.text
         if (!assistantTextStarted) phase.value = 'thinking'
+        feedLlmWatchdog()
         break
       case 'llm.delta':
-        if (!assistantTextStarted) {
+        feedLlmWatchdog()
+        // 新回答首字要清空上一轮文本。assistantTextStarted 在插话队列路径（asr.final 里
+        // isSpeaking 时直接 break）没被重置，单靠它会把新回答累加到旧回答上（助手框累加）。
+        // replyDone=true 是 llm.done 设的「上一轮已完成」可靠信号，补上它兜底插话场景。
+        if (!assistantTextStarted || replyDone.value) {
           assistantTextStarted = true
           thinkingDone.value = true
+          replyDone.value = false
           reply.value = ''
         }
         reply.value += event.text
+        // 文字吐出来到真正出声之间是「正在回答」（replying）——原始就有的合理中间态：
+        // LLM 流式文字先显示，攒段 TTS 合成完、tts.start 真正出声才切 speaking「正在播报」。
+        // 用户明确这个过渡合理、要保留。之前"卡在正在回答不切播报"不是 replying 的错，
+        // 而是下一句 tts.start 被抗重复守卫误吞（见 tts.start 分支的 ttsIdleSeen 修复）。
         if (phase.value !== 'speaking') phase.value = 'replying'
         // 不在这里撤销 thinking 提示：文字出来了但 TTS 还没开始播（合成/下载中）这段
         // 也要计入"等待出声"，到 tts.start 才 disarm。
         break
       case 'llm.done':
+        console.info('[da] LLM_DONE recv speaking=' + isSpeaking.value + ' phase=' + phase.value)
+        clearLlmWatchdog()
         thinkingDone.value = true
         replyDone.value = true
         if (!isSpeaking.value) setPhaseDone('llm.done')
@@ -672,8 +828,23 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'tts.start':
         // 抗重复：同一句 TTS 若因任何原因被重复下发（传输层/重连竞态/未知双发），
         // 已经在播报中（isSpeaking）又来一个 tts.start 视为重复，直接忽略，避免「放两遍」。
-        // 合法的下一句/下一轮总在 tts.end/stop 之后才来，此时 isSpeaking 已复位，不受影响。
-        if (isSpeaking.value) break
+        // 【队列回放例外】播空后网关收到 playback_done 立即推进、下一句 tts.start 会落在
+        // 「收到 tts.idle（ttsIdleSeen）→ 600ms 延迟收尾」窗口内，此时 isSpeaking 还没复位——
+        // 这是合法新句，不是重复！若不处理就直接 break，phase 卡 replying「正在回答」永不切
+        // speaking「正在播报」（真机铁证）。识别到就先同步收尾上一句，再继续处理本句。
+        if (isSpeaking.value && !ttsIdleSeen) break
+        if (isSpeaking.value && ttsIdleSeen) {
+          console.info('[da] TTS_START after idle(新句) - 先同步收尾上一句 phase=' + phase.value)
+          // 上一句已播空（tts.idle 到过），立即收尾复位 isSpeaking/phase，避免本句被吞。
+          // 不再回执网关：tts.idle 本就是网关下发的播完确认，网关侧已收到 playback_done。
+          if (idleSettleTimer) { clearTimeout(idleSettleTimer); idleSettleTimer = null }
+          onPlaybackSettled(false)
+        }
+        ttsIdleSeen = false
+        console.info('[da] TTS_START recv phase=' + phase.value)
+        diagPhase('TTS_START')
+        lastLlmActivityAt = Date.now()
+        clearLlmWatchdog()
         cancelPendingIdle()
         // 真正开始出声了：撤销"等待出声"提示计时（思考+文字+TTS等待这段已结束）
         disarmThinkingCue()
@@ -704,7 +875,6 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'tts.end': {
         // 网关下发完 ≠ 客户端播完：播完前保持静音上行、挂起 T1，
         // 否则尾音被收回当成用户说话，或还没播完就触发「还在吗」。
-        ttsEndAt = Date.now()
         cancelPendingIdle()
         // 播完回执兜底：App 端 AudioTrack idle 回调链若丢失（历史坑），这里永不触发，
         // 网关就每句白等 30s 超时——表现正是「队列有数据却不处理」。超时后强制走
@@ -715,13 +885,38 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 300s 足够覆盖任何合理播报长度。
         playbackDoneFallback = setTimeout(onPlaybackSettled, 300_000)
         cancelPlaybackIdle = waitPlaybackIdle(onPlaybackSettled)
+        // 更短的播报看门狗：原生播空检测偶发失效时（tts.idle 永不到、300s 兜底太慢），
+        // 25s 内强制收尾，避免界面卡「正在播报」、音乐音量一直被 duck。tts.idle 到达会 clear。
+        armSpeechWatchdog()
         break
       }
-      case 'tts.idle':
+      case 'tts.idle': {
         // 原生直连播空的权威回执（经网关下发）：真正播完的时刻，做本地收尾但不再回报网关
         // （tts.idle 本就是网关发的确认，再回报会形成循环）。
-        if (isSpeaking.value) onPlaybackSettled(false)
+        // 不再用 isSpeaking 作守卫：播报期若被 tts-error 等分支抢先置 false，真正的播空回执
+        // 会被守卫跳过、phase 永久卡 speaking。改为「只要还在等播完就收尾」——tts.end 挂了
+        // playbackDoneFallback，收尾后清空，故它是否还在即为是否 awaiting 播完的权威标志。
+        console.info('[da] TTS_IDLE recv speaking=' + isSpeaking.value
+          + ' phase=' + phase.value + ' waiting=' + (playbackDoneFallback !== null))
+        diagPhase('TTS_IDLE recv')
+        if (playbackDoneFallback !== null || isSpeaking.value || phase.value === 'speaking') {
+          // 标记「上一句已播空」：队列回放的下一句 tts.start 常在这之后、前端收尾之前到达，
+          // tts.start 守卫据此识别为合法新句而非重复（见 tts.start 分支）。
+          ttsIdleSeen = true
+          // 延迟确认：网关多句播放时每句播空都发 tts.idle，第一句播空不代表整轮结束。
+          // 【关键】TTS 音频在 App 端走原生直连（role=pcm→playPcmBytes），不经 JS 的 playTts，
+          // 所以 lastTtsAudioAt 在 App 上永远不更新、不能用来判断下一句。改用 tts.idle 自身：
+          // 每收到一个 idle 就重置延迟；600ms 内没有新的 idle（=最后一句）才收尾。
+          // 多句之间下一句 TTS 合成+下发需要数百 ms~数秒 > 600ms，中间 idle 会被后续 idle 重置。
+          if (idleSettleTimer) clearTimeout(idleSettleTimer)
+          idleSettleTimer = setTimeout(() => {
+            idleSettleTimer = null
+            console.info('[da] TTS_IDLE settle (600ms 无后续 idle)')
+            onPlaybackSettled(false)
+          }, 600)
+        }
         break
+      }
       case 'media.play': {
         // proxy 标记由网关按频道判定（B 站等防盗链直链需走网关 /music/stream 代理补 Referer）；
         // 客户端不再写死任何频道名，只按此标记决定是否拼代理地址。
@@ -859,10 +1054,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         } else if (event.cue === 'tts-error') {
           // TTS 播报失败：播本地 mp3；并显式复位播报态，避免 tts.start 没配对 tts.end
           // 导致 isSpeaking 卡 true、把队列下一句的 tts.start 当重复吞掉（队列卡死）。
-          if (isSpeaking.value) {
-            isSpeaking.value = false
+          console.info('[da] TTS_ERROR cue speaking=' + isSpeaking.value + ' phase=' + phase.value)
+          if (isSpeaking.value || phase.value === 'speaking') {
+            cancelPendingIdle()
             stopAppPlayback() // 复位原生播报态 + playbackInFlight，避免下一句 tts.start 被吞
             duckMusic(false)
+            isSpeaking.value = false
+            // 关键：只置 isSpeaking=false 不够，phase 仍卡 speaking 会让界面「正在播报」不退出，
+            // 且后续真正的 tts.idle 也因 awaiting 已被 cancel 而被忽略。这里一并收尾 phase。
+            setPhaseDone('tts-error')
+            markAnswerDone()
           }
           void playPromptCue('ttsError')
         }
@@ -881,6 +1082,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   function cancelPendingIdle(): void {
     cancelPlaybackIdle?.()
     cancelPlaybackIdle = null
+    if (idleSettleTimer) { clearTimeout(idleSettleTimer); idleSettleTimer = null }
+    clearLlmWatchdog()
+    clearSpeechWatchdog()
     // 兜底定时器一并作废：取消等待 = 不再发播完回执（如被打断/重开新轮），防误触发
     if (playbackDoneFallback) {
       clearTimeout(playbackDoneFallback)
@@ -1091,39 +1295,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 因上行静音→识别失败→下发 asr-error→延长 cue 窗口 3.4s——形成恶性循环，播报全程上行
     // 被清零（真机铁证：采集端 rms 0.137，网关收到 0.0001），插话永远识别不到。
     // 改为「仅待唤醒态掐麦」后，对话态永不掐麦，从根上斩断循环。
-    // 临时诊断：每 2s 把 onPcm 的真实状态经 WS 文本消息上报网关落盘（定位后移除）
-    let diagFrames = 0
-    let diagRms = 0
-    let diagAt = Date.now()
+    let pcmDiagAt = 0
     const onPcm = (pcm: ArrayBuffer): void => {
-      const cue = isPromptCuePlaying()
       // 与原生 _standbyMuted 同一判据：只有待唤醒态静音上行（Android 走 JS 这条路，
       // iOS 走 PcmUploader 原生直连、由原生侧静音，两边等价）。
       const muted = mode === 'wake'
-      diagFrames += 1
-      {
-        const dv = new DataView(pcm)
-        const n = Math.floor(pcm.byteLength / 2)
-        let sum = 0
-        for (let i = 0; i < n; i += 1) {
-          const s = dv.getInt16(i * 2, true) / 32768
-          sum += s * s
-        }
-        diagRms = n ? Math.sqrt(sum / n) : 0
-      }
       const now = Date.now()
-      if (now - diagAt >= 2000) {
-        transport.sendDiag?.({
-          state: state.value,
-          speaking: isSpeaking.value,
-          cue,
-          muted,
-          frames: diagFrames,
-          rms: Number(diagRms.toFixed(4)),
-          connected: transport.isConnected(),
-        })
-        diagFrames = 0
-        diagAt = now
+      if (now - pcmDiagAt > 3000) {
+        pcmDiagAt = now
+        console.info('[da] ONPCM mode=' + mode + ' muted=' + muted + ' state=' + state.value
+          + ' phase=' + phase.value + ' connected=' + transport.isConnected())
       }
       transport.sendAudioChunk(muted ? new ArrayBuffer(pcm.byteLength) : pcm)
     }
@@ -1147,17 +1328,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         errorMessage.value = t('error.micUnavailable', { reason: '麦克风权限被拒绝' })
         return
       }
-      // 临时诊断：把原生 PCM 直连配置结果经 sendDiag.trace 上报网关落盘，
-      // 定位"播报期插话识别不到"是否因 configureDirectUpload 没生效。
-      const diagMsg = (msg: string) => {
-        transport.sendDiag?.({
-          state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
-          frames: 0, rms: 0, connected: transport.isConnected(), trace: `CAPTURE-DIAG ${msg}`,
-        })
-      }
       const ok = startAppCapture(onPcm, (message) => {
         errorMessage.value = t('error.micUnavailable', { reason: message })
-      }, diagMsg)
+      })
       if (ok) capturing = true
       else errorMessage.value = t('error.micUnavailable', { reason: '原生录音启动失败' })
       return
@@ -1249,6 +1422,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       gatewayPreparing.value = false
       // 「准备中」已在等待之前播过（见上），这里只补「就绪」。若准备中还在播，
       // 用串行队列等它播完再播就绪，保证两条都不被打断、按序完整。失败路径上面已 return。
+      // 关键：等 KWS 模型真正加载完再播「已就绪」——首次冷启动 KWS 加载可能比网关慢，
+      // 早播会让用户以为能喊、实际白喊好几遍。等待期间界面显示「语音唤醒加载中」。
+      // 等满即播（最多 6s）：等待本身已保证「不太早」；无条件播保证「有提示」——
+      // 不再用 wakeReady 精确值做门控（原生 ready 回调经 weex 桥的 payload 格式不稳，
+      // 一旦解析错就永远不播，正是上一版「已就绪没提示」的根因）。
+      await waitKwsReady(6000)
       playPromptCueSequence(['gatewayReady'])
     } catch (err) {
       // 兜底：enable 链路任何未预期异常（如原生插件方法缺失抛错）都必须结束「启动中」态，
@@ -1304,6 +1483,19 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 「唤醒了但说不了话」是不诚实的状态），此时诚实提示并顺手触发重连。 */
   function wake(): void {
     if (state.value !== 'standby') return
+    // KWS 加载失败时点圆球 = 重试加载模型（用户明确要求「失败时点中间也能重新加载」）。
+    // 重新挂载 KWS 引擎会把 wakeReady 重置回 loading，界面显示「加载中」；这次点球不进对话，
+    // 等 onReady 成功后用户再点球或喊词进入——避免模型还没好就进假 listening。
+    if (wakeReady.value === 'failed') {
+      console.info('[da] WAKE retry KWS after failed')
+      // 先 stop 重置 kwsService/native 的 running 标志（失败时可能仍为 true，直接 start 会被跳过），
+      // stopKws 同时把 wakeReady 置回 loading，界面显示「加载中」；再 start 真正重建 KWS 引擎。
+      stopKws()
+      startKws()
+      return
+    }
+    // KWS 还在加载中时点球：也允许重试一次（幂等保护在 kwsService.start 的 running 标志），
+    // 但不打断正在进行的加载；直接放行下面的 wake 流程（网关好了就进对话，点球本就是手动唤醒兜底）。
     if (!canWake()) {
       // 原则：网关/ASR 没好时手动点球不放行；但要提示，不静默——播对应原因的提示音
       playPromptCue(wakeBlockedCue())
@@ -1363,6 +1555,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 招呼落到界面并播本地提示音，与 playGreeting 一致
     reply.value = '我在'
     replyDone.value = true
+    // 【插话累加修复】重置助手文本起始标志：插话打断后新回答的第一个 llm.delta 到达时，
+    // 必须走 775 的 reply.value='' 把「我在」/上一轮回答清掉再累加。不重置则 assistantTextStarted
+    // 还是上一轮的 true → 跳过清空 → 新回答 += 到旧文本 = 助手框累加。
+    assistantTextStarted = false
     playPromptCue('greeting')
     interruptSpeech(dropText)
   }
@@ -1411,16 +1607,38 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * - failed：引擎不可用（插件缺失/加载失败），只能点圆球
    */
   const wakeReady = ref<'loading' | 'ready' | 'failed'>('loading')
+  // KWS 模型加载完成时兑现所有等待者：用于「网关已就绪」提示音等 KWS 真正可用再播，
+  // 避免用户听到「已就绪」就喊、但模型还没加载好而白喊（真机首次冷启动的反馈）。
+  let kwsReadyWaiters: Array<() => void> = []
+  function resolveKwsReady(): void {
+    const waiters = kwsReadyWaiters
+    kwsReadyWaiters = []
+    waiters.forEach((fn) => fn())
+  }
+  /** 等 KWS 就绪（最多 timeoutMs）；已 ready/failed 立即返回，避免加载失败时干等。 */
+  function waitKwsReady(timeoutMs: number): Promise<void> {
+    if (wakeReady.value !== 'loading') return Promise.resolve()
+    return new Promise((resolve) => {
+      const done = (): void => {
+        if (timer) clearTimeout(timer)
+        kwsReadyWaiters = kwsReadyWaiters.filter((f) => f !== done)
+        resolve()
+      }
+      const timer = setTimeout(done, timeoutMs)
+      kwsReadyWaiters.push(done)
+    })
+  }
   const kwsService: WakeService = createWakeService({
     wakeWords: DEFAULT_WAKE_WORDS,
     lang: getLanguage(),
     onWake: (word) => { handleWakeHit(word, true) },
     onError: (msg) => { console.warn('[kws]', msg) },
-    onReady: (ok) => { wakeReady.value = ok ? 'ready' : 'failed' },
+    onReady: (ok) => { wakeReady.value = ok ? 'ready' : 'failed'; resolveKwsReady() },
   })
   function startKws(): void {
     if (!kwsService.isSupported()) {
       wakeReady.value = 'failed'
+      resolveKwsReady()
       return
     }
     kwsService.start()
@@ -1430,7 +1648,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 下次开启会重新加载模型，回到「加载中」
     wakeReady.value = 'loading'
   }
-  // KWS 插件可用时展示端侧唤醒；不可用时仍可唤醒（ASR 文本兜底），故 wakeSupported 恒 true。
+  // 唤醒只走端侧 KWS，没有 ASR 文本兜底（唤醒前不调 ASR 是硬原则）：
+  // 不可用时用户仍可点圆球开始，故 wakeSupported 恒 true。
   const wakeSupported = true
   const wakeProviderName = computed(() =>
     kwsService.isSupported() ? kwsService.providerName : '网关语音（本地 ASR）'
@@ -1570,7 +1789,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     return { sung: chars.slice(0, n).join(''), rest: chars.slice(n).join('') }
   })
 
+  // App 回前台兜底：iOS 锁屏冻结的 JS 定时器无法自恢复，靠 onAppShow 主动检查卡死态。
+  // uni.onAppShow 是 App 级全局 API，H5 端同样有实现（no-op 或页面 show），两端一致。
+  const appShowHandler = () => resumeFromBackgroundCheck()
+  const uniAny = typeof uni !== 'undefined' ? (uni as unknown as Record<string, unknown>) : null
+  if (uniAny && typeof uniAny.onAppShow === 'function') {
+    (uniAny.onAppShow as (fn: () => void) => void)(appShowHandler)
+  }
+
   onUnmounted(() => {
+    if (uniAny && typeof uniAny.offAppShow === 'function') {
+      (uniAny.offAppShow as (fn: () => void) => void)(appShowHandler)
+    }
     clearT1()
     clearT2()
     clearClosing()

@@ -6,12 +6,12 @@ import {
 } from '../../../src/core/config/storage'
 
 describe('app config', () => {
-  it('默认是自带服务、中文，语音服务为内置 / 本地 9529 / 无密钥', () => {
+  it('默认是自带服务、中文，语音服务为内置 / 公网代理 / 无密钥', () => {
     const config = createDefaultConfig()
     expect(config.mode).toBe('byok')
     expect(config.language).toBe('zh-CN')
     expect(config.voice.provider).toBe('builtin')
-    expect(config.voice.builtin.url).toBe('http://127.0.0.1:9529')
+    expect(config.voice.builtin.url).toBe('https://25946kt718.goho.co')
     expect(config.voice.builtin.apiKey).toBe('')
   })
 
@@ -19,16 +19,7 @@ describe('app config', () => {
     const a = createDefaultVoice()
     const b = createDefaultVoice()
     a.builtin.url = 'http://x'
-    expect(b.builtin.url).toBe('http://127.0.0.1:9529')
-  })
-
-  it('两个来源的地址 / 密钥各自独立保存', () => {
-    const a = createDefaultVoice()
-    a.builtin.url = 'http://lan'
-    a.dashscope.apiKey = 'sk-x'
-    expect(a.builtin.url).toBe('http://lan')
-    expect(a.dashscope.apiKey).toBe('sk-x')
-    expect(a.builtin.apiKey).toBe('')
+    expect(b.builtin.url).toBe('https://25946kt718.goho.co')
   })
 
   it('未知 provider 回退到内置，url / apiKey 收敛为字符串（迁移进内置这一份）', () => {
@@ -51,46 +42,45 @@ describe('app config', () => {
     const v = createDefaultVoice()
     expect(v.builtin.asrModel).toBe('')
     expect(v.builtin.ttsModel).toBe('')
-    expect(v.dashscope.asrModel).toBe('')
-    expect(v.dashscope.ttsModel).toBe('')
-  })
-
-  it('两个来源的 ASR / TTS 模型各自独立保存', () => {
-    const config = normalizeConfig({
-      voice: {
-        provider: 'builtin',
-        builtin: { url: '', apiKey: '', asrModel: 'sensevoice-small', ttsModel: 'edge-tts' },
-        dashscope: { url: '', apiKey: 'k', asrModel: 'fun-asr-realtime', ttsModel: 'cosyvoice-v3-plus' },
-      },
-    })
-    expect(config.voice.builtin.asrModel).toBe('sensevoice-small')
-    expect(config.voice.builtin.ttsModel).toBe('edge-tts')
-    expect(config.voice.dashscope.asrModel).toBe('fun-asr-realtime')
-    expect(config.voice.dashscope.ttsModel).toBe('cosyvoice-v3-plus')
   })
 
   it('ASR / TTS 模型名 trim，非字符串与缺省收敛为空串', () => {
     const config = normalizeConfig({
       voice: {
-        provider: 'dashscope',
-        dashscope: { url: '', apiKey: 'k', asrModel: '  fun-asr  ', ttsModel: 123 },
+        provider: 'builtin',
+        builtin: { url: '', apiKey: '', asrModel: '  sensevoice  ', ttsModel: 123 },
       },
     })
-    expect(config.voice.dashscope.asrModel).toBe('fun-asr')
-    expect(config.voice.dashscope.ttsModel).toBe('')
-    expect(config.voice.builtin.asrModel).toBe('')
+    expect(config.voice.builtin.asrModel).toBe('sensevoice')
     expect(config.voice.builtin.ttsModel).toBe('')
   })
 
   it('内置缺地址时补默认根地址，避免空串连到奇怪的地方', () => {
     const config = normalizeConfig({ voice: { provider: 'builtin', url: '', apiKey: '' } })
-    expect(config.voice.builtin.url).toBe('http://127.0.0.1:9529')
+    expect(config.voice.builtin.url).toBe('https://25946kt718.goho.co')
   })
 
-  it('dashscope 缺地址时不补内置地址', () => {
-    const config = normalizeConfig({ voice: { provider: 'dashscope', url: '', apiKey: 'sk-xxx' } })
-    expect(config.voice.dashscope.url).toBe('')
-    expect(config.voice.dashscope.apiKey).toBe('sk-xxx')
+  it('存量旧默认地址（本机 9529）自动迁移到公网代理，用户自填地址不动', () => {
+    const migrated = normalizeConfig({
+      voice: { provider: 'builtin', url: 'http://127.0.0.1:9529', apiKey: '' },
+    })
+    expect(migrated.voice.builtin.url).toBe('https://25946kt718.goho.co')
+    const kept = normalizeConfig({
+      voice: { provider: 'builtin', url: 'http://192.168.1.20:9529', apiKey: '' },
+    })
+    expect(kept.voice.builtin.url).toBe('http://192.168.1.20:9529')
+  })
+
+  it('旧 dashscope 来源存档落回内置：provider 收敛、dashscope 子配置丢弃、走内置默认地址', () => {
+    const config = normalizeConfig({
+      voice: {
+        provider: 'dashscope',
+        dashscope: { url: 'https://old-dashscope', apiKey: 'sk-old', model: 'qwen' },
+      },
+    })
+    expect(config.voice.provider).toBe('builtin')
+    expect(config.voice.builtin.url).toBe('https://25946kt718.goho.co')
+    expect(config.voice.builtin.apiKey).toBe('')
   })
 
   it('完全非法的输入也能得到可用默认配置', () => {

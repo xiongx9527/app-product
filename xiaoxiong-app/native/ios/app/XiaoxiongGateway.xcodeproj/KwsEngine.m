@@ -73,11 +73,13 @@ static const NSUInteger kMaxPendingFrames = 16;  // 积压超过则丢最旧，�
 }
 
 - (BOOL)p_startLockedWithError:(NSError **)error {
-    NSString *modelDir = @"KwsResources/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01";
+    // 2026-11-22 换用 zh-en-3M-2025 模型：离线验证旧模型只中1遍、新模型2遍全中
+    NSString *modelDir = @"KwsResources/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20";
     NSString *root = [self.bundle.bundlePath stringByAppendingPathComponent:modelDir];
-    NSString *encoder = [root stringByAppendingPathComponent:@"encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"];
-    NSString *decoder = [root stringByAppendingPathComponent:@"decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"];
-    NSString *joiner = [root stringByAppendingPathComponent:@"joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"];
+    // 新模型 epoch-13、chunk-16；decoder 官方无 int8 版，用 fp32 的 .onnx
+    NSString *encoder = [root stringByAppendingPathComponent:@"encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx"];
+    NSString *decoder = [root stringByAppendingPathComponent:@"decoder-epoch-13-avg-2-chunk-16-left-64.onnx"];
+    NSString *joiner = [root stringByAppendingPathComponent:@"joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx"];
     NSString *tokens = [root stringByAppendingPathComponent:@"tokens.txt"];
     NSString *keywords = [root stringByAppendingPathComponent:@"keywords.txt"];
 
@@ -105,7 +107,10 @@ static const NSUInteger kMaxPendingFrames = 16;  // 积压超过则丢最旧，�
     cfg.model_config.model_type = "zipformer2";
     cfg.keywords_file = keywords.UTF8String;
     cfg.max_active_paths = 4;
-    cfg.keywords_score = 1.5f;
+    // score=2.0：真机录音离线 sweep 铁证——1.5 时两遍唤醒词只中第 2 遍，2.0 时两遍全中。
+    // threshold 保持官方 0.25（0.02~0.25 对命中无影响，瓶颈在 score）。误唤醒由 rearm 去抖
+    // + 只认「小熊小熊」兜底。
+    cfg.keywords_score = 2.0f;
     cfg.keywords_threshold = 0.25f;
 
     _spotter = SherpaOnnxCreateKeywordSpotter(&cfg);

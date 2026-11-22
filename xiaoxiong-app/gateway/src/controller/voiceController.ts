@@ -163,23 +163,13 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
   // 记录当前绑定的 socket：旧连接若滞后断开，不应再清掉已切到新连接的会话
   boundWs = ws
 
-  let alive = true
-  const onPong = (): void => {
-    alive = true
-  }
-  const pingTimer = setInterval(() => {
-    if (!alive) {
-      ws.terminate()
-      return
-    }
-    alive = false
-    try {
-      ws.ping()
-    } catch {
-      /* 连接已坏，下个周期 terminate */
-    }
-  }, 15000)
-
+  // 【2026-11-21 移除 ping-pong 主动 terminate —— 播报卡死根因】
+  // 原逻辑：每 15s 发 ping，连续两次没收到 pong 就 ws.terminate()。但 App 端用
+  // uni.connectSocket（DCloud），不保证响应标准 WS ping 帧；播报期 JS 线程忙时 pong
+  // 回调更容易延迟 → 网关误判连接已死，在连接存活约 45-48s 时 terminate（真机铁证：
+  // 播报中途 Socket CONNRESET/Connection reset by peer，@48.242s，随后 tts.idle 全丢、
+  // 界面卡「正在播报/正在听」）。语音助手是长连接，宁可 keep 着也不要误杀：
+  // 连接存活交给 TCP keepalive，断连由 onclose/onerror 自然处理，前端已有自动重连。
   const onMessage = (data: RawData, isBinary: boolean): void => {
     if (isBinary) {
       const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
@@ -189,7 +179,6 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
     }
   }
   const cleanup = (): void => {
-    clearInterval(pingTimer)
     // 仅当本连接仍是会话当前绑定的 socket 才清掉会话状态；
     // 若已重连到新 socket，旧连接的延迟 close 不得误伤正在使用的新会话。
     if (boundWs === ws) {
@@ -198,7 +187,6 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
     }
   }
 
-  ws.on('pong', onPong)
   ws.on('message', onMessage)
   ws.on('close', cleanup)
   ws.on('error', cleanup)

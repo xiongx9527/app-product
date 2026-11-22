@@ -41,6 +41,10 @@ import androidx.core.content.ContextCompat;
 
 import org.json.JSONObject;
 
+// onReady KWS 就绪回调用到 Map/HashMap；HEAD 引入时漏了 import，补上才能编译。
+import java.util.HashMap;
+import java.util.Map;
+
 import io.dcloud.feature.uniapp.annotation.UniJSMethod;
 import io.dcloud.feature.uniapp.bridge.UniJSCallback;
 import io.dcloud.feature.uniapp.common.UniModule;
@@ -138,7 +142,8 @@ public class WakeModule extends UniModule {
     /** 诊断：每 400ms 打印一次 KWS 当前解码出的 token（有声音时），定位「有时快有时慢」漏检原因 */
     private long kwsDiagAt = 0;
     /** 模型在 assets 内的目录（相对 assets 根），由打包脚本从 native/kws/vendor 拷入 */
-    private static final String KWS_ASSET_DIR = "kws/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01";
+    // 2026-11-22 换用 zh-en-3M-2025 模型：离线验证同一段真机录音旧模型只中1遍、新模型2遍全中
+    private static final String KWS_ASSET_DIR = "kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20";
 
     // ---- 本地提示音播放（原生 MediaPlayer，不申请音频焦点）----
     // 为什么不用 uni.createInnerAudioContext：那条路底层 io.dcloud.feature.audio.AudioPlayer
@@ -590,9 +595,10 @@ public class WakeModule extends UniModule {
             feat.setFeatureDim(80);
 
             OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
-            transducer.setEncoder(KWS_ASSET_DIR + "/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
-            transducer.setDecoder(KWS_ASSET_DIR + "/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
-            transducer.setJoiner(KWS_ASSET_DIR + "/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+            // 新模型 epoch-13、chunk-16；decoder 官方无 int8 版，用 fp32 的 .onnx
+            transducer.setEncoder(KWS_ASSET_DIR + "/encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx");
+            transducer.setDecoder(KWS_ASSET_DIR + "/decoder-epoch-13-avg-2-chunk-16-left-64.onnx");
+            transducer.setJoiner(KWS_ASSET_DIR + "/joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx");
 
             OnlineModelConfig model = new OnlineModelConfig();
             model.setTransducer(transducer);
@@ -604,9 +610,11 @@ public class WakeModule extends UniModule {
             cfg.setModelConfig(model);
             cfg.setKeywordsFile(KWS_ASSET_DIR + "/keywords.txt");
             cfg.setMaxActivePaths(4);
-            // 官方默认 score=1.5/threshold=0.25。曾放宽到 2.0/0.18 想提灵敏度，但旁边电视播放时
-            // 被噪声误触发、且 rearm 去抖锁死反而「唤醒不了」——恢复官方保守默认值。
-            cfg.setKeywordsScore(1.5f);
+            // score=2.0（官方 bonus score，越大越易命中）：真机录音离线 sweep 铁证——score=1.5
+            // 时两遍「小熊小熊」只中第 2 遍（第 1 遍漏），score=2.0 时两遍全中；threshold 在
+            // 0.02~0.25 间不影响结果，瓶颈在 score。此前误唤醒是 2.0+threshold 0.18 组合所致，
+            // 现保持官方 threshold 0.25 + rearm 去抖 + 只认「小熊小熊」，误唤醒风险低。
+            cfg.setKeywordsScore(2.0f);
             cfg.setKeywordsThreshold(0.25f);
 
             kws = new KeywordSpotter(ctx.getAssets(), cfg);
@@ -680,6 +688,16 @@ public class WakeModule extends UniModule {
     @UniJSMethod(uiThread = false)
     public void onReady(UniJSCallback cb) {
         if (cb != null) readyCb = cb;
+        // 同 iOS 的「已 ready 立即兑现」保护：initKws 在 start() 里同步完成，
+        // 若 JS 的 onReady 绑定（异步 weex 桥）晚于 start() 的回调，回调就丢了、
+        // 前端 wakeReady 永远停在 loading → 「已就绪」提示不播。注册时若 kws 已就绪立即补发。
+        if (readyCb != null && kws != null) {
+            try {
+                Map<String, Object> payload = new HashMap<>();
+                payload.put("ready", true);
+                readyCb.invokeAndKeepAlive(new org.json.JSONObject(payload));
+            } catch (Throwable ignored) { }
+        }
     }
 
     // ---- 采集实现 ----

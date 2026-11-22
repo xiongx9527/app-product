@@ -34,9 +34,11 @@ export interface DetailItem {
 export type ServerEvent =
   | { type: 'asr.partial'; text: string }
   /** queueRemaining 是服务端给出的队列剩余数，客户端据此同步，不靠本地猜测 */
-  | { type: 'asr.final'; text: string; queueRemaining: number }
+  | { type: 'asr.final'; text: string; queueRemaining: number; fromQueue?: boolean }
   /** 当前轮还没播完，这句只识别不打断，排进队列 */
   | { type: 'asr.queued'; text: string; position: number; size: number; message: string }
+  /** 网关队列已全部消费完：客户端据此清掉排队角标 */
+  | { type: 'queue.drained' }
   /** 这句没被接收（队列满），message 是服务端本地化的原因；reason 标记队列满 */
   | { type: 'asr.rejected'; text: string; message: string; reason: 'queue-full' }
   | { type: 'llm.thinking'; text: string }

@@ -128,10 +128,13 @@ for udid in "${UDIDS[@]}"; do
   LAST_GOOD_APP="$APP"
 
   # 3b) 用当次产物给该台装机
+  # 不用 --justlaunch：它会用 lldb 附加把 App 拉起，lldb 的 safequit 会让 App 在启动
+  # 0.5s 内触发 lldb_image_notifier SIGTRAP（真机反复实锤），表现为「一打开就闪退」，
+  # 但那只是调试器附加的副作用，不是 App 代码崩溃。改为只装不启，由用户手动点图标启动。
   echo "  [2/2] 装机"
   INSTALL_LOG="/tmp/reprovision-install-$udid.log"
-  "$IOS_DEPLOY" --id "$udid" --bundle "$APP" --no-wifi --justlaunch > "$INSTALL_LOG" 2>&1
-  # justlaunch 的 safequit 常返回非 0，以日志为准，且必须区分「装上了」与「装上了但启动被拦」
+  "$IOS_DEPLOY" --id "$udid" --bundle "$APP" --no-wifi > "$INSTALL_LOG" 2>&1
+  # 以日志为准，且必须区分「装上了」与「装上了但启动被拦」
   if grep -q 'Installed package' "$INSTALL_LOG"; then
     if grep -qiE 'Cannot launch|not explicitly trusted|invalid code signature' "$INSTALL_LOG"; then
       echo "        已安装，待设备端信任后即可打开"

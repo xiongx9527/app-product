@@ -212,7 +212,7 @@ else
 end
 
 # KwsResources 模型目录：拷进壳工程并建 folder reference（Copy Bundle Resources）
-KWS_MODEL = 'sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01'
+KWS_MODEL = 'sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20'
 kws_res_src = File.join(factory_root, 'KwsResources', KWS_MODEL)
 kws_res_dst = File.join(shell_root, 'HBuilder-Hello', 'KwsResources', KWS_MODEL)
 if File.directory?(kws_res_src)

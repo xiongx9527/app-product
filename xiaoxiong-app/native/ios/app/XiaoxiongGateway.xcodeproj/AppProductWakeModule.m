@@ -244,6 +244,12 @@ UNI_EXPORT_METHOD(@selector(start:))
             NSLog(@"%@ KWS 启动失败: %@", kTag, err.localizedDescription);
             void (^cb)(id, BOOL) = self->_kwsErrorCb;
             if (cb) dispatch_async(dispatch_get_main_queue(), ^{ cb(err.localizedDescription ?: @"KWS 启动失败", YES); });
+            // 同时兑现「未就绪」：界面据此提示「语音唤醒不可用，请点圆球」，
+            // 否则 JS 侧永远停在 loading，用户会以为只是还在加载、一直白喊。
+            UniModuleKeepAliveCallback readyCb = self->_readyCb;
+            if (readyCb) dispatch_async(dispatch_get_main_queue(), ^{
+                @try { readyCb(@NO, YES); } @catch (NSException *e) {}
+            });
         }
     });
 }

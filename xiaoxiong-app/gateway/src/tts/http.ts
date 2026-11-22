@@ -5,7 +5,9 @@ import type { VendorParams } from '../config'
  *  设备经 adb reverse 访问本机 9529，偶发网络抖动会让短句也超时（实测"比如放首歌、"
  *  6字也 aborted）；8s 偏紧，放宽到 12s 减少误报，但仍小于 speakSentence 的帧间隔
  *  15s，避免两处超时竞态导致重复提示。 */
-const TTS_TIMEOUT_MS = 12000
+// 单次 TTS 合成超时：真机铁证 100+ 字天气文本 edge-tts 合成要 7.35s，6s 会误判失败。
+// 设 20s 覆盖长文本；须 < speakSentence 的 gapMs（已调到 30s），否则 gap 先触发误判挂死。
+const TTS_TIMEOUT_MS = 20000
 /** TTS 单帧大小：9600B = 200ms @24k/16bit。整段 TTS（builtin/deepseek 一次返回完整
  *  WAV）切成此尺寸逐帧下发——单帧 1.2MB（base64 1.6MB）经 weex 桥传输会超限/截断
  *  导致播不出来（真机"今天天气怎么样"文字出了没声音的根因）。 */
@@ -31,44 +33,55 @@ export class HttpVoiceTts implements TtsProvider {
   ) {}
 
   async *synthesize(text: string): AsyncIterable<Uint8Array> {
-    try {
-      const res = await fetch(`${this.baseUrl}/v1/audio/speech`, {
-        method: 'POST',
-        headers: this.authHeaders({ 'content-type': 'application/json' }),
-        body: JSON.stringify({
-          input: text,
-          // 不写死 edge 音色：9529 按当前 TTS_PROVIDER 选默认音色（builtin→XiaoxiaoNeural、
-          // deepseek→stella）。写死 edge 音色会让 deepseek 分支拒绝（502）导致播不出来。
-          // 客户端显式配了 voice（params.voice）才覆盖。
-          response_format: 'wav',
-          speed: 1.0,
-          ...this.params,
-        }),
-        signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
-      })
-      if (!res.ok || !res.body) {
-        // 失败必须显式抛错，让 speakSentence 的 catch 发 tts-error 本地 mp3 提示。
-        // 旧实现回退静音帧：网关收到"帧"就当成功，既不播声音也不播提示（用户"失败了没提示"）。
-        throw new Error(`[tts] 合成失败 HTTP ${res.status}`)
+    // 公网链路偶发抖动（TLS 断连/超时）会让单次 fetch 抛错 → 误报「这段没能播报」。
+    // 重试 1 次：单次超时降到 6s，两次合计 ≤12s < speakSentence 的 15s gap 超时，
+    // 网络抖动在 gap 内重试成功即可正常播报，不再误报。真失败（上游挂）才抛错走 tts-error。
+    let lastErr: unknown
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const pcm = await this.fetchPcm(text, TTS_TIMEOUT_MS)
+        // 整段 TTS（builtin/deepseek 一次返回完整 WAV）必须切成小帧下发：
+        // 原生 playPcm(String b64) 每帧 Base64.decode 后写 AudioTrack，单帧 1.2MB（base64 1.6MB）
+        // 经 weex 桥传输会超限/截断 → 播不出来。切成 9600B(200ms@24k) 匹配流式播放。
+        for (let off = 0; off < pcm.length; off += TTS_FRAME_BYTES) {
+          yield pcm.subarray(off, Math.min(off + TTS_FRAME_BYTES, pcm.length))
+        }
+        return
+      } catch (err) {
+        lastErr = err
+        if (attempt === 0) console.warn('[tts] 合成失败，重试一次：', err)
       }
-      const contentType = res.headers.get('content-type') ?? ''
-      const ab = new Uint8Array(await res.arrayBuffer())
-      if (contentType.includes('application/json') || !isRiff(ab)) {
-        throw new Error('[tts] 合成失败：响应非 WAV')
-      }
-      const pcm = extractWavData(ab)
-      if (pcm.length === 0) throw new Error('[tts] 合成失败：WAV 无 data 段')
-      // 整段 TTS（builtin/deepseek 一次返回完整 WAV）必须切成小帧下发：
-      // 原生 playPcm(String b64) 每帧 Base64.decode 后写 AudioTrack，单帧 1.2MB（base64 1.6MB）
-      // 经 weex 桥传输会超限/截断 → 播不出来。切成 9600B(200ms@24k) 匹配流式播放。
-      for (let off = 0; off < pcm.length; off += TTS_FRAME_BYTES) {
-        yield pcm.subarray(off, Math.min(off + TTS_FRAME_BYTES, pcm.length))
-      }
-    } catch (err) {
-      // 失败显式抛错（含 fetch 超时/网络错误）——speakSentence catch 会发 tts-error 提示音。
-      console.error('[tts] 调用本地语音服务失败：', err)
-      throw err
     }
+    // 两次都失败：显式抛错——speakSentence catch 会发 tts-error 本地 mp3 提示。
+    console.error('[tts] 调用语音服务失败（已重试）：', lastErr)
+    throw lastErr
+  }
+
+  /** 单次 TTS 合成请求：fetch + 校验 WAV + 提取 PCM。 */
+  private async fetchPcm(text: string, timeoutMs: number): Promise<Uint8Array> {
+    const res = await fetch(`${this.baseUrl}/v1/audio/speech`, {
+      method: 'POST',
+      headers: this.authHeaders({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        input: text,
+        // 不写死 edge 音色：9529 按当前 TTS_PROVIDER 选默认音色（builtin→XiaoxiaoNeural、
+        // deepseek→stella）。写死 edge 音色会让 deepseek 分支拒绝（502）导致播不出来。
+        // 客户端显式配了 voice（params.voice）才覆盖。
+        response_format: 'wav',
+        speed: 1.0,
+        ...this.params,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok || !res.body) throw new Error(`[tts] 合成失败 HTTP ${res.status}`)
+    const contentType = res.headers.get('content-type') ?? ''
+    const ab = new Uint8Array(await res.arrayBuffer())
+    if (contentType.includes('application/json') || !isRiff(ab)) {
+      throw new Error('[tts] 合成失败：响应非 WAV')
+    }
+    const pcm = extractWavData(ab)
+    if (pcm.length === 0) throw new Error('[tts] 合成失败：WAV 无 data 段')
+    return pcm
   }
 
   /** 统一附加鉴权头：有 apiKey 时带 Bearer，否则原样返回。 */
