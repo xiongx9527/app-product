@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { readFileSync } from 'node:fs'
 import { WebSocketServer } from 'ws'
 import { loadConfig } from './config'
 import { createDb } from './db/client'
@@ -71,6 +72,27 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       // 必须排在 apiBase catch-all 之前，否则会被通用 api 路由抢走。
       if (url.pathname === '/api/diag') {
         writeJson(res, 200, { errors: getStreamDiagnostics() }, { 'access-control-allow-origin': '*' })
+        return
+      }
+      // 语音会话诊断日志（barge-diag.log）尾部：只读、本机调试用。
+      // iOS 的网关跑在 App 沙盒里、无法像 Android 那样 run-as 取文件，只能经这个接口读，
+      // 否则播报链（TTS-SENTENCES/PB-DONE/TTS-FAIL）在 iOS 上完全不可观测。
+      if (url.pathname === '/api/diag/log') {
+        const raw = Number(url.searchParams.get('lines') ?? 300)
+        const lines = Math.min(2000, Math.max(1, Number.isFinite(raw) ? raw : 300))
+        let text = ''
+        try {
+          const home = process.env.GATEWAY_HOME ?? '.'
+          text = readFileSync(`${home}/barge-diag.log`, 'utf8').split('\n').slice(-lines).join('\n')
+        } catch {
+          text = ''
+        }
+        res.writeHead(200, {
+          'content-type': 'text/plain; charset=utf-8',
+          'access-control-allow-origin': '*',
+          'cache-control': 'no-store',
+        })
+        res.end(text)
         return
       }
       if (url.pathname === '/api/health' || url.pathname === '/health') {

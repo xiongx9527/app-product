@@ -1406,16 +1406,28 @@ export class VoiceSessionService {
     }
     // 超时看门狗：上游 LLM 卡住/冷启动慢时，主动舍弃本轮流式增量、断开下行播放，
     // 立即播友好兜底，不让用户干等、也不暴露技术故障（用户：「不要让用户觉得好慢」）。
-    // 深度思考（params.think=true）时推理模型（deepseek-v4-pro）思考链可能要 60~90s
-    // （实测复杂问题 reasoning_tokens 5000+ 耗时 88s），15s 默认超时会误砍 → 卡"正在思考"。
-    // 故 think 开启时放宽到 120s；未开启仍用短超时快速兜底。
+    // 【空闲超时，不是总时长超时】每次收到正文/思考增量都把计时器续期——只要模型还在吐字就
+    // 一直等。真机铁证：原实现是「整轮 15s 总超时」，"总结科比十大瞬间"这类长回答生成本身
+    // 就要 16s+，到点被砍 → 播 llm-error、一个字都不说（14:58:37 收到识别、14:58:53 报错）。
+    // 首包另给宽限：think 开启时推理模型首 token 可能要 60~90s（实测复杂问题 88s），
+    // 故首个增量前用 THINK_LLM_TIMEOUT_MS(120s)；未开启思考仍用短超时快速兜底。
     const thinkEnabled = this.lastVoice?.params?.think === true
-    const timeoutMs = this.deps.llmTimeoutMs ?? (thinkEnabled ? THINK_LLM_TIMEOUT_MS : DEFAULT_LLM_TIMEOUT_MS)
+    const idleMs = this.deps.llmTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS
+    const firstMs = this.deps.llmTimeoutMs ?? (thinkEnabled ? THINK_LLM_TIMEOUT_MS : DEFAULT_LLM_TIMEOUT_MS)
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null
+    let rejectTimeout: ((err: Error) => void) | null = null
+    /** 重新计时：首包前用 firstMs，开始吐字后每次增量都按 idleMs 续期 */
+    const armLlmTimeout = (ms: number) => {
+      if (timeoutTimer) clearTimeout(timeoutTimer)
+      timeoutTimer = setTimeout(() => rejectTimeout?.(new Error('LLM_TIMEOUT')), ms)
+    }
+    /** 有增量就续期（思考帧也算：思考期模型确实在工作，不能当卡死） */
+    const bumpLlmTimeout = () => armLlmTimeout(idleMs)
     const replyPromise = this.agent.reply(
       text,
       (delta) => {
         if (stale() || timedOut) return
+        bumpLlmTimeout()
         // 无字数闸门：llm.delta 全量下发，界面与播报都完整。
         this.deps.send({ type: 'llm.delta', text: delta })
         buffer += delta
@@ -1429,6 +1441,7 @@ export class VoiceSessionService {
       (delta) => {
         // 思考过程只给界面看，不进 buffer、不进 TTS
         if (stale() || timedOut) return
+        bumpLlmTimeout()
         this.deps.send({ type: 'llm.thinking', text: delta })
       }
     )
@@ -1438,7 +1451,8 @@ export class VoiceSessionService {
       const full = await Promise.race([
         replyPromise,
         new Promise<string>((_, reject) => {
-          timeoutTimer = setTimeout(() => reject(new Error('LLM_TIMEOUT')), timeoutMs)
+          rejectTimeout = reject
+          armLlmTimeout(firstMs)
         }),
       ])
       if (stale()) {

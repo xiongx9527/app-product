@@ -51,6 +51,8 @@ static const NSInteger kFrameBytes = 1024;
     NSTimeInterval _ttsLastDataAt; // 最后一次收到 TTS 数据的时间
     UniModuleKeepAliveCallback _playbackIdleCb; // 播空回调 JS
     BOOL _playRunning;          // 是否正在播报（直连上传门控用）
+    dispatch_queue_t _ttsIdleQueue;  // 播空检测定时器队列（串行，独立于采集/WS 线程）
+    dispatch_source_t _ttsIdleTimer; // 播空检测定时器（见 startTtsIdleTimer）
     BOOL _standbyMuted;         // 待唤醒态：上行全静音（唤醒前不调 ASR），KWS 照常听
     UniModuleKeepAliveCallback _readyCb; // KWS 就绪回调（JS onReady）
 }
@@ -68,6 +70,7 @@ static const NSInteger kFrameBytes = 1024;
         _ttsLock = [[NSLock alloc] init];
         _ttsHasData = NO;
         _playRunning = NO;
+        _ttsIdleQueue = dispatch_queue_create("com.xiaoxiong.tts.idle", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -301,6 +304,10 @@ UNI_EXPORT_METHOD(@selector(playCue:))
     _cuePlayer.delegate = self;
     // 关键：不再 setCategory / setActive——复用采集的 PlayAndRecord 会话直接播放，
     // 避免 DCloud InnerAudioContext 切换 category 打断 KWS 采集。
+    // 但必须切外放：PlayAndRecord 默认输出是听筒（receiver），首启「网关启动中」这类
+    // 在任何 TTS 之前的提示音会从听筒出，音量比后面走外放的提示音小一截（真机现象）。
+    // 与 TTS 首帧的 overrideOutputAudioPort 保持一致，只改输出口、不碰 category。
+    [[AVAudioSession sharedInstance] overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
     [_cuePlayer prepareToPlay];
     BOOL ok = [_cuePlayer play];
     NSLog(@"%@ playCue %@ ok=%d", kTag, name, ok);
@@ -485,8 +492,9 @@ UNI_EXPORT_METHOD(@selector(stopCue))
     if (off > 0) {
         [_carry replaceBytesInRange:NSMakeRange(0, off) withBytes:NULL length:0];
     }
-    // 顺带检测 TTS 播空（采集帧持续到达，用它驱动 idle 检测）
-    if (_playRunning) [self checkTtsIdle];
+    // 播空检测不在这里做：已改为 startTtsIdleTimer 独立定时器驱动。
+    // 旧实现在此调用 checkTtsIdle，依赖 tap 持续回调；tap 一旦停摆就永远检测不到播空
+    // → playback_done 不发 → 界面卡「正在播报」（详见 startTtsIdleTimer 注释）。
 }
 
 - (void)stopCapture {
@@ -534,7 +542,10 @@ static void ttsAudioQueueCallback(void *userData, AudioQueueRef queue, AudioQueu
 
 /// 确保 TTS AudioQueue 已启动（复用采集的 PlayAndRecord 会话，不重设 category）
 - (void)ensureTtsQueue {
-    if (_ttsQueue) return;
+    [_ttsLock lock];
+    BOOL exists = (_ttsQueue != nil);
+    [_ttsLock unlock];
+    if (exists) return;
     AVAudioSession *session = [AVAudioSession sharedInstance];
     // 首帧播放切外放保证 audible（"声音小"根因之一）；不重设 category（会杀采集）
     [session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:nil];
@@ -562,36 +573,93 @@ static void ttsAudioQueueCallback(void *userData, AudioQueueRef queue, AudioQueu
     AudioQueueStart(_ttsQueue, NULL);
     _playRunning = YES;
     NSLog(@"%@ TTS AudioQueue started", kTag);
+    // 播空检测由独立定时器驱动，不再依赖采集回调（见 startTtsIdleTimer 注释）
+    [self startTtsIdleTimer];
+}
+
+/**
+ * 启动播空检测定时器（100ms 轮询）。
+ *
+ * 为什么不能用采集回调顺带检查（旧实现）：那要求 AVAudioEngine 的 tap 一直在跑。真机上
+ * 首帧播放会 overrideOutputAudioPort:Speaker 切路由，路由变化可能让引擎 tap 停摆；播报期
+ * 上行被静音、JS 线程被 TTS 占满时也可能不再回调——于是 checkTtsIdle 永不执行 →
+ * session.playback_done 不发 → 网关 tts.idle 不来 → 界面永久卡「正在播报」，只能等前端
+ * 60s SPEECH_WATCHDOG 兜底（真机现象：播完要等很久状态才变）。Android 一直用独立
+ * idle polling 线程，所以只有 iOS 复现。这里对齐 Android：定时器不依赖任何外部回调。
+ */
+- (void)startTtsIdleTimer {
+    // 注意：这里绝不能用 dispatch_async + block 强捕获 self。
+    // -dealloc → stopTtsQueueInternal → stopTtsIdleTimer 也会走到这里，若 block 捕获 self，
+    // 会在对象已开始析构后再 retain 一次（复活），block 释放时 objc_release 到已释放内存 →
+    // SIGSEGV。真机崩溃栈铁证：线程 com.xiaoxiong.tts.idle 的 __destroy_helper_block_e8_32s
+    // → objc_release。App 端这个模块非单例、启动期会被创建/释放，所以一启动就崩。
+    // 因此生命周期全同步做：dispatch_source_cancel 本身线程安全、不需要 block。
+    @synchronized (self) {
+        if (_ttsIdleTimer) return;
+        if (!_ttsIdleQueue) _ttsIdleQueue = dispatch_queue_create("com.xiaoxiong.tts.idle", DISPATCH_QUEUE_SERIAL);
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _ttsIdleQueue);
+        if (!timer) return;
+        // 100ms 一次，允许 50ms 抖动（省电，不影响 600ms 判空精度）
+        dispatch_source_set_timer(timer,
+                                  dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                                  (uint64_t)(0.1 * NSEC_PER_SEC),
+                                  (uint64_t)(0.05 * NSEC_PER_SEC));
+        // 只弱捕获：self 释放后 handler 变 no-op，不会复活也不会访问野指针
+        __weak AppProductWakeModule *weakSelf = self;
+        dispatch_source_set_event_handler(timer, ^{
+            [weakSelf checkTtsIdle];
+        });
+        _ttsIdleTimer = timer;
+        dispatch_resume(timer);
+    }
+}
+
+/** 停播空检测定时器（同步取消；可从 dealloc / 定时器自身 handler 里调用）。 */
+- (void)stopTtsIdleTimer {
+    @synchronized (self) {
+        if (!_ttsIdleTimer) return;
+        dispatch_source_cancel(_ttsIdleTimer);
+        _ttsIdleTimer = nil;
+    }
 }
 
 /// 停止 TTS AudioQueue 并复位
 - (void)stopTtsQueueInternal {
-    if (_ttsQueue) {
-        AudioQueueStop(_ttsQueue, true);
-        AudioQueueDispose(_ttsQueue, true);
-        _ttsQueue = nil;
-    }
+    [self stopTtsIdleTimer];
+    // 先在同一把锁内把 _ttsQueue 置空、清缓冲，再停/释放队列：
+    // 这样 checkTtsIdle（定时器队列）读到的状态与这里一致，不会在停播后又误判一次播空；
+    // 且 AudioQueueStop/Dispose 不在锁内调用，避免与填充回调（要抢同一把锁）互等。
+    AudioQueueRef q;
     [_ttsLock lock];
+    q = _ttsQueue;
+    _ttsQueue = nil;
     [_ttsBuffer setLength:0];
     _ttsHasData = NO;
     [_ttsLock unlock];
+    if (q) {
+        AudioQueueStop(q, true);
+        AudioQueueDispose(q, true);
+    }
     _playRunning = NO;
 }
 
-/// TTS 播空检测：环形缓冲连续空 ≥600ms 且有数据历史 → 播完。在采集回调里顺带检查。
+/// TTS 播空检测：环形缓冲连续空 ≥600ms 且有数据历史 → 播完。由 startTtsIdleTimer 每 100ms 驱动。
 - (void)checkTtsIdle {
-    if (!_ttsQueue || !_ttsHasData) return;
-    NSTimeInterval now = CFAbsoluteTimeGetCurrent();
-    NSUInteger avail;
-    [_ttsLock lock]; avail = _ttsBuffer.length; [_ttsLock unlock];
-    if (avail == 0 && now - _ttsLastDataAt >= 0.6) {
+    // 状态字段跨线程读写（WS 线程写 _ttsQueue/_ttsHasData，本方法在定时器队列读），统一在锁内取快照
+    [_ttsLock lock];
+    BOOL active = (_ttsQueue != nil && _ttsHasData);
+    NSUInteger avail = _ttsBuffer.length;
+    NSTimeInterval lastAt = _ttsLastDataAt;
+    [_ttsLock unlock];
+    if (!active) return;
+    if (avail == 0 && CFAbsoluteTimeGetCurrent() - lastAt >= 0.6) {
         NSLog(@"%@ TTS idle detected", kTag);
         // ① 原生 sendText 回执（可靠主路）
         [_pcmUploader sendText:@"{\"type\":\"session.playback_done\"}"];
         // ② 回调 JS（辅路）
         UniModuleKeepAliveCallback cb = _playbackIdleCb;
         if (cb) @try { cb(@YES, YES); } @catch (NSException *e) {}
-        // ③ 自复位停队列
+        // ③ 自复位停队列（同时取消本定时器）
         [self stopTtsQueueInternal];
     }
 }

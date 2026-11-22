@@ -846,6 +846,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         lastLlmActivityAt = Date.now()
         clearLlmWatchdog()
         cancelPendingIdle()
+        // 【必须】撤销 T1 静默计时：上一句播完时 onPlaybackSettled→markAnswerDone 已经
+        // 启动了 T1(30s)，而队列里的下一句会在几十毫秒内就 tts.start 开播。T1 不会因为
+        // 又出声而自动作废 → 30s 后 T1 超时 → T2(15s) → 退下/会话 cancelled → 剩余批次
+        // 被 stale() 跳过（真机铁证：十大瞬间只播到第 7 条就停，日志里 DONE 后 17ms 就
+        // TTS_START，30+15s 后 state=standby）。ASSISTANT_BUSY 只做 cancelT1、不改状态。
+        dispatch({ type: 'ASSISTANT_BUSY' })
         // 真正开始出声了：撤销"等待出声"提示计时（思考+文字+TTS等待这段已结束）
         disarmThinkingCue()
         // 不再 resetPlayback()：网关已等上一句播完才下发这一句，
@@ -1633,7 +1639,26 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     lang: getLanguage(),
     onWake: (word) => { handleWakeHit(word, true) },
     onError: (msg) => { console.warn('[kws]', msg) },
-    onReady: (ok) => { wakeReady.value = ok ? 'ready' : 'failed'; resolveKwsReady() },
+    onReady: (ok, raw) => {
+      wakeReady.value = ok ? 'ready' : 'failed'
+      // 诊断：原生 ready payload 的真实形态经网关落盘（Android 没有 jsLog，这是唯一可见通路）。
+      // 桥接把 {ready:true} 变成 JSON 字符串时旧解析会误判 failed → 界面「语音唤醒不可用」。
+      try {
+        transport.sendDiag?.({
+          state: 'wake-ready',
+          speaking: false,
+          cue: false,
+          muted: false,
+          frames: 0,
+          rms: 0,
+          connected: transport.isConnected(),
+          trace: `ready=${ok} raw=${JSON.stringify(raw)}`,
+        })
+      } catch {
+        // 诊断失败不影响唤醒
+      }
+      resolveKwsReady()
+    },
   })
   function startKws(): void {
     if (!kwsService.isSupported()) {

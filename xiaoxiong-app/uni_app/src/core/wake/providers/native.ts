@@ -18,10 +18,43 @@ interface NativeWakeModule {
   /** 原生 KWS 命中回调：payload 形如 { word: '小熊小熊' }，也可能无参（旧基座） */
   onWake?(callback: (payload?: { word?: string } | string) => void): void
   onError?(callback: (payload: { message?: string } | string) => void): void
-  /** KWS 就绪回调：payload { ready: boolean } 或布尔值 */
-  onReady?(callback: (payload: { ready?: boolean } | boolean) => void): void
+  /** KWS 就绪回调：payload { ready: boolean } / 布尔值 / JSON 字符串（桥接形态不定） */
+  onReady?(callback: (payload: { ready?: boolean } | boolean | string) => void): void
   /** 待唤醒态上行静音（唤醒前不调 ASR）：iOS 实现，Android 可缺省 */
   setStandbyMuted?(muted: boolean): void
+}
+
+/**
+ * 解析原生 KWS 就绪回调的 payload，兼容桥接的各种形态：
+ * boolean / number(1|0) / { ready } / JSON 字符串 `{"ready":true}` / 字符串 "true"。
+ * 解析不出明确 false 时按「就绪」处理——原生只有在引擎可用时才会回调（失败另有 onError），
+ * 宁可放行让用户能喊词，也不要因为 payload 形态异常把可用能力误判成不可用。
+ */
+function parseReadyPayload(payload: unknown): boolean {
+  if (typeof payload === 'boolean') return payload
+  if (typeof payload === 'number') return payload !== 0
+  if (typeof payload === 'string') {
+    const s = payload.trim()
+    if (s === '' ) return true
+    if (s === 'true' || s === '1') return true
+    if (s === 'false' || s === '0') return false
+    try {
+      const obj = JSON.parse(s) as unknown
+      if (typeof obj === 'boolean') return obj
+      if (typeof obj === 'number') return obj !== 0
+      if (obj && typeof obj === 'object' && 'ready' in (obj as Record<string, unknown>)) {
+        return !!(obj as { ready?: unknown }).ready
+      }
+      return true
+    } catch {
+      return true
+    }
+  }
+  if (payload && typeof payload === 'object' && 'ready' in (payload as Record<string, unknown>)) {
+    return !!(payload as { ready?: unknown }).ready
+  }
+  // null/undefined/{} 等无法判定的形态：按就绪处理（见函数注释）
+  return true
 }
 
 function wakeWordOf(payload?: { word?: string } | string): string | undefined {
@@ -110,14 +143,11 @@ export function createNativeWakeProvider(
       if (!instance?.onReady) return
       try {
         instance.onReady((payload) => {
-          // 原生回调的 ready 经 DCloud/weex 桥可能是 boolean、number(1/0) 或 {ready}：
-          // iOS @YES/@NO 桥过来常是 number 1/0，旧逻辑只认 boolean 会把 1 误判成 false →
-          // wakeReady 卡在 failed、「已就绪」提示不播。三种格式都兼容。
-          let ready: boolean
-          if (typeof payload === 'boolean') ready = payload
-          else if (typeof payload === 'number') ready = payload !== 0
-          else ready = !!(payload as { ready?: boolean } | null)?.ready
-          callback(ready)
+          // 原生回调的 ready 经 DCloud 桥的形态不稳定：boolean、number(1/0)、{ready}、
+          // 甚至 JSON 字符串（Android invokeAndKeepAlive(JSONObject) 实测会桥成字符串）。
+          // 旧逻辑只认 boolean/object，字符串 `{"ready":true}` 取 .ready 得 undefined →
+          // 误判 failed → 界面显示「语音唤醒不可用」、点球才动（真机 2026-11-22 复现）。
+          callback(parseReadyPayload(payload), payload)
         })
       } catch (e) { console.warn('[wake] onReady 绑定失败', e) }
     },

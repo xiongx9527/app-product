@@ -32,8 +32,8 @@ export interface WakeServiceOptions {
   /** KWS 命中回调；word 为命中的唤醒词（可能为空，用默认词兜底） */
   onWake: (word?: string) => void
   onError?: (message: string) => void
-  /** KWS 就绪态：true=模型加载完成可喊词，false=加载失败（点圆球兜底） */
-  onReady?: (ready: boolean) => void
+  /** KWS 就绪态：true=模型加载完成可喊词，false=加载失败（点圆球兜底）；raw 为原生原始 payload（诊断用） */
+  onReady?: (ready: boolean, raw?: unknown) => void
   wakeWords?: readonly string[]
   /** 识别语言，默认取配置页里的全局语言 */
   lang?: string
