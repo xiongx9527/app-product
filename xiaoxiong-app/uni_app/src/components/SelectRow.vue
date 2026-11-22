@@ -18,7 +18,7 @@ const props = defineProps<{
   options: Option[]
   modelValue: string
   disabled?: boolean
-  /** 选项较多时开启搜索框（如 DashScope 模型目录很长，便于定位） */
+  /** 选项较多时开启搜索框（如模型目录很长，便于定位） */
   searchable?: boolean
 }>()
 

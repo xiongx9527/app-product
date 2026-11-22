@@ -73,8 +73,8 @@ export function useHealth(wsConnected: Ref<boolean>) {
   async function fetchHealth(): Promise<void> {
     try {
       const base = resolveGatewayHttpBase()
-      // 把当前选中的语音来源配置带给网关，使其按所选来源（如 DashScope）探测能力，
-      // 而非永远探测网关默认的内置；密钥只在本机 localhost 回传网关、响应不含密钥。
+      // 把当前语音服务配置带给网关，使其按用户实际填的地址/模型探测能力，
+      // 而非永远探测网关默认；密钥只在本机 localhost 回传网关、响应不含密钥。
       const voice = activeVoiceConfig()
       const data = (await httpGetJson(`${base}${HEALTH_PATH}`, {
         'x-voice-config': JSON.stringify(voice),
@@ -145,8 +145,8 @@ export function useHealth(wsConnected: Ref<boolean>) {
 export async function fetchHealthReport(voice: unknown, deep = false): Promise<HealthReport | null> {
   try {
     const base = resolveGatewayHttpBase()
-    // 把当前选中的语音来源配置带给网关，使其按所选来源（如 DashScope）探测能力，
-    // 而非永远探测网关默认的内置；密钥只在本机 localhost 回传网关、响应不含密钥。
+    // 把当前语音服务配置带给网关，使其按用户实际填的地址/模型探测能力，
+    // 而非永远探测网关默认；密钥只在本机 localhost 回传网关、响应不含密钥。
     const data = (await httpGetJson(`${base}${HEALTH_PATH}?${deep ? 'deep=1' : ''}`, {
       'x-voice-config': JSON.stringify(voice),
     })) as { providers?: HealthReport }

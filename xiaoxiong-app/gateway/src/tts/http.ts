@@ -7,7 +7,11 @@ import type { VendorParams } from '../config'
  *  15s，避免两处超时竞态导致重复提示。 */
 // 单次 TTS 合成超时：真机铁证 100+ 字天气文本 edge-tts 合成要 7.35s，6s 会误判失败。
 // 设 20s 覆盖长文本；须 < speakSentence 的 gapMs（已调到 30s），否则 gap 先触发误判挂死。
-const TTS_TIMEOUT_MS = 20000
+// 单句合成超时。原则：绝不一次合成整段长文本，而是按断句逐句合成（见 voiceSessionService
+// 的 flushTts）。单句一般 <100 字、edge-tts 合成 ~7-16s，25s 足够且能在真挂起时较快兜底。
+// 曾错误地把超时放宽到 90s 想让整段 300 字（实测 42s）一次合成成功——那是掩盖问题，
+// 违反"边合成边读"原则，已回退。
+const TTS_TIMEOUT_MS = 25000
 /** TTS 单帧大小：9600B = 200ms @24k/16bit。整段 TTS（builtin/deepseek 一次返回完整
  *  WAV）切成此尺寸逐帧下发——单帧 1.2MB（base64 1.6MB）经 weex 桥传输会超限/截断
  *  导致播不出来（真机"今天天气怎么样"文字出了没声音的根因）。 */

@@ -1,8 +1,6 @@
 import { Agent } from '@agentscope-ai/agentscope/agent'
-import {
-  OpenAIChatModel,
-} from '@agentscope-ai/agentscope/model'
 import type { ChatModelBase } from '@agentscope-ai/agentscope/model'
+import { ReasoningChatModel } from './reasoningChatModel'
 import { UserMsg } from '@agentscope-ai/agentscope/message'
 import { EventType } from '@agentscope-ai/agentscope/event'
 import { messages } from '../i18n'
@@ -37,8 +35,10 @@ function createModel(cfg: LlmConfig, stream = true): ChatModelBase {
   switch (provider) {
     case 'builtin':
       // 内置：本地 AI 服务的 OpenAI 兼容层（/llm/v1 纯转发到任意上游），统一走 OpenAI 兼容接口。
+      // 用 ReasoningChatModel（OpenAIChatModel 子类）：9529 把各厂商思考统一成 delta.reasoning_content，
+      // 父类 OpenAIChatModel 不读该字段会丢掉思考块（思考框永远不显示），子类补上。
       // 本地服务不校验 key，apiKey 为空时用占位符，避免 OpenAI SDK 在构造时因缺凭证抛错拖垮进程。
-      return new OpenAIChatModel({
+      return new ReasoningChatModel({
         modelName: model,
         apiKey: apiKey || 'builtin-local',
         baseURL: baseUrl || undefined,
@@ -50,7 +50,8 @@ function createModel(cfg: LlmConfig, stream = true): ChatModelBase {
       // https://llm-xxx.maas.aliyuncs.com）才会真正被用上。DashScopeChatModel 不带 baseURL
       // 参数，只会打阿里云云端、无视用户配置，导致自定义端点（MAAS）「模型异常」。
       // 阿里云兼容模式与通用 OpenAI 兼容，OpenAIChatModel + baseURL 对云端 / 自定义端点一致生效。
-      return new OpenAIChatModel({ modelName: model, apiKey, baseURL: baseUrl || undefined, stream, presetGenParams: params })
+      // 同样用 ReasoningChatModel 以兼容自定义端点返回的 reasoning_content。
+      return new ReasoningChatModel({ modelName: model, apiKey, baseURL: baseUrl || undefined, stream, presetGenParams: params })
     default:
       throw new Error(`不支持的 LLM 提供方：${provider as string}`)
   }

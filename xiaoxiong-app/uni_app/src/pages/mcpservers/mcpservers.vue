@@ -222,7 +222,7 @@ const { goBack } = useSubPageBack({
       <text class="row-label">{{ t('settings.mcp.name') }}</text>
       <input class="input" v-model="editing!.name" :placeholder="t('settings.mcp.name')" />
 
-      <!-- 传输方式：单选，仿 内置 / dashscope 的 radio 效果；已保存服务器锁定不可改 -->
+      <!-- 传输方式：单选 radio；已保存服务器锁定不可改 -->
       <text class="row-label">{{ t('settings.mcp.transport.title') }}</text>
       <view class="providers">
         <view
@@ -413,7 +413,7 @@ const { goBack } = useSubPageBack({
   gap: 10px;
 }
 
-/* 传输方式：3 选 1 单选，仿设置页 内置 / dashscope 的 radio 效果 */
+/* 传输方式：3 选 1 单选 */
 .providers {
   display: flex;
   gap: 10px;
