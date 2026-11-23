@@ -16,10 +16,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-// 内置语音服务默认根地址：公网语音代理（原本机 127.0.0.1:9529 仅 Mac 可达，iOS 真机连不到）。
+// 内置语音服务默认根地址：花生壳固定域名（域名永久不变，非 cloudflared 随机域名）。
+// cloudflared trycloudflare 域名每次重启都会变，已弃用。
 const DEFAULT_BUILTIN_URL = 'https://25946kt718.goho.co'
-// 旧默认地址：存量配置里若仍是这个值（且用户没改过），自动迁移到公网地址。
+// 旧默认地址：存量配置里若仍是这些值（且用户没改过），自动迁移到固定域名。
+// 包括旧本机端口（9529 已关闭）和旧 cloudflared 随机域名。
 const LEGACY_BUILTIN_URL = 'http://127.0.0.1:9529'
+const LEGACY_BUILTIN_URL_2 = 'https://foreign-becoming-lucia-consciousness.trycloudflare.com'
 
 const DEFAULT_VOICE: VoiceServiceConfig = {
   provider: 'builtin',
@@ -227,9 +230,12 @@ function normalizeVoice(raw: unknown): VoiceServiceConfig {
     url: legacyUrl || DEFAULT_VOICE.builtin.url,
     apiKey: legacyApiKey || DEFAULT_VOICE.builtin.apiKey,
   })
-  // 存量配置迁移：builtin.url 若仍是出厂旧默认（用户没改过），升级到公网地址。
+  // 存量配置迁移：builtin.url 若仍是出厂旧默认（用户没改过），升级到固定域名。
+  // 花生壳仅开发测试用，正式发布时把 DEFAULT_BUILTIN_URL 换成正式公网地址即可。
   // 只精准命中旧默认值，用户自填的其它地址（自建 LAN / 其它服务）一律不动。
-  if (builtin.url === LEGACY_BUILTIN_URL) builtin.url = DEFAULT_BUILTIN_URL
+  if (builtin.url === LEGACY_BUILTIN_URL || builtin.url === LEGACY_BUILTIN_URL_2) {
+    builtin.url = DEFAULT_BUILTIN_URL
+  }
   return { provider, builtin }
 }
 

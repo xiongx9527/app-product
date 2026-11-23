@@ -34,7 +34,7 @@ import {
   setAppPlaybackVolume,
   markPlaybackInFlight,
 } from '@/core/audio/appPlayback'
-import { isAppCaptureSupported, requestMicPermission, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
+import { isAppCaptureSupported, requestMicPermission, resumeAppCapture, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
 import { t } from '@/core/i18n'
 import { transition } from '@/core/assistant/stateMachine'
 import {
@@ -347,6 +347,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let lastLlmActivityAt = 0
   const RESUME_STALE_MS = 3000
   function resumeFromBackgroundCheck(): void {
+    // iOS 熄屏/退后台可能掐断 AVAudioEngine 的 input tap，且亮屏后不自动恢复 → KWS 没输入、
+    // 喊"小熊小熊"无反应。先无条件让原生自检重建采集，再做播报/思考态收尾（互相独立）。
+    resumeAppCapture()
+    // 【关键】待唤醒态不轮询 health，且熄屏期间网关上游可能由 down 转好（或 WS 半死未触发
+    // useHealth 的 watcher 刷新）。回前台必须主动拉一次，否则 health.value 停留在熄屏前的旧
+    // false → canWake() 恒 false → KWS 命中被静默吞掉、喊词永远进不了对话（真机铁证：熄屏
+    // 喊词 KWS HIT 两次但界面纹丝不动）。刷新异步进行，不影响本次播报/思考态收尾。
+    void refreshHealth()
     const stale = Date.now() - lastLlmActivityAt
     if (stale < RESUME_STALE_MS) return
     if (isSpeaking.value || phase.value === 'speaking') {
@@ -564,7 +572,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   )
   // 网关能力健康度（LLM / ASR / TTS / 外网）：连上后定时轮询，负责「运行中 ok→down」的瞬时变化；
   // 「建连那一刻就已不可用」的兜底下发由网关 client.cue 事件负责（见 handleServerEvent）。
-  const { health, startPolling: startHealthPolling, stopTimer: stopHealthPolling } = useHealth(wsConnected)
+  const { health, refreshHealth, startPolling: startHealthPolling, stopTimer: stopHealthPolling } = useHealth(wsConnected)
   // 设备权限只读检测（不弹授权框）：麦克风未授权要出声提示，定位只显示状态。
   const { permissions, refreshPermissions } = usePermissions(wsConnected)
   // 能力不可用播报以客户端健康报告为唯一来源：连上后 useHealth 主动拉 /api/health，时序确定、每次连接都会跑。
@@ -1621,7 +1629,20 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * @returns 是否真正消费了这次命中（调用点据此决定是否 break 后续逻辑）。
    */
   function handleWakeHit(text?: string, throttle = false): boolean {
-    if (!canWake()) return false
+    if (!canWake()) {
+      // 【熄屏唤醒诊断·常驻】KWS 命中后若被前置条件拦掉，把 ws/health 真相落盘：
+      // 真机出现过「熄屏 KWS HIT 两次但界面纹丝不动」，需区分是 WS 未连还是 health 陈旧。
+      try {
+        const r = health.value
+        transport.sendDiag?.({
+          state: state.value, speaking: isSpeaking.value, cue: false,
+          muted: mode === 'wake', frames: 0, rms: 0,
+          connected: transport.isConnected(),
+          trace: `WAKE-BLOCKED ws=${transport.isConnected()} connecting=${connecting.value} asr=${r?.asr.reachable} healthNull=${!r} text=${text || ''}`,
+        })
+      } catch { /* 诊断失败不影响主流程 */ }
+      return false
+    }
     if (mode === 'wake') {
       if (Date.now() - lastSpokeAt < WAKE_ECHO_MS) return false
       // 记下 KWS/文本唤醒时刻：接下来几秒内 ASR 转写的同一句唤醒词当回显忽略（见 isKwsWakeEcho）。
@@ -1673,7 +1694,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const kwsService: WakeService = createWakeService({
     wakeWords: DEFAULT_WAKE_WORDS,
     lang: getLanguage(),
-    onWake: (word) => { handleWakeHit(word, true) },
+    onWake: (word) => {
+      // 【熄屏唤醒诊断·常驻】KWS 回调到 JS 的第一现场，确认原生→JS 桥是否通。
+      try {
+        transport.sendDiag?.({
+          state: state.value, speaking: isSpeaking.value, cue: false,
+          muted: mode === 'wake', frames: 0, rms: 0,
+          connected: transport.isConnected(),
+          trace: `KWS-ONWAKE word=${word || ''} ws=${transport.isConnected()}`,
+        })
+      } catch { /* 忽略 */ }
+      handleWakeHit(word, true)
+    },
     onError: (msg) => { console.warn('[kws]', msg) },
     onReady: (ok, raw) => {
       wakeReady.value = ok ? 'ready' : 'failed'

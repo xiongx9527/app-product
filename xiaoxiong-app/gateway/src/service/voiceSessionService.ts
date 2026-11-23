@@ -813,8 +813,11 @@ export class VoiceSessionService {
       if (this.locationRequestSent) return
       this.locationRequestSent = true
       this.deps.send({ type: 'client.location.request' })
-      // 客户端取不到/拒绝授权/离线：超时兑现为 null，工具回退到「位置不可用」话术
-      const timeoutMs = this.deps.locationRequestTimeoutMs ?? 8000
+      // 客户端取不到/拒绝授权/离线：超时兑现为 null，工具回退到「位置不可用」话术。
+      // 首次问天气要给足时间：客户端需先弹定位授权框（uni.authorize 最多等 1.5s 兜底），
+      // 再走 GPS/网络冷启动定位（首 fix 常需数秒），旧默认 8s 不够 → 首次必报「无法获取位置」、
+      // 第二次（权限已授、GPS 已热）才成功（真机铁证 2026-11-23）。放宽到 20s 让首次也能拿到。
+      const timeoutMs = this.deps.locationRequestTimeoutMs ?? 20000
       this.locationRequestTimer = setTimeout(() => {
         this.locationRequestTimer = null
         this.resolvePendingLocation()

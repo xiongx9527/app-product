@@ -120,8 +120,8 @@ export function loadConfig(): GatewayConfig {
     rsaFrontendPublicKey: process.env.RSA_FRONTEND_PUBLIC_KEY ?? '',
     timeZone: process.env.TIME_ZONE ?? 'Asia/Shanghai',
     // 内置 / DashScope 的默认根地址：仅作兜底（客户端未带 url 时用），由部署环境变量决定。
-    // 内置语音服务地址：缺省回退到公网语音代理（原本机 127.0.0.1:9529 仅 Mac 可达，iOS 真机连不到）。
-    // 真机用户如用自建本地 AI 服务，应通过 VOICE_BUILTIN_URL 覆盖此默认；前端不感知具体地址。
+    // 内置语音服务地址：缺省回退到花生壳固定域名（域名永久不变，非 cloudflared 随机域名）。
+    // 花生壳仅开发测试用，正式发布用 VOICE_BUILTIN_URL 指向正式公网地址。
     voiceBuiltinUrl: process.env.VOICE_BUILTIN_URL ?? 'https://25946kt718.goho.co',
     voiceDashscopeUrl: process.env.VOICE_DASHSCOPE_URL ?? '',
     ws: { path: process.env.WS_PATH ?? '/ws' },

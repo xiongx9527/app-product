@@ -12,6 +12,7 @@
 #import "PcmUploader.h"
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <UIKit/UIKit.h>
 #import <math.h>
 
 static NSString *const kTag = @"[app-product-wake]";
@@ -55,6 +56,15 @@ static const NSInteger kFrameBytes = 1024;
     dispatch_source_t _ttsIdleTimer; // 播空检测定时器（见 startTtsIdleTimer）
     BOOL _standbyMuted;         // 待唤醒态：上行全静音（唤醒前不调 ASR），KWS 照常听
     UniModuleKeepAliveCallback _readyCb; // KWS 就绪回调（JS onReady）
+    // 【2026-11-23 修熄屏唤醒】采集"意图"与实际运行状态分离：
+    // _wantRunning=用户/JS 希望常驻采集（startPcm=YES, stopPcm=NO）；_running=AVAudioEngine 当前真的在跑。
+    // 熄屏/音频中断/会话被保活抢占会让引擎 tap 停摆（_running 可能还是 YES 但再无帧），
+    // 只要 _wantRunning 为真就必须自动把采集重建起来，不能再"一次启动管终身"。
+    BOOL _wantRunning;
+    NSTimeInterval _lastFrameAt;     // 最近一次 tap 回调时间，用于识别"引擎还在但不出帧"的停摆
+    NSUInteger _restartGeneration;   // 重启请求代次，防止多次监听叠加导致重复/过期重启
+    dispatch_queue_t _captureEventQueue; // 采集恢复专用串行队列（不占 JS/WS 线程）
+    dispatch_source_t _captureWatchdog;  // 2s 巡检：引擎停摆则重启（后台 native 线程仍可跑）
 }
 @end
 
@@ -71,11 +81,24 @@ static const NSInteger kFrameBytes = 1024;
         _ttsHasData = NO;
         _playRunning = NO;
         _ttsIdleQueue = dispatch_queue_create("com.xiaoxiong.tts.idle", DISPATCH_QUEUE_SERIAL);
+        // 采集自愈基础设施（常驻，不依赖 JS 是否被后台冻结）
+        _wantRunning = NO;
+        _lastFrameAt = 0;
+        _restartGeneration = 0;
+        _captureEventQueue = dispatch_queue_create("com.xiaoxiong.capture.event", DISPATCH_QUEUE_SERIAL);
+        NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+        [nc addObserver:self selector:@selector(handleAudioInterruption:) name:AVAudioSessionInterruptionNotification object:nil];
+        [nc addObserver:self selector:@selector(handleMediaServicesReset:) name:AVAudioSessionMediaServicesWereResetNotification object:nil];
+        [nc addObserver:self selector:@selector(handleEngineConfigChange:) name:AVAudioEngineConfigurationChangeNotification object:nil];
+        [nc addObserver:self selector:@selector(handleAppDidBecomeActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
+        [self startCaptureWatchdog];
     }
     return self;
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [self stopCaptureWatchdog];
     [self stopCueInternal];
     [_kwsEngine stop];
     _kwsEngine = nil;
@@ -187,6 +210,18 @@ UNI_EXPORT_METHOD(@selector(stopPcm))
 - (void)stopPcm {
     NSLog(@"%@ stopPcm", kTag);
     [self stopCapture];
+}
+
+/// 【修熄屏唤醒】JS 回前台/检测到采集停摆时调用：若用户仍希望采集(_wantRunning)，
+/// 强制拆建 AVAudioEngine 重装 tap，恢复熄屏期间被系统掐断的麦克风采集。
+/// 不存在"重复启动"副作用：幂等，且只作用于仍处在采集意图态的实例。
+UNI_EXPORT_METHOD(@selector(ensureCapture))
+- (void)ensureCapture {
+    NSLog(@"%@ ensureCapture want=%d running=%d", kTag, _wantRunning, _running);
+    if (!_wantRunning) return;
+    // JS 主动调用一律强制重建：真机上存在"engine.isRunning=YES 但 tap 早已不出帧"的
+    // 僵尸态，只靠健康检查会误判为正常。
+    [self scheduleCaptureRestart:@"ensureCapture(JS)" force:YES];
 }
 
 #pragma mark - KWS 常驻唤醒（sherpa-onnx）
@@ -349,14 +384,21 @@ UNI_EXPORT_METHOD(@selector(stopCue))
 #pragma mark - 采集
 
 - (void)startCapture {
-    if (_running) {
-        NSLog(@"%@ startCapture ignored: already running", kTag);
+    // 即便此刻 engine 还在跑，也要把"意图"置真：熄屏/中断停摆后靠它触发自愈。
+    _wantRunning = YES;
+    if (_running && _engine.isRunning) {
+        NSLog(@"%@ startCapture: already running, mark want=YES", kTag);
         return;
     }
     // 点击开始时按需请求麦克风权限；授权成功后（含异步弹框回调）才真正启动采集。
     __weak typeof(self) weakSelf = self;
     [self requestMicPermissionWithCompletion:^(BOOL granted) {
-        if (!granted) return;
+        if (!granted) {
+            // 权限没拿到就不留"想要采集"的假意图，否则看门狗会 2s 一次空重启刷屏
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            strongSelf->_wantRunning = NO;
+            return;
+        }
         [weakSelf startCaptureInternal];
     }];
 }
@@ -427,13 +469,15 @@ UNI_EXPORT_METHOD(@selector(stopCue))
         return;
     }
     _running = YES;
-    NSLog(@"%@ capture started: %ldHz/%ldch/%ldbit frame=%ldB actualRate=%.0f",
+    _lastFrameAt = CFAbsoluteTimeGetCurrent();
+    NSLog(@"%@ capture started: %ldHz/%ldch/%ldbit frame=%ldB actualRate=%.0f want=%d",
           kTag, (long)kSampleRate, (long)kChannels, (long)kBits, (long)kFrameBytes,
-          session.sampleRate);
+          session.sampleRate, _wantRunning);
 }
 
 - (void)onPcmBuffer:(AVAudioPCMBuffer *)buffer {
     if (!_running) return;
+    _lastFrameAt = CFAbsoluteTimeGetCurrent();
     const float *ch = buffer.floatChannelData ? buffer.floatChannelData[0] : NULL;
     if (!ch) return;
     NSUInteger n = buffer.frameLength;
@@ -498,6 +542,8 @@ UNI_EXPORT_METHOD(@selector(stopCue))
 }
 
 - (void)stopCapture {
+    // 先清意图：之后即便收到中断/配置变化通知也不再自愈重启
+    _wantRunning = NO;
     if (!_running) return;
     _running = NO;
     if (_engine) {
@@ -510,6 +556,109 @@ UNI_EXPORT_METHOD(@selector(stopCue))
     AVAudioSession *session = AVAudioSession.sharedInstance;
     [session setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
     NSLog(@"%@ capture stopped", kTag);
+}
+
+#pragma mark - 采集自愈（熄屏 / 音频中断 / 引擎配置变化 / 回前台）
+
+/**
+ * 常驻 2s 巡检（运行在 native 串行队列，JS 被后台冻结也照跑）。
+ * 只判断"用户还想采集但引擎已停/超过 2s 没出帧"，正常态不做任何动作。
+ */
+- (void)startCaptureWatchdog {
+    @synchronized (self) {
+        if (_captureWatchdog) return;
+        if (!_captureEventQueue) _captureEventQueue = dispatch_queue_create("com.xiaoxiong.capture.event", DISPATCH_QUEUE_SERIAL);
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _captureEventQueue);
+        if (!timer) return;
+        dispatch_source_set_timer(timer,
+                                  dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                                  (uint64_t)(2.0 * NSEC_PER_SEC),
+                                  (uint64_t)(0.5 * NSEC_PER_SEC));
+        __weak typeof(self) weakSelf = self;
+        dispatch_source_set_event_handler(timer, ^{
+            [weakSelf scheduleCaptureRestart:@"watchdog" force:NO];
+        });
+        _captureWatchdog = timer;
+        dispatch_resume(timer);
+    }
+}
+
+- (void)stopCaptureWatchdog {
+    @synchronized (self) {
+        if (!_captureWatchdog) return;
+        dispatch_source_cancel(_captureWatchdog);
+        _captureWatchdog = nil;
+    }
+}
+
+- (void)handleAudioInterruption:(NSNotification *)note {
+    NSNumber *type = note.userInfo[AVAudioSessionInterruptionTypeKey];
+    if (!type) return;
+    if (type.unsignedIntegerValue == AVAudioSessionInterruptionTypeBegan) {
+        NSLog(@"%@ 音频中断开始 want=%d running=%d", kTag, _wantRunning, _running);
+        return;
+    }
+    // 中断结束（来电/其它 App 抢占/熄屏保活切换）：系统是否建议 resume 都不等，
+    // 只要用户仍想采集就重建，避免"系统没给 ShouldResume 标志 → 采集永久停"。
+    NSLog(@"%@ 音频中断结束，准备恢复采集", kTag);
+    [self scheduleCaptureRestart:@"interruption-ended" force:NO];
+}
+
+- (void)handleMediaServicesReset:(NSNotification *)note {
+    NSLog(@"%@ 媒体服务重置，准备恢复采集", kTag);
+    [self scheduleCaptureRestart:@"media-services-reset" force:YES];
+}
+
+- (void)handleEngineConfigChange:(NSNotification *)note {
+    NSLog(@"%@ 引擎配置变化，检查采集是否停摆", kTag);
+    // 不强制：setCategory/installTap 自身也会触发此通知，健康时不折腾。
+    [self scheduleCaptureRestart:@"engine-config-change" force:NO];
+}
+
+- (void)handleAppDidBecomeActive:(NSNotification *)note {
+    NSLog(@"%@ App 回前台，强制自检采集", kTag);
+    // 回前台强制重建一次：熄屏期间可能出现 engine.isRunning=YES 但 tap 早已停的僵尸态；
+    // 且 sceneWillEnterForeground 会停掉保活静音，会话状态正好需要复位。
+    [self scheduleCaptureRestart:@"app-did-become-active" force:YES];
+}
+
+/// 延迟一点再重启：等系统完成会话/路由切换，避免立刻重建又被同一次切换掐掉。
+- (void)scheduleCaptureRestart:(NSString *)reason force:(BOOL)force {
+    if (!_wantRunning) return;
+    NSUInteger gen;
+    @synchronized (self) { gen = ++_restartGeneration; }
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), _captureEventQueue, ^{
+        [weakSelf performCaptureRestartWithGeneration:gen reason:reason force:force];
+    });
+}
+
+- (void)performCaptureRestartWithGeneration:(NSUInteger)gen reason:(NSString *)reason force:(BOOL)force {
+    @synchronized (self) { if (gen != _restartGeneration) return; }
+    if (!_wantRunning) return;
+    if (!force && _running && _engine.isRunning &&
+        (CFAbsoluteTimeGetCurrent() - _lastFrameAt) < 2.0) {
+        return; // 引擎健康，不重复拆建
+    }
+    [self restartCaptureInternal:reason];
+}
+
+/// 彻底拆掉旧引擎并重装 tap（权限已就绪，不再走弹框路径）。
+- (void)restartCaptureInternal:(NSString *)reason {
+    NSLog(@"%@ RESTART-CAPTURE reason=%@ running=%d lastFrameAge=%.1fs",
+          kTag, reason, _running, CFAbsoluteTimeGetCurrent() - _lastFrameAt);
+    _running = NO;
+    AVAudioEngine *old = _engine;
+    _engine = nil;
+    if (old) {
+        @try { [old.inputNode removeTapOnBus:0]; }
+        @catch (NSException *e) { NSLog(@"%@ removeTap 异常(忽略): %@", kTag, e.reason); }
+        if (old.isRunning) [old stop];
+    }
+    [_carry setLength:0];
+    // 不调 setActive:NO：GatewayLauncher 的静音保活与采集共用同一 audio session，
+    // 关掉会连带掐掉后台保活；startCaptureInternal 会按采集口径重设 category 并 setActive:YES。
+    [self startCaptureInternal];
 }
 
 #pragma mark - 原生 TTS 播放（AudioQueue，写 role=pcm 下发的 24k int16 PCM）

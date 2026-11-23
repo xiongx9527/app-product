@@ -33,6 +33,8 @@ interface NativePcmModule {
     frameMs: number
   }): void
   stopPcm?(): void
+  /** iOS 专用：熄屏/中断/回前台后强制重建 AVAudioEngine 采集（幂等，旧基座没有则降级） */
+  ensureCapture?(): void
   onPcmFrame?(callback: (frame: ArrayBuffer) => void): void
   onPcmError?(callback: (payload: { message?: string } | string) => void): void
 }
@@ -190,6 +192,23 @@ export function stopAppCapture(): void {
     mod?.stopPcm?.()
   } catch {
     // 重复停止忽略
+  }
+}
+
+/**
+ * 回前台/熄屏结束后让原生强制自检并重建采集。
+ * iOS 上熄屏期间 AVAudioEngine 的 input tap 可能被系统/保活会话掐断，且不一定会自动恢复；
+ * 原生侧有中断监听和 2s 看门狗，这里再由 onAppShow 补一次强制重建兜底。
+ * 只在 JS 认为采集仍在进行时生效；旧基座无 ensureCapture 时静默降级。
+ */
+export function resumeAppCapture(): void {
+  if (!running) return
+  const instance = boundInstance ?? mod
+  if (!instance || typeof instance.ensureCapture !== 'function') return
+  try {
+    instance.ensureCapture()
+  } catch {
+    // 旧基座方法异常不影响其余回前台收尾
   }
 }
 

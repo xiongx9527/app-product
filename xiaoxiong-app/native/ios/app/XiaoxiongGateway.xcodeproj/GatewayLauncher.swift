@@ -36,7 +36,9 @@ public final class GatewayLauncher: NSObject {
         SilentKeepAlive.shared.begin()
     }
 
-    /// 回前台时调用：停静音、关音频会话、结束后台任务。
+    /// 回前台时调用：停静音、结束后台任务。
+    /// 注意：绝不在这里 setActive(false) —— 采集（WakeModule 的 AVAudioEngine）与保活
+    /// 共用同一个 AVAudioSession，关掉会直接掐断 KWS/麦克风，导致亮屏后采集恢复不了。
     @objc
     public static func endGatewayKeepAlive() {
         SilentKeepAlive.shared.end()
@@ -99,8 +101,11 @@ private final class SilentKeepAlive {
         player?.stop()
         player = nil
 
-        let session = AVAudioSession.sharedInstance()
-        try? session.setActive(false, options: .notifyOthersOnDeactivation)
+        // 【2026-11-23 修熄屏唤醒】这里不能 setActive(false)：
+        // 采集（AppProductWakeModule 的 AVAudioEngine 麦克风）与保活共用同一个 audio session，
+        // 回前台_stop 静音时把 session 关掉，采集 tap 立刻停摆且不会自动恢复（真机铁证：
+        // frames 卡在 19200、loud=0，亮屏后也不再增长）。会话激活状态交给采集模块管理。
+        // 静音播放器停掉后 session 仍保持 active，但已无音频输出，不影响前台体验。
 
         if bgId != .invalid {
             UIApplication.shared.endBackgroundTask(bgId)
@@ -118,8 +123,14 @@ private final class SilentKeepAlive {
 
         let session = AVAudioSession.sharedInstance()
         do {
-            // .playback + .mixWithOthers：不打断前台 TTS/录音，也不被其 duck。
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            // 【2026-11-23 修熄屏唤醒】必须用 .playAndRecord，不能用 .playback。
+            // .playback 是纯播放类别、不含录音输入——熄屏保活一旦把会话切成 .playback，
+            // WakeModule 的 AVAudioEngine 麦克风采集就被掐断，KWS 没输入 → 熄屏后喊唤醒词没反应。
+            // 且若会话已是采集的 .playAndRecord 且激活，绝不重设 category/mode：
+            // 重设会触发 AVAudioEngineConfigurationChange，引擎 tap 被拆掉、VoiceChat 的 AEC 也丢失。
+            if session.category != .playAndRecord || session.mode != .voiceChat {
+                try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.mixWithOthers, .allowBluetooth])
+            }
             try session.setActive(true)
 
             let wavURL = try ensureSilentWav()
