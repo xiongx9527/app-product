@@ -27,6 +27,9 @@ static const NSInteger kFrameSamples = 512;
 /** iOS AVAudioEngine(VoiceChat) 采集幅度偏小（实测 rms~0.002，正常近场应 0.01~0.11），
  *  经网关 VAD 绝对下限 0.008 会被全当静音丢弃 → ASR 收不到音频。这里放大到正常范围。 */
 static const float kInputGain = 12.0f;
+/** KWS 专用增益：12x 会把说话峰值削成方波、声学特征失真导致唤醒词难命中；
+ *  用 6x 温和放大（原始 rms~0.002→0.012 达可用范围）且钳位到±0.95 避免满幅削波。 */
+static const float kKwsGain = 6.0f;
 static const NSInteger kFrameBytes = 1024;
 
 @interface AppProductWakeModule () <AVAudioPlayerDelegate, PcmUploaderTtsListener> {
@@ -52,6 +55,8 @@ static const NSInteger kFrameBytes = 1024;
     NSTimeInterval _ttsLastDataAt; // 最后一次收到 TTS 数据的时间
     UniModuleKeepAliveCallback _playbackIdleCb; // 播空回调 JS
     BOOL _playRunning;          // 是否正在播报（直连上传门控用）
+    BOOL _mediaPlaying;         // 媒体播放器(音乐/新闻 InnerAudioContext)是否在播——其声音不经网关TTS、无AEC参考，必须静音上行防被识别
+    NSTimeInterval _soundTailMuteUntil; // 播报/提示音结束后的尾巴静音截止（覆盖扬声器余音，防回声自激）
     dispatch_queue_t _ttsIdleQueue;  // 播空检测定时器队列（串行，独立于采集/WS 线程）
     dispatch_source_t _ttsIdleTimer; // 播空检测定时器（见 startTtsIdleTimer）
     BOOL _standbyMuted;         // 待唤醒态：上行全静音（唤醒前不调 ASR），KWS 照常听
@@ -212,6 +217,25 @@ UNI_EXPORT_METHOD(@selector(stopPcm))
     [self stopCapture];
 }
 
+/// 【唤醒后保持亮屏】JS 在进入对话时调 YES、回待唤醒/退出时调 NO。
+/// iOS 熄屏后 App 进后台即便有 audio 保活，长时间高 CPU（KWS 推理+采集+内嵌网关）
+/// 仍会触发系统 task_exceeded_cpulimit 杀进程（真机铁证 2026-11-23）→ 用户体感「崩了」。
+/// 唤醒后禁用 idleTimer 让屏幕常亮，对话期间保持在前台，绕开后台 CPU 限制；
+/// 对话结束务必恢复 NO，否则永远不熄屏、耗电。
+UNI_EXPORT_METHOD(@selector(keepScreenOn:))
+- (void)keepScreenOn:(BOOL)on {
+    [UIApplication sharedApplication].idleTimerDisabled = on;
+    NSLog(@"%@ keepScreenOn=%d", kTag, on);
+}
+
+/// 【2026-11-23 修媒体播放声音被识别】音乐/新闻走 InnerAudioContext 外放，不经网关 TTS、
+/// 网关 AEC 拿不到参考信号、消不掉回声。媒体播放期间必须静音上行（KWS 仍喂原始帧可唤醒）。
+UNI_EXPORT_METHOD(@selector(setMediaPlaying:))
+- (void)setMediaPlaying:(BOOL)on {
+    _mediaPlaying = on;
+    NSLog(@"%@ setMediaPlaying=%d", kTag, on);
+}
+
 /// 【修熄屏唤醒】JS 回前台/检测到采集停摆时调用：若用户仍希望采集(_wantRunning)，
 /// 强制拆建 AVAudioEngine 重装 tap，恢复熄屏期间被系统掐断的麦克风采集。
 /// 不存在"重复启动"副作用：幂等，且只作用于仍处在采集意图态的实例。
@@ -256,12 +280,12 @@ UNI_EXPORT_METHOD(@selector(start:))
 - (void)start:(NSDictionary *)options {
     NSLog(@"%@ KWS start options=%@", kTag, options);
     if (!_kwsEngine) {
-        _kwsEngine = [[KwsEngine alloc] initWithWakeWord:@"小熊小熊" bundle:[NSBundle mainBundle]];
+        _kwsEngine = [[KwsEngine alloc] initWithWakeWord:@"你好小熊" bundle:[NSBundle mainBundle]];
         __weak typeof(self) weakSelf = self;
         _kwsEngine.onWake = ^(NSString *word) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
             UniModuleKeepAliveCallback cb = strongSelf->_wakeCb;
-            if (cb) cb(@{ @"word": word ?: @"小熊小熊" }, YES); // keepAlive，对标 Android invokeAndKeepAlive
+            if (cb) cb(@{ @"word": word ?: @"你好小熊" }, YES); // keepAlive，对标 Android invokeAndKeepAlive
         };
         _kwsEngine.onError = ^(NSString *msg) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -454,12 +478,23 @@ UNI_EXPORT_METHOD(@selector(stopCue))
     _inputSampleRate = hwFormat.sampleRate > 0 ? hwFormat.sampleRate : kSampleRate;
     AVAudioFormat *tapFormat = hwFormat; // 用硬件实际格式，避免格式不匹配崩溃
     __weak typeof(self) weakSelf = self;
-    [input installTapOnBus:0
-                bufferSize:kFrameSamples
-                    format:tapFormat
-                     block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
-        [weakSelf onPcmBuffer:buffer];
-    }];
+    // 【2026-11-23 修自愈重启崩溃】installTapOnBus 在某些状态（自愈重建 engine、旧 tap 残留、
+    // 硬件格式运行时变化）会抛 NSException（AVAE_RaiseException/CreateRecordingTap）直接 SIGABRT。
+    // 崩溃栈铁证：restartCaptureInternal→startCaptureInternal→installTapOnBus 崩。用 @try/@catch
+    // 兜住：这次自愈失败就不置 _running，看门狗下次再试，绝不崩 App。
+    @try {
+        [input installTapOnBus:0
+                    bufferSize:kFrameSamples
+                        format:tapFormat
+                         block:^(AVAudioPCMBuffer * _Nonnull buffer, AVAudioTime * _Nonnull when) {
+            [weakSelf onPcmBuffer:buffer];
+        }];
+    } @catch (NSException *e) {
+        NSLog(@"%@ installTap 异常(自愈本次失败，下次重试): %@", kTag, e.reason);
+        _engine = nil;
+        [session setActive:NO error:nil];
+        return;
+    }
 
     NSError *err = nil;
     if (![_engine startAndReturnError:&err]) {
@@ -486,24 +521,28 @@ UNI_EXPORT_METHOD(@selector(stopCue))
     // 硬件格式重采样到 16k/mono（线性插值），再转 int16 PCM。
     // 输出样本数 = 输入帧数 * 16000 / 实际采样率。
     NSUInteger outCount = (NSUInteger)llround((double)n * kSampleRate / inSR);
-    NSMutableData *pcm = [NSMutableData dataWithCapacity:outCount * 2];
-    double frameSum = 0;
+    NSMutableData *pcm = [NSMutableData dataWithCapacity:outCount * 2];   // 增益后，给 ASR/上行
+    NSMutableData *kwsPcm = [NSMutableData dataWithCapacity:outCount * 2]; // 原始，给 KWS
     for (NSUInteger o = 0; o < outCount; o++) {
         double srcPos = (double)o * inSR / kSampleRate;      // 对应输入样本位置（浮点）
         NSUInteger i0 = (NSUInteger)srcPos;
         NSUInteger i1 = i0 + 1 < n ? i0 + 1 : i0;
         float frac = (float)(srcPos - (double)i0);
-        float s = ch[i0] * (1.0f - frac) + ch[i1] * frac;   // 线性插值
-        s = s * kInputGain;                                   // 放大到正常近场幅度
+        float raw = ch[i0] * (1.0f - frac) + ch[i1] * frac;  // 线性插值后的原始幅度
+        // KWS 用温和放大(kKwsGain=6x)+钳位0.95 的帧：既达到模型可用音量(原始太小)，
+        // 又避免 12x 满幅削波成方波导致声学特征失真（唤醒词难命中、要喊好几遍）。
+        float kws = raw * kKwsGain;
+        if (kws > 0.95f) kws = 0.95f; else if (kws < -0.95f) kws = -0.95f;
+        int16_t kv = (int16_t)(kws * 32767);
+        [kwsPcm appendBytes:&kv length:2];
+        float s = raw * kInputGain;                           // 放大到正常近场幅度（仅给 ASR/上行）
         if (s > 1) s = 1; else if (s < -1) s = -1;
-        frameSum += (double)s * s;
         int16_t v = (int16_t)(s * 32767);
         [pcm appendBytes:&v length:2];
     }
-    (void)frameSum; // 能量统计已移除
-    // 同一份采集帧同时喂给 KWS（常驻唤醒）；KwsEngine 内部后台推理，不在此线程阻塞。
+    // KWS 用原始帧（常驻唤醒）；KwsEngine 内部后台推理，不在此线程阻塞。
     if (_kwsEngine) {
-        [_kwsEngine feedPCM:(const int16_t *)pcm.bytes count:outCount];
+        [_kwsEngine feedPCM:(const int16_t *)kwsPcm.bytes count:outCount];
     }
     [_carry appendData:pcm];
 
@@ -520,13 +559,29 @@ UNI_EXPORT_METHOD(@selector(stopCue))
         // 出声期一律发全 0 帧杜绝回声进 ASR；KWS 仍喂原始帧（短唤醒词命中用于打断，不受影响）。
         // 待唤醒态(_standbyMuted)上行全静音：唤醒前不调 ASR、不联网（端侧 KWS 常驻听），
         // 网关即使残留 session 也收不到真人声、不会触发 ASR 识别。KWS 仍喂原始帧，唤醒照常。
-        BOOL assistantSpeaking = _playRunning || (_cuePlayer && _cuePlayer.isPlaying) || _standbyMuted;
-        NSData *uplink = assistantSpeaking ? [NSMutableData dataWithLength:kFrameBytes] : frame;
-        [_pcmUploader upload:uplink];
-        // 只有直连未建立时才走 weex base64 回调兜底；已连接时必须停掉，避免两份音频喂 ASR
-        if (_pcmFrameCb && !_pcmUploader.isConnected) {
+        // 【2026-11-23 回退定稿】播报期恢复静音上行——曾尝试发真实帧让插话完整，
+        // 但 iOS 无硬件 AEC，软件 AEC 消不干净 TTS 回声 → 播报内容被识别成用户输入 → 自激。
+        // 两难不可兼得，选不自激：待唤醒/提示音/TTS 播报期都不上行，插话靠 KWS 喊「小熊小熊」打断。
+        // 【2026-11-23 回退媒体播放静音】媒体播放(音乐/新闻 InnerAudioContext)期恢复上行真实帧：
+        // 静音上行会让网关检测不到人声(frameRms>0.02)→ duck 不触发→ 无法边播边插话（用户体感
+        // "播放时不能说话"）。Android 正是上行真实帧+硬件AEC消回声→duck→音量变小→插话。
+        // iOS 无硬件AEC，回声风险由网关软件AEC + 能量判据(lastRms<0.004)兜底。
+        // 【2026-11-23 最终定稿·iOS 接受不能普通插话】iOS 无硬件 AEC，播报期上行真实帧
+        // → TTS 回声(rms 0.045)混进 ASR → duck 虽触发(音量变小)但识别的是回声、不准。
+        // 用户拍板：不能可靠插话就别 duck（音量别变小）。故 TTS 播报期恢复静音上行，
+        // 网关收不到回声、不误触发 duck、播报音量稳定。插话只靠端侧 KWS 喊「小熊小熊」
+        // 打断（走原生原始帧、不受上行静音影响）。这与 Android 不同——Android 有硬件 AEC
+        // 才能边播边插话，iOS 架构上做不到，接受此限制。
+        BOOL muteUplink = _playRunning || (_cuePlayer && _cuePlayer.isPlaying) || _standbyMuted
+                          || (CFAbsoluteTimeGetCurrent() < _soundTailMuteUntil);
+        if (!muteUplink) {
+            [_pcmUploader upload:frame]; // 只有空闲对话期上传真实帧
+        }
+        // KWS 仍喂原始帧（上面已喂），唤醒/打断不受静音影响。
+        // 只有直连未建立时才走 weex base64 回调兜底；已连接时必须停掉，避免两份音频喂 ASR。
+        if (_pcmFrameCb && !_pcmUploader.isConnected && !muteUplink) {
             @try {
-                NSString *b64 = [uplink base64EncodedStringWithOptions:0];
+                NSString *b64 = [frame base64EncodedStringWithOptions:0];
                 _pcmFrameCb(b64, YES);
             } @catch (NSException *e) {
                 // JS 已解绑等，忽略继续采集
@@ -790,6 +845,10 @@ static void ttsAudioQueueCallback(void *userData, AudioQueueRef queue, AudioQueu
         AudioQueueDispose(q, true);
     }
     _playRunning = NO;
+    // 【防播报余音自激】播空检测(缓冲空)早于扬声器真正播完：此处停队列后扬声器还在出声，
+    // 若立即恢复上行，尾音被麦克风收回→识别成"第一条第一条"→自激。尾巴静音 2s 覆盖余音。
+    _soundTailMuteUntil = CFAbsoluteTimeGetCurrent() + 2.0;
+    NSLog(@"%@ TTS tail mute until +2.0s", kTag);
 }
 
 /// TTS 播空检测：环形缓冲连续空 ≥600ms 且有数据历史 → 播完。由 startTtsIdleTimer 每 100ms 驱动。

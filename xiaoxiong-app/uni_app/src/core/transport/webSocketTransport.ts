@@ -12,6 +12,37 @@ interface LocationSnapshot {
   address?: string
 }
 
+/**
+ * 定位缓存 key：iOS 熄屏/后台时 uni.getLocation 拿不到定位，但此前拿到的位置是可复用的。
+ * 持久化到 storage（而非只留在内存 lastLocation），冷启动/重装后也能随 session.start
+ * 直接带缓存位置给网关，不必现场再取。带时间戳，超过 30 分钟视为过期（人会移动）。
+ */
+const LOCATION_CACHE_KEY = 'app-product.locationCache.v1'
+const LOCATION_CACHE_TTL_MS = 30 * 60 * 1000
+
+function loadCachedLocation(): LocationSnapshot | null {
+  try {
+    if (typeof uni === 'undefined' || typeof uni.getStorageSync !== 'function') return null
+    const raw = uni.getStorageSync(LOCATION_CACHE_KEY)
+    if (!raw) return null
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : (raw as { at?: number; loc?: LocationSnapshot })
+    if (!parsed?.loc || typeof parsed.loc.latitude !== 'number') return null
+    if (typeof parsed.at === 'number' && Date.now() - parsed.at > LOCATION_CACHE_TTL_MS) return null
+    return parsed.loc
+  } catch {
+    return null
+  }
+}
+
+function saveCachedLocation(loc: LocationSnapshot): void {
+  try {
+    if (typeof uni === 'undefined' || typeof uni.setStorageSync !== 'function') return
+    uni.setStorageSync(LOCATION_CACHE_KEY, JSON.stringify({ at: Date.now(), loc }))
+  } catch {
+    // 缓存失败不影响本次上报
+  }
+}
+
 /** 网关 WebSocket 地址解析：唯一来源是构建期 VITE_GATEWAY_WS_URL（由 dev 脚本按后端
  * PORT 注入，或 .env 配置）；未注入时回退内置默认本机地址。不再提供设置页手动配置，
  * 前后端地址统一由这一个来源决定。每次连接都重新解析。
@@ -250,6 +281,9 @@ export class WebSocketTransport implements AssistantTransport {
     this.url = url ?? ''
     this.lang = lang
     this.maxReconnectAttempts = maxReconnectAttempts
+    // 冷启动即从 storage 恢复上次定位：熄屏/后台拿不到新定位时也能随 session.start
+    // 带缓存位置给网关，天气等问位置的指令不必等现场 getLocation（真机铁证 2026-11-23）。
+    this.lastLocation = loadCachedLocation()
   }
 
   connect(mode: SessionMode = 'dialog'): Promise<void> {
@@ -537,11 +571,17 @@ export class WebSocketTransport implements AssistantTransport {
     })
   }
 
-  /** 取设备位置并上报；取不到（未授权/无 GPS/非 App 端）时静默跳过，不阻断会话。 */
+  /** 取设备位置并上报；取不到（熄屏后台/未授权/无 GPS/非 App 端）时用缓存兜底，不阻断会话。 */
   private async fetchAndSendLocation(): Promise<void> {
-    const loc = await this.getDeviceLocation()
-    if (!loc) return
+    let loc = await this.getDeviceLocation()
+    if (!loc) {
+      // 熄屏/后台 uni.getLocation 拿不到：退回上次缓存位置（仍在 TTL 内），
+      // 让天气等问位置的指令用缓存经纬度正常查询，而不是回「当前位置未获取到」。
+      loc = this.lastLocation ?? loadCachedLocation()
+      if (!loc) return
+    }
     this.lastLocation = loc
+    saveCachedLocation(loc)
     this.sendJson({
       type: 'session.location',
       latitude: loc.latitude,

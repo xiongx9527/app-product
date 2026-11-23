@@ -25,6 +25,10 @@ export const DEFAULT_SUBTITLE_FONT_SIZE = 18
 export const SUBTITLE_COLOR_OPTIONS = ['#ffffff', '#6c8cff', '#5cd6b2', '#ffb38a', '#ff8ab5'] as const
 export const DEFAULT_SUBTITLE_COLOR = '#ffffff'
 
+/** 设置页「定时检查」间隔档位（毫秒）；默认 30s。脏值收敛到合法档位。 */
+export const AUTO_CHECK_INTERVAL_OPTIONS = [10_000, 30_000, 60_000, 120_000] as const
+export const DEFAULT_AUTO_CHECK_MS = 30_000
+
 /** 把任意输入收敛到列表里的合法时区，非法或缺省回退东 8 区 */
 export function normalizeTimezone(value: unknown): string {
   const raw = String(value ?? '').trim()

@@ -141,9 +141,19 @@ public class WakeModule extends UniModule {
     private volatile long lastKwsHitMs = 0;
     /** 诊断：每 400ms 打印一次 KWS 当前解码出的 token（有声音时），定位「有时快有时慢」漏检原因 */
     private long kwsDiagAt = 0;
+    /**
+     * 喂给 KWS 的目标音量（把每帧 rms 归一到该值，再钳位 0.95）。真机铁证：2026-11-23 待唤醒态
+     * 喊「小熊小熊」前三遍 raw rms 已达 0.04~0.17 但 tok=[]（引擎解不出 token），第四遍才命中。
+     * iOS 用固定 6x 是因为它 AVAudioEngine 原始幅度太小；Android 实测原始已 0.15，直接照搬 6x
+     * 会把峰值削成方波、声学特征失真反而更难命中（iOS 当年的 ×12 坑）。故用自适应归一化：小声
+     * 放大、大声不削波，把喂给 sherpa-onnx 的能量稳定在舒适区。仅作用于 KWS，上行/ASR 帧不变。
+     */
+    private static final float KWS_TARGET_RMS = 0.20f;
     /** 模型在 assets 内的目录（相对 assets 根），由打包脚本从 native/kws/vendor 拷入 */
     // 2026-11-22 换用 zh-en-3M-2025 模型：离线验证同一段真机录音旧模型只中1遍、新模型2遍全中
-    private static final String KWS_ASSET_DIR = "kws/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20";
+    // 2026-11-23 换回旧模型 wenetspeech-3.3M：新模型 zh-en-3M-2025 真机连续喊命中率极低
+    // （喊7遍中1遍，tok=[]），旧模型关键词表配套、召回更稳（见记忆 project_kws_hit_rate_gain）。
+    private static final String KWS_ASSET_DIR = "kws/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01";
 
     // ---- 本地提示音播放（原生 MediaPlayer，不申请音频焦点）----
     // 为什么不用 uni.createInnerAudioContext：那条路底层 io.dcloud.feature.audio.AudioPlayer
@@ -595,10 +605,10 @@ public class WakeModule extends UniModule {
             feat.setFeatureDim(80);
 
             OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
-            // 新模型 epoch-13、chunk-16；decoder 官方无 int8 版，用 fp32 的 .onnx
-            transducer.setEncoder(KWS_ASSET_DIR + "/encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx");
-            transducer.setDecoder(KWS_ASSET_DIR + "/decoder-epoch-13-avg-2-chunk-16-left-64.onnx");
-            transducer.setJoiner(KWS_ASSET_DIR + "/joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx");
+            // 旧模型 wenetspeech-3.3M 是 epoch-12，decoder 也有 int8 版（见 KWS_ASSET_DIR 注释）。
+            transducer.setEncoder(KWS_ASSET_DIR + "/encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+            transducer.setDecoder(KWS_ASSET_DIR + "/decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
+            transducer.setJoiner(KWS_ASSET_DIR + "/joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx");
 
             OnlineModelConfig model = new OnlineModelConfig();
             model.setTransducer(transducer);
@@ -614,7 +624,11 @@ public class WakeModule extends UniModule {
             // 时两遍「小熊小熊」只中第 2 遍（第 1 遍漏），score=2.0 时两遍全中；threshold 在
             // 0.02~0.25 间不影响结果，瓶颈在 score。此前误唤醒是 2.0+threshold 0.18 组合所致，
             // 现保持官方 threshold 0.25 + rearm 去抖 + 只认「小熊小熊」，误唤醒风险低。
-            cfg.setKeywordsScore(2.0f);
+            // 【2026-11-23 提命中率·真凶】"小熊小熊" token 重叠（x iǎo x ióng ×2），
+            // sherpa-onnx 官方：重叠关键词 num_trailing_blanks 要从默认 1 设到 8，
+            // 否则 decode 空（真机铁证 tok=[]，score 加到 3.0 也没用）。
+            cfg.setNumTrailingBlanks(8);
+            cfg.setKeywordsScore(3.0f);
             cfg.setKeywordsThreshold(0.25f);
 
             kws = new KeywordSpotter(ctx.getAssets(), cfg);
@@ -633,8 +647,19 @@ public class WakeModule extends UniModule {
         try {
             int n = frame.length / 2;
             float[] samples = new float[n];
+            // 自适应增益：把本帧 rms 归一到 KWS_TARGET_RMS（上限 8x 防静音帧噪声被放大、下限 1x 不缩小）
+            double g = 1.0;
+            if (rms > 1e-5) {
+                g = KWS_TARGET_RMS / rms;
+                if (g > 8.0) g = 8.0;
+                if (g < 1.0) g = 1.0;
+            }
+            int clipped = 0;        // 被钳位的样本数（占比高说明仍有削波，需复查目标音量）
             for (int i = 0, j = 0; i < frame.length; i += 2, j += 1) {
-                samples[j] = (short) (((frame[i + 1] & 0xff) << 8) | (frame[i] & 0xff)) / 32768.0f;
+                float raw = (short) (((frame[i + 1] & 0xff) << 8) | (frame[i] & 0xff)) / 32768.0f;
+                float v = (float) (raw * g);
+                if (v > 0.95f) { v = 0.95f; clipped++; } else if (v < -0.95f) { v = -0.95f; clipped++; }
+                samples[j] = v;
             }
             kwsStream.acceptWaveform(samples, SAMPLE_RATE);
             while (kws.isReady(kwsStream)) {
@@ -646,12 +671,15 @@ public class WakeModule extends UniModule {
                 if (rms > 0.01 && nowMs - kwsDiagAt >= 400) {
                     kwsDiagAt = nowMs;
                     String toks = result == null ? "" : String.join("|", result.getTokens());
-                    Log.i(TAG, "KWS-DIAG rms=" + String.format("%.3f", rms) + " tok=[" + toks + "] kw=" + keyword);
+                    Log.i(TAG, "KWS-DIAG raw=" + String.format("%.3f", rms)
+                            + " gain=" + String.format("%.2f", g)
+                            + " clip=" + String.format("%.0f%%", 100.0 * clipped / n)
+                            + " tok=[" + toks + "] kw=" + keyword);
                 }
                 if (keyword != null && !keyword.isEmpty()) {
                     // 官方词（你好军哥/小爱同学…）只用于撑起关键词表结构（单词表在真机上检不准），
                     // 真正当唤醒词的只有「小熊小熊」——其它命中一律忽略，避免误唤醒。
-                    if (!"小熊小熊".equals(keyword)) {
+                    if (!"你好小熊".equals(keyword)) {
                         kws.reset(kwsStream);
                         continue;
                     }
@@ -817,11 +845,10 @@ public class WakeModule extends UniModule {
                     // 回调失败（如 JS 已解绑）忽略，继续采集
                 }
             }
-            // 原生 PCM 直连网关：只在播报期（weex 回调失效）启用，补上 JS 收不到的帧；
-            // 非播报期 weex 回调正常，仍由 JS 主连接发送，避免两路重复导致 ASR 收到重叠音频。
-            if (pcmUploader != null && playRunning) {
-                pcmUploader.upload(frame.clone());
-            }
+            // 【2026-11-23 砍插话·对齐 iOS】播报期不再上行真实帧：
+            // 之前 playRunning 时 pcmUploader.upload 上传真实帧→网关检测人声→duck→普通插话排队；
+            // 用户要求两端砍掉普通插话，只留 KWS「小熊小熊」打断（走 feedKws 原始帧、不经上行）。
+            // 播报期不上传→网关收不到回声/人声、不误入队。非播报期仍由上面 pcmFrameCb(weex) 上行。
         }
         Log.i(TAG, "captureLoop ended, total frames=" + count);
     }

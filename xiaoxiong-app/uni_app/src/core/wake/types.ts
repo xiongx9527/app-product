@@ -16,6 +16,8 @@ export interface WakeProvider {
 }
 
 /** 默认唤醒词，后续可按产品命名调整。
- *  "小熊熊"是口语化简称（用户实测喊这个），也认——matchWakeWord 用 includes，
- *  标准词放最前优先命中。别放更短的"小熊"，会误触发（"小熊饼干"等）。 */
-export const DEFAULT_WAKE_WORDS: string[] = ['小熊小熊', '小熊熊', '小小熊']
+ *  matchWakeWord 用 includes，标准词放最前优先命中。
+ *  2026-11-23 从"小熊小熊"改为"你好小熊"：KWS 的 token 重复序列（x iǎo x ióng ×2）
+ *  会让解码路径歧义、命中率极低；"你好小熊"四音节无重复，召回更稳。
+ *  别放太短的词（"你好"/"小熊"）会误触发（"你好呀"/"小熊饼干"等）。 */
+export const DEFAULT_WAKE_WORDS: string[] = ['你好小熊', '你好小小熊']

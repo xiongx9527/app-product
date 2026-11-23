@@ -6,6 +6,8 @@ import {
   SUBTITLE_COLOR_OPTIONS,
   DEFAULT_SUBTITLE_FONT_SIZE,
   DEFAULT_SUBTITLE_COLOR,
+  AUTO_CHECK_INTERVAL_OPTIONS,
+  DEFAULT_AUTO_CHECK_MS,
 } from './constants'
 import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
 import type { AppConfig, GeneralConfig, MemoryConfig, McpConfig, McpServerConfig, McpTransport, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
@@ -91,22 +93,27 @@ export function createDefaultConfig(): AppConfig {
   }
 }
 
-/** 通用设置默认值：自动连接网关默认开启（开屏即连网关进入待唤醒，免去手动点开关）。 */
+/** 通用设置默认值：自动连接网关默认开启（开屏即连网关进入待唤醒，免去手动点开关）；定时检查默认关闭。 */
 function createDefaultGeneral(): GeneralConfig {
-  return { autoConnect: true, theme: 'default' }
+  return { autoConnect: true, theme: 'default', autoCheck: false, autoCheckMs: DEFAULT_AUTO_CHECK_MS }
 }
 
 const THEME_IDS = ['default', 'purple', 'teal', 'amber'] as const
 
-/** 归一化通用设置：autoConnect 只认 boolean，缺省/非法回退默认（开）。 */
+/** 归一化通用设置：autoConnect 只认 boolean，缺省/非法回退默认（开）；autoCheck 缺省/非法回退默认（关）。 */
 function normalizeGeneral(raw: unknown): GeneralConfig {
   const source = isRecord(raw) ? raw : {}
   const autoConnect =
     typeof source.autoConnect === 'boolean' ? source.autoConnect : createDefaultGeneral().autoConnect
+  const autoCheck =
+    typeof source.autoCheck === 'boolean' ? source.autoCheck : createDefaultGeneral().autoCheck
+  const autoCheckMs = AUTO_CHECK_INTERVAL_OPTIONS.includes(source.autoCheckMs as (typeof AUTO_CHECK_INTERVAL_OPTIONS)[number])
+    ? (source.autoCheckMs as number)
+    : DEFAULT_AUTO_CHECK_MS
   const theme = THEME_IDS.includes(source.theme as (typeof THEME_IDS)[number])
     ? (source.theme as GeneralConfig['theme'])
     : createDefaultGeneral().theme
-  return { autoConnect, theme }
+  return { autoConnect, theme, autoCheck, autoCheckMs }
 }
 
 /** 记忆设置默认值：自动记忆（自动抽取）默认关闭，手动指令不受此开关影响。 */

@@ -49,6 +49,9 @@ export class HttpVoiceAsr implements AsrProvider {
   private partialText = ''
   /** 最近一次 finalize 音频的 VAD 真语音秒数（-1=无数据/未装模型），供网关幻觉二级判断。 */
   speechDuration = -1
+  /** 【2026-11-23】最近一次 finalize 整段音频的平均 RMS，用于识别"播报回声/余音"
+   *  （回声 rms≈0.001，真人说话 rms≈0.01+）；配合 speechDuration<0 可靠区分回声与真人选号。 */
+  lastRms = -1
   /** 串行化识别请求：本地服务不必承受并发，定稿也不会和中间结果抢跑。 */
   private inflight: Promise<void> = Promise.resolve()
   /** 上一次 partial 识别是否还在进行。慢上游（往返~2s）若仍按固定 600ms 提交，
@@ -100,6 +103,14 @@ export class HttpVoiceAsr implements AsrProvider {
     if (this.bufferedBytes === 0) return ''
     await this.inflight
     const pcm = Buffer.concat(this.buffer)
+    // 【2026-11-23】算整段平均 RMS（16bit 单声道），供网关识别播报回声/余音。
+    let sum = 0
+    const n = Math.floor(pcm.byteLength / 2)
+    for (let i = 0; i < n; i += 1) {
+      const s = pcm.readInt16LE(i * 2) / 32768
+      sum += s * s
+    }
+    this.lastRms = n > 0 ? Math.sqrt(sum / n) : 0
     this.reset()
     const { text, speechDuration, failed } = await this.transcribe(pcm)
     this.speechDuration = speechDuration

@@ -100,7 +100,14 @@ final class GatewayNode {
         do { try fm.createDirectory(at: cache, withIntermediateDirectories: true) } catch {}
         setenv("NODE_COMPILE_CACHE", cache.path, 1)
         setenv("NODE_COMPILE_CACHE_PORTABLE", "1", 1)
-        setenv("NODE_OPTIONS", "--max-old-space-size-percentage=50 --enable-source-maps", 1)
+        // 【2026-11-23 修 iOS CPU 超限】去掉 --enable-source-maps：
+        // 该选项让 V8 对每条异常堆栈做 source-map 解析，高频 WS 帧/异步链下 CPU 开销巨大，
+        // 在 iOS 单进程 + 60% CPU 硬限制下会触发 task_exceeded_cpulimit 被系统杀进程。
+        // 生产环境不需要源码映射（诊断靠 barge-diag 日志，不靠 V8 堆栈）；保留堆上限防 OOM。
+        // 【2026-11-23 CDP 已定位死循环并修复】诊断期曾开 --inspect=9229，用 CDP Debugger.pause
+        // 抓到 JS 栈 = EchoCanceller.process 在 handleBinary 里被非播报期帧触发 O(n×M) 死循环，
+        // 已在 voiceSessionService.ts 给 AEC 加 playbackPending 守卫根治。生产不再开调试端口。
+        setenv("NODE_OPTIONS", "--max-old-space-size-percentage=50", 1)
 
         // 3) 切工作目录（相对路径基准）
         chdir(home.path)

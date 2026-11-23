@@ -41,7 +41,10 @@ Java_com_xiaoxiong_assistant_gateway_GatewayNodeService_nativeStartNode(
   setEnv("GATEWAY_PORT_FILE", home + "/.gateway_port");
   setEnv("NODE_COMPILE_CACHE", cache + "/node-cache");  // V8 代码缓存，加速冷启
   // 后台运行时不能按整机 RAM 定 old-space，用百分比上限避免触发 cgroup 杀进程
-  setEnv("NODE_OPTIONS", "--max-old-space-size-percentage=50 --enable-source-maps");
+  // 【2026-11-23 与 iOS 对齐】去掉 --enable-source-maps（V8 每条异常做 source-map 解析，
+  // 高频 WS 帧下 CPU 开销大）与 --inspect（诊断期临时的 0.0.0.0:9229 调试端口，生产不开）。
+  // 诊断靠 barge-diag 日志，不靠 V8 堆栈/CDP。
+  setEnv("NODE_OPTIONS", "--max-old-space-size-percentage=50");
 
   // 工作目录切到 home，相对路径解析才有基准
   chdir(home.c_str());

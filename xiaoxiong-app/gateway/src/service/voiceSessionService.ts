@@ -37,6 +37,8 @@ let bargeDiagAt = 0
 /** 累计收到的音频帧数（每 50 帧落一条），与 pb 状态/节流无关，确认网关是否真的在收帧 */
 let bargeFrames = 0
 let bargeLoudFrames = 0
+/** AEC 前后能量诊断计数（每 200 帧一条 AEC-ENERGY 日志，长期保留） */
+let aecDiagFrames = 0
 /** 播报期全 0 静音帧跳过 AEC 的累计计数（每 500 条落一条日志，长期保留） */
 let silentAecSkipped = 0
 
@@ -279,7 +281,6 @@ export class VoiceSessionService {
    * 最后一次下发音频之后的回声保护窗口（毫秒）：窗口内定稿的文本一律按回声对待。
    * 播放结束（含被打断）后仍留一小段尾巴，盖住扬声器余音经空气/回路传回麦克风的延迟。
    */
-  private echoUntil = 0
   /** 本轮已下发的音频字节数，用于估算播放时长做握手超时兜底。 */
   private downlinkBytes = 0
   /**
@@ -841,6 +842,21 @@ export class VoiceSessionService {
     if (!this.active) return
     // 本帧 RMS（供 duck 触发与诊断共用）；复用 noiseFilter 的 pcmRms，避免重复实现
     const frameRms = pcmRms(chunk)
+    // 【2026-11-23 根治 iOS CPU 超限被杀】播报期 iOS 上行全是全 0 静音帧
+    // （AppProductWakeModule.m：_playRunning 时上行整帧静音，真人声只喂原生 KWS、不上行）。
+    // 这些帧对 VAD/AEC/ASR/endpoint 零信息量，但长播报（新闻多句，几分钟）每秒 ~100 帧
+    // ×（pcmRms 遍历 + vad.push + 诊断），把 iOS 单进程 Node 事件循环打满 → CPU 91% 被系统 kill、
+    // 心跳 timer 饿死（stage 恒 frame-done、卡 188s/581s）。这里在入口直接早退：
+    // 仍保留每 50 帧一条 TOTAL 诊断（不变）让帧到达可观测，其余全部跳过。
+    // 【功能零损失】真人插话帧 rms>1e-6 不早退、照常走 AEC/VAD/ASR；非播报期不早退；
+    // KWS 在原生侧独立跑、不经此路。Android 播报期上行真实静音帧(rms~0.0005)>1e-6 不早退。
+    if (this.playbackPending && frameRms < 1e-6) {
+      bargeFrames += 1
+      if (bargeFrames % 50 === 0) {
+        bargeDiag(`TOTAL frames=${bargeFrames} loud=${bargeLoudFrames} pb=true SKIP-SILENT`)
+      }
+      return
+    }
     // 累计收帧诊断（每 50 帧一条，不受节流/pb 影响）：确认帧是否真的到达网关
     bargeFrames += 1
     if (frameRms > 0.008) bargeLoudFrames += 1
@@ -865,7 +881,24 @@ export class VoiceSessionService {
     // 保证 Android 的 AEC 滤波器 w 仍靠真实静音帧持续收敛、插话回声消除不受影响。
     const isAllSilentUplink = this.playbackPending && frameRms < 1e-6
     setDiagStage(isAllSilentUplink ? 'aec-skip-silent' : 'aec-process') // 【心跳埋点·长期保留】
-    const cleanChunk = (this.aecActive && !isAllSilentUplink) ? this.aec.process(chunk) : chunk
+    // 【2026-11-23 iOS CPU 死循环根治·CDP 抓栈铁证】卡死时 CDP Debugger.pause 抓到的 JS 栈：
+    //   #0 EchoCanceller.process (bundle:118858 的 `for j<M 更新 w[j]`)
+    //   #1 handleBinary → this.aec.process(chunk)  ← 根因就在这里
+    // 原条件 `aecActive && !isAllSilentUplink` 缺 playbackPending 守卫：播报链异常中断/
+    // 卡死时 aecActive 残留 true，之后**所有非播报期真实帧**都跑 O(n×M) 三重循环（每帧
+    // 512×512×3≈78万次），V8 解释执行慢到事件循环饿死 → CPU 90% 被系统杀进程。
+    // 修复：只有真在播报(playbackPending)时才跑 AEC——播报期才有回声需要消除；
+    // 非播报期即使 aecActive 残留也不跑（无回声可消，且这帧正是要送 ASR 的真人声，
+    // 跑 AEC 反而把真人声当回声消掉）。Android 播报期上行真实帧仍在 playbackPending 时走 AEC，
+    // 回声消除不受影响；iOS 播报期不发帧、本就不进 AEC。两端功能都正确。
+    const cleanChunk = (this.playbackPending && this.aecActive && !isAllSilentUplink)
+      ? this.aec.process(chunk) : chunk
+    // 【2026-11-23 诊断·常驻】播报期每 200 帧记一条 AEC 前后能量，验证回声消除效果
+    // （raw 高、clean 仍高=AEC 没消干净→插话被回声盖住；clean 明显低=AEC 生效）。
+    aecDiagFrames += 1
+    if (this.playbackPending && this.aecActive && aecDiagFrames % 200 === 0) {
+      bargeDiag(`AEC-ENERGY raw=${frameRms.toFixed(4)} clean=${pcmRms(cleanChunk).toFixed(4)}`)
+    }
     if (isAllSilentUplink) {
       silentAecSkipped += 1
       if (silentAecSkipped % 500 === 0) {
@@ -1088,8 +1121,8 @@ export class VoiceSessionService {
     // 临时诊断：定稿文本 + 噪声过滤结果，确认 endpoint 有没有触发、文本有没有被丢
     bargeDiag(
       `FINAL text="${text}"${text !== rawText ? ` raw="${rawText}"` : ''} pb=${this.playbackPending} noise=${isNoise(text)} `
-      + `foreign=${isForeignNoise(text, this.lang)} echo=${Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)}`
-      + ` vd=${this.asr.speechDuration ?? -1}`
+      + `foreign=${isForeignNoise(text, this.lang)} echo=${resemblesSpoken(text, this.spoken)}`
+      + ` vd=${this.asr.speechDuration ?? -1} rms=${(this.asr.lastRms ?? -1).toFixed(4)}`
     )
     if (!text || isNoise(text) || isForeignNoise(text, this.lang)) return
 
@@ -1100,6 +1133,23 @@ export class VoiceSessionService {
       return
     }
 
+    // 【2026-11-23 回声必须在 skill 选号之前拦】music_skill.onFinalize 会把"第一条"当选号
+    // 消费（在回声比对之前），导致播报回声"第一条"触发播放自激。在 dispatchFinalize 之前
+    // 用**能量判据**拦回声：真人说"第一条"选号时 rms≈0.01+（放行），播报回声 rms≈0.001
+    // 且 vd<0（拦）。文本判据(resemblesSpoken)也并列——它俩都命中过回声。
+    {
+      const vd0 = this.asr.speechDuration ?? -1
+      const rms0 = this.asr.lastRms ?? -1
+      // 只用纯能量判据：真人说"第一条"选号 rms≈0.01+（放行），播报回声 rms≈0.001（拦）。
+      // 绝不用 vd 或文本判据——真人选号 vd 也=-1、文本也像播报内容，会误伤。
+      const echoBeforeSkill = vd0 < 0 && rms0 >= 0 && rms0 < 0.004
+      if (echoBeforeSkill) {
+        bargeDiag(`ECHO-BEFORE-SKILL text="${text}" vd=${vd0} rms=${rms0.toFixed(4)}`)
+        this.echo.noteBargeIn()
+        this.syncDuplex()
+        return
+      }
+    }
     // ── skill 定稿钩子（偏好追问等规则已迁进 skill）──
     // 只在空闲真实对话轮次处理（播报期插话的「好/嗯」会排队，由 runTurn 消费时再确认）。
     // 任一 skill 的 onFinalize 消费了这句就直接 return，不再走直连命令 / LLM。
@@ -1107,6 +1157,10 @@ export class VoiceSessionService {
       if (await this.dispatchFinalize(text)) return
     }
 
+    // 【2026-11-23 回退"选号前回声早拦"】真机铁证：用户真实说"第一条"选新闻时 vd 也是 -1、
+    // echo=true（文本像播报内容），被 early-drop 误杀 → 选号完全没反应。文本+vd 无法区分
+    // "播报回声第一条"和"用户选号第一条"。回退到原逻辑：回声拦截放在选号之后，
+    // 宁可偶尔自激也不能让用户无法选号。超长视频改用时长过滤（B站源≤10分钟）根治卡死。
     // 上一轮给过候选歌曲列表，这一句优先当作「选第几首 / 说歌名」解析。
     // 必须在下面的回声比对之前：用户说的「第二首」「稻香」正是刚口播过的词，
     // 否则会被 resemblesSpoken 当成播报回声丢掉，导致永远选不中。
@@ -1127,13 +1181,26 @@ export class VoiceSessionService {
     // 入队条件：播报进行中，或"这句是播报期开的口"（定稿可能拖到播报结束后、pb 已 false）。
     // bargeIn 在 setDuck(true) 且播报期时置位，定稿时已取出并清字段。
     if (this.playbackPending || bargeIn) {
-      if (Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)) return
+      // 【2026-11-23 修播报回声自激】去掉 echoUntil 时间窗口：真机铁证播报结束后 22 秒才
+      // 定稿出回声("第一条。")，8s/1.2s 窗口都拦不住。spoken 本身只留最近 6 句（短期记忆），
+      // resemblesSpoken 用子串/75%严格匹配，像"刚播报过的内容"就是回声，无需时间窗口。
+      if (resemblesSpoken(text, this.spoken)) return
       this.enqueueDuringBusy(text)
       return
     }
     // 文本级回声兜底：刚播完的尾巴里仍可能混进助手说过的原话（含复述用户），
     // 播放结束后的保护窗口内按回声丢弃，避免被当成用户新的一句。
-    if (Date.now() < this.echoUntil && resemblesSpoken(text, this.spoken)) {
+    // 【2026-11-23 修播报回声自激】同上：去掉 echoUntil 时间窗口，播报结束很久后定稿的
+    // 尾音回声("第一条。")一样要拦。spoken 短期记忆 + resemblesSpoken 严格匹配足够。
+    // 【2026-11-23 回声可靠判据】文本像播报内容 → 回声；或 后端VAD判无真人语音(vd<0)
+    // 且整段音频能量极低(lastRms<0.004，真人说话 rms≈0.01+，播报余音≈0.001) → 回声。
+    // 后者能拦住"第一条"这类恰好像播报内容、但文本判据以外的回声，且不误伤真人选号
+    // （真人说"第一条"时 rms 高，不会被当回声）。
+    const vd = this.asr.speechDuration ?? -1
+    const rms = this.asr.lastRms ?? -1
+    const echoByEnergy = vd < 0 && rms >= 0 && rms < 0.004
+    if (resemblesSpoken(text, this.spoken) || echoByEnergy) {
+      bargeDiag(`ECHO-DROP text="${text}" vd=${vd} rms=${rms.toFixed(4)}`)
       this.echo.noteBargeIn()
       this.syncDuplex()
       return
@@ -1664,8 +1731,12 @@ export class VoiceSessionService {
         setDiagStage('tts-send-audio') // 【心跳埋点·长期保留】帧下发段
         this.downlinkBytes += frame.byteLength
         this.echo.onDownlink()
-        // 每下发一帧就把回声保护窗口往后挪：窗口始终盖住「最后一帧之后的一小段余音」
-        this.echoUntil = Date.now() + 1200
+        // 每下发一帧就把回声保护窗口往后挪：窗口盖住「最后一帧之后的一小段余音」。
+        // 【2026-11-23 修播报回声自激】1200ms 不够——真机铁证：新闻播完后尾音被 ASR buffer
+        // 缓存，播报结束后 8 秒才定稿出"第一条。"（播报内容），此时 echoUntil 早过期、
+        // resemblesSpoken 兜底失效 → 回声被当用户输入触发新一轮播报自激。
+        // 提到 8000ms 覆盖这个定稿延迟；resemblesSpoken 要求子串/75%重合，真人正常指令
+        // （天气/音乐/控制）不会与播报内容相似，误伤概率极低。
         // 软件 AEC：把下发的 TTS（24k）推作远端参考；播报首帧 reset 一次，句间延续系数以覆盖回声尾。
         if (!this.aecActive) { this.aec.reset(); this.aecActive = true }
         this.aec.pushReference(frame)
@@ -1789,7 +1860,6 @@ export class VoiceSessionService {
     this.processing = false
     this.speaking = false
     this.playbackPending = false
-    this.echoUntil = 0
     this.queue.length = 0
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait('reset')
@@ -1884,7 +1954,6 @@ export class VoiceSessionService {
     this.processing = false
     this.speaking = false
     this.playbackPending = false
-    this.echoUntil = 0
     this.queue.length = 0
     // 注意：这里不清空 pendingCandidates（候选歌单）。cancel() 同时服务于
     // 重唤醒(REWAKE→session.cancel+session.start)与彻底退出(DISABLE/CANCEL)，
@@ -1929,7 +1998,6 @@ export class VoiceSessionService {
     this.skipRequested = true
     this.speaking = false
     this.playbackPending = false
-    this.echoUntil = 0
     // 解除「等播完」阻塞：runTurn 的 await playback 立即返回，随后检查 turn/cancelled
     // 均未变（不在 break 条件里加 skipRequested），于是继续 shift 队列下一句。
     this.cancelPlaybackWait('skip-current')
@@ -1949,7 +2017,6 @@ export class VoiceSessionService {
     this.turn += 1
     this.speaking = false
     this.playbackPending = false
-    this.echoUntil = 0
     this.queue.length = 0
     this.content.reset('end')
     this.finalizeChain = Promise.resolve()
@@ -1973,7 +2040,6 @@ export class VoiceSessionService {
   close(): void {
     this.active = false
     this.playbackPending = false
-    this.echoUntil = 0
     this.queue.length = 0
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait('close')

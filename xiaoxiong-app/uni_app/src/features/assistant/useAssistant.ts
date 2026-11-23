@@ -34,7 +34,7 @@ import {
   setAppPlaybackVolume,
   markPlaybackInFlight,
 } from '@/core/audio/appPlayback'
-import { isAppCaptureSupported, requestMicPermission, resumeAppCapture, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
+import { isAppCaptureSupported, requestMicPermission, resumeAppCapture, setAppScreenOn, setMediaPlaying, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
 import { t } from '@/core/i18n'
 import { transition } from '@/core/assistant/stateMachine'
 import {
@@ -422,10 +422,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * KWS 唤醒静默窗：端侧 KWS 命中唤醒词后，同一句话仍会被 ASR 兜底链路再转写一遍
    * （双轨并存），若在窗口内不拦，就会出现「KWS 先唤醒→ASR 的『小熊小熊』又进来二次 reWake、
    * 且把唤醒词写进草稿区」。KWS 命中时记时刻，窗口内 ASR 的唤醒词文本一律忽略。
-   * 时长要覆盖 ASR 整段识别延迟（真机实测 final 比 KWS 晚约 3.4s），留足余量。
+   * 时长要覆盖 ASR 整段识别延迟。真机 2026-11-23 实测 final 比 KWS 晚 5.9s（命中 14:48:43、
+   * ASR 转发"小熊小熊"14:48:48），超了原 5s 窗口→没拦住→ASR 唤醒词二次 reWake/cancel 把
+   * 刚建立的会话冲掉，紧接着的用户指令识别为空（喊了中了却没反应）。加大到 8s 留足余量。
    */
   let kwsWakeAt = 0
-  const KWS_WAKE_MUTE_MS = 5000
+  const KWS_WAKE_MUTE_MS = 8000
   /** ASR 转写的这句是否就是刚被 KWS 消费掉的那句唤醒词（应忽略，不再写草稿/不再二次唤醒）。 */
   const isKwsWakeEcho = (text: string): boolean =>
     Date.now() - kwsWakeAt < KWS_WAKE_MUTE_MS && !!matchWakeWord(text, DEFAULT_WAKE_WORDS)
@@ -652,6 +654,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     const url = musicState.url.value.trim()
     if (title && url) addFavorite({ title, url })
   })
+
+  // 媒体播放(音乐/新闻/电台)期间通知原生静音上行：外放声音不经网关TTS、AEC 无参考消不掉，
+  // 否则边播边被麦克风收回识别成用户输入(尤其"第一条"之类被当选号)。KWS 仍照常听、可喊词打断。
+  watch(musicState.playing, (playing) => setMediaPlaying(playing), { immediate: true })
 
   function handleServerEvent(event: ServerEvent): void {
     // 待唤醒态不消费任何 ASR 事件：唤醒只认端侧 KWS（「唤醒前不调 ASR」是硬原则）。
@@ -1074,9 +1080,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         halfDuplex.value = event.mode === 'half'
         break
       case 'audio.duck':
-        // barge-in duck：你一开口网关就压低 TTS，让麦克风只收到人声、ASR 识别准；
-        // 说完恢复。仅 App 原生播放有 duck 能力，H5（WebAudio）无此接口自动 no-op。
-        setAppPlaybackVolume(event.duck ? TTS_VOLUME_DUCK : TTS_VOLUME_NORMAL)
+        // 【2026-11-23 最终定稿】iOS 无硬件 AEC、无法可靠边播边插话，网关一旦误判回声为
+        // 人声就 duck 把音量压低，但识别仍不准——用户拍板：不能插话就别变小声。
+        // 忽略 audio.duck，播报音量全程保持正常；插话靠端侧 KWS 喊「小熊小熊」打断。
+        // 只在 duck=false（恢复）时确保音量回到正常，兜底防别处误压。
+        if (!event.duck) setAppPlaybackVolume(TTS_VOLUME_NORMAL)
         break
       case 'error':
         errorMessage.value = event.message
@@ -1275,6 +1283,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 待唤醒：连网关（wake 模式）并开启麦克风上行；上行静音，只靠端侧 KWS 唤醒。 */
   async function enterWake(): Promise<void> {
     mode = 'wake'
+    // 回待唤醒：恢复自动熄屏。对话期间为保定位/防后台 CPU 超限被杀一直常亮，
+    // 回到待唤醒后必须放开，否则永远不熄屏、耗尽电量（KWS 仍常驻，熄屏也能喊词唤醒）。
+    setAppScreenOn(false)
     // 唤醒前不调 ASR（硬原则）：待唤醒态把上行 PCM 置静音，网关收不到有效音频就不会触发识别。
     // 端侧 KWS 在本地跑，不依赖上行，照常能唤醒。
     kwsService.setStandbyMuted(true)
@@ -1303,6 +1314,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 命中唤醒：在同一条连接上切到 dialog 模式，进入 LLM/TTS。 */
   async function enterDialog(): Promise<void> {
     mode = 'dialog'
+    // 对话期间保持屏幕常亮：① 后台拿不到定位（天气首次问失败）② 后台高 CPU 触发系统杀进程。
+    // 对话结束回待唤醒（enterWake）时恢复自动熄屏。
+    setAppScreenOn(true)
     // 进入对话态必须恢复上行：用户说的话要送 ASR。静音只属于待唤醒态。
     kwsService.setStandbyMuted(false)
     // 进入对话态才启动 30s 健康轮询：对话中要用 ASR/LLM/TTS，需持续掌握可用性。
@@ -1320,6 +1334,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   /** 关闭助手：停采集、关连接，并停掉音乐。两个采集后端互斥，都尝试停止（未启动的是 no-op）。 */
   function leaveWake(): void {
+    setAppScreenOn(false) // 退出助手：恢复自动熄屏（对话期保持常亮的对称收尾）
     stopHealthPolling()
     resetGatewayDownAnnounce()
     if (capturing) {
@@ -1516,7 +1531,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 覆盖 standby 空闲直连播报（百科/天气/新闻确认句等不经会话的口播）——
    * 这正是原来点球停不掉的根因：那些场景 state=standby，onOrbTap 走的是 wake()。
    */
-  function interruptSpeech(dropText?: string): void {
+  function interruptSpeech(dropText?: string, fromKws = false): void {
     cancelPendingIdle()
     disarmThinkingCue()
     stopTts()
@@ -1525,7 +1540,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     setPhaseDone('interruptSpeech')
     markAnswerDone()
     lastSpokeAt = Date.now()
-    transport.sendSkipCurrent(dropText)
+    // 【KWS 命中=整轮停】sendSkipCurrent 只跳当前句、runTurn 会继续 shift 队列下一句接着播
+    // （网关 skipCurrent 注释明确如此）→ 用户体感"喊了小熊小熊还在播报"。
+    // KWS 命中改用 sendCancel（++turn+清队列+整轮重来），播报彻底停；
+    // 点球/ASR 文本等保留原 sendSkipCurrent（只跳当前句、队列继续）。
+    if (fromKws) transport.sendCancel()
+    else transport.sendSkipCurrent(dropText)
   }
 
   /** 点中间圆球手动开始一轮：等同说「小熊小熊」唤醒，仅待唤醒(standby)态有效。
@@ -1590,14 +1610,16 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    *  不 dispatch REWAKE——那会 cancel+start 清掉队列；改走 interruptSpeech，只作废当前句、
    *  保留队列，且**不碰媒体播放器**（音乐/新闻音轨继续放）。招呼与「我说」框照旧。
    *  dropText 带上这句唤醒词原文，网关据此把它从队列删掉（它是打断信号、不是指令）。 */
-  function skipCurrentAndGreet(dropText?: string): void {
-    // 临时诊断：确认「小熊小熊」命中后有没有走到打断、canWake 是否为真
+  function skipCurrentAndGreet(dropText?: string, fromKws = false): void {
+    // 【KWS 必须命中】KWS 命中不走 canWake 拦截（health 刚启动未就绪会吞命中）；仅 ASR 文本保留。
     transport.sendDiag?.({
       state: state.value, speaking: isSpeaking.value, cue: false, muted: false,
       frames: 0, rms: 0, connected: transport.isConnected(),
-      trace: `SKIP-CURRENT called drop=${dropText ?? ''} canWake=${canWake()} pb=${isSpeaking.value}`,
+      trace: `SKIP-CURRENT called drop=${dropText ?? ''} canWake=${canWake()} fromKws=${fromKws} pb=${isSpeaking.value}`,
     })
-    if (!canWake()) return
+    if (!canWake() && !fromKws) return
+    // KWS 命中：播放也停（用户要求"播报停止、播放也停止"）
+    if (fromKws) stopMusic()
     // 识别到的「小熊小熊」也要进「我说」框：用它原文（无参数时用默认唤醒词）。
     // 用户明确要求唤醒词和普通插话一样在「我说」框可见。
     transcript.value = dropText || DEFAULT_WAKE_WORDS[0]
@@ -1610,7 +1632,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 还是上一轮的 true → 跳过清空 → 新回答 += 到旧文本 = 助手框累加。
     assistantTextStarted = false
     playPromptCue('greeting')
-    interruptSpeech(dropText)
+    interruptSpeech(dropText, fromKws)
   }
 
   /**
@@ -1628,10 +1650,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    *   避免一次喊词触发多次招呼；asr.final / queued / rejected 是离散事件，不节流。
    * @returns 是否真正消费了这次命中（调用点据此决定是否 break 后续逻辑）。
    */
-  function handleWakeHit(text?: string, throttle = false): boolean {
-    if (!canWake()) {
-      // 【熄屏唤醒诊断·常驻】KWS 命中后若被前置条件拦掉，把 ws/health 真相落盘：
-      // 真机出现过「熄屏 KWS HIT 两次但界面纹丝不动」，需区分是 WS 未连还是 health 陈旧。
+  function handleWakeHit(text?: string, throttle = false, fromKws = false): boolean {
+    // 【2026-11-23 KWS 必须命中】端侧 KWS 唤醒是本地能力，命中即生效，不受 health 前置条件拦截。
+    // 刚启动时 health 探测要几秒，此前 KWS 命中被 canWake() 静默吞掉 → 用户"喊3遍才响应"。
+    // 网关/ASR 没好时 enterDialog/connect 本就有重连兜底，不该在唤醒这一步拦。
+    // 仅 ASR 文本唤醒(fromKws=false)保留 canWake 硬约束。
+    if (!canWake() && !fromKws) {
       try {
         const r = health.value
         transport.sendDiag?.({
@@ -1654,8 +1678,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       if (Date.now() - lastPartialSkipAt < PARTIAL_SKIP_MS) return false
       lastPartialSkipAt = Date.now()
     }
-    if (assistantBusy || isSpeaking.value || queuePending.value > 0) skipCurrentAndGreet(text)
-    else reWake()
+    if (assistantBusy || isSpeaking.value || queuePending.value > 0) skipCurrentAndGreet(text, fromKws)
+    else if (fromKws) {
+      // KWS 命中（即使当前空闲）：播报停 + 播放停（用户要求），再进新一轮。
+      stopMusic()
+      reWake()
+    } else reWake()
     return true
   }
 
@@ -1695,16 +1723,29 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     wakeWords: DEFAULT_WAKE_WORDS,
     lang: getLanguage(),
     onWake: (word) => {
-      // 【熄屏唤醒诊断·常驻】KWS 回调到 JS 的第一现场，确认原生→JS 桥是否通。
+      // 【KWS 命中必须停播报+停播放】前端立即停声（用户要的效果，不依赖网关往返）：
+      // ① 停媒体播放器（音乐/新闻 InnerAudioContext）
+      // ② 停 TTS 播报
+      stopMusic()
+      stopTts()
+      isSpeaking.value = false
+      duckMusic(false)
+      // 记下原生 KWS 命中时刻，让接下来 8s 内 ASR 转写的同一句"小熊小熊"当回显忽略。
+      // 必须记在这里而非只在 handleWakeHit 的 wake 分支——dialog 态命中（播报打断）也要覆盖。
+      kwsWakeAt = Date.now()
+      // 【2026-11-23 真机铁证】这里绝不能再 sendCancel：handleWakeHit 内部 REWAKE 的
+      // cancelSession effect 或 interruptSpeech(fromKws) 已经各发一次 cancel。实测一次命中
+      // 触发两次 session-cancel（间隔 37ms）后紧接 start，时序竞争导致命中后会话状态错乱、
+      // 后续指令识别为空——正是「喊好几遍才有一遍能用」的真凶。停播报靠上面 stopTts 已足够。
       try {
         transport.sendDiag?.({
           state: state.value, speaking: isSpeaking.value, cue: false,
           muted: mode === 'wake', frames: 0, rms: 0,
           connected: transport.isConnected(),
-          trace: `KWS-ONWAKE word=${word || ''} ws=${transport.isConnected()}`,
+          trace: `KWS-ONWAKE-FORCESTOP word=${word || ''} ws=${transport.isConnected()}`,
         })
       } catch { /* 忽略 */ }
-      handleWakeHit(word, true)
+      handleWakeHit(word, true, true) // fromKws：端侧命中不受 health 拦
     },
     onError: (msg) => { console.warn('[kws]', msg) },
     onReady: (ok, raw) => {

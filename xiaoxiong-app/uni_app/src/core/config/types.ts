@@ -107,6 +107,13 @@ export interface GeneralConfig {
    * 全为深色主题；老配置里的 'auto' 会在归一化时回退到 default。
    */
   theme: 'default' | 'purple' | 'teal' | 'amber'
+  /**
+   * 语音设置页「定时检查」：开启后设置页每隔一段时间自动重跑能力检测并刷新结果，
+   * 免去每次手动点「一键检测」。默认关闭——避免不必要的定时探测开销。
+   */
+  autoCheck?: boolean
+  /** 定时检查间隔（毫秒），只取 AUTO_CHECK_INTERVAL_OPTIONS 里的合法档位；缺省 30s。 */
+  autoCheckMs?: number
 }
 
 /** 记忆设置 */

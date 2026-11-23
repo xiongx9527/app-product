@@ -35,6 +35,10 @@ interface NativePcmModule {
   stopPcm?(): void
   /** iOS 专用：熄屏/中断/回前台后强制重建 AVAudioEngine 采集（幂等，旧基座没有则降级） */
   ensureCapture?(): void
+  /** iOS 专用：唤醒对话期间保持屏幕常亮（禁 idleTimer），回待唤醒恢复；避免后台 CPU 超限被杀 */
+  keepScreenOn?(on: boolean): void
+  /** iOS 专用：媒体播放器(音乐/新闻)播放期间静音上行，防外放声音被麦克风收回识别成用户输入 */
+  setMediaPlaying?(on: boolean): void
   onPcmFrame?(callback: (frame: ArrayBuffer) => void): void
   onPcmError?(callback: (payload: { message?: string } | string) => void): void
 }
@@ -209,6 +213,56 @@ export function resumeAppCapture(): void {
     instance.ensureCapture()
   } catch {
     // 旧基座方法异常不影响其余回前台收尾
+  }
+}
+
+/**
+ * 唤醒对话期间保持屏幕常亮（禁 iOS idleTimer），回待唤醒时恢复。
+ * iOS 熄屏后进后台：① uni.getLocation 拿不到定位（天气首次问失败）；
+ * ② KWS 推理+采集+内嵌网关持续高 CPU 会触发 task_exceeded_cpulimit 被系统杀进程（体感「崩了」）。
+ * 对话期间常亮即可同时规避这两点。旧基座无此方法时静默降级。
+ *
+ * 【租约兜底】网关卡死时前端看门狗 force settle 不走 enterWake、不会调 false，
+ * 屏幕会永久常亮（真机 2026-11-23「卡在正在思考 + 不熄屏」）。故 true 时挂一个
+ * 最大 90s 的自动熄灭定时器：对话正常结束（leaveWake/enterWake）调 false 会取消；
+ * 卡死无人收尾时到点也强制熄灭，绝不永久亮屏。每次 true 续租。
+ */
+const SCREEN_ON_LEASE_MS = 90_000
+let screenOnLeaseTimer: ReturnType<typeof setTimeout> | null = null
+
+function applyScreenOn(on: boolean): void {
+  const instance = boundInstance ?? mod ?? loadPcmModule()
+  if (!instance || typeof instance.keepScreenOn !== 'function') return
+  try {
+    instance.keepScreenOn(on)
+  } catch {
+    // 旧基座无此方法：降级为不保屏
+  }
+}
+
+export function setAppScreenOn(on: boolean): void {
+  if (screenOnLeaseTimer) {
+    clearTimeout(screenOnLeaseTimer)
+    screenOnLeaseTimer = null
+  }
+  applyScreenOn(on)
+  if (on) {
+    screenOnLeaseTimer = setTimeout(() => {
+      screenOnLeaseTimer = null
+      applyScreenOn(false) // 租约到期强制熄灭，防卡死永久亮屏
+    }, SCREEN_ON_LEASE_MS)
+  }
+}
+
+/** 媒体播放器(音乐/新闻/电台)播放期间通知原生静音上行：外放声音不经网关TTS、
+ *  网关 AEC 无参考信号消不掉，不静音会被麦克风收回识别成用户输入。KWS 仍照常听。 */
+export function setMediaPlaying(on: boolean): void {
+  const instance = boundInstance ?? mod ?? loadPcmModule()
+  if (!instance || typeof instance.setMediaPlaying !== 'function') return
+  try {
+    instance.setMediaPlaying(on)
+  } catch {
+    // 旧基座无此方法：降级
   }
 }
 

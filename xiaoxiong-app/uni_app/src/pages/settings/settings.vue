@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { FloatPositionKey } from '@/core/adaptation/floatLayer'
-import { SUBTITLE_FONT_SIZE_OPTIONS, SUBTITLE_COLOR_OPTIONS } from '@/core/config/constants'
+import { SUBTITLE_FONT_SIZE_OPTIONS, SUBTITLE_COLOR_OPTIONS, AUTO_CHECK_INTERVAL_OPTIONS } from '@/core/config/constants'
 import {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
@@ -292,6 +292,37 @@ async function runDetection(): Promise<void> {
   }
 }
 
+/** 定时检查：开关默认关闭，开启后本页按配置的间隔自动重跑检测、刷新结果。
+ *  间隔可选 10/30/60/120 秒（见 AUTO_CHECK_INTERVAL_OPTIONS）。
+ *  只在语音设置页打开期间生效，离开页面即清理定时器，不在全局后台跑。 */
+const autoCheckIntervalOptions = AUTO_CHECK_INTERVAL_OPTIONS.map((ms) => ({
+  value: String(ms),
+  label: t('settings.voice.autoCheckInterval', { seconds: String(ms / 1000) }),
+}))
+let autoCheckTimer: ReturnType<typeof setInterval> | null = null
+function stopAutoCheck(): void {
+  if (autoCheckTimer) {
+    clearInterval(autoCheckTimer)
+    autoCheckTimer = null
+  }
+}
+function startAutoCheck(): void {
+  stopAutoCheck()
+  if (!appConfig.general.autoCheck) return
+  autoCheckTimer = setInterval(() => void runDetection(), appConfig.general.autoCheckMs ?? 30_000)
+}
+function onAutoCheckChange(on: boolean): void {
+  appConfig.general.autoCheck = on
+  persistConfig()
+  startAutoCheck()
+}
+function onAutoCheckIntervalChange(ms: string): void {
+  appConfig.general.autoCheckMs = Number(ms)
+  persistConfig()
+  startAutoCheck() // 间隔变了：按新间隔重启定时器
+}
+onUnmounted(stopAutoCheck)
+
 /** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用），不实时拉取以便国际化。
  *  每条带 model（所属模型），渲染成下拉里的次要列，并随选择下发网关决定真正请求的 TTS 模型。 */
 const ttsVoices = ref<{ value: string; label: string; subtitle?: string; desc?: string }[]>([])
@@ -371,6 +402,8 @@ onMounted(() => {
   void loadTtsVoices()
   void loadAsrModels()
   void loadTtsModels()
+  // 上次开了定时检查：进本页即按配置间隔续上定时器（离开页面 onUnmounted 会清）。
+  startAutoCheck()
   // 播放源目前仅百度一种（隐藏选择器），旧配置若存过其它源（netease/tencent/kugou）静默回退到百度。
   if (appConfig.playback.source !== 'baidu') {
     appConfig.playback.source = 'baidu'
@@ -528,6 +561,27 @@ watch(
         </button>
       </view>
       <text class="hint">{{ t('settings.voice.detectHint') }}</text>
+      <!-- 定时检查：默认关闭，开启后本页每 30s 自动重跑检测 -->
+      <view class="setting-row">
+        <view class="setting-text">
+          <text class="row-label">{{ t('settings.voice.autoCheck') }}</text>
+          <text class="hint">{{ t('settings.voice.autoCheckHint') }}</text>
+        </view>
+        <switch
+          :checked="appConfig.general.autoCheck ?? false"
+          color="#6c8cff"
+          @change="(e: any) => onAutoCheckChange(e.detail.value)"
+        />
+      </view>
+      <!-- 定时检查间隔：开关开启时才显示；与其它下拉一致平铺（title 交给 SelectRow），避免被 setting-row 左右布局挤窄 -->
+      <template v-if="appConfig.general.autoCheck">
+        <text class="row-label">{{ t('settings.voice.autoCheckIntervalLabel') }}</text>
+        <SelectRow
+          :options="autoCheckIntervalOptions"
+          :model-value="String(appConfig.general.autoCheckMs ?? 30000)"
+          @update:model-value="onAutoCheckIntervalChange"
+        />
+      </template>
       <text v-if="detectError" class="detect-error">{{ t('settings.voice.detectError') }}</text>
       <view v-if="detectItems" class="detect-result">
         <view v-for="item in detectItems" :key="item.key" class="detect-row">

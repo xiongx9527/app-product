@@ -64,7 +64,22 @@ export interface NewsVideoCandidate {
   bvid: string
   title: string
   cover?: string
+  /** 视频时长（秒），来自搜索结果 duration 字段；用于排除超长录播/合集。 */
+  durationSec?: number
 }
+
+/** 解析 B站搜索结果的时长字符串（"76:14"/"5:32"/"1:01:02"）为秒。 */
+function parseDuration(raw: unknown): number | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined
+  const parts = raw.trim().split(':').map((p) => Number(p.trim()))
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return undefined
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  return undefined
+}
+
+/** 播放时长硬上限（秒）：超过 10 分钟的多半是整期录播/合集，抽音轨会拖垮设备、播放卡死。与音乐源 MAX_PLAY_DURATION_SEC 一致。 */
+const MAX_NEWS_DURATION_SEC = 10 * 60
 
 /** 递归收集搜索结果里所有「同时带 bvid 与 title」的视频条目（去重保序，标题已清洗）。 */
 function collectHits(node: unknown, out: Map<string, NewsVideoCandidate> = new Map()): NewsVideoCandidate[] {
@@ -76,10 +91,12 @@ function collectHits(node: unknown, out: Map<string, NewsVideoCandidate> = new M
   const obj = node as Record<string, unknown>
   if (typeof obj.bvid === 'string' && typeof obj.title === 'string') {
     if (!out.has(obj.bvid)) {
+      const durationSec = parseDuration(obj.duration)
       out.set(obj.bvid, {
         bvid: obj.bvid,
         title: cleanNewsTitle(String(obj.title)),
         ...(typeof obj.pic === 'string' ? { cover: obj.pic } : {}),
+        ...(durationSec !== undefined ? { durationSec } : {}),
       })
     }
   }
@@ -118,7 +135,12 @@ export function createNewsVideoSource(options: NewsVideoOptions = {}) {
     const resp = await fetcher(`${BILI_SEARCH}?${qs}`, { headers: HEADERS })
     const json = (await resp.json()) as unknown
     const hits = collectHits(json)
-    return hits.sort((a, b) => scoreHit(b, keyword) - scoreHit(a, keyword))
+    // 【2026-11-23 修超长新闻卡死】B站搜索常返回整期录播/合集（如"深圳少儿新闻"命中 76 分钟
+    // 视频），抽音轨 1 小时多会拖垮设备、播放卡死。有 duration 数据时先过滤掉 >15 分钟的，
+    // 只留适合播报的短片段；若全是长视频（过滤后为空）则回退全部，避免用户问新闻无结果。
+    const short = hits.filter((h) => h.durationSec === undefined || h.durationSec <= MAX_NEWS_DURATION_SEC)
+    const pool = short.length > 0 ? short : hits
+    return pool.sort((a, b) => scoreHit(b, keyword) - scoreHit(a, keyword))
   }
 
   /** 按 BVID 抽取该视频的 dash 音轨直链；失败返回 null。用户选中某条候选时才调用。 */

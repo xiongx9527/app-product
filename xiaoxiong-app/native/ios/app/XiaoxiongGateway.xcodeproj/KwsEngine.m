@@ -73,13 +73,14 @@ static const NSUInteger kMaxPendingFrames = 16;  // 积压超过则丢最旧，�
 }
 
 - (BOOL)p_startLockedWithError:(NSError **)error {
-    // 2026-11-22 换用 zh-en-3M-2025 模型：离线验证旧模型只中1遍、新模型2遍全中
-    NSString *modelDir = @"KwsResources/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20";
+    // 2026-11-23 换回旧模型 wenetspeech-3.3M：新模型 zh-en-3M-2025 真机连续喊命中率极低
+    // （喊7遍中1遍），旧模型关键词表配套、召回更稳（与 Android 同步，见 project_kws_hit_rate_gain）。
+    NSString *modelDir = @"KwsResources/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01";
     NSString *root = [self.bundle.bundlePath stringByAppendingPathComponent:modelDir];
-    // 新模型 epoch-13、chunk-16；decoder 官方无 int8 版，用 fp32 的 .onnx
-    NSString *encoder = [root stringByAppendingPathComponent:@"encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx"];
-    NSString *decoder = [root stringByAppendingPathComponent:@"decoder-epoch-13-avg-2-chunk-16-left-64.onnx"];
-    NSString *joiner = [root stringByAppendingPathComponent:@"joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx"];
+    // 旧模型 epoch-12，decoder 也有 int8 版。
+    NSString *encoder = [root stringByAppendingPathComponent:@"encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"];
+    NSString *decoder = [root stringByAppendingPathComponent:@"decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx"];
+    NSString *joiner = [root stringByAppendingPathComponent:@"joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"];
     NSString *tokens = [root stringByAppendingPathComponent:@"tokens.txt"];
     NSString *keywords = [root stringByAppendingPathComponent:@"keywords.txt"];
 
@@ -110,7 +111,11 @@ static const NSUInteger kMaxPendingFrames = 16;  // 积压超过则丢最旧，�
     // score=2.0：真机录音离线 sweep 铁证——1.5 时两遍唤醒词只中第 2 遍，2.0 时两遍全中。
     // threshold 保持官方 0.25（0.02~0.25 对命中无影响，瓶颈在 score）。误唤醒由 rearm 去抖
     // + 只认「小熊小熊」兜底。
-    cfg.keywords_score = 2.0f;
+    // 【2026-11-23 提命中率·真凶】"小熊小熊"=x iǎo x ióng x iǎo x ióng，token 高度重叠。
+    // sherpa-onnx 官方明确：关键词间有重叠 token 时 num_trailing_blanks 要从默认 1 设到 8，
+    // 否则 decode 不出结果（真机铁证 tok=[]，score 加到 3.0 也没用）。
+    cfg.num_trailing_blanks = 8;
+    cfg.keywords_score = 3.0f;
     cfg.keywords_threshold = 0.25f;
 
     _spotter = SherpaOnnxCreateKeywordSpotter(&cfg);

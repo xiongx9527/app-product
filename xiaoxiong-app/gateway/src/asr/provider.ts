@@ -15,4 +15,10 @@ export interface AsrProvider {
    * 可选：上游 ASR 实现不需要提供。
    */
   speechDuration?: number
+  /**
+   * 最近一次 finalize 整段音频的平均 RMS（仅内置 HttpVoiceAsr 有）。
+   * 用于识别"播报回声/余音"（rms≈0.001）与真人说话（rms≈0.01+）。
+   * 可选：上游 ASR 实现不需要提供。
+   */
+  lastRms?: number
 }

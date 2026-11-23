@@ -1,4 +1,4 @@
-import type { GatewayConfig } from '../config'
+import type { GatewayConfig, VendorParams } from '../config'
 import { resolveCapabilityConfig } from '../voiceConfig'
 import type { VoiceConfig } from '../voiceConfig'
 import { DashScopeWsTts } from '../tts/dashscopeWs'
@@ -183,6 +183,7 @@ async function probeAsr(
   provider: string,
   apiKey?: string,
   model = 'sensevoice-small',
+  params?: VendorParams,
 ): Promise<boolean> {
   if (provider === 'dashscope') {
     if (!apiKey) return false
@@ -195,6 +196,13 @@ async function probeAsr(
       // 内置 ASR 引擎只支持 sensevoice-small（其它模型需配上游），硬传 whisper-1 会被 9529 以
       // 400 拒绝，导致检测误报「地址不可达」。优先用已配置的模型，未配则回退内置默认。
       form.append('model', model)
+      // 【2026-11-23 设置什么传什么】透传用户配的 ASR 参数（language 等），
+      // 与真实 asr/http.ts 调用一致；避免探测用默认 language、实际用配置 language 不一致误判。
+      // model 由独立字段覆盖（避免 params.model 与上面重复 append 冲突）。
+      for (const [k, v] of Object.entries(params ?? {})) {
+        if (k === 'model' || v === undefined || v === null) continue
+        form.append(k, String(v))
+      }
       const controller = new AbortController()
       // iOS 内嵌网关经 USB 隧道转发 + 真发音频识别，4s 常不够（并发风暴下更易超时误报
       // 「地址不可达」）。放宽到 8s，与 LLM deep 探测一致；并行探测下总耗时仍可控在 15s 窗口内。
@@ -228,6 +236,7 @@ async function probeTts(
   apiKey: string | undefined,
   endpoint: string,
   deep: boolean,
+  params?: VendorParams,
 ): Promise<ProviderStatus> {
   if (provider === 'dashscope') {
     if (!apiKey) {
@@ -274,8 +283,12 @@ async function probeTts(
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             input: '你好',
-            voice: 'zh-CN-XiaoxiaoNeural',
             response_format: 'wav',
+            // 【2026-11-23 修"TTS 检测不可用"·设置什么传什么】探测必须与真实调用一致：
+            // 把用户在设置页配的 TTS 参数（voice 音色 / model 模型）原样透传。
+            // 不能写死 XiaoxiaoNeural（后端切到 DeepSeek+stella 后写死会 502），
+            // 也不能省略（省略就探不到"当前配置能否合成"，换成默认音色失去意义）。
+            ...(params ?? {}),
           }),
           signal: controller.signal,
         })
@@ -299,14 +312,15 @@ async function buildStatus(
   apiKey: string | undefined,
   deep: boolean,
   model?: string,
+  params?: VendorParams,
 ): Promise<ProviderStatus> {
   if (provider === 'stub') return summarizeProvider('stub', false)
   const endpoint = hostOf(baseUrl)
   // TTS 直接返回 ProviderStatus（deep 时走真实合成探测，需带上具体失败原因）；
   // ASR / LLM 仍是布尔可达性，由 summarizeProvider 收敛成状态。
-  if (kind === 'tts') return probeTts(baseUrl, provider, apiKey, endpoint, deep)
+  if (kind === 'tts') return probeTts(baseUrl, provider, apiKey, endpoint, deep, params)
   const reachable =
-    kind === 'asr' ? await probeAsr(baseUrl, provider, apiKey, model) : await probe(baseUrl, apiKey)
+    kind === 'asr' ? await probeAsr(baseUrl, provider, apiKey, model, params) : await probe(baseUrl, apiKey)
   return summarizeProvider(provider, reachable, endpoint)
 }
 
@@ -426,8 +440,10 @@ export async function buildHealth(
   // 延迟，串行累加（ASR 真发音频 4s + TTS 真合成 4s + network 2.5s + LLM deep 8s+）可超
   // 18s，超过前端 waitForEmbeddedGateway 的 15s 超时 → 隧道数据面明明全通、health 仍判失败。
   // 并行后总耗时≈最慢单项，稳在 15s 窗口内。
-  const asrPromise = buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, deep, asrModel)
-  const ttsPromise = buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey, deep)
+  // ASR 探测同样透传用户配的参数（language 等），设置什么传什么。
+  const asrPromise = buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, deep, asrModel, resolved.asr.params)
+  // TTS 探测透传用户配的 voice/model（设置什么传什么），与真实 synthesize 调用一致。
+  const ttsPromise = buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey, deep, undefined, resolved.tts.params)
   const networkPromise = probeExternal()
   // LLM：deep（一键检测）走真正调用模型，能暴露欠费 / 模型名 / 密钥这类「连通但不可用」故障；
   // 其余（30s 轮询）只做连通探测，避免每次轮询都真打模型烧额度。

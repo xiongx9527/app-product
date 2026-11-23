@@ -196,7 +196,22 @@ export interface BiliResult {
   title: string
   /** B 站视频封面（搜索结果的 pic），与音轨/字幕同源；评书、视频类内容也据此显示悬浮封面 */
   cover?: string
+  /** 视频时长（秒），来自搜索结果 duration（"76:31"格式）；用于过滤超长视频。 */
+  durationSec?: number
 }
+
+/** B站搜索时长字符串（"76:31"/"1:01:02"）转秒。 */
+function parseDuration(raw: unknown): number | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined
+  const parts = raw.trim().split(':').map((p) => Number(p.trim()))
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) return undefined
+  if (parts.length === 2) return parts[0] * 60 + parts[1]
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  return undefined
+}
+
+/** 单条播放时长硬上限（秒）：超过 10 分钟的多半是整期录播/超长合集，抽音轨会拖垮设备、播放卡死。 */
+const MAX_PLAY_DURATION_SEC = 10 * 60
 
 /** 递归遍历搜索返回的 JSON，收集所有「同时带 bvid 与 title」的视频条目（去重）。 */
 function collectResults(node: unknown, out: Map<string, BiliResult> = new Map()): BiliResult[] {
@@ -209,6 +224,7 @@ function collectResults(node: unknown, out: Map<string, BiliResult> = new Map())
   if (typeof obj.bvid === 'string' && typeof obj.title === 'string') {
     const bvid = obj.bvid
     if (!out.has(bvid)) {
+      const durationSec = parseDuration(obj.duration)
       out.set(
         bvid,
         // 标题里常混 <em> 高亮标签，去掉再比较；视频封面(pic)同源带出，供悬浮/播放条显示
@@ -216,6 +232,7 @@ function collectResults(node: unknown, out: Map<string, BiliResult> = new Map())
           bvid,
           title: String(obj.title).replace(/<[^>]+>/g, ''),
           ...(typeof obj.pic === 'string' ? { cover: normalizeCoverUrl(obj.pic) } : {}),
+          ...(durationSec !== undefined ? { durationSec } : {}),
         }
       )
     }
@@ -232,7 +249,14 @@ export async function searchOrdered(keyword: string, fetcher: MusicFetcher): Pro
   const qs = new URLSearchParams({ keyword, wts, w_rid: wrid }).toString()
   const resp = await fetcher(`${BILI_SEARCH}?${qs}`, { headers: BILI_HEADERS })
   const json = (await resp.json()) as unknown
-  const results = collectResults(json)
+  const collected = collectResults(json)
+  // 【2026-11-23 全局播放≤20分钟】B站搜索常混入整期录播/超长视频（如 76 分钟的节目回放），
+  // 抽音轨会拖垮设备、播放卡死。有 duration 数据时过滤掉 >20 分钟的；过滤后为空才回退全部
+  // （避免用户点歌/问内容时全被过滤导致"没找到"）。
+  const withinLimit = collected.filter(
+    (r) => r.durationSec === undefined || r.durationSec <= MAX_PLAY_DURATION_SEC
+  )
+  const results = withinLimit.length > 0 ? withinLimit : collected
   const rank = (list: BiliResult[]): BiliResult[] =>
     list
       .map((r, i) => ({ r, i }))
