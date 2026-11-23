@@ -3617,9 +3617,13 @@ async function renderDashboard(){
     });
     if(all.length){ VOICE_CATALOG=all; refreshTtsVoices(); }
   }).catch(()=>{});
+  // 三个 tab 的连通测试统一打「当前面板所在服务」：用同源地址（location.origin），
+  // 动态跟随实际访问地址——本机打开就是 http://127.0.0.1:port，公网打开就是 https://域名，
+  // 不写死 host/port。绝不能硬拼 127.0.0.1:port：面板从公网/局域网打开时会变成跨源 + https
+  // 混合内容，浏览器直接拦截 fetch（Failed to fetch）。同源还天然带会话 Cookie。
+  testOrigin = (typeof location!=='undefined' && location.origin) ? location.origin : '';
   api('/admin/api/status').then(r=>r.ok?r.json():null).then(s=>{
     const def = s && s.health && s.health.tts_voice;
-    if(s && s.port) testOrigin='http://127.0.0.1:'+s.port;   // 三个 tab 统一打本代理
     if(def){ VOICE_DEFAULTS['builtin|']=def; VOICE_DEFAULTS['builtin|edge-tts']=def; }
     refreshTtsVoices();
   }).catch(()=>refreshTtsVoices());
