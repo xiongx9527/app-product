@@ -41,6 +41,15 @@ export const DEFAULT_GATEWAY_HOST = '127.0.0.1'
 export const DEFAULT_GATEWAY_PORT = 8787
 export const DEFAULT_GATEWAY_WS_URL = `ws://${DEFAULT_GATEWAY_HOST}:${DEFAULT_GATEWAY_PORT}/ws`
 
+/**
+ * 固定对接的 MCP 服务：地址沿用「服务设置」里的语音服务地址（协议/host/端口），
+ * 只拼下面这段固定路径。app 不提供手动添加 MCP server 的入口，内部只下发这一个。
+ * model-proxy 对外同时支持 /mcp/sse（SSE）与 /mcp/（Streamable HTTP），这里选 SSE。
+ */
+export const MCP_ENDPOINT_PATH = '/mcp/sse'
+/** 固定 MCP server 的显示名（下发网关仅作标识，不影响工具名） */
+export const MCP_SERVER_NAME = 'model-proxy'
+
 export const SUPPORTED_LANGUAGES = ['zh-CN', 'en-US'] as const
 export type AppLanguage = (typeof SUPPORTED_LANGUAGES)[number]
 

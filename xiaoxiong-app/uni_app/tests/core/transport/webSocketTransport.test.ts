@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { WebSocketTransport } from '../../../src/core/transport/webSocketTransport'
-import { resolveGatewayUrl, resolveGatewayHttpBase } from '../../../src/core/transport/webSocketTransport'
+import { resolveGatewayUrl, resolveGatewayHttpBase, resolveMcpUrl } from '../../../src/core/transport/webSocketTransport'
+import { appConfig } from '../../../src/core/config'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -104,5 +105,30 @@ describe('resolveGatewayUrl / resolveGatewayHttpBase（网关地址，统一来�
     vi.stubEnv('VITE_GATEWAY_WS_URL', '')
     expect(resolveGatewayUrl()).toBe('ws://127.0.0.1:8787/ws')
     expect(resolveGatewayHttpBase()).toBe('http://127.0.0.1:8787')
+  })
+})
+
+describe('resolveMcpUrl（固定 MCP 地址 = 服务设置地址 + /mcp/sse）', () => {
+  const original = appConfig.voice.builtin.url
+  afterEach(() => { appConfig.voice.builtin.url = original })
+
+  it('沿用配置地址的协议/host/端口，只拼固定路径', () => {
+    appConfig.voice.builtin.url = 'http://127.0.0.1:9529'
+    expect(resolveMcpUrl()).toBe('http://127.0.0.1:9529/mcp/sse')
+  })
+
+  it('公网地址同样只拼路径', () => {
+    appConfig.voice.builtin.url = 'https://25946kt718.goho.co'
+    expect(resolveMcpUrl()).toBe('https://25946kt718.goho.co/mcp/sse')
+  })
+
+  it('去掉配置地址末尾的斜杠，避免双斜杠', () => {
+    appConfig.voice.builtin.url = 'https://gw.example.com/'
+    expect(resolveMcpUrl()).toBe('https://gw.example.com/mcp/sse')
+  })
+
+  it('服务地址为空时返回空串（不下发固定 server）', () => {
+    appConfig.voice.builtin.url = ''
+    expect(resolveMcpUrl()).toBe('')
   })
 })

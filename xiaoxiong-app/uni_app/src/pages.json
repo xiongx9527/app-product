@@ -36,13 +36,6 @@
         "enablePullDownRefresh": true,
         "backgroundTextStyle": "light"
       }
-    },
-    {
-      "path": "pages/mcpservers/mcpservers",
-      "style": {
-        "navigationStyle": "custom",
-        "navigationBarTitleText": "mcp服务"
-      }
     }
   ],
   "globalStyle": {

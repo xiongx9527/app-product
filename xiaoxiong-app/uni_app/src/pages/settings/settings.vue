@@ -156,7 +156,7 @@ function setConsolidateEvery(e: any): void {
 
 /** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
  * 各分区一律默认折叠，样式一致（标题右侧带收起/展开箭头）。 */
-type SettingsGroup = 'general' | 'voice' | 'playback' | 'recommend' | 'memory' | 'mcp'
+type SettingsGroup = 'general' | 'voice' | 'playback' | 'recommend' | 'memory'
 const expanded = ref<SettingsGroup | null>(null)
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
@@ -178,11 +178,6 @@ function setDealsCount(e: any): void {
 /** 进入好价商品列表页：查看助手推荐过的商品。 */
 function openDeals(): void {
   uni.navigateTo({ url: '/pages/deals/deals' })
-}
-
-/** 进入 MCP 服务器配置页：增删一组 MCP 服务器（stdio / sse / http）。 */
-function openMcpServers(): void {
-  uni.navigateTo({ url: '/pages/mcpservers/mcpservers' })
 }
 
 /** LLM 模型下拉：选项来自内置来源已配置的上游模型。 */
@@ -746,35 +741,6 @@ watch(
         </view>
         <text class="entry-arrow">›</text>
       </view>
-      </template>
-    </view>
-    <!-- MCP 服务器：用户自行填写，网关据此连上并把其工具注册进助手工具箱。
-         与其它分区一样走折叠逻辑（标题右侧带收起/展开箭头），置于末尾。 -->
-    <view class="group">
-      <view class="group-head" @tap="toggleGroup('mcp')">
-        <text class="group-title">{{ t('settings.mcp.title') }}</text>
-        <view class="group-chevron" :class="{ open: isOpen('mcp') }" />
-      </view>
-      <template v-if="isOpen('mcp')">
-        <!-- 总开关：关闭则整体停用 MCP，不向网关下发任何服务器 -->
-        <view class="setting-row">
-          <view class="setting-text">
-            <text class="row-label">{{ t('settings.mcp.enabled') }}</text>
-            <text class="hint">{{ t('settings.mcp.enabledHint') }}</text>
-          </view>
-          <switch
-            :checked="appConfig.mcp.enabled"
-            color="#6c8cff"
-            @change="(e: any) => (appConfig.mcp.enabled = e.detail.value)"
-          />
-        </view>
-        <view class="entry" @tap="openMcpServers">
-          <view class="row-text">
-            <text class="row-label">{{ t('settings.mcp.open') }}</text>
-            <text class="hint">{{ t('settings.mcp.openHint') }}</text>
-          </view>
-          <text class="entry-arrow">›</text>
-        </view>
       </template>
     </view>
     <!-- 记忆设置 -->

@@ -1,5 +1,5 @@
 import { appConfig, activeVoiceConfig } from '@/core/config'
-import { DEFAULT_GATEWAY_WS_URL } from '@/core/config/constants'
+import { DEFAULT_GATEWAY_WS_URL, MCP_ENDPOINT_PATH, MCP_SERVER_NAME } from '@/core/config/constants'
 import { getDeviceId } from '@/core/config/deviceId'
 import { getGatewayWsUrl, isEmbeddedGateway } from './gatewayBootstrap'
 import { t } from '@/core/i18n'
@@ -39,6 +39,16 @@ export function resolveGatewayHttpBase(): string {
   const slash = http.indexOf('/', schemeEnd)
   if (slash !== -1) http = http.slice(0, slash)
   return http
+}
+
+/**
+ * 固定 MCP server 地址：沿用「服务设置」里的语音服务地址（协议/host/端口原样），
+ * 只拼固定路径 /mcp/sse。用户在设置里改服务地址后，下次 start / 重武装即生效。
+ * 纯字符串处理，不依赖全局 URL（App/Harmony 的 JS 引擎未必有）。
+ */
+export function resolveMcpUrl(): string {
+  const base = (appConfig.voice.builtin.url || '').trim().replace(/\/+$/, '')
+  return base ? base + MCP_ENDPOINT_PATH : ''
 }
 
 /** WebSocket 最小接口：浏览器原生 WebSocket 与 uni SocketTask 适配层共用。 */
@@ -502,24 +512,23 @@ export class WebSocketTransport implements AssistantTransport {
         consolidateThreshold: appConfig.memory.consolidateThreshold,
         consolidateEvery: appConfig.memory.consolidateEvery,
       },
-      // MCP 服务器列表：来自客户端设置页，仅启用项下发网关。网关据此连上并把其工具注册进助手工具箱。
-      // rearm 也会重新下发，故修改即时生效（下次 start / 重武装即生效）。总开关关闭时整体不下发。
+      // MCP 固定对接：app 不提供手动添加 MCP server 的入口，内部固定下发一个指向
+      // model-proxy 的 SSE server。地址 = 服务设置里的语音服务地址 + 固定路径 /mcp/sse，
+      // 随服务地址配置变化（下次 start / 重武装即生效）。网关据此连上并把工具注册进助手工具箱。
       mcp: {
-        servers: appConfig.mcp.enabled
-          ? appConfig.mcp.servers
-              .filter((s) => s.enabled)
-              .map((s) => ({
-                name: s.name,
-                transport: s.transport,
-                command: s.command,
-                args: s.args,
-                env: s.env,
-                url: s.url,
-                headers: s.headers,
-                enabledTools: s.enabledTools,
-                disabledTools: s.disabledTools,
-              }))
-          : [],
+        servers: (() => {
+          const url = resolveMcpUrl()
+          if (!url) return []
+          return [{
+            name: MCP_SERVER_NAME,
+            transport: 'sse' as const,
+            url,
+            // 鉴权请求头跟随语音服务的 apiKey（VoICE_API_KEY_AUTH=on 时网关需要 Bearer）
+            headers: appConfig.voice.builtin.apiKey
+              ? { Authorization: `Bearer ${appConfig.voice.builtin.apiKey}` }
+              : undefined,
+          }]
+        })(),
       },
       location: this.lastLocation ?? undefined,
       mode,

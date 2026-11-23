@@ -78,7 +78,11 @@ export interface AppConfig {
   general: GeneralConfig
   /** 记忆设置：长期记忆（自动抽取 / 手动指令）相关开关 */
   memory: MemoryConfig
-  /** MCP 服务器配置：用户自行填写并开启，网关据此连上并把工具注册进助手工具箱 */
+  /**
+   * MCP 配置（遗留字段）：app 已改为固定对接 model-proxy 的 /mcp，不再暴露手动配置入口，
+   * 下发时由 webSocketTransport 根据「服务设置」地址动态生成固定 server，故此字段不再被读取。
+   * 保留仅为兼容存量本地配置，后续可移除。
+   */
   mcp: McpConfig
 }
 
