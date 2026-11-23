@@ -118,7 +118,7 @@ import upstream_pool  # 上游地址池：多地址 + 账号池，健康探测 +
 import rate_store  # 限流门面：按 api-key 计数，内存/Redis 由配置决定
 import model_catalog  # 统一模型目录（LLM / TTS / STT 三端口，对齐 fw-plus-ai-native）
 from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 
@@ -799,6 +799,12 @@ app = FastAPI(
 
 # 自定义 OpenAPI：过滤 /admin/* 等内部端点（赋值方式，兼容不接受 openapi= 构造参数的 FastAPI 版本）
 app.openapi = _public_openapi
+
+
+@app.get("/doc.html", include_in_schema=False)
+async def swagger_doc_alias():
+    """Swagger 文档别名：兼容 knife4j 习惯的 /doc.html，重定向到 FastAPI 自带 /docs。"""
+    return RedirectResponse(url="/docs", status_code=307)
 
 # 管理面板「测其它实例」是浏览器直连对方代理，对方必须允许跨域，否则 ASR/TTS
 # 会在浏览器侧被 CORS 拦掉（表现为 Failed to fetch）。
