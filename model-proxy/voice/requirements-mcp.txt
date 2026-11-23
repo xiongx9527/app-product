@@ -1,0 +1,4 @@
+# MCP server 中转网关依赖（LangChain 官方 MCP 路线：langchain.mcp 基于 FastMCP）
+# 独立文件：网关是可选能力，import 失败时 /mcp 不挂载，不影响语音/LLM 主服务
+# 用阿里源安装：pip install -i https://mirrors.aliyun.com/pypi/simple -r requirements-mcp.txt
+langchain[mcp]>=1.5,<2

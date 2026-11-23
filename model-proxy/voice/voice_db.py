@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 19
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -128,6 +128,15 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         ["col:rate_policies:embed_tokens_per_min:INTEGER NOT NULL DEFAULT 0"]),
     16: ("rate_policies 加 rerank_tokens_per_min 列（重排 token 限流维度，默认 0）",
         ["col:rate_policies:rerank_tokens_per_min:INTEGER NOT NULL DEFAULT 0"]),
+    17: ("新增 mcp_servers（MCP 中转上游配置：name 作工具前缀 + url + 脱敏 headers + 健康）与 "
+        "mcp_tool_acl（按 key_id 隔离工具可见性，key_id=0 为所有 Key 的默认工具哨兵）两表", []),
+    18: ("MCP 网关业务类型：mcp_servers 加 biz_type（generic/askdata，askdata 走账号密码换 token）；"
+        "admin_api_keys 加 askdata_user/askdata_pass（该 Key 的 askdata 账号密码，空则用网关默认值）",
+        ["col:mcp_servers:biz_type:TEXT NOT NULL DEFAULT 'generic'",
+         "col:admin_api_keys:askdata_user:TEXT NOT NULL DEFAULT ''",
+         "col:admin_api_keys:askdata_pass:TEXT NOT NULL DEFAULT ''"]),
+    19: ("mcp_servers 加 tool_prefix 列：工具前缀独立字段（默认空=沿用 name），避免网关名用中文导致工具名非法",
+        ["col:mcp_servers:tool_prefix:TEXT NOT NULL DEFAULT ''"]),
 }
 
 
@@ -241,6 +250,28 @@ def ensure_schema() -> None:
             key_id    INTEGER NOT NULL REFERENCES admin_api_keys(id) ON DELETE CASCADE,
             policy_id INTEGER NOT NULL REFERENCES rate_policies(id) ON DELETE CASCADE,
             UNIQUE(key_id, policy_id)
+        );
+        -- MCP 中转上游（v17）：name 作工具前缀，headers_json 脱敏存储，健康状态回写。
+        CREATE TABLE IF NOT EXISTS mcp_servers (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            name         TEXT NOT NULL UNIQUE,
+            url          TEXT NOT NULL,
+            headers_json TEXT NOT NULL DEFAULT '{}',
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            timeout_sec  INTEGER NOT NULL DEFAULT 30,
+            last_ok      INTEGER,
+            last_error   TEXT,
+            last_seen    INTEGER,
+            created_at   INTEGER NOT NULL,
+            updated_at   INTEGER NOT NULL
+        );
+        -- MCP 工具授权（v17）：key_id=0 为默认工具哨兵（所有 Key 自动拥有），>0 为某 Key 专属。
+        CREATE TABLE IF NOT EXISTS mcp_tool_acl (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_id          INTEGER NOT NULL,
+            qualified_name  TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            UNIQUE(key_id, qualified_name)
         );
         -- 音色目录：每条带 provider / model 与中英描述，供 /voice/v1/audio/voices 查询。
         -- 用表维护（不再硬编码），首次初始化时播种内置(edge-tts) + 全部 dashscope 音色。
@@ -848,8 +879,9 @@ def api_key_set_enabled(key_id: int, enabled: bool) -> bool:
 
 
 def api_key_update(key_id: int, **fields) -> bool:
-    """更新白名单字段：name/not_before/expires_at/allowed_ips/owner_type/owner_id。"""
-    allowed = {"name", "not_before", "expires_at", "allowed_ips", "owner_type", "owner_id"}
+    """更新白名单字段：name/not_before/expires_at/allowed_ips/owner_type/owner_id + askdata 账号密码。"""
+    allowed = {"name", "not_before", "expires_at", "allowed_ips", "owner_type", "owner_id",
+               "askdata_user", "askdata_pass"}
     patch = {k: v for k, v in fields.items() if k in allowed}
     if not patch:
         return False
@@ -1799,3 +1831,116 @@ def _seed_enabled_from_config() -> None:
             "VALUES(?,?,?,?,?)", ("tts", "builtin", "edge-tts", 1, 0)
         )
         c.commit()
+
+
+# ── MCP 中转网关（v17）────────────────────────────────────────────────
+# mcp_servers: 上游 MCP server 配置；headers_json 中敏感 header 由调用方脱敏后传入/读取。
+# mcp_tool_acl: 按 key_id 隔离工具可见性；key_id=0 为默认工具哨兵（所有 Key 自动拥有）。
+
+def mcp_servers_list() -> list[dict[str, Any]]:
+    rows = _conn_get().execute(
+        "SELECT id, name, url, headers_json, enabled, timeout_sec, biz_type, tool_prefix, last_ok, last_error, last_seen, "
+        "created_at, updated_at FROM mcp_servers ORDER BY id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mcp_server_get(sid: int) -> dict[str, Any] | None:
+    r = _conn_get().execute("SELECT * FROM mcp_servers WHERE id=?", (sid,)).fetchone()
+    return dict(r) if r else None
+
+
+def mcp_server_add(name: str, url: str, headers_json: str = "{}", enabled: int = 1,
+                   timeout_sec: int = 30, biz_type: str = "generic", tool_prefix: str = "") -> dict[str, Any]:
+    now = int(time.time())
+    with _lock:
+        cur = _conn_get().execute(
+            "INSERT INTO mcp_servers(name, url, headers_json, enabled, timeout_sec, biz_type, tool_prefix, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)", (name.strip(), url.strip(), headers_json or "{}", enabled, timeout_sec,
+                                       biz_type or "generic", (tool_prefix or "").strip(), now, now))
+        _conn_get().commit()
+    return mcp_server_get(cur.lastrowid)
+
+
+def mcp_server_update(sid: int, fields: dict[str, Any]) -> dict[str, Any] | None:
+    allowed = ("name", "url", "headers_json", "enabled", "timeout_sec", "biz_type", "tool_prefix")
+    patch = {k: v for k, v in fields.items() if k in allowed}
+    if not patch:
+        return mcp_server_get(sid)
+    patch["updated_at"] = int(time.time())
+    sets = ", ".join(f"{k}=?" for k in patch)
+    with _lock:
+        _conn_get().execute(f"UPDATE mcp_servers SET {sets} WHERE id=?", (*patch.values(), sid))
+        _conn_get().commit()
+    return mcp_server_get(sid)
+
+
+def mcp_server_has_tools(sid: int) -> bool:
+    """该网关的工具是否已加入对外工具清单（qualified_name 以 <name>__ 开头）。有则不允许删除。"""
+    srv = mcp_server_get(sid)
+    if not srv:
+        return False
+    prefix = (srv.get("name") or "") + "__"
+    row = _conn_get().execute(
+        "SELECT 1 FROM mcp_tool_acl WHERE qualified_name LIKE ? LIMIT 1", (prefix + "%",)
+    ).fetchone()
+    return row is not None
+
+
+def mcp_server_delete(sid: int) -> bool:
+    if mcp_server_has_tools(sid):
+        return False  # 有工具在用，拒绝删除（前端提示）
+    with _lock:
+        _conn_get().execute("DELETE FROM mcp_servers WHERE id=?", (sid,))
+        _conn_get().commit()
+    return True
+
+
+def mcp_server_health(sid: int, ok: bool, error: str = "") -> None:
+    with _lock:
+        _conn_get().execute(
+            "UPDATE mcp_servers SET last_ok=?, last_error=?, last_seen=?, updated_at=? WHERE id=?",
+            (1 if ok else 0, error or None, int(time.time()), int(time.time()), sid))
+        _conn_get().commit()
+
+
+def mcp_acl_list(key_id: int | None = None) -> list[dict[str, Any]]:
+    c = _conn_get()
+    if key_id is None:
+        rows = c.execute("SELECT id, key_id, qualified_name, created_at FROM mcp_tool_acl ORDER BY key_id, qualified_name").fetchall()
+    else:
+        rows = c.execute("SELECT id, key_id, qualified_name, created_at FROM mcp_tool_acl WHERE key_id=? ORDER BY qualified_name", (key_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mcp_acl_visible_tools(key_id: int | None) -> set[str]:
+    """可见工具 = key_id=0（默认工具）∪ key_id=self（专属）。未鉴权 key 仅拿默认工具。"""
+    c = _conn_get()
+    rows = c.execute("SELECT qualified_name FROM mcp_tool_acl WHERE key_id=0 OR key_id=?", (key_id or -1,)).fetchall()
+    return {r["qualified_name"] for r in rows}
+
+
+def mcp_acl_set(key_id: int, qualified_names: list[str]) -> None:
+    """整体替换某 Key 的工具授权（qualified_names 去重）。"""
+    clean = sorted({str(x).strip() for x in (qualified_names or []) if str(x).strip()})
+    now = int(time.time())
+    with _lock:
+        c = _conn_get()
+        c.execute("DELETE FROM mcp_tool_acl WHERE key_id=?", (key_id,))
+        c.executemany(
+            "INSERT INTO mcp_tool_acl(key_id, qualified_name, created_at) VALUES(?,?,?)",
+            [(key_id, n, now) for n in clean])
+        c.commit()
+
+
+def mcp_acl_prune(valid_names: set[str]) -> int:
+    """清理已失效的工具授权（上游改名/删除后），返回清理条数。"""
+    rows = _conn_get().execute("SELECT id, qualified_name FROM mcp_tool_acl").fetchall()
+    stale = [r["id"] for r in rows if r["qualified_name"] not in valid_names]
+    if not stale:
+        return 0
+    with _lock:
+        c = _conn_get()
+        c.executemany("DELETE FROM mcp_tool_acl WHERE id=?", [(i,) for i in stale])
+        c.commit()
+    return len(stale)

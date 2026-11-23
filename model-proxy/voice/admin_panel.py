@@ -667,7 +667,7 @@ def register_admin_routes(
     _STT_UPSTREAM_TEST = stt_upstream_test
     _TTS_UPSTREAM_TEST = tts_upstream_test
 
-    from admin import routes_config, routes_ops, routes_users
+    from admin import routes_config, routes_mcp, routes_ops, routes_users
 
     @app.middleware("http")
     async def admin_security_headers(request: Request, call_next):
@@ -764,3 +764,4 @@ def register_admin_routes(
         stt_upstream_test=stt_upstream_test,
         tts_upstream_test=tts_upstream_test,
     ))
+    app.include_router(routes_mcp.build_router())

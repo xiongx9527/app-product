@@ -376,22 +376,15 @@ def _write_api_key(path: str, value: str) -> None:
 
 
 def api_key_auth_enabled() -> bool:
-    """是否启用 API-Key 鉴权（作用于 /llm 与 /voice 数据接口）。三态语义：
+    """是否启用 API-Key 鉴权：只有显式 VOICE_API_KEY_AUTH=on 才开启，其余（off/未设置）都不需要 Key。
 
-    - 显式 VOICE_API_KEY_AUTH=on  -> 开启；
-    - 显式 off/none/...           -> 强制关闭（逃生口，忽略表内 key）；
-    - 未设置（空）                -> 表内存在 enabled key 即视为开启。
+    - 显式 on/true/1/yes/enabled -> 开启（此时必须带有效 Key，否则拒绝）；
+    - off/未设置/其它            -> 关闭，所有数据接口免 Key（表里有 Key 也不自动开启）。
 
-    api-key 已改为 SQLite 表管理（不读 VOICE_API_KEY 配置）；迁移后表里有 key 就自动
-    生效，避免「建了 key 却没开鉴权」。失败关闭由下游保证：开启且无可用 key 时拒绝。
+    建了 Key 不代表要鉴权——是否校验由开关显式决定，避免"建了测试 Key 就把所有接口锁死"。
     """
     auth = config_value("VOICE_API_KEY_AUTH", "").strip().lower()
-    if auth in ENABLED_VALUES:
-        return True
-    # 注意："" 也在 API_KEY_OFF_VALUES 里，必须排除空串，否则「未设置」会被当成显式关闭。
-    if auth and auth in API_KEY_OFF_VALUES:
-        return False
-    return voice_db.api_keys_has_enabled()
+    return auth in ENABLED_VALUES
 
 
 _auto_api_key: str | None = None
@@ -692,11 +685,34 @@ def _shared_http_client() -> httpx.AsyncClient:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    yield
-    global _http_client
-    if _http_client is not None and not _http_client.is_closed:
-        await _http_client.aclose()
-        _http_client = None
+    # MCP 网关：启动时连接上游并发现工具（失败不影响主服务）
+    # mount 的子 app 收不到父 app 的 lifespan，需在此显式驱动组合 app 的 lifespan，
+    # 否则 Streamable-HTTP 的 session manager task group 未初始化会 500。
+    from contextlib import AsyncExitStack
+    mcp_lifespan = None
+    try:
+        import mcp_gateway
+        await mcp_gateway.refresh()
+        _mcp_asgi = mcp_gateway.sse_app()
+        if _mcp_asgi is not None:
+            _app.mount("/mcp", _mcp_asgi)   # 对外 MCP endpoint（SSE + Streamable，自带 API-Key 鉴权）
+            mcp_lifespan = _mcp_asgi.lifespan_context()
+            await mcp_lifespan.__aenter__()
+            logging.getLogger("uvicorn.error").info("MCP 网关已挂载 /mcp（SSE + Streamable，上游工具已发现）")
+    except Exception as _e:
+        logging.getLogger("uvicorn.error").warning("MCP 网关初始化失败（/mcp 将不可用）: %s", _e)
+    try:
+        yield
+    finally:
+        if mcp_lifespan is not None:
+            try:
+                await mcp_lifespan.__aexit__(None, None, None)
+            except Exception as _e:
+                logging.getLogger("uvicorn.error").warning("MCP 网关 lifecyle 关闭异常: %s", _e)
+        global _http_client
+        if _http_client is not None and not _http_client.is_closed:
+            await _http_client.aclose()
+            _http_client = None
 
 
 def _public_openapi():
@@ -716,6 +732,55 @@ def _public_openapi():
         p: v for p, v in schema.get("paths", {}).items()
         if not p.startswith(hidden_prefixes) and p not in hidden_exact
     }
+    # MCP 对外接口由 mount 的子 FastMCP app 提供，FastAPI 不会自动收录到 OpenAPI。
+    # 手动注入两个 transport 的端点说明，便于在 /docs 直接查看/对接。
+    _bearer = [{"type": "http", "scheme": "bearer", "bearerFormat": "API-Key"}]
+    _mcp_desc = (
+        "MCP 网关：把上游 MCP server 的工具聚合后对外暴露。两种 transport 等价，工具一致。\n\n"
+        "- 鉴权：VOICE_API_KEY_AUTH=on 时需 `Authorization: Bearer <API-Key>`；工具按 Key 过滤。\n"
+        "- 工具：统一加前缀 `<tool_prefix>__`，当前问数(askdata)提供 13 个工具。\n"
+        "- 详细对接说明见仓库 docs/mcp-external-api.md。"
+    )
+    schema["paths"]["/mcp/sse"] = {
+        "get": {
+            "tags": ["MCP"], "summary": "MCP over SSE（握手）",
+            "description": _mcp_desc + "\n\nSSE 握手返回 `endpoint` 事件（`/mcp/messages/?session_id=...`），后续通信走 POST /mcp/messages/。",
+            "security": _bearer,
+            "responses": {"200": {"description": "text/event-stream，endpoint 事件含消息端点与 session_id"},
+                          "401": {"description": "缺少或错误的 API Key"}},
+        }
+    }
+    schema["paths"]["/mcp/messages/"] = {
+        "post": {
+            "tags": ["MCP"], "summary": "MCP over SSE（客户端消息）",
+            "description": "SSE 链路的客户端→服务端消息端点，URL 由 /mcp/sse 的 endpoint 事件给出（带 session_id）。",
+            "security": _bearer,
+            "responses": {"202": {"description": "已接受"}},
+        }
+    }
+    schema["paths"]["/mcp/"] = {
+        "post": {
+            "tags": ["MCP"], "summary": "MCP over Streamable HTTP（单端点）",
+            "description": _mcp_desc + "\n\ninitialize / tools/list / tools/call / ping 均走此端点；响应为 JSON 或 SSE（由 Accept 决定），会话 id 在 `mcp-session-id` 响应头。",
+            "security": _bearer,
+            "responses": {"200": {"description": "JSON-RPC 响应，含 mcp-session-id 头"},
+                          "401": {"description": "缺少或错误的 API Key"}},
+        },
+        "get": {
+            "tags": ["MCP"], "summary": "Streamable HTTP 会话恢复/事件流",
+            "description": "带 `mcp-session-id` 头恢复 SSE 事件流（服务器→客户端通知）。",
+            "security": _bearer,
+            "responses": {"200": {"description": "text/event-stream"}},
+        },
+        "delete": {
+            "tags": ["MCP"], "summary": "关闭 Streamable HTTP 会话",
+            "description": "带 `mcp-session-id` 头显式关闭会话。",
+            "security": _bearer,
+            "responses": {"200": {"description": "已关闭"}},
+        },
+    }
+    if "MCP" not in (schema.get("tags") or []):
+        schema.setdefault("tags", []).append({"name": "MCP", "description": "MCP 网关对外接口（SSE + Streamable HTTP）"})
     app.openapi_schema = schema
     return schema
 
