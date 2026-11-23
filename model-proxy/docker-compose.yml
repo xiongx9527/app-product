@@ -1,0 +1,100 @@
+# model-proxy 容器编排。
+# 默认：model-proxy + redis（缓存/限流）+ mysql（纠错词库），三者一起起。
+# 用法（在 model-proxy 目录）：
+#   docker compose up -d                    # 起 model-proxy + redis + mysql（默认）
+#   docker compose down                     # 停止（数据卷保留，不丢）
+#   docker compose --profile pgsql up -d    # 额外带 pgsql（可选，纠错库可切 postgres）
+#
+# 回退 sqlite（不要 redis/mysql）：用环境变量覆盖，并把 redis/mysql 服务去掉：
+#   CORRECTION_DB=sqlite RATE_LIMIT_BACKEND=memory docker compose up -d
+#   或编辑本文件把 model-proxy.environment 里 REDIS_URL / VOICE_MYSQL_DSN 注释掉。
+
+services:
+  model-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: app-product/model-proxy:local
+    container_name: model-proxy
+    restart: unless-stopped
+    ports:
+      - "19529:19529"
+    environment:
+      VOICE_HOME: /data
+      VOICE_HOST: 0.0.0.0
+      VOICE_PORT: "19529"
+      # 缓存/限流走 Redis（连不上自动降级到内存）：
+      REDIS_URL: redis://redis:6379/0
+      # 纠错词表缓存：redis(走 Redis) | memory(不走缓存)，默认跟随 REDIS_URL
+      CORRECTION_CACHE: ${CORRECTION_CACHE:-redis}
+      RATE_LIMIT_BACKEND: ${RATE_LIMIT_BACKEND:-redis}
+      # 纠错词库走 MySQL（VOICE_MYSQL_DSN 的 mysql:// scheme 会被自动推断为 mysql 后端）；
+      # 也可用 VOICE_CORRECTION_DB 显式指定，值：sqlite|mysql|postgresql。
+      VOICE_CORRECTION_DB: ${CORRECTION_DB:-mysql}
+      VOICE_MYSQL_DSN: mysql://voice:${MYSQL_PASSWORD:-voice_pass}@mysql:3306/voice
+      # 可选 PostgreSQL（把 CORRECTION_DB=postgresql 时生效）：
+      # VOICE_REMOTE_DSN: postgresql://voice:${PG_PASSWORD:-voice_pass}@pgsql:5432/voice
+      # 鉴权开关：需要 API-Key 时设 on（api-key 文件随 /data 挂载）：
+      # VOICE_API_KEY_AUTH: "on"
+    volumes:
+      # 宿主运行目录整体挂进容器：voice.conf / voice.db / models / api-key / 日志。
+      - ${VOICE_HOME:-$HOME/.app-product/voice}:/data
+    depends_on:
+      redis:
+        condition: service_started
+      mysql:
+        condition: service_healthy
+
+  # ── Redis（缓存 + 限流令牌桶）────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: model-proxy-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    # 不映射宿主端口，容器间走服务名 redis:6379；宿主调试可加 ports: ["6379:6379"]。
+
+  # ── MySQL（纠错词库）──────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: model-proxy-mysql
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-voice_root_pass}
+      MYSQL_DATABASE: voice
+      MYSQL_USER: voice
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-voice_pass}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 用 127.0.0.1 强制走 TCP（localhost 走 socket 会在用户/权限初始化完成前假阳性），
+      # 并以 voice 用户认证，确保 model-proxy 起来时 mysql 真正可连。
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uvoice -p${MYSQL_PASSWORD:-voice_pass} 2>/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # ── 可选：PostgreSQL（纠错词库可切 postgres）──────────────────────
+  pgsql:
+    image: postgres:16-alpine
+    container_name: model-proxy-pgsql
+    restart: unless-stopped
+    profiles: ["pgsql"]
+    environment:
+      POSTGRES_DB: voice
+      POSTGRES_USER: voice
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-voice_pass}
+    volumes:
+      - pgsql-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voice -d voice"]
+      interval: 10s
+      retries: 5
+
+volumes:
+  redis-data:
+  mysql-data:
+  pgsql-data:

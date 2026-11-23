@@ -1,0 +1,7 @@
+-r requirements-base.txt
+edge-tts>=6.1,<8
+# Docker 全量镜像专用：不装 kokoro-onnx。
+# 原因：kokoro-onnx 全版本要求 numpy>=2.0.2，与内置重排锁的 torch2.2.2 + numpy1.26.4
+# 硬冲突（torch2.2 针对 numpy1.x 编译，numpy2 会在 import 时崩）。本机 x86 Mac 因
+# onnxruntime 无 wheel 装不上 kokoro 而回避了冲突；Linux 容器能装，必须用本文件避开。
+# 容器内 TTS 用在线 edge-tts（edge-tts 不依赖 numpy/kokoro），离线 kokoro 音色不可用。

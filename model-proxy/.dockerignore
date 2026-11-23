@@ -1,0 +1,14 @@
+# 构建上下文里排除本地运行产物：模型/venv/数据库/日志都不进镜像，
+# 运行时由 docker-compose.yml 的 volume 从宿主挂载。
+**/__pycache__/
+**/*.pyc
+voice/venv/
+voice/venv314.bak/
+voice/models/
+voice/*.db
+voice/*.log
+voice.log
+*.db
+*.log
+.env
+.DS_Store

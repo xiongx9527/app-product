@@ -533,3 +533,52 @@ VOICE_DASHSCOPE_URL=https://dashscope.aliyuncs.com
 - 本地 AI 服务的安装、`voice.sh start / stop / restart / status / check / log` 与 macOS 一致；
 - 统一服务管理 `services.sh start / stop / restart / status / check / log` 与 macOS 一致；
 - 语音服务依赖 Python 3.10+ 与 ffmpeg（用系统包管理器安装），模型 / 虚拟环境目录与 macOS 相同。
+
+## Docker Compose（容器部署）
+
+`Dockerfile` + `docker-compose.yml` 提供一键容器化部署（Python 3.12 全量依赖：语音 ASR/TTS +
+LLM/Embed/Rerank 代理 + MCP 网关），基于 `python:3.12-slim`，系统层装 ffmpeg。
+
+> 内置重排依赖（torch 2.2.2 + transformers 4.40）重量较大，首次构建会下载约 1GB+；
+> 模型权重（SenseVoice）不进镜像，运行时从宿主挂载复用。
+>
+> **注意**：容器里不装 kokoro-onnx（本地离线 TTS 音色不可用，TTS 走在线 edge-tts）。
+> 原因：kokoro 要求 numpy>=2.0.2，与重排的 torch2.2.2+numpy1.26.4 硬冲突；Docker 用
+> `requirements-tts-docker.txt` 避开。本机非 Docker 安装仍用原 `requirements-tts.txt`（含 kokoro）。
+
+```bash
+cd model-proxy
+docker compose up -d --build          # 构建并启动：model-proxy + redis + mysql（默认）
+docker compose logs -f model-proxy    # 看启动日志（缓存/纠错库类型/鉴权状态）
+docker compose down                   # 停止（数据卷 + 宿主目录都保留，不丢）
+```
+
+**默认配套服务**：redis（缓存 + 限流）、mysql（纠错词库）随 model-proxy 一起启动，
+DSN 已自动注入容器（redis://redis:6379、mysql://voice:***@mysql:3306/voice）。
+回退到纯 sqlite + 不用 Redis 缓存/限流：`CORRECTION_DB=sqlite CORRECTION_CACHE=memory RATE_LIMIT_BACKEND=memory docker compose up -d`。
+
+数据与配置持久化：宿主 `~/.app-product/voice`（可用 `VOICE_HOME` 环境变量覆盖）整体挂到容器
+`/data`，包含 `voice.conf` / `voice.db` / `models` / `api-key` / 日志。首次使用前先用
+`./install-voice.sh` 在宿主下载好模型（或把已有 `~/.app-product/voice` 直接复用），容器启动即能用。
+
+健康检查：`curl http://127.0.0.1:19529/health`；管理面板 `http://127.0.0.1:19529/admin`；
+Swagger `http://127.0.0.1:19529/doc.html`。
+
+### 配套服务与数据库类型
+
+| 服务 | 默认 | 用途 | 配置 |
+|---|---|---|---|
+| redis | **默认启动** | 纠错缓存 + 限流令牌桶 | `REDIS_URL=redis://redis:6379/0`，连不上自动降级内存 |
+| mysql | **默认启动** | 纠错词库 | `VOICE_CORRECTION_DB=mysql` + `VOICE_MYSQL_DSN`（已注入） |
+| pgsql | 可选（profile） | 纠错词库可切 postgres | `docker compose --profile pgsql up -d`，再设 `CORRECTION_DB=postgresql` + `VOICE_REMOTE_DSN` |
+| sqlite | 回退用 | 纠错词库默认非 docker | `CORRECTION_DB=sqlite` 回退，数据就是挂载目录里的 `voice.db` |
+
+配套服务**不映射宿主端口**（容器间走服务名访问），所以不会占用本机已有的 6379/3306/5432。
+需要宿主调试时再手动加 `ports`。密码用环境变量覆盖，不要用默认值上生产：
+
+```bash
+MYSQL_PASSWORD=your_pass MYSQL_ROOT_PASSWORD=your_root docker compose up -d
+```
+
+SQLite 是嵌入式数据库（就是 `voice.db` 文件），无需独立服务镜像，随宿主目录挂载即可。
+注意：**核心数据（配置/API-Key/MCP/审计）始终用 SQLite**，mysql/pgsql 只承载纠错词库。
