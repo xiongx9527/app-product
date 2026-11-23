@@ -622,6 +622,14 @@ const I18N = {
     "test.tabEmbed": "向量嵌入 Embed",
     "test.tabRerank": "重排 Rerank",
     "test.tabTts": "语音合成 TTS",
+    "test.tabOcr": "文字识别 OCR",
+    "ocr.hint": "上传图片，用内置 PaddleOCR 识别其中文字（需先开启 OCR_ENABLED 并安装依赖）。",
+    "ocr.statusIdle": "未开始",
+    "ocr.recognize": "识别图片",
+    "ocr.outPlaceholder": "识别结果将在这里显示。",
+    "ocr.noFile": "请先选择图片",
+    "ocr.workingX": "正在识别 {name}…",
+    "ocr.empty": "（未识别到文字）",
     "tts.builtinNote": "内置 TTS 可选 edge-tts（在线）或 kokoro（纯本地）；勾选/设默认后保存即生效，点「测试可用」按需验证。",
     "tts.builtinSynth": "内置合成（edge-tts 在线 / kokoro 本地）",
     "tts.needNetwork": "edge-tts 需联网、依赖 ffmpeg；kokoro 纯本地免依赖",
@@ -1067,6 +1075,14 @@ const I18N = {
     "test.tabEmbed": "Embeddings",
     "test.tabRerank": "Rerank",
     "test.tabTts": "Speech Synthesis TTS",
+    "test.tabOcr": "OCR Recognition",
+    "ocr.hint": "Upload an image and recognize its text with built-in PaddleOCR (requires OCR_ENABLED=on and dependencies installed).",
+    "ocr.statusIdle": "Idle",
+    "ocr.recognize": "Recognize",
+    "ocr.outPlaceholder": "Recognition result will appear here.",
+    "ocr.noFile": "Please choose an image first",
+    "ocr.workingX": "Recognizing {name}…",
+    "ocr.empty": "(no text recognized)",
     "tts.builtinNote": "Built-in TTS offers edge-tts (online) or kokoro (fully local); pick a default and save to apply, use \"Test availability\" to verify on demand.",
     "tts.builtinSynth": "Built-in synthesis (edge-tts online / kokoro local)",
     "tts.needNetwork": "edge-tts needs internet + ffmpeg; kokoro fully local, no deps",
@@ -3283,6 +3299,7 @@ async function renderDashboard(){
       <button class="tab" data-tab="rerank">${t('test.tabRerank')}</button>
       <button class="tab" data-tab="asr">${t('test.tabAsr')}</button>
       <button class="tab" data-tab="tts">${t('test.tabTts')}</button>
+      <button class="tab" data-tab="ocr">${t('test.tabOcr')}</button>
     </div>
 
     <div id="t-llm" class="tabpane">
@@ -3394,6 +3411,14 @@ async function renderDashboard(){
       <span class="hint" id="ttsMsg" style="display:block; margin-top:6px"></span>
     </div>
 
+    <div id="t-ocr" class="tabpane" hidden>
+      <label>${t('ocr.hint')}</label>
+      <input id="ocrFile" type="file" accept="image/*" style="margin-top:4px" />
+      <div class="hint" id="ocrStatus" style="margin-top:6px">${t('ocr.statusIdle')}</div>
+      <button id="ocrGo" class="full" style="margin-top:12px">${t('ocr.recognize')}</button>
+      <pre class="m-out" id="ocrOut" style="margin-top:10px;white-space:pre-wrap">${t('ocr.outPlaceholder')}</pre>
+    </div>
+
     <div id="t-rerank" class="tabpane" hidden>
       <label>${t('common.provider')}</label>
       <select id="rerankProvider"><option value="">${t('llm.defaultRoute')}</option></select>
@@ -3483,7 +3508,7 @@ async function renderDashboard(){
   tabs.forEach(t=>t.onclick=()=>{
     tabs.forEach(x=>x.classList.remove('active'));
     t.classList.add('active');
-    ['llm','asr','tts','embed','rerank'].forEach(k=>{ const e=document.getElementById('t-'+k); if(e) e.hidden = (t.dataset.tab!==k); });
+    ['llm','asr','tts','embed','rerank','ocr'].forEach(k=>{ const e=document.getElementById('t-'+k); if(e) e.hidden = (t.dataset.tab!==k); });
     if(t.dataset.tab==='llm' || t.dataset.tab==='embed'){ populateLlmProviders(); }
     if(t.dataset.tab==='rerank'){ populateRerankProviders(); }
   });
@@ -3655,6 +3680,28 @@ async function renderDashboard(){
         msg.textContent=t('common.done')+'（'+(blob.size/1024).toFixed(1)+' KB）'; msg.className='hint';
       }
     }catch(e){ msg.textContent=t('common.errorPrefix')+e.message; msg.className='err'; }
+  };
+
+  // OCR 图片识别测试：读文件为 base64 → POST /ocr/v1/ocr → 显示文字。
+  const ocrGo=document.getElementById('ocrGo');
+  if(ocrGo) ocrGo.onclick=async ()=>{
+    const status=document.getElementById('ocrStatus'), out=document.getElementById('ocrOut');
+    const fileEl=document.getElementById('ocrFile');
+    const file=fileEl && fileEl.files && fileEl.files[0];
+    if(!file){ status.textContent=t('ocr.noFile'); status.className='err'; return; }
+    status.textContent=t('ocr.workingX').replace('{name}', file.name); status.className='hint';
+    out.textContent='';
+    try{
+      const b64=await new Promise((resolve,reject)=>{
+        const fr=new FileReader(); fr.onload=()=>resolve(String(fr.result).split(',')[1]||''); fr.onerror=reject; fr.readAsDataURL(file);
+      });
+      const r=await fetch(testOrigin+'/ocr/v1/ocr',{method:'POST',credentials:'same-origin',
+        headers:{'content-type':'application/json',...authHdr()}, body:JSON.stringify({image:b64})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok || !d.ok){ status.textContent=t('common.failed')+' '+r.status+'：'+((d&&d.error&&d.error.message)||'').slice(0,200); status.className='err'; return; }
+      status.textContent=t('common.done')+'（'+(d.texts||[]).length+' 条）'; status.className='hint';
+      out.textContent=(d.texts||[]).map((x,i)=>`${i+1}. ${x.text}  [${x.score}]`).join('\n') || t('ocr.empty');
+    }catch(e){ status.textContent=t('common.errorPrefix')+e.message; status.className='err'; }
   };
 
   // 模型下拉按所选提供商联动：没选提供商时禁用；选了才列出该提供商下的模型。

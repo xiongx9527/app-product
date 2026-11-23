@@ -57,6 +57,15 @@ VOICE_PORT=19529
 #   $VOICE_HOME
 # VOICE_DB_DIR=$VOICE_HOME
 
+# ── 内置 OCR（可选，单进程内嵌）─────────────────────────────────
+# 用 PaddleOCR / PP-OCRv5 本地识别图片文字，对外接口 POST /ocr/v1/ocr。
+# 首次识别会自动下载模型到 ~/.paddlex/official_models/（之后离线）。
+# 安装：./model-proxy/install-ocr.sh（会钉住 numpy1.26 保护内置重排的 torch2.2）。
+# OCR_ENABLED=off         总开关：on 才允许 /ocr/v1/ocr；off 时接口返回 503
+# OCR_MODEL_VERSION=PP-OCRv5  模型版本（一般不用改）
+# OCR_ENABLED=on
+# OCR_MODEL_VERSION=PP-OCRv5
+
 # ── 日志地址 ─────────────────────────────────────────────────────
 # 服务日志文件路径（voice.sh 会把 stdout/stderr 重定向到这里）。
 # 留空使用默认路径：

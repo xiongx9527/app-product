@@ -534,6 +534,27 @@ VOICE_DASHSCOPE_URL=https://dashscope.aliyuncs.com
 - 统一服务管理 `services.sh start / stop / restart / status / check / log` 与 macOS 一致；
 - 语音服务依赖 Python 3.10+ 与 ffmpeg（用系统包管理器安装），模型 / 虚拟环境目录与 macOS 相同。
 
+## 内置 OCR（PaddleOCR / PP-OCRv5）
+
+图片文字识别，独立能力前缀 `/ocr`（不放在 `/voice` 下），**单端口 19529、不加新端口**。
+
+```bash
+./model-proxy/install-ocr.sh          # 安装（paddlepaddle + paddleocr，钉住 numpy1.26 保护内置重排）
+./model-proxy/install-ocr.sh --verify # 仅验证环境
+# 开启：voice.conf 设 OCR_ENABLED=on（或面板/DB 配置），重启服务
+```
+
+接口：
+- `POST /ocr/v1/ocr`：`{"image": "<base64 图片>"}` → `{"ok": true, "texts": [{text,score,box}], "full_text": "..."}`
+- `GET /ocr/v1/models`：内置 OCR 模型信息
+- 管理面板「连通测试」页新增「文字识别 OCR」tab，可上传图片直接测试。
+
+**架构说明**（重要）：torch2.2（内置重排）与 paddle3.0 的 C++ 扩展**无法同进程共存**
+（同进程调用 OCR 会 segfault）。因此 OCR 在**短生命周期子进程**里跑
+（`voice/ocr_worker.py`，从 stdin 读 base64、stdout 出 JSON），主服务进程只做调度，
+**不监听额外端口**。单次识别含模型加载约 2-3 秒，模型首次自动下载到 `~/.paddlex/official_models/`。
+Docker 容器内同样可用（venv 已含 paddle 依赖；OCR_ENABLED=on 开启）。
+
 ## Docker Compose（容器部署）
 
 `Dockerfile` + `docker-compose.yml` 提供一键容器化部署（Python 3.12 全量依赖：语音 ASR/TTS +

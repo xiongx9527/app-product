@@ -36,7 +36,14 @@ RUN python -m pip install --upgrade pip \
         -r voice/requirements-mcp.txt \
         -r voice/requirements-rerank.txt \
         pymysql \
-        "psycopg[binary]"
+        "psycopg[binary]" \
+    && python -m pip install "numpy==1.26.4" paddlepaddle==3.0.0 \
+        -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ \
+    && python -m pip install "numpy==1.26.4" paddleocr==3.7.0 \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple
+# OCR 依赖：paddlepaddle 内核（百度源，Linux cp312 wheel）+ paddleocr 封装（清华源）。
+# 钉住 numpy1.26 保护 torch2.2 内置重排；OCR 用独立子进程跑（voice/ocr_worker.py），
+# 不与主进程 torch 冲突，无需额外端口。
 
 # 源码（preflight.py / admin_panel.py / openai_voice_server.py 等），不含模型/venv/数据。
 COPY voice/ ./voice/

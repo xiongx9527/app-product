@@ -781,6 +781,23 @@ def _public_openapi():
     }
     if "MCP" not in (schema.get("tags") or []):
         schema.setdefault("tags", []).append({"name": "MCP", "description": "MCP 网关对外接口（SSE + Streamable HTTP）"})
+    # OCR：单进程内嵌 PaddleOCR，独立前缀 /ocr（不放 /voice 下）
+    schema["paths"]["/ocr/v1/ocr"] = {
+        "post": {
+            "tags": ["OCR"], "summary": "图片文字识别（PaddleOCR 内置）",
+            "description": "内置 OCR：POST {image: base64} → {ok, texts:[{text,score,box}], full_text}。需 OCR_ENABLED=on 且已安装 paddleocr。",
+            "security": _bearer,
+            "responses": {"200": {"description": "识别结果"},
+                          "400": {"description": "image 缺失或 base64 非法"},
+                          "503": {"description": "OCR 未开启/未安装"}},
+        }
+    }
+    schema["paths"]["/ocr/v1/models"] = {
+        "get": {"tags": ["OCR"], "summary": "OCR 模型信息",
+                "responses": {"200": {"description": "内置 OCR 模型列表"}}},
+    }
+    if "OCR" not in (schema.get("tags") or []):
+        schema.setdefault("tags", []).append({"name": "OCR", "description": "内置 OCR 文字识别（PaddleOCR，独立前缀 /ocr）"})
     app.openapi_schema = schema
     return schema
 
@@ -4100,6 +4117,59 @@ async def rerank(request: Request):
         content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
         status_code=200, media_type="application/json",
     )
+
+
+@app.post("/ocr/v1/ocr")
+async def ocr_recognize(request: Request):
+    """内置 OCR（PaddleOCR / PP-OCRv5）：独立能力前缀 /ocr，不放在 /voice 下。
+
+    入站 JSON：{"image": "<base64>"} 或 {"image": "data:image/png;base64,..."}；
+    返回 {ok, texts:[{text,score,box}], full_text}。单进程内嵌，模型首次自动下载。
+    与其它对外接口一致走统一 API-Key 鉴权；OCR 为本地重计算，放线程池避免阻塞事件循环。
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        return error_response(400, "请求体不是合法 JSON")
+    if not isinstance(body, dict):
+        return error_response(400, "请求体必须是 JSON 对象")
+    # 总开关：OCR_ENABLED=on 才允许识别（默认 off，需显式开启）
+    if config_value("OCR_ENABLED", "off").strip().lower() not in ENABLED_VALUES:
+        return error_response(503, "内置 OCR 未开启：请在 voice.conf 设 OCR_ENABLED=on 并运行 install-ocr.sh")
+    raw = body.get("image")
+    if not isinstance(raw, str) or not raw.strip():
+        return error_response(400, "image 不能为空（base64 图片）")
+    import base64
+    import asyncio
+    try:
+        b64 = raw.strip()
+        if b64.startswith("data:") and "," in b64:
+            b64 = b64.split(",", 1)[1]
+        image_bytes = base64.b64decode(b64, validate=True)
+    except Exception as exc:  # noqa: BLE001
+        return error_response(400, f"image base64 解码失败: {exc}")
+    if not image_bytes:
+        return error_response(400, "image 解码后为空")
+    try:
+        import builtin_ocr
+        # OCR 在独立子进程里跑（builtin_ocr 用 subprocess，paddle 不进主进程），
+        # to_thread 只等子进程，不污染主进程，也避免阻塞事件循环。
+        import asyncio
+        result = await asyncio.to_thread(builtin_ocr.recognize, image_bytes)
+        return JSONResponse(result)
+    except Exception as exc:  # noqa: BLE001
+        return error_response(500, f"OCR 识别失败: {exc}")
+
+
+@app.get("/ocr/v1/models")
+async def ocr_models():
+    """OCR 模型信息（内置引擎，供面板/对接方查询）。"""
+    try:
+        import builtin_ocr
+        return {"models": [{"name": builtin_ocr.model_name(), "provider": "builtin",
+                            "ready": builtin_ocr.ready()}]}
+    except Exception as exc:  # noqa: BLE001
+        return {"models": [], "error": str(exc)[:200]}
 
 
 @app.get("/llm/v1/providers")
