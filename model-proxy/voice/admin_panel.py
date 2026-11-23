@@ -525,20 +525,31 @@ def _system_overview() -> dict[str, Any]:
     }
 
     # 缓存：极简——类型 + key 数量。
-    # 本地真相源是 voice_db._cache（进程内存 dict）；配了 REDIS_URL 则走 Redis 缓存。
+    # 开关 CORRECTION_CACHE 统一控制纠错缓存 + 限流：memory=强制内存，redis/auto=跟随 REDIS_URL。
+    # 真相源用限流后端实际值（已跟随开关），避免只配了 REDIS_URL 但开关=memory 时误报 Redis。
     rate_stats = safe(rate_store.stats, {})
     rate_backend = rate_stats.get("backend", "memory") if isinstance(rate_stats, dict) else "memory"
-    cache_type = "Redis" if (redis_url or rate_backend == "redis") else "内存"
+    correction_cache = os.environ.get("CORRECTION_CACHE", "auto").strip().lower()
+    cache_disabled = correction_cache == "memory"
+    cache_type = "内存" if cache_disabled else ("Redis" if rate_backend == "redis" else "内存")
     cfg_keys = safe(lambda: len(voice_db._cache), 0)
     cache_keys = cfg_keys if isinstance(cfg_keys, int) else 0
     if cache_type == "Redis":
+        # 限流后端已成功初始化为 redis（rate_stats.backend=redis）即视为连通；
+        # 同步探测 redis_ok 只在配置同步时才更新，平时为 None 不代表不连通。
         rook = remote.get("redis_ok")
-        cache_health = "正常" if rook else ("异常" if rook is False else "未知")
-        if remote.get("redis_error"):
-            cache_health += f"（{str(remote['redis_error'])[:40]}）"
+        if rook is False:
+            cache_health = "异常"
+            if remote.get("redis_error"):
+                cache_health += f"（{str(remote['redis_error'])[:40]}）"
+        elif rate_backend == "redis":
+            cache_health = "正常"
+        else:
+            cache_health = "正常" if rook else "未知"
     else:
         cache_health = "正常（进程内存）"
-    caches = {"type": cache_type, "keys": cache_keys, "health": cache_health}
+    caches = {"type": cache_type, "keys": cache_keys, "health": cache_health,
+              "switch": "memory" if cache_disabled else "redis"}
 
     # ── 日志 ──
     log_path = os.path.join(VOICE_HOME_DIR, "voice.log")

@@ -160,7 +160,7 @@ ZCR_MIN_PEAK = 0.01
 #   咳嗽「哎」0.322~0.348，冲击噪声 0.265~0.524。
 # 取 0.20：两侧余量都够。补的是 ZCR 漏掉的低频噪声——该咳嗽样本 ZCR 仅
 # 0.178~0.218（低于 0.22），但能量是宽带的，平坦度高、一定能拦住。
-FLATNESS_NON_SPEECH_THRESHOLD = 0.20
+FLATNESS_NON_SPEECH_THRESHOLD = 0.50  # 2026-11-23 修正：iOS 12x增益后真人 flatness 实测 0.22~0.34，0.20 会全误杀
 
 # 配置优先级从高到低：命令行覆盖 > 环境变量 > 配置文件 > 这里的默认值。
 DEFAULTS = {
@@ -2467,9 +2467,6 @@ async def speech(body: SpeechBody):
     tts_provider = (body.provider or "").strip().lower() or (
         config_value("TTS_PROVIDER", "builtin") or "builtin"
     ).strip().lower()
-    tts_provider = (body.provider or "").strip().lower() or (
-        config_value("TTS_PROVIDER", "builtin") or "builtin"
-    ).strip().lower()
     upstream_model = ""
     builtin_model = "edge-tts"
     if tts_provider == "builtin":
@@ -2491,14 +2488,14 @@ async def speech(body: SpeechBody):
         # 上游模式：空音色保持为空，交给 _tts_synthesize 用该 provider 的默认音色，
         # 避免内置默认音色触发上游的音色校验误报。
         voice = resolve_voice(voice_req) if voice_req else ""
-        # 上游模式：model 优先取请求参数，缺省回退 TTS_UPSTREAM_MODEL 配置
-        upstream_model = (body.model or "").strip() or (
-            config_value("TTS_UPSTREAM_MODEL") or ""
-        ).strip()
+        # 上游模式：model 优先取请求参数，缺省按 provider 回退对应配置键
+        # （dashscope→TTS_UPSTREAM_MODEL / deepseek→TTS_DEEPSEEK_MODEL），与面板映射一致。
+        model_key = admin_panel.TTS_PROVIDER_MODEL_KEYS.get(tts_provider, "TTS_UPSTREAM_MODEL")
+        upstream_model = (body.model or "").strip() or (config_value(model_key) or "").strip()
         if not upstream_model:
             return error_response(
                 400,
-                "已选择上游 TTS（dashscope），请在请求里带 model 或配置 TTS_UPSTREAM_MODEL",
+                f"已选择上游 TTS（{tts_provider}），请在请求里带 model 或配置 {model_key}",
             )
     protocol = resolve_voice_protocol(body.protocol, upstream_model, tts_provider)
     if protocol not in ("http", "ws", "http-async"):
@@ -3007,9 +3004,10 @@ async def _ws_handle_tts(websocket: WebSocket, task_id: str, model: str, payload
     if tts_provider == "deepseek":
         upstream_model = (model or "").strip() or _deepseek_default_model("tts")
     elif tts_provider != "builtin":
-        upstream_model = (model or "").strip() or (config_value("TTS_UPSTREAM_MODEL") or "").strip()
+        _mkey = admin_panel.TTS_PROVIDER_MODEL_KEYS.get(tts_provider, "TTS_UPSTREAM_MODEL")
+        upstream_model = (model or "").strip() or (config_value(_mkey) or "").strip()
         if not upstream_model:
-            await _ws_send_fail(websocket, task_id, "dashscope TTS 需要 model 或配置 TTS_UPSTREAM_MODEL")
+            await _ws_send_fail(websocket, task_id, f"{tts_provider} TTS 需要 model 或配置 {_mkey}")
             return False
     else:
         # 内置模式只认内置模型；传了上游（尤其 ws）模型属于「模型与提供商对不上」，直接报错。
@@ -4375,7 +4373,12 @@ def main(argv=None) -> None:
     db_path = os.path.join(db_dir, "voice.db")
     remote_dsn = os.environ.get("VOICE_REMOTE_DSN") or None
     redis_url = os.environ.get("REDIS_URL") or None
-    store = config_store.configure(db_path, remote_dsn, redis_url)
+    # 纠错缓存/限流统一开关 CORRECTION_CACHE：redis | memory（默认 auto 跟随 REDIS_URL）。
+    # memory 时所有 Redis 缓存（配置同步 + 纠错词表 + 限流）一律关闭。
+    correction_cache = os.environ.get("CORRECTION_CACHE", "auto").strip().lower()
+    cache_disabled = correction_cache == "memory"
+    cache_url = None if cache_disabled else redis_url
+    store = config_store.configure(db_path, remote_dsn, cache_url)
 
     # api-key 存量迁移（v10，仅一次）：把旧 VOICE_API_KEY 配置 + auto key 文件的明文
     # 哈希入库。之后鉴权一律查表，不再读 VOICE_API_KEY。迁移标记写入 config_kv 防重复。
@@ -4395,11 +4398,13 @@ def main(argv=None) -> None:
 
     # ASR 纠错词表存储：三库对等（sqlite/mysql/postgresql）+ Redis 缓存。
     # db_kind 不显式配时按 VOICE_REMOTE_DSN / VOICE_MYSQL_DSN 推断，默认 sqlite（复用 voice.db）。
+    # 纠错词表缓存沿用上面统一算好的 cache_url / cache_disabled（CORRECTION_CACHE 开关）。
     try:
         correction_store = voice_correction_store.configure(
             db_kind=os.environ.get("VOICE_CORRECTION_DB") or None,
             sqlite_path=db_path,
-            redis_url=redis_url,
+            redis_url=cache_url,
+            cache_disabled=cache_disabled,
         )
         correction_store.ensure_schema()
         _startup_log(
@@ -4420,8 +4425,10 @@ def main(argv=None) -> None:
         _startup_log(f"[local-ai] 数据库: {db_path}（配置以数据库为准）", flush=True)
     if remote_dsn:
         _startup_log("[local-ai] 远程库: 已配置，保存 / 启动时会与本地同步", flush=True)
-    if redis_url:
-        _startup_log("[local-ai] 远程缓存: Redis（REDIS_URL 已配置，缓存走 Redis 不落库）", flush=True)
+    if cache_url:
+        _startup_log("[local-ai] 远程缓存: Redis（CORRECTION_CACHE=redis，缓存走 Redis 不落库）", flush=True)
+    elif correction_cache == "memory":
+        _startup_log("[local-ai] 远程缓存: 关闭（CORRECTION_CACHE=memory）", flush=True)
         # 启动时先把远端配置合并到本地，保证「本地与远程一致」。
         if remote_dsn:
             try:
@@ -4489,8 +4496,13 @@ def main(argv=None) -> None:
         _startup_log("[local-ai] 鉴权 : 关闭", flush=True)
 
     # 限流门面：按配置选内存/Redis 后端（配了 Redis 连不上自动降级内存）
+    # 限流后端跟随 CORRECTION_CACHE：memory 时强制内存（与纠错缓存开关统一），
+    # 其它情况沿用 RATE_LIMIT_BACKEND（auto=配了 REDIS_URL 就用 Redis）。
+    _rl_backend_cfg = config_value("RATE_LIMIT_BACKEND", "auto")
+    if cache_disabled:
+        _rl_backend_cfg = "memory"
     _rl_backend = rate_store.configure(
-        config_value("RATE_LIMIT_BACKEND", "auto"),
+        _rl_backend_cfg,
         config_value("REDIS_URL", "") or None,
     )
     _rl_on = config_value("RATE_LIMIT_ENABLED", "off").strip().lower() in ENABLED_VALUES

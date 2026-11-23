@@ -53,8 +53,9 @@ class _RedisCache:
     TTL = 30  # 秒；写操作会主动失效，TTL 只是兜底防脏读
     RETRY = 30  # 连接失败后多久再试
 
-    def __init__(self, url: str | None):
-        self.url = (url or os.environ.get("REDIS_URL") or "").strip()
+    def __init__(self, url: str | None, disabled: bool = False):
+        # disabled=True 表示显式关闭缓存（CORRECTION_CACHE=off），不再回退读 REDIS_URL。
+        self.url = "" if disabled else (url or os.environ.get("REDIS_URL") or "").strip()
         self._client = None
         self._bad_ts = 0.0
         self._lock = threading.Lock()
@@ -116,9 +117,9 @@ class _RedisCache:
 
 class CorrectionStore:
     """统一接口：调用方只依赖本类，不感知具体数据库与缓存。"""
-    def __init__(self, backend: "_BaseBackend", redis_url: str | None = None):
+    def __init__(self, backend: "_BaseBackend", redis_url: str | None = None, cache_disabled: bool = False):
         self._b = backend
-        self._cache = _RedisCache(redis_url)
+        self._cache = _RedisCache(redis_url, disabled=cache_disabled)
 
     @property
     def backend_name(self) -> str:
@@ -622,6 +623,7 @@ class _MysqlBackend(_BaseBackend):
                 correct VARCHAR(255) NOT NULL UNIQUE,
                 pinyin VARCHAR(512) NOT NULL DEFAULT '',
                 note VARCHAR(512),
+                device_id VARCHAR(255),
                 source VARCHAR(16) NOT NULL DEFAULT 'local',
                 reviewed TINYINT NOT NULL DEFAULT 0,
                 enabled TINYINT NOT NULL DEFAULT 1,
@@ -635,6 +637,7 @@ class _MysqlBackend(_BaseBackend):
                 wrong VARCHAR(255) NOT NULL,
                 pinyin VARCHAR(512) NOT NULL DEFAULT '',
                 note VARCHAR(512),
+                device_id VARCHAR(255),
                 source VARCHAR(16) NOT NULL DEFAULT 'local',
                 reviewed TINYINT NOT NULL DEFAULT 0,
                 enabled TINYINT NOT NULL DEFAULT 1,
@@ -646,6 +649,13 @@ class _MysqlBackend(_BaseBackend):
                 KEY idx_acv_pinyin (pinyin),
                 KEY idx_acv_updated (updated_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+            # 已存在的旧表补 device_id（CREATE TABLE IF NOT EXISTS 不会给老表加列）。
+            # 用 information_schema 判断，幂等；库名取当前 database()。
+            for tbl in ("asr_corrections", "asr_correction_variants"):
+                cur.execute("""SELECT COUNT(*) FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME='device_id'""", (tbl,))
+                if not cur.fetchone()[0]:
+                    cur.execute(f"ALTER TABLE {tbl} ADD COLUMN device_id VARCHAR(255)")
 
     def list(self, since, limit, offset):
         c = self._get_conn()
@@ -1035,9 +1045,11 @@ def configure(
     mysql_dsn: str | None = None,
     pg_dsn: str | None = None,
     redis_url: str | None = None,
+    cache_disabled: bool = False,
 ) -> CorrectionStore:
     """建立全局唯一纠错存储实例。db_kind 缺省时按 DSN scheme 推断，再缺省 sqlite。
-    redis_url 不传时从 REDIS_URL 环境变量读（见 _RedisCache）。"""
+    redis_url 不传时从 REDIS_URL 环境变量读（见 _RedisCache）；
+    cache_disabled=True 时强制关闭缓存（CORRECTION_CACHE=memory），不回退读 REDIS_URL。"""
     global _store
     kind = (db_kind or os.environ.get("VOICE_CORRECTION_DB") or "").strip().lower()
     remote = (pg_dsn or os.environ.get("VOICE_REMOTE_DSN") or os.environ.get("VOICE_PG_DSN") or "").strip()
@@ -1062,7 +1074,7 @@ def configure(
         backend = _SqliteBackend(path)
     else:
         raise RuntimeError(f"未知纠错库类型: {kind}（可用 sqlite/mysql/postgresql）")
-    _store = CorrectionStore(backend, redis_url=redis_url)
+    _store = CorrectionStore(backend, redis_url=redis_url, cache_disabled=cache_disabled)
     return _store
 
 
