@@ -2,7 +2,7 @@
 
 为什么需要它：
     客户端只和 Node 网关通信；网关的 ASR / TTS / LLM 再按各自的协议调用本服务。
-    开发机上没有现成的 9529 服务时，这个脚本用 Python 直接提供同样的能力，
+    开发机上没有现成的 19529 服务时，这个脚本用 Python 直接提供同样的能力，
     避免为了跑通一条语音 / 对话链路去装 Docker。
 
 接口前缀（按能力分开）：
@@ -46,7 +46,7 @@
 配置：
     所有运行参数都可以写在配置文件里（默认 $VOICE_HOME/voice.conf）：
         VOICE_HOST         监听地址，默认 0.0.0.0
-        VOICE_PORT         监听端口，默认 9529
+        VOICE_PORT         监听端口，默认 19529
         SENSEVOICE_DIR     SenseVoice 模型目录，默认 $VOICE_HOME/models/sensevoice
         SENSEVOICE_LANGUAGE SenseVoice 识别语言（auto/zh/en/ja/ko/yue），默认 zh；
                            留空或 auto 走自动检测，短句/带噪时会把中文摇成拼音碎片
@@ -109,7 +109,7 @@ from uvicorn.logging import AccessFormatter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import llm_protocols  # LLM 上游多协议适配层
-import admin_panel  # Web 管理面板（鉴权 + 配置编辑 + 启停 + 日志，挂在 9529 /admin）
+import admin_panel  # Web 管理面板（鉴权 + 配置编辑 + 启停 + 日志，挂在 19529 /admin）
 import voice_db  # 本地管理数据库（SQLite）：配置的真相源 + 事件 / 审计
 import voice_sync  # 远程数据库同步（Postgres）
 import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库的门面
@@ -165,7 +165,7 @@ FLATNESS_NON_SPEECH_THRESHOLD = 0.20
 # 配置优先级从高到低：命令行覆盖 > 环境变量 > 配置文件 > 这里的默认值。
 DEFAULTS = {
     "VOICE_HOST": "0.0.0.0",
-    "VOICE_PORT": "9529",
+    "VOICE_PORT": "19529",
     "TTS_VOICE": "zh-CN-XiaoxiaoNeural",
     "TTS_TIMEOUT": "20",
     "UPSTREAM_TIMEOUT": "90",
@@ -699,6 +699,27 @@ async def _lifespan(_app: FastAPI):
         _http_client = None
 
 
+def _public_openapi():
+    """对外 OpenAPI：剔除管理面板 /admin/* 与内部端点，只留语音/LLM 接口。
+
+    比逐个路由设 include_in_schema 更可靠——admin 路由经 include_router 挂载，
+    在 app.routes 上逐个标记会漏掉。这里在生成 schema 时统一过滤。
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+    schema = get_openapi(title=app.title, version=app.version,
+                         description=app.description, routes=app.routes)
+    hidden_prefixes = ("/admin",)
+    hidden_exact = {"/", "/health"}
+    schema["paths"] = {
+        p: v for p, v in schema.get("paths", {}).items()
+        if not p.startswith(hidden_prefixes) and p not in hidden_exact
+    }
+    app.openapi_schema = schema
+    return schema
+
+
 app = FastAPI(
     title="openai-voice-server",
     lifespan=_lifespan,
@@ -710,6 +731,9 @@ app = FastAPI(
         "（OpenAPI 不描述 WebSocket，故独立文档页；也可在仓库 xiaoxiong-app/contracts/README.md 查看）。"
     ),
 )
+
+# 自定义 OpenAPI：过滤 /admin/* 等内部端点（赋值方式，兼容不接受 openapi= 构造参数的 FastAPI 版本）
+app.openapi = _public_openapi
 
 # 管理面板「测其它实例」是浏览器直连对方代理，对方必须允许跨域，否则 ASR/TTS
 # 会在浏览器侧被 CORS 拦掉（表现为 Failed to fetch）。
@@ -746,6 +770,91 @@ def _rate_limit_check(key_id: int) -> tuple[bool, int, int]:
     period_sec = policy.get("period_seconds", 60)
     ok, retry = rate_store.check_and_consume(key_id, "requests", limit, period_seconds=period_sec)
     return ok, retry, limit
+
+
+def _embed_token_limit_check(key_id: int | None, body: dict) -> JSONResponse | None:
+    """向量嵌入 token 限流：按 input 预估 token 数预扣，超限 → 429。
+
+    - 仅带有效 API Key 时才有 key_id（鉴权关闭时 middleware 不写 → key_id 为 None → 放行，
+      与 requests 限流行为一致）。
+    - 上游真实 usage 拿不到（请求尚未发出），这里按字符估算 token 预扣，口径与
+      _estimate_tokens_chars 一致（统计估算，不做精确计费）。
+    """
+    if key_id is None:
+        return None
+    if config_value("RATE_LIMIT_ENABLED", "off").strip().lower() not in ENABLED_VALUES:
+        return None
+    policy = voice_db.rate_binding_effective(key_id)
+    if not policy:
+        return None
+    limit = int(policy.get("embed_tokens_per_min") or 0)
+    if limit <= 0:
+        return None  # 0 = 不限制该维度
+    inp = body.get("input")
+    if isinstance(inp, list):
+        text = "\n".join(str(x) for x in inp if isinstance(x, (str, int, float)))
+    elif isinstance(inp, (str, int, float)):
+        text = str(inp)
+    else:
+        text = ""
+    cost = max(1, _estimate_tokens_chars(text))
+    period_sec = policy.get("period_seconds", 60)
+    ok, retry = rate_store.check_and_consume(key_id, "embed_tokens", limit, cost=cost,
+                                             period_seconds=period_sec)
+    if ok:
+        return None
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "向量 token 超限，请稍后重试",
+            "kind": "embed_tokens",
+            "limit": limit,
+            "cost": cost,
+            "reset_at": int(time.time()) + retry,
+        },
+        headers={"Retry-After": str(retry)},
+    )
+
+
+def _rerank_token_limit_check(key_id: int | None, body: dict) -> JSONResponse | None:
+    """重排 token 限流：按 query + documents 预估 token 数预扣，超限 → 429。
+
+    与 _embed_token_limit_check 同口径：仅带有效 key 时限流（鉴权关闭放行），
+    请求未发出前用字符估算 token；limit=rerank_tokens_per_min，kind=rerank_tokens。
+    """
+    if key_id is None:
+        return None
+    if config_value("RATE_LIMIT_ENABLED", "off").strip().lower() not in ENABLED_VALUES:
+        return None
+    policy = voice_db.rate_binding_effective(key_id)
+    if not policy:
+        return None
+    limit = int(policy.get("rerank_tokens_per_min") or 0)
+    if limit <= 0:
+        return None
+    parts = [body.get("query") or ""]
+    docs = body.get("documents") or []
+    if isinstance(docs, list):
+        parts.extend(str(d) for d in docs if isinstance(d, (str, int, float)))
+    elif isinstance(docs, (str, int, float)):
+        parts.append(str(docs))
+    cost = max(1, _estimate_tokens_chars("\n".join(str(p) for p in parts)))
+    period_sec = policy.get("period_seconds", 60)
+    ok, retry = rate_store.check_and_consume(key_id, "rerank_tokens", limit, cost=cost,
+                                             period_seconds=period_sec)
+    if ok:
+        return None
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": "重排 token 超限，请稍后重试",
+            "kind": "rerank_tokens",
+            "limit": limit,
+            "cost": cost,
+            "reset_at": int(time.time()) + retry,
+        },
+        headers={"Retry-After": str(retry)},
+    )
 
 
 def _rate_limit_response(key_id: int) -> JSONResponse | None:
@@ -1672,7 +1781,7 @@ async def voice_corrections_post(request: Request):
         correct_pinyin=calc_py(correct, body.get("correct_pinyin")),
         wrong=wrong,
         wrong_pinyin=calc_py(wrong, body.get("wrong_pinyin")),
-        source="uploaded",  # 客户端上传（来源类型，9529 只有 source 表达来源）
+        source="uploaded",  # 客户端上传（来源类型，19529 只有 source 表达来源）
         device_id=device_id,
     )
     # 客户端上传默认不启用，等管理端审核通过后自动启用（approve 会置 enabled）
@@ -3093,30 +3202,79 @@ def embed_catalog() -> list[model_catalog.ModelInfo]:
     return list(models.values())
 
 
+def rerank_catalog() -> list[model_catalog.ModelInfo]:
+    """合成重排（rerank）模型目录：来自独立的 RERANK 上游池，type=RERANK。
+
+    与 LLM / EMBED 目录严格分离——只列真正配置为重排用途的模型。
+    供 /llm/v1/models 展示（对话校验仍只用 llm_catalog()）。
+    """
+    models: dict[tuple[str, str], model_catalog.ModelInfo] = {}
+
+    def add(e: dict):
+        m = (e.get("model") or "").strip()
+        if not m:
+            return
+        models.setdefault(
+            (m, model_catalog.ModelType.RERANK),
+            model_catalog.ModelInfo(
+                id=m,
+                owned_by=(e.get("vendor") or e.get("protocol") or "openai"),
+                provider=e.get("vendor") or "",
+                type=model_catalog.ModelType.RERANK,
+                is_default=(m == default_model_for_provider("RERANK", e.get("vendor") or "")),
+            ),
+        )
+
+    for e in upstream_pool.load_pool("RERANK"):
+        add(e)
+    # 内置引擎条目 base_url 为空（走本地 CrossEncoder），会被 load_pool 的"base_url 非空"
+    # 规则过滤掉；这里从原始配置补回，让 /llm/v1/models 能列出内置重排模型。
+    try:
+        raw = config_value("RERANK_UPSTREAM_POOL", "") or ""
+        arr = json.loads(raw) if raw else []
+        if isinstance(arr, list):
+            for e in arr:
+                if isinstance(e, dict) and (e.get("vendor") or "").lower() == "builtin":
+                    add(e)
+    except (ValueError, TypeError):
+        pass
+    return list(models.values())
+
+
 @app.get("/llm/v1/models")
 async def llm_models():
-    """模型列表：返回「所有分组的模型之和」，而不是只代理某一个上游。
+    """模型列表：返回「所有分组的模型之和」（LLM + EMBED + RERANK 并集）。
 
-    每个分组（按提供商）有自己固定的模型类型，把它们的模型并集返回给网关 / 用户，
-    这样客户端能在多个提供商之间看到全部可用模型。优先用配置里的模型名（入口 model
-    > 分组 model > 全局 LLM_UPSTREAM_MODEL）合成；如果都没配，则退回真实代理一个
-    上游的 /models（保留 Ollama 翻译），避免空列表。
+    各能力也可通过独立前缀接口获取自己的模型：
+    /embed/v1/models、/rerank/v1/models。
     """
-    if not llm_enabled():
-        return llm_disabled_response()
-    entries = upstream_pool.load_pool("LLM")
-    if not entries:
-        return llm_disabled_response()
+    return await _models_for_type("")
 
-    models = llm_catalog()
-    # 向量（embeddings）模型来自独立的 EMBED 池，单独标 type=EMBED 并入列表，
-    # 让 /llm/v1/models 同时展示对话与向量两类可用模型。
-    models += embed_catalog()
+
+async def _models_for_type(want: str):
+    """模型列表核心逻辑：want 为空返回全部并集；否则只返回该类型。"""
+    models = []
+    if not want or want == "LLM":
+        models += llm_catalog()
+    if not want or want == "EMBED":
+        # 向量（embeddings）模型来自独立的 EMBED 池，单独标 type=EMBED。
+        models += embed_catalog()
+    if not want or want == "RERANK":
+        models += rerank_catalog()
     if models:
         return {
             "object": "list",
             "data": [mi.to_openai() for mi in models],
         }
+
+    # 没有配置模型且未限定类型（或限定 LLM）时，退回真实代理一个上游的模型列表。
+    if want and want != "LLM":
+        return {"object": "list", "data": []}
+    if not llm_enabled():
+        return llm_disabled_response()
+    entries = upstream_pool.load_pool("LLM")
+    if not entries:
+        return llm_disabled_response()
 
     # 没有任何配置模型时，退回真实代理一个上游的模型列表。
     entry = upstream_pool.pick("LLM")
@@ -3149,9 +3307,9 @@ def _is_self_proxy_base(url: str) -> bool:
     if host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
         return False
     try:
-        own_port = int(config_value("VOICE_PORT", "9529").strip())
+        own_port = int(config_value("VOICE_PORT", "19529").strip())
     except (ValueError, TypeError):
-        own_port = 9529
+        own_port = 19529
     return (p.port or 80) == own_port
 
 
@@ -3539,7 +3697,7 @@ def _embed_cap() -> str:
     return "LLM"
 
 
-@app.post("/llm/v1/embeddings")
+@app.post("/embed/v1/embeddings")
 async def embeddings(request: Request):
     """OpenAI 兼容嵌入（向量）接口：入站固定 OpenAI /v1/embeddings 格式，出站按上游
     线协议翻译。Embeddings 只支持非流式；Anthropic / OpenAI Responses 线协议没有向量
@@ -3555,6 +3713,12 @@ async def embeddings(request: Request):
         return error_response(400, "请求体不是合法 JSON")
     if not isinstance(body, dict):
         return error_response(400, "请求体必须是 JSON 对象")
+
+    # 向量 token 限流（按 key 策略的 embed_tokens_per_min，预扣估算 token）。
+    # 鉴权关闭时无 key_id → 放行；与 middleware 的 requests 限流独立叠加。
+    limited = _embed_token_limit_check(getattr(request.state, "api_key_id", None), body)
+    if limited is not None:
+        return limited
 
     req_model = body.get("model") if isinstance(body.get("model"), str) else None
     req_vendor = body.get("vendor") if isinstance(body.get("vendor"), str) else None
@@ -3689,13 +3853,223 @@ async def embeddings(request: Request):
     )
 
 
+@app.get("/embed/v1/providers")
+async def embed_providers():
+    """向量提供商列表（独立前缀，复用 type=EMBED 口径）。"""
+    return await _providers_for_cap("EMBED")
+
+
+@app.get("/embed/v1/models")
+async def embed_models():
+    """向量模型列表（独立前缀，复用 type=EMBED 口径）。"""
+    return await _models_for_type("EMBED")
+
+
+@app.post("/rerank")
+async def rerank_tei(request: Request):
+    """TEI 兼容重排端点（与本机 9527 tei-reranker 协议一致）：
+
+    POST /rerank  {query, texts:[...]}  ->  [{index, score}]（按 score 降序）。
+    路径遵循 TEI 官方规范（HuggingFace text-embeddings-inference 固定为 /rerank），
+    不套本项目的 /v1/{资源} 格式，以免破坏 TEI 原生兼容。
+    供 java-product 的 RerankModelPort(Style=TEI) 直连：配 apiDomain=http://host:19529、
+    protocol=TEI，框架自动补 /rerank，行为与连 9527 完全相同。走内置 CrossEncoder。
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        return error_response(400, "请求体不是合法 JSON")
+    if not isinstance(body, dict):
+        return error_response(400, "请求体必须是 JSON 对象")
+    query = body.get("query")
+    texts = body.get("texts")
+    if not isinstance(query, str) or not query.strip():
+        return error_response(400, "query 不能为空")
+    if not isinstance(texts, list) or not texts:
+        return error_response(400, "texts 必须是非空数组")
+
+    # 限流（用 texts 作为计量文本，与 /v1/rerank 同 kind）
+    limited = _rerank_token_limit_check(
+        getattr(request.state, "api_key_id", None),
+        {"query": query, "documents": texts},
+    )
+    if limited is not None:
+        return limited
+
+    try:
+        import builtin_rerank
+        scores = await asyncio.to_thread(builtin_rerank.score, query, texts, int(body.get("batch_size") or 32))
+    except Exception as exc:  # noqa: BLE001
+        return error_response(503, f"内置重排不可用: {exc}")
+    # TEI 返回按 score 降序的 [{index, score}]，与 9527 输出一致
+    results = [{"index": i, "score": round(float(s), 6)} for i, s in enumerate(scores)]
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return Response(
+        content=json.dumps(results, ensure_ascii=False).encode("utf-8"),
+        status_code=200, media_type="application/json",
+    )
+
+
+@app.post("/rerank/v1/rerank")
+async def rerank(request: Request):
+    """重排（rerank）接口：入站 Cohere 风格 {query, documents, top_n, return_documents}，
+    出站按上游线协议翻译，响应归一化为 {results:[{index, relevance_score, document?}], usage}。
+
+    内置引擎（protocol=builtin）走本地 CrossEncoder；否则上游来自独立的 RERANK 池。
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        return error_response(400, "请求体不是合法 JSON")
+    if not isinstance(body, dict):
+        return error_response(400, "请求体必须是 JSON 对象")
+
+    # 重排 token 限流（与 embed 独立，kind=rerank_tokens）
+    limited = _rerank_token_limit_check(getattr(request.state, "api_key_id", None), body)
+    if limited is not None:
+        return limited
+
+    query = body.get("query")
+    documents = body.get("documents")
+    if not isinstance(query, str) or not query.strip():
+        return error_response(400, "query 不能为空")
+    if not isinstance(documents, list) or not documents:
+        return error_response(400, "documents 必须是非空数组")
+
+    req_model = body.get("model") if isinstance(body.get("model"), str) else None
+    req_vendor = body.get("vendor") if isinstance(body.get("vendor"), str) else None
+    req_protocol = body.get("protocol") if isinstance(body.get("protocol"), str) else None
+    req_base_url = body.get("base_url") if isinstance(body.get("base_url"), str) else None
+
+    # ── 内置引擎：protocol=builtin 走本地 CrossEncoder，不依赖 LLM/RERANK 池 ──
+    use_builtin = (req_protocol or "").strip().lower() == "builtin"
+    if not use_builtin and req_vendor:
+        use_builtin = req_vendor.strip().lower() == "builtin"
+    if not use_builtin and not req_protocol and not req_base_url:
+        # 未指定任何上游且池里第一条是 builtin → 用内置
+        builtin_entries = [e for e in upstream_pool.load_pool("RERANK")
+                           if (e.get("protocol") or "").lower() == "builtin" or (e.get("vendor") or "").lower() == "builtin"]
+        use_builtin = bool(builtin_entries)
+    if use_builtin:
+        try:
+            import builtin_rerank
+            scores = await asyncio.to_thread(
+                builtin_rerank.score, query, documents, int(body.get("batch_size") or 32))
+            data = builtin_rerank.to_cohere(
+                query, documents, scores, top_n=body.get("top_n"),
+                return_documents=bool(body.get("return_documents")), model=req_model)
+        except Exception as exc:  # noqa: BLE001
+            return error_response(503, f"内置重排不可用: {exc}")
+        return Response(
+            content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+            status_code=200, media_type="application/json",
+        )
+
+    if not llm_enabled():
+        return llm_disabled_response()
+    direct_upstream = body.get("direct_upstream") is True and bool(req_base_url)
+    if req_base_url and not direct_upstream and "/rerank" not in req_base_url:
+        req_base_url = req_base_url.rstrip("/") + "/v1/rerank"
+    if req_base_url and _is_self_proxy_base(req_base_url):
+        req_base_url = None
+
+    cap = "RERANK"
+    if req_base_url:
+        entry = {
+            "base_url": req_base_url,
+            "api_key": (body.get("api_key") or "") if isinstance(body.get("api_key"), str) else "",
+            "protocol": req_protocol or "rerank",
+            "model": req_model or "",
+            "vendor": "",
+        }
+    else:
+        entries = upstream_pool.load_pool(cap)
+        if not entries:
+            return error_response(503, "未配置重排（RERANK）上游：请在配置页 Rerank tab 添加上游")
+        if req_vendor:
+            entry = upstream_pool.pick_by_vendor(cap, req_vendor)
+        elif req_model:
+            matched = [e for e in entries if e.get("model") == req_model]
+            entry = matched[0] if matched else None
+        else:
+            default_vendor = (config_value(f"{cap}_UPSTREAM_VENDOR", "") or "").strip().lower()
+            entry = (upstream_pool.pick_by_vendor(cap, default_vendor)
+                     if default_vendor else upstream_pool.pick_by_model(cap, None))
+        if entry is None:
+            return error_response(400, "未找到匹配的重排上游或模型")
+
+    effective_model = req_model or entry.get("model") or default_model_for_provider(cap, entry.get("vendor") or "") or ""
+    wire = req_protocol or entry.get("protocol") or "rerank"
+    try:
+        req, resp_transform = llm_protocols.prepare_rerank(
+            wire, entry["base_url"], entry.get("api_key") or "", effective_model, body)
+    except ValueError as exc:
+        return error_response(501, str(exc))
+    req.headers.update(extra_upstream_headers(request))
+    req.headers["Accept-Encoding"] = "identity"
+
+    try:
+        response = await _shared_http_client().post(
+            req.url, headers=req.headers, json=req.payload,
+            timeout=_upstream_timeout(upstream_timeout()),
+        )
+    except httpx.PoolTimeout as exc:
+        return error_response(503, f"上游连接池繁忙：{exc}")
+    except httpx.HTTPError as exc:
+        upstream_pool.mark_failure(cap, entry)
+        return error_response(502, f"上游重排请求失败: {exc}")
+    if response.status_code >= 400:
+        upstream_pool.mark_failure(cap, entry, response.status_code)
+        return error_response(502, f"上游重排失败（{response.status_code}）: {upstream_error(response)}")
+    upstream_pool.mark_success(cap, entry)
+    try:
+        data = resp_transform(response.json())
+    except ValueError:
+        return Response(content=response.content, status_code=response.status_code,
+                        media_type=response.headers.get("content-type"))
+    return Response(
+        content=json.dumps(data, ensure_ascii=False).encode("utf-8"),
+        status_code=200, media_type="application/json",
+    )
+
+
 @app.get("/llm/v1/providers")
 async def list_llm_providers():
-    """对外公开：列出当前已配置的 LLM 提供商（vendor），供测试界面下拉框与第三方拉取。
+    """对外公开：列出 LLM 提供商（vendor/protocol/model/host，脱敏无密钥）。
 
-    每个条目含 vendor / protocol / model / host（脱敏后的上游主机），不含任何密钥。
+    各能力也可通过独立前缀接口获取自己的提供商：
+    /embed/v1/providers、/rerank/v1/providers。
     """
-    entries = upstream_pool.load_pool("LLM")
+    return await _providers_for_cap("LLM")
+
+
+async def _providers_for_cap(cap: str):
+    """提供商列表核心逻辑：按能力 cap 过滤。"""
+    entries = list(upstream_pool.load_pool(cap))
+    # 内置引擎条目 base_url 为空，会被 load_pool 的"base_url 非空"规则过滤；
+    # 与 rerank_catalog 同口径，从原始池配置补回（内置不依赖外部地址）。
+    if cap == "RERANK":
+        try:
+            import json as _json
+            raw = config_value("RERANK_UPSTREAM_POOL", "") or ""
+            arr = _json.loads(raw) if raw else []
+            if isinstance(arr, list):
+                known = {(e.get("vendor"), e.get("model")) for e in entries}
+                for e in arr:
+                    if (isinstance(e, dict) and (e.get("vendor") or "").lower() == "builtin"
+                            and (e.get("vendor"), e.get("model")) not in known):
+                        entries.append({"vendor": e.get("vendor"), "protocol": e.get("protocol") or "builtin",
+                                        "model": e.get("model") or "", "base_url": ""})
+        except (ValueError, TypeError):
+            pass
+    # 面板固定预置两行（与 admin/panel.html 的 FIXED_VENDORS 一致）：
+    #   EMBED = ollama + 自定义；RERANK = builtin + dashscope。
+    # 没配到池里的占位行也列出，保证 API 与面板看到的提供商数量一致。
+    fixed = {"EMBED": [("custom", "openai_chat_completions")],
+             "RERANK": [("dashscope", "dashscope")]}.get(cap, [])
+    for vendor, protocol in fixed:
+        if not any((e.get("vendor") or "").strip().lower() == vendor for e in entries):
+            entries.append({"vendor": vendor, "protocol": protocol, "model": "", "base_url": ""})
     out = []
     seen = set()
     for e in entries:
@@ -3714,8 +4088,21 @@ async def list_llm_providers():
         if key in seen:
             continue
         seen.add(key)
-        out.append({"vendor": vendor or "(未指定)", "protocol": protocol, "model": model, "host": host})
+        out.append({"vendor": vendor or "(未指定)", "protocol": protocol, "model": model,
+                    "host": host, "type": cap})
     return {"providers": out}
+
+
+@app.get("/rerank/v1/providers")
+async def rerank_providers():
+    """重排提供商列表（独立前缀，复用 type=RERANK 口径）。"""
+    return await _providers_for_cap("RERANK")
+
+
+@app.get("/rerank/v1/models")
+async def rerank_models():
+    """重排模型列表（独立前缀，复用 type=RERANK 口径）。"""
+    return await _models_for_type("RERANK")
 
 
 def _ws_doc_markdown() -> str:
@@ -3860,7 +4247,7 @@ def parse_args(argv=None):
         dest="host",
         help="监听地址，默认 0.0.0.0",
     )
-    parser.add_argument("--port", type=int, help="监听端口，默认 9529")
+    parser.add_argument("--port", type=int, help="监听端口，默认 19529")
     parser.add_argument(
         "--api-key",
         dest="api_key",
@@ -3980,7 +4367,7 @@ def main(argv=None) -> None:
 
     # 默认监听 0.0.0.0：网关可能和手机在同一局域网，换机器部署时不用改代码。
     host = config_value("VOICE_HOST", "0.0.0.0").strip() or "0.0.0.0"
-    port_text = config_value("VOICE_PORT", "9529").strip()
+    port_text = config_value("VOICE_PORT", "19529").strip()
     try:
         port = int(port_text)
     except ValueError as exc:
@@ -4064,7 +4451,7 @@ def main(argv=None) -> None:
             flush=True,
         )
 
-    # 管理面板：Web 控制台挂到同一 9529 端口，账号密码存 SQLite admin_users（多账号+角色）。
+    # 管理面板：Web 控制台挂到同一 19529 端口，账号密码存 SQLite admin_users（多账号+角色）。
     # 与语音 / LLM 接口同进程，但走 /admin 前缀且单独鉴权，不干扰推理接口。
     admin_panel.init_admin(_config_path, VOICE_HOME)
     # 确保内置管理员存在（存量 admin.conf/admin_credentials 迁移；新密码只打印一次）。

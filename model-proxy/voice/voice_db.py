@@ -10,7 +10,7 @@
     - 写操作走 write-through：落库同时更新缓存，读几乎零延迟；
     - 事件 / 审计只追加，不进热路径，无需缓存。
 
-为什么不放 Node 网关：管理面板挂在 Python 代理同一进程（9529），DB 也由它独占
+为什么不放 Node 网关：管理面板挂在 Python 代理同一进程（19529），DB 也由它独占
 读写最自然；远程库（Postgres）只做同步镜像，见 voice_sync.py。
 """
 
@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -124,6 +124,10 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         ["col:rate_policies:is_builtin:INTEGER NOT NULL DEFAULT 0"]),
     14: ("rate_policies 加 period 列（限流时间单位 minute/hour/day/week/month，默认 minute）",
         ["col:rate_policies:period:TEXT NOT NULL DEFAULT 'minute'"]),
+    15: ("rate_policies 加 embed_tokens_per_min 列（向量嵌入 token 限流维度，默认 0）",
+        ["col:rate_policies:embed_tokens_per_min:INTEGER NOT NULL DEFAULT 0"]),
+    16: ("rate_policies 加 rerank_tokens_per_min 列（重排 token 限流维度，默认 0）",
+        ["col:rate_policies:rerank_tokens_per_min:INTEGER NOT NULL DEFAULT 0"]),
 }
 
 
@@ -221,6 +225,8 @@ def ensure_schema() -> None:
             llm_tokens_per_min  INTEGER NOT NULL,
             asr_seconds_per_min INTEGER NOT NULL,
             tts_chars_per_min   INTEGER NOT NULL,
+            embed_tokens_per_min INTEGER NOT NULL DEFAULT 0,
+            rerank_tokens_per_min INTEGER NOT NULL DEFAULT 0,
             enabled             INTEGER NOT NULL DEFAULT 1,
             is_default          INTEGER NOT NULL DEFAULT 0,
             is_builtin          INTEGER NOT NULL DEFAULT 0,
@@ -355,6 +361,8 @@ def _migrate() -> None:
 
     row = c.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
     current = int(row["v"] or 0)
+    was_pre15 = current < 15  # 是否从 <v15 升级上来（用于回填新列默认值，仅一次）
+    was_pre16 = current < 16  # 是否从 <v16 升级上来（rerank_tokens_per_min 回填）
 
     # 历史行补录说明（老库升级时这些行已存在但没有 description）
     for version, (desc, _ddl) in SCHEMA_CHANGES.items():
@@ -380,6 +388,26 @@ def _migrate() -> None:
     _migrate_admin_users()
     # v11：播种默认限流策略（幂等，库里没有 is_default=1 的策略时建一条）。
     _seed_default_rate_policy()
+    # v15：从 <v15 升级上来时，给已存在的内置策略回填新列 embed_tokens_per_min 的默认值。
+    # 新播种的策略已在 _seed_default_rate_policy 里带默认值；这里只补老库那条（补列后默认 0）。
+    # 只在升级那一次回填，之后用户手动改成 0（表示不限制）不会被覆盖。
+    if was_pre15 and _has_column("rate_policies", "embed_tokens_per_min"):
+        try:
+            default_embed = int(get_config("RATE_LIMIT_DEFAULT_EMBED_TOKENS", "") or 50000)
+        except (ValueError, TypeError):
+            default_embed = 50000
+        c.execute("UPDATE rate_policies SET embed_tokens_per_min=? "
+                  "WHERE is_builtin=1 AND embed_tokens_per_min=0", (default_embed,))
+        c.commit()
+    # v16：从 <v16 升级上来时，给内置策略回填新列 rerank_tokens_per_min 的默认值。
+    if was_pre16 and _has_column("rate_policies", "rerank_tokens_per_min"):
+        try:
+            default_rerank = int(get_config("RATE_LIMIT_DEFAULT_RERANK_TOKENS", "") or 50000)
+        except (ValueError, TypeError):
+            default_rerank = 50000
+        c.execute("UPDATE rate_policies SET rerank_tokens_per_min=? "
+                  "WHERE is_builtin=1 AND rerank_tokens_per_min=0", (default_rerank,))
+        c.commit()
     # v12：删除废弃的 admin_api_keys.rate_limit_enabled 列（SQLite 3.35+ DROP COLUMN）。
     # 不支持时忽略——该列留着物理存在但代码不再读写，无害。
     try:
@@ -429,6 +457,8 @@ def _seed_default_rate_policy() -> None:
     llm = _int_cfg("RATE_LIMIT_DEFAULT_LLM_TOKENS", 20000)
     asr = _int_cfg("RATE_LIMIT_DEFAULT_ASR_SECONDS", 300)
     tts = _int_cfg("RATE_LIMIT_DEFAULT_TTS_CHARS", 50000)
+    embed = _int_cfg("RATE_LIMIT_DEFAULT_EMBED_TOKENS", 50000)
+    rerank = _int_cfg("RATE_LIMIT_DEFAULT_RERANK_TOKENS", 50000)
     now = int(time.time())
     with _lock:
         c = _conn_get()
@@ -438,9 +468,10 @@ def _seed_default_rate_policy() -> None:
         c.execute(
             "INSERT OR IGNORE INTO rate_policies"
             "(name, description, req_per_min, llm_tokens_per_min, asr_seconds_per_min, "
-            "tts_chars_per_min, enabled, is_default, is_builtin, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,1,1,1,?,?)",
-            ("默认策略", "系统内置，不可删除或停用", req, llm, asr, tts, now, now),
+            "tts_chars_per_min, embed_tokens_per_min, rerank_tokens_per_min, "
+            "enabled, is_default, is_builtin, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,1,1,1,?,?)",
+            ("默认策略", "系统内置，不可删除或停用", req, llm, asr, tts, embed, rerank, now, now),
         )
         c.commit()
 
@@ -878,7 +909,9 @@ def api_keys_has_enabled() -> bool:
 
 # ── 限流策略（v14，仅按 key，周期可配）──────────────────────────────
 _RATE_POLICY_FIELDS = ("name", "description", "req_per_min", "llm_tokens_per_min",
-                       "asr_seconds_per_min", "tts_chars_per_min", "enabled", "is_default", "period")
+                       "asr_seconds_per_min", "tts_chars_per_min", "embed_tokens_per_min",
+                       "rerank_tokens_per_min",
+                       "enabled", "is_default", "period")
 # 时间单位 → 秒数（固定秒数近似，月=30天）
 RATE_PERIODS: dict[str, int] = {
     "minute": 60, "hour": 3600, "day": 86400, "week": 604800, "month": 2592000,
@@ -904,7 +937,8 @@ def rate_policies_list() -> list[dict[str, Any]]:
 
 
 def rate_policy_add(name: str, req: int, llm: int, asr: int, tts: int,
-                    description: str = "", period: str = "minute") -> dict[str, Any]:
+                    description: str = "", period: str = "minute",
+                    embed: int = 0, rerank: int = 0) -> dict[str, Any]:
     name = (name or "").strip()
     if not name:
         raise ValueError("策略名不能为空")
@@ -918,9 +952,10 @@ def rate_policy_add(name: str, req: int, llm: int, asr: int, tts: int,
             raise ValueError("策略名已存在")
         cur = c.execute(
             "INSERT INTO rate_policies(name, description, req_per_min, llm_tokens_per_min, "
-            "asr_seconds_per_min, tts_chars_per_min, enabled, is_default, period, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,1,0,?,?,?)",
-            (name, description, req, llm, asr, tts, period, now, now),
+            "asr_seconds_per_min, tts_chars_per_min, embed_tokens_per_min, rerank_tokens_per_min, "
+            "enabled, is_default, period, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,1,0,?,?,?)",
+            (name, description, req, llm, asr, tts, embed, rerank, period, now, now),
         )
         c.commit()
         return rate_policy_get(cur.lastrowid)
@@ -934,7 +969,8 @@ def rate_policy_update(policy_id: int, **fields) -> dict[str, Any]:
     if old["is_builtin"] and fields.get("enabled") == 0:
         raise ValueError("内置策略不可停用")
     patch = {k: v for k, v in fields.items() if k in ("name", "description", "req_per_min",
-             "llm_tokens_per_min", "asr_seconds_per_min", "tts_chars_per_min", "enabled", "period")}
+             "llm_tokens_per_min", "asr_seconds_per_min", "tts_chars_per_min",
+             "embed_tokens_per_min", "rerank_tokens_per_min", "enabled", "period")}
     if "period" in patch:
         p = (patch["period"] or "minute").strip().lower()
         if p not in RATE_PERIODS:
@@ -1012,12 +1048,13 @@ def rate_binding_effective(key_id: int) -> dict[str, Any] | None:
     多策略 period 可能不同：按「每秒速率」归一化后取最小速率，再换算到所选 period
     （取各策略中最短的 period，即最频繁检查的周期）对应的阈值。
     返回 {req_per_min, llm_tokens_per_min, asr_seconds_per_min, tts_chars_per_min,
-          period, period_seconds, policy_name}。
+          embed_tokens_per_min, rerank_tokens_per_min, period, period_seconds, policy_name}。
     """
-    FIELDS = ("req_per_min", "llm_tokens_per_min", "asr_seconds_per_min", "tts_chars_per_min")
+    FIELDS = ("req_per_min", "llm_tokens_per_min", "asr_seconds_per_min",
+              "tts_chars_per_min", "embed_tokens_per_min", "rerank_tokens_per_min")
     rows = _conn_get().execute(
         "SELECT p.req_per_min, p.llm_tokens_per_min, p.asr_seconds_per_min, "
-        "p.tts_chars_per_min, p.name, p.period "
+        "p.tts_chars_per_min, p.embed_tokens_per_min, p.rerank_tokens_per_min, p.name, p.period "
         "FROM rate_policy_bindings b JOIN rate_policies p ON p.id=b.policy_id "
         "WHERE b.key_id=? AND p.enabled=1", (key_id,)
     ).fetchall()
@@ -1025,7 +1062,7 @@ def rate_binding_effective(key_id: int) -> dict[str, Any] | None:
         # 没绑策略 → 用内置的兜底策略（唯一、不可删禁）
         row = _conn_get().execute(
             "SELECT req_per_min, llm_tokens_per_min, asr_seconds_per_min, "
-            "tts_chars_per_min, name, period FROM rate_policies "
+            "tts_chars_per_min, embed_tokens_per_min, rerank_tokens_per_min, name, period FROM rate_policies "
             "WHERE is_builtin=1 AND enabled=1 LIMIT 1"
         ).fetchone()
         if not row:

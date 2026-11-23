@@ -13,7 +13,7 @@ ASR 固定内置 SenseVoice（无上游概念，ASR 非 WAV 直接 400）。
     python tests/test_routing_httpx.py
 
 测试默认跑在 TEST_PORT（默认 9511，可用环境变量覆盖）上，不会碰本机正在运行的
-9529 服务。结束后输出 [PASS]/[FAIL] 并以退出码 0/1 表示成败。
+19529 服务。结束后输出 [PASS]/[FAIL] 并以退出码 0/1 表示成败。
 """
 
 from __future__ import annotations

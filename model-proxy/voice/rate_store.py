@@ -13,8 +13,8 @@ import threading
 import time
 from typing import Any
 
-# 4 个独立维度（每个 key 各自计数）
-KINDS = ("requests", "llm_tokens", "asr_seconds", "tts_chars")
+# 6 个独立维度（每个 key 各自计数）
+KINDS = ("requests", "llm_tokens", "asr_seconds", "tts_chars", "embed_tokens", "rerank_tokens")
 
 _backend: "_BaseBackend | None" = None
 _backend_name = "memory"

@@ -6,7 +6,7 @@
 
 前置：
   - Google Chrome 已安装（/Applications/Google Chrome.app）
-  - 9529 服务已启动且加载了当前代码（改了 admin_panel.py 必须 restart！）
+  - 19529 服务已启动且加载了当前代码（改了 admin_panel.py 必须 restart！）
   - node 26+（内置 WebSocket）
 
 运行：node tests/test_admin_ui.mjs
@@ -16,7 +16,7 @@ import {readFileSync} from 'node:fs';
 import {newTab, closeTab, connect, makeClient, evaluate, sleep} from './cdp_helper.mjs';
 
 const PORT = 9224;
-const ADMIN = 'http://127.0.0.1:9529/admin';
+const ADMIN = 'http://127.0.0.1:19529/admin';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const CONF = process.env.VOICE_HOME ? `${process.env.VOICE_HOME}/voice.conf` : `${process.env.HOME}/.app-product/voice/voice.conf`;
 

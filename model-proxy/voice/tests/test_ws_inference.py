@@ -6,7 +6,7 @@ import os
 
 import websockets
 
-URL = os.environ.get("WS_URL", "ws://127.0.0.1:9529/voice/ws/inference")
+URL = os.environ.get("WS_URL", "ws://127.0.0.1:19529/voice/ws/inference")
 TIMEOUT = 8.0
 
 

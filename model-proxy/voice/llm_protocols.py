@@ -42,6 +42,7 @@ WIRE_PROTOCOLS = {
     "openai_responses",
     "anthropic_messages",
     "gemini",
+    "rerank",
 }
 
 # 旧协议名 / 线协议名 -> 线协议。未知协议回退到 openai_chat_completions（保证不崩）。
@@ -134,6 +135,18 @@ def _openai_chat_path(base: str) -> str:
     if base.endswith("/v1"):
         return "/chat/completions"
     return "/v1/chat/completions"
+
+
+def _openai_embeddings_path(base: str) -> str:
+    """OpenAI embeddings 路径后缀；兼容 base 已带 / 或未带 /v1。
+
+    与 _openai_chat_path 同口径：base 已带 /v1 时只补 /embeddings，避免拼出
+    /v1/v1/embeddings（ollama 默认地址改为 /v1 后必须兼容）。
+    """
+    base = base.rstrip("/")
+    if base.endswith("/v1"):
+        return "/embeddings"
+    return "/v1/embeddings"
 
 
 def _openai_chunk(model: str, delta: dict, finish: str | None = None) -> bytes:
@@ -959,6 +972,98 @@ def prepare_embeddings(
     if wire == "gemini":
         return _build_gemini_embeddings(base, api_key, model_override or body.get("model") or "", body), gemini_embed_to_openai
     # 其余 OpenAI 兼容（含 dashscope / deepseek / openai / ollama 的 /v1/embeddings）
-    path = "/compatible-mode/v1/embeddings" if vendor == "dashscope" else "/v1/embeddings"
+    # base 已带 /v1（如 ollama 默认 http://127.0.0.1:11434/v1）时只补 /embeddings，
+    # 避免拼成 /v1/v1/embeddings；dashscope 走它固定的 /compatible-mode/v1 变体。
+    path = "/compatible-mode/v1/embeddings" if vendor == "dashscope" else _openai_embeddings_path(base)
     req = _build_openai_embeddings(base, api_key, model_override, body, path)
     return req, _identity
+
+
+# ── 重排（rerank）请求构建与响应翻译 ───────────────────────────────────
+# 入站固定为 Cohere 风格：POST /v1/rerank
+#   {model, query, documents:[...], top_n, return_documents}
+# 响应 {results:[{index, relevance_score, document?}], model, usage:{...}}。
+# 线协议 rerank 表示"通用 Cohere 兼容"；base 已带 /v1 时只补 /rerank，
+# 否则补 /v1/rerank（与 embeddings 路径拼接同口径）。
+SUPPORTED_RERANK_WIRES = {"rerank", "openai_chat_completions"}
+
+
+def _openai_rerank_path(base: str) -> str:
+    """重排路径后缀；兼容 base 已带 /v1 或未带（与 _openai_embeddings_path 同口径）。"""
+    base = base.rstrip("/")
+    if base.endswith("/v1"):
+        return "/rerank"
+    return "/v1/rerank"
+
+
+def _rerank_body(model: str, body: dict) -> dict:
+    """归一出入站请求体：保留 Cohere 风格字段，剥离本项目的控制字段。"""
+    payload = {k: v for k, v in body.items()
+               if k not in ("vendor", "protocol", "base_url", "api_key", "direct_upstream", "extra_body")}
+    if model:
+        payload["model"] = model
+    return payload
+
+
+def rerank_to_cohere(obj: dict) -> dict:
+    """把厂商重排响应归一化为入站 Cohere 风格。
+
+    兼容：Cohere `{results:[{index,relevance_score}]}`、TEI `[{index,score}]`、
+    DashScope `{output:{results:[...]}}`、结果里 `score`/`relevance` 字段名。
+    """
+    if isinstance(obj, list):
+        results_raw = obj
+    elif isinstance(obj, dict):
+        results_raw = obj.get("results")
+        if results_raw is None and isinstance(obj.get("output"), dict):
+            results_raw = obj["output"].get("results")
+    else:
+        results_raw = None
+    results = []
+    for item in (results_raw or []):
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("index")
+        score = item.get("relevance_score", item.get("score", item.get("relevance")))
+        if idx is None:
+            continue
+        d = {"index": int(idx), "relevance_score": float(score) if score is not None else 0.0}
+        doc = item.get("document")
+        if isinstance(doc, dict):
+            doc = doc.get("text")
+        if doc is not None:
+            d["document"] = doc
+        results.append(d)
+    results.sort(key=lambda x: x["relevance_score"], reverse=True)
+    model = obj.get("model") if isinstance(obj, dict) else ""
+    usage = (obj.get("usage") or obj.get("meta", {}).get("billed_units")
+             if isinstance(obj, dict) else None) or {}
+    out = {"results": results}
+    if model:
+        out["model"] = model
+    out["usage"] = usage
+    return out
+
+
+def prepare_rerank(
+    protocol: str, base: str, api_key: str, model: str, body: dict,
+) -> tuple[UpstreamRequest, callable]:
+    """构建重排（rerank）上游请求：线协议只由 protocol 决定，入站固定 Cohere 风格。
+
+    - rerank / openai_chat_completions：通用 Cohere 兼容，POST base + /v1/rerank。
+    - dashscope：阿里云百炼 qwen3-rerank 的 OpenAI 兼容端点 /compatible-api/v1/reranks（扁平字段）。
+    - 其它线协议（anthropic/gemini/responses/azure）不支持 rerank，由路由层 501。
+    """
+    wire = normalize_protocol(protocol)
+    if wire not in SUPPORTED_RERANK_WIRES:
+        raise ValueError(f"线协议 {wire} 不支持 rerank")
+    vendor = protocol_vendor(protocol)
+    if vendor == "dashscope":
+        # 百炼 qwen3-rerank OpenAI 兼容端点：路径固定，base 为 workspace 级 host
+        path = "/compatible-api/v1/reranks"
+        url = base.rstrip("/") + path
+    else:
+        url = base.rstrip("/") + _openai_rerank_path(base)
+    payload = _rerank_body(model, body)
+    headers = {"Content-Type": "application/json", **_bearer(api_key), "Accept-Encoding": "identity"}
+    return UpstreamRequest(url, headers, payload), rerank_to_cohere

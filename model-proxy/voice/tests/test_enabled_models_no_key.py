@@ -7,7 +7,7 @@
     另有几处会让勾选丢失：两个槽的写入带条件、只发 cands.filter(sel) 漏项、
     默认模型写空串导致 config_kv 与启用表不一致。
 
-运行（无需起 9529 服务，用临时 SQLite）：
+运行（无需起 19529 服务，用临时 SQLite）：
     cd model-proxy/voice
     .venv/bin/python tests/test_enabled_models_no_key.py
 

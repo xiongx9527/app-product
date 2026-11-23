@@ -389,8 +389,8 @@ if ($ProxyOnly) {
 Write-Host ""
 Write-Host "网关（xiaoxiong-app/gateway/.env）对应配置："
 Write-Host "  ASR_PROVIDER=whisper"
-Write-Host "  ASR_BASE_URL=http://127.0.0.1:9529"
+Write-Host "  ASR_BASE_URL=http://127.0.0.1:19529"
 Write-Host "  TTS_PROVIDER=edge"
-Write-Host "  TTS_BASE_URL=http://127.0.0.1:9529"
+Write-Host "  TTS_BASE_URL=http://127.0.0.1:19529"
 Write-Host '  TTS_PARAMS={"voice":"zh-CN-XiaoxiaoNeural"}'
 Write-Host "如果开启了 API Key，再补上 ASR_API_KEY / TTS_API_KEY（与配置文件一致）。"

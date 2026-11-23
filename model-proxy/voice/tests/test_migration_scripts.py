@@ -1,6 +1,6 @@
 """迁移脚本 013 / 014 回归测试（手工补迁移路径）。
 
-背景：9529 的 schema 迁移由 voice_db.ensure_schema() 自动执行；但 migrations/*.sql
+背景：19529 的 schema 迁移由 voice_db.ensure_schema() 自动执行；但 migrations/*.sql
 也支持手工 `sqlite3 db < script.sql` 补迁移。本测试验证这两个脚本在 v12 老库上
 能正确迁移、且重复执行幂等（数据不乱）。
 

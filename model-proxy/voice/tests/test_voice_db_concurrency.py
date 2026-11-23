@@ -4,7 +4,7 @@
     voice_db._conn_get() 原先返回模块级**单个** sqlite3.Connection（
     check_same_thread=False）。写方法都在 `with _lock:` 里，但大量读方法
     （session_valid / get_config / load_config / list_speech_models / stats ...）
-    没加锁。9529 的 admin 请求由 anyio 线程池并发回调 require_admin →
+    没加锁。19529 的 admin 请求由 anyio 线程池并发回调 require_admin →
     valid_session → session_valid，多个线程同时对同一 Connection 调用
     .execute() 会把 sqlite 内部状态搞乱：
       - 抛 sqlite3.InterfaceError: bad parameter or other API misuse → 500；
@@ -13,7 +13,7 @@
     修复：改为**每线程一条独立连接**（threading.local()），写仍由 _lock 串行化，
     跨连接靠 sqlite 文件锁 + commit 保证可见性。
 
-运行（无需起 9529 服务，每个用例用独立临时 SQLite）：
+运行（无需起 19529 服务，每个用例用独立临时 SQLite）：
     cd model-proxy/voice
     /Users/xiongxiao/.app-product/voice/venv/bin/python tests/test_voice_db_concurrency.py
     （只用标准库 + 本地 catalog.py，系统 python3 亦可）

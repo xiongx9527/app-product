@@ -268,6 +268,7 @@ xiaoxiong-app/uni_app/src/
   ~/.app-product/voice/venv/bin/python openai_voice_server.py
   ```
   启动前先确认 venv 依赖齐全（`~/.app-product/voice/venv/bin/python -c "import websockets, fastapi, uvicorn"`）。服务是本机 Mac 进程，要**常驻**（普通 `&` 后台启动会被 shell 回收，用能保持进程的方式如终端常驻 / 任务管理器）。起来后本机 `curl http://127.0.0.1:9529/` 应返回 `{"service":"app-product-local-ai",...}`，真机再确认 `adb reverse tcp:9529 tcp:9529` 隧道 + 设备侧 `adb shell 'curl http://127.0.0.1:9529/'` 拿到 200。卡死（CPU 空转、ASR 返回幻觉碎片但 health 仍 200）时 `kill -9` 掉旧进程再用 venv 重启。
+- **⚠️ venv 必须用 Python 3.12，别用 3.14**（2026-11-22 实锤）：本机 `python3` 默认指向 3.14.6，用它建的 venv **装不上 ASR/TTS 依赖**——`sherpa-onnx>=1.10` / `numpy 1.26` 在 3.14 无 wheel（pip 报 `from versions: none`）。本机装有 3.12/3.13/3.14，重建 venv 固定用 3.12：`/usr/local/bin/python3.12 -m venv ~/.app-product/voice/venv`，然后 `PIP_INDEX_URL=https://pypi.org/simple ./model-proxy/install-voice.sh`（默认 pip 源缺 uvicorn/numpy，必须指定官方源）。另注意 **kokoro-onnx 0.6.x 要求 onnxruntime>=1.20.1，但 Intel Mac(x86_64) 的 PyPI 上 onnxruntime 最高只有 1.19.2** → 完整安装会因依赖冲突失败；ASR(sherpa-onnx) + 在线 TTS(edge-tts) 不依赖 kokoro，可跳过 kokoro 单独装这两组让语音可用。
 - **SenseVoice 句尾重复词清洗**（2026-11-17）：真机「今天天几怎么样？」被 SenseVoice 输出成「今天天气怎么样？天气。」（主体收在问号处、尾部又多吐一次「天气」）——**项目没有「纠正词/热词/词表替换」功能，网关和前端都原样透传 ASR 文本**，这是模型自己的尾部重复，别去找不存在的替换逻辑。清洗放在 `asr/noiseFilter.ts` 的 `stripTrailingEcho()`：摘掉收尾标点后，若「最后一个句末标点之后的核心（≥2 字）」已在主体出现过，就删到该标点为止。在 `voiceSessionService.ts` 的 partial 下发与 `finalizeUtterance` 定稿（噪声过滤之前）两处调用，保证「我说」框与 LLM 看到同一份干净文本；诊断 FINAL 行附 `raw=` 记原文。尾巴是全新内容（「去北京？上海也行」）、单字尾巴、无句末标点都保留，避免误伤。
 
 ### 打包、真机调试与环境坑

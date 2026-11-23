@@ -26,6 +26,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 运行目录放在用户目录而不是仓库里：模型约 240MB，既避免污染 git 状态，
 # 也让同一个仓库的多个工作副本可以复用同一份虚拟环境和模型。
 VOICE_HOME="${VOICE_HOME:-$HOME/.app-product/voice}"
+# pip 源：默认阿里镜像（官方源下 torch/numpy 等大包常断连）；可用 PIP_INDEX 覆盖
+PIP_INDEX="${PIP_INDEX:-https://mirrors.aliyun.com/pypi/simple}"
 VENV_DIR="$VOICE_HOME/venv"
 MODEL_DIR="$VOICE_HOME/models/sensevoice"
 KOKORO_MODEL_DIR="$VOICE_HOME/models/kokoro"
@@ -178,7 +180,7 @@ else
   log "  创建虚拟环境：${VENV_DIR}"
   run "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
-run "$VENV_PY" -m pip install --upgrade pip
+run "$VENV_PY" -m pip install --upgrade pip -i "$PIP_INDEX"
 
 # STT 和 TTS 的依赖拆成两个文件：--stt-only / --tts-only 时只装需要的那一半。
 # --proxy-only 两个都不装，只保留基础依赖（FastAPI / uvicorn / httpx）。
@@ -193,7 +195,7 @@ if [ "${#REQS[@]}" -eq 0 ]; then
   REQS=("-r" "$REQ_DIR/requirements-base.txt")
 fi
 log "  安装依赖：$(printf '%s ' "${REQS[@]}")"
-run "$VENV_PY" -m pip install "${REQS[@]}"
+run "$VENV_PY" -m pip install -i "$PIP_INDEX" "${REQS[@]}"
 
 log "[3/5] 检查 ffmpeg（本地 TTS 把 edge-tts 的 MP3 转成 WAV 需要它）"
 if [ "$PROXY_ONLY" -eq 1 ]; then
@@ -372,8 +374,8 @@ fi
 log ""
 log "网关（xiaoxiong-app/gateway/.env）对应配置："
 log "  ASR_PROVIDER=whisper"
-log "  ASR_BASE_URL=http://127.0.0.1:9529"
+log "  ASR_BASE_URL=http://127.0.0.1:19529"
 log "  TTS_PROVIDER=edge"
-log "  TTS_BASE_URL=http://127.0.0.1:9529"
+log "  TTS_BASE_URL=http://127.0.0.1:19529"
 log "  TTS_PARAMS={\"voice\":\"zh-CN-XiaoxiaoNeural\"}"
 log "如果开启了 API Key，再补上 ASR_API_KEY / TTS_API_KEY（与配置文件一致）。"

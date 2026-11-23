@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 启动本地语音服务（STT: SenseVoice / TTS: edge-tts），默认监听 0.0.0.0:9529。
+# 启动本地语音服务（STT: SenseVoice / TTS: edge-tts），默认监听 0.0.0.0:19529。
 #
 # 默认监听 0.0.0.0 而不是 127.0.0.1：网关通常在本机，但手机 / 另一台机器调试时
 # 需要直接访问。默认不启用 API Key，需要时用 --require-api-key 或配置文件开启。
@@ -20,7 +20,7 @@
 # 环境变量:
 #   VOICE_HOME         运行目录，默认 ~/.app-product/voice
 #   VOICE_CONFIG       配置文件，默认 $VOICE_HOME/voice.conf
-#   VOICE_PORT         监听端口，默认 9529（也可用 --port）
+#   VOICE_PORT         监听端口，默认 19529（也可用 --port）
 #   VOICE_HOST         监听地址，默认 0.0.0.0（也可用 --host / --ip）
 #   VOICE_API_KEY      off / auto / 显式 Key（也可用 --api-key 等参数）
 #   VOICE_API_KEY_FILE API Key 文件，默认 $VOICE_HOME/api-key

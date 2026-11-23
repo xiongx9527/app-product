@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-  启动本地语音服务（STT: SenseVoice / TTS: edge-tts），默认监听 0.0.0.0:9529。
+  启动本地语音服务（STT: SenseVoice / TTS: edge-tts），默认监听 0.0.0.0:19529。
 
 .DESCRIPTION
   所有运行参数都可以写在配置文件里（默认 VoiceHome\voice.conf）；

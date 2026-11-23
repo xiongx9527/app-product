@@ -3,7 +3,7 @@
 #
 # 服务：
 #   ollama   Ollama 本地模型服务（默认 11434；LLM 以本机 Ollama 为上游时可选）
-#   voice    本地 AI 服务（LLM + STT + TTS，默认 9529）
+#   voice    本地 AI 服务（LLM + STT + TTS，默认 19529）
 #            LLM 为纯 OpenAI 兼容转发代理，上游见 voice.conf 的 LLM_UPSTREAM_BASE_URL
 #   gateway  Node 网关（默认 8787，热重载）
 #   uniapp   uni-app 前端开发服务

@@ -2,7 +2,7 @@
 
 本仓库的**本地 AI 服务与开发辅助脚本**（与 `xiaoxiong-app` 同级）。负责：
 
-- 本地 AI 服务（默认 `9529`）：STT / TTS / LLM 代理 / Embeddings，OpenAI 兼容接口 + 管理面板；
+- 本地 AI 服务（默认 `19529`）：STT / TTS / LLM 代理 / Embeddings，OpenAI 兼容接口 + 管理面板；
 - 本机开发服务的统一启停与状态查看（macOS / Linux，`services.sh`）；
 - Ollama 的安装与模型下载（LLM 的可选上游）。
 
@@ -46,7 +46,7 @@ model-proxy/
 | 名称 | 说明 |
 |---|---|
 | `ollama` | Ollama 本地模型服务（默认 11434；LLM 以本机 Ollama 为上游时可选） |
-| `voice` | 本地 AI 服务，STT / TTS / LLM 代理 / Embeddings（默认 9529） |
+| `voice` | 本地 AI 服务，STT / TTS / LLM 代理 / Embeddings（默认 19529） |
 | `gateway` | Node 网关（默认 8787，热重载） |
 | `uniapp` | uni-app 前端开发服务 |
 | `backend` | `ollama` + `voice` + `gateway`（不含前端） |
@@ -93,7 +93,7 @@ model-proxy/
 > `services.sh` 只有 bash 版（macOS / Linux）。Windows 用各服务自己的 `.cmd`，
 > 网关 / 前端用 `node xiaoxiong-app\scripts\dev-server.mjs ...` 分别管理。
 
-## 本地 AI 服务（9529）
+## 本地 AI 服务（19529）
 
 一个 FastAPI 进程同时提供四类能力：
 
@@ -120,7 +120,7 @@ model-proxy/
 
 ### 热词纠错词表
 
-把语音识别的同音错词纠正为正确词（如"若神父"→"洛神赋"）。9529 是词表权威源，从空表起步，
+把语音识别的同音错词纠正为正确词（如"若神父"→"洛神赋"）。19529 是词表权威源，从空表起步，
 由客户端 `learn_correction` 学习上传或管理面板添加；各客户端增量同步，本地先存、择机上传。
 存储层三库对等（SQLite / MySQL / PostgreSQL），可选 Redis 缓存。
 
@@ -204,7 +204,7 @@ python3 model-proxy/voice/init_catalog.py --dry-run --json
 
 | 配置 | 默认值 | 说明 |
 |---|---|---|
-| `VOICE_PORT` | `9529` | 监听端口 |
+| `VOICE_PORT` | `19529` | 监听端口 |
 | `VOICE_HOST` | `0.0.0.0` | 监听地址（也可用 `--host` / `--ip` 覆盖） |
 | `VOICE_DB_DIR` | `$VOICE_HOME` | `voice.db` 所在目录 |
 | `VOICE_LOG_FILE` | `$VOICE_HOME/voice.log` | 日志文件 |
@@ -225,7 +225,7 @@ Postgres 并回填），写入后写穿。两者都没配 / 连不上时**优雅
 
 ### 管理面板（/admin）
 
-浏览器打开 `http://<host>:9529/admin`。鉴权用**独立的 `admin.conf`**（与 `voice.conf`
+浏览器打开 `http://<host>:19529/admin`。鉴权用**独立的 `admin.conf`**（与 `voice.conf`
 互不干扰）：
 
 ```ini
@@ -307,7 +307,7 @@ ADMIN_PASSWORD=改成一个强密码
 
 ### 对外监听安全建议
 
-服务默认监听 `0.0.0.0:9529`（保留真机 `adb reverse`、iOS USB 隧道、局域网联调链路），
+服务默认监听 `0.0.0.0:19529`（保留真机 `adb reverse`、iOS USB 隧道、局域网联调链路），
 启动时若检测到对外监听且 IP 白名单或 API-Key 未配置，会打 `[安全警告]` 提示。生产/长期
 运行时二选一：
 
@@ -361,7 +361,7 @@ ADMIN_PASSWORD=改成一个强密码
 后台管理：
 
 ```bash
-./model-proxy/voice.sh start                 # 后台启动，默认 0.0.0.0:9529
+./model-proxy/voice.sh start                 # 后台启动，默认 0.0.0.0:19529
 ./model-proxy/voice.sh start --port 9531     # 附加参数原样传给 start-voice.sh
 ./model-proxy/voice.sh status                # 是否在运行、监听端口、最近一行日志
 ./model-proxy/voice.sh check                 # 只做启动前依赖检查
@@ -452,7 +452,7 @@ cd model-proxy/voice
 ```
 
 `run_all.py` 自动发现 `tests/test_*.py`，逐个独立进程运行并汇总；任一断言型用例
-失败则退出码非 0。`test_ws_inference.py` 是连真实 9529 服务的冒烟脚本，没有断言，
+失败则退出码非 0。`test_ws_inference.py` 是连真实 19529 服务的冒烟脚本，没有断言，
 所以额外扫描输出里的 `[异常]` / `Traceback`，避免假绿。
 
 ## Ollama（可选）
@@ -498,7 +498,7 @@ powershell -ExecutionPolicy Bypass -File .\model-proxy\pull-ollama-models.ps1 -D
 
 ### 接入方式
 
-推荐把 Ollama 当成 9529 的普通 LLM 上游：在管理面板的 LLM 池里新增一条
+推荐把 Ollama 当成 19529 的普通 LLM 上游：在管理面板的 LLM 池里新增一条
 `http://127.0.0.1:11434/v1`，协议选 `openai_chat_completions`，即可被网关经
 `/llm/v1` 使用，不需要改客户端配置。
 
@@ -509,17 +509,17 @@ powershell -ExecutionPolicy Bypass -File .\model-proxy\pull-ollama-models.ps1 -D
 配置时兜底）在 `xiaoxiong-app/gateway/.env`：
 
 ```dotenv
-# 可选：覆盖内置来源地址（默认就是 http://127.0.0.1:9529）
-VOICE_BUILTIN_URL=http://127.0.0.1:9529
+# 可选：覆盖内置来源地址（默认就是 http://127.0.0.1:19529）
+VOICE_BUILTIN_URL=http://127.0.0.1:19529
 # 可选：覆盖 DashScope 官方云端入口；留空时用代码里的官方默认地址
 VOICE_DASHSCOPE_URL=https://dashscope.aliyuncs.com
 ```
 
 - 内置来源：ASR / TTS 打 `/voice/v1/*`，LLM 打 `/llm/v1/*`，Embeddings 打
   `/llm/v1/embeddings`；
-- DashScope 来源：网关直接打百炼官方地址，不经过 9529；
-- 真机联调时设备上的 `127.0.0.1:9529` 是**电脑**的服务，需要
-  `adb reverse tcp:9529 tcp:9529`（见 `AGENTS.md`）。
+- DashScope 来源：网关直接打百炼官方地址，不经过 19529；
+- 真机联调时设备上的 `127.0.0.1:19529` 是**电脑**的服务，需要
+  `adb reverse tcp:19529 tcp:19529`（见 `AGENTS.md`）。
 
 服务默认监听 `0.0.0.0`；只在本机使用就把 `VOICE_HOST` 改成 `127.0.0.1`（或启动加
 `--ip 127.0.0.1`）。需要局域网访问则保持默认并配好 `VOICE_IP_ALLOW` 白名单 +

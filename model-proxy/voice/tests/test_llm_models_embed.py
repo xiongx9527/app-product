@@ -6,7 +6,7 @@
     修复后 EMBED 池的模型单独标 type=EMBED 并入列表；同时 llm_catalog() 仍只含
     LLM 类型，避免对话校验的 validate()（find 搜全部类型）误把向量模型当对话模型放行。
 
-运行（无需起 9529 服务，用临时 SQLite）：
+运行（无需起 19529 服务，用临时 SQLite）：
     cd model-proxy/voice
     .venv/bin/python tests/test_llm_models_embed.py
 

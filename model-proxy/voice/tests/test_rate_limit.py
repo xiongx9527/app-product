@@ -53,6 +53,8 @@ def main() -> int:
         policies = voice_db.rate_policies_list()
         check("播种内置策略 1 条", len(policies) == 1 and policies[0]["is_builtin"] == 1 and policies[0]["is_default"] == 1)
         check("内置阈值正确", policies[0]["req_per_min"] == 100)
+        check("内置 Embed 阈值正确", policies[0]["embed_tokens_per_min"] == 50000)
+        check("内置 Rerank 阈值正确", policies[0]["rerank_tokens_per_min"] == 50000)
         voice_db.ensure_schema()
         check("幂等重跑不重复", len(voice_db.rate_policies_list()) == 1)
         did = policies[0]["id"]
@@ -70,14 +72,20 @@ def main() -> int:
         check("默认策略可多个", sum(1 for p in voice_db.rate_policies_list() if p["is_default"]) == 2)
 
         # ── 2) 多策略取最严格 ────────────────────────────────────
-        p_loose = voice_db.rate_policy_add("宽松", 1000, 100000, 5000, 500000)
-        p_strict = voice_db.rate_policy_add("严格", 5, 100, 10, 500)
+        p_loose = voice_db.rate_policy_add("宽松", 1000, 100000, 5000, 500000, embed=90000, rerank=90000)
+        p_strict = voice_db.rate_policy_add("严格", 5, 100, 10, 500, embed=900, rerank=900)
         test_key = voice_db.api_key_create("rl-test-key", name="rl")
         tkid = test_key["id"]
         voice_db.rate_binding_set(tkid, [p_loose["id"], p_strict["id"]])
         eff = voice_db.rate_binding_effective(tkid)
         check("多策略取最严格 req", eff["req_per_min"] == 5)
         check("多策略取最严格 llm", eff["llm_tokens_per_min"] == 100)
+        check("有效阈值含 embed 维度", "embed_tokens_per_min" in eff)
+        check("多策略取最严格 embed", eff["embed_tokens_per_min"] == min(
+            p_loose["embed_tokens_per_min"], p_strict["embed_tokens_per_min"]))
+        check("有效阈值含 rerank 维度", "rerank_tokens_per_min" in eff)
+        check("多策略取最严格 rerank", eff["rerank_tokens_per_min"] == min(
+            p_loose["rerank_tokens_per_min"], p_strict["rerank_tokens_per_min"]))
         # 停用严格策略后回退宽松
         voice_db.rate_policy_update(p_strict["id"], enabled=0)
         eff2 = voice_db.rate_binding_effective(tkid)
@@ -121,6 +129,10 @@ def main() -> int:
         # 新策略 PATCH
         r = ca.patch(f"/admin/api/rate/policies/{p_loose['id']}", json={"req_per_min": 777})
         check("接口改策略阈值 200", r.status_code == 200 and r.json()["policy"]["req_per_min"] == 777)
+        r = ca.patch(f"/admin/api/rate/policies/{p_loose['id']}", json={"embed_tokens_per_min": 12345})
+        check("接口改 Embed 阈值 200", r.status_code == 200 and r.json()["policy"]["embed_tokens_per_min"] == 12345)
+        r = ca.patch(f"/admin/api/rate/policies/{p_loose['id']}", json={"rerank_tokens_per_min": 23456})
+        check("接口改 Rerank 阈值 200", r.status_code == 200 and r.json()["policy"]["rerank_tokens_per_min"] == 23456)
         # 绑定 PATCH（只接受 policy_ids，无 per-key 开关）
         r = ca.patch(f"/admin/api/rate/bindings/{tkid}", json={"policy_ids": [p_strict["id"]]})
         check("接口改绑定 200", r.status_code == 200)

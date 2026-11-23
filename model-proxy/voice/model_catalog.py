@@ -25,10 +25,11 @@ class ModelType:
 
     LLM = "LLM"
     EMBED = "EMBED"
+    RERANK = "RERANK"
     TTS = "TTS"
     STT = "STT"
 
-    ALL = (LLM, EMBED, TTS, STT)
+    ALL = (LLM, EMBED, RERANK, TTS, STT)
 
 
 @dataclass

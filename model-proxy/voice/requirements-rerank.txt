@@ -1,0 +1,11 @@
+# 内置重排（rerank）依赖：本地加载 bge-reranker 等 CrossEncoder 模型，非 Docker。
+# 装在 voice/venv 里（与语音服务共用 venv），由 install-rerank.sh 安装。
+#
+# 版本约束：Python 3.12 官方/阿里源上 torch 最高 2.2.2；新版 transformers(>=4.45) 要求
+# torch>=2.6 会禁用 PyTorch 导致内置重排不可用，故锁定兼容组合（transformers 4.40 + st 3.0.1）。
+# 模型权重不在这里，见 install-rerank.sh 的 RERANK_MODEL。
+torch==2.2.2
+transformers==4.40.0
+sentence-transformers==3.0.1
+numpy==1.26.4
+scipy==1.11.4
