@@ -4149,7 +4149,12 @@ function apiKeyAddModal(){
     const copy=m.querySelector('#akCopy'), plain=m.querySelector('#akPlain');
     copy.onclick=async ()=>{ try{ await navigator.clipboard.writeText(plain.value); copy.textContent=t('apikey.copied'); }
       catch(e){ plain.select(); document.execCommand('copy'); copy.textContent=t('apikey.copied'); } };
-    m.querySelector('#gmOk').textContent=t('common.ok');
+    // 展示框阶段：确定只负责关闭（外层 ok.onclick 仍指向提交回调，再点会重复建 Key）；
+    // 取消在"已创建"展示框里没有意义，隐藏掉。
+    const okBtn=m.querySelector('#gmOk'), cancelBtn=m.querySelector('#gmCancel');
+    okBtn.textContent=t('common.ok');
+    okBtn.onclick=()=>m.classList.remove('show');
+    if(cancelBtn) cancelBtn.style.display='none';
     loadApiKeys();
     return 'keep';
   });
@@ -4255,11 +4260,11 @@ function rateFieldsHtml(p){
     '<label>'+t('rate.description')+'</label><input id="rpDesc" type="text" value="'+esc(p.description||'')+'" />'+
     rateUnitSel('rpPeriod', per)+
     '<label>'+t('rate.req')+'</label><input id="rpReq" type="number" min="0" value="'+(p.req_per_min||0)+'" />'+
-    '<label>LLM token / '+per+'</label><input id="rpLlm" type="number" min="0" value="'+(p.llm_tokens_per_min||0)+'" />'+
-    '<label>ASR '+t('rate.seconds')+' / '+per+'</label><input id="rpAsr" type="number" min="0" value="'+(p.asr_seconds_per_min||0)+'" />'+
-    '<label>TTS '+t('rate.chars')+' / '+per+'</label><input id="rpTts" type="number" min="0" value="'+(p.tts_chars_per_min||0)+'" />'+
-    '<label>'+t('rate.embed')+' / '+per+'</label><input id="rpEmbed" type="number" min="0" value="'+(p.embed_tokens_per_min||0)+'" />'+
-    '<label>'+t('rate.rerank')+' / '+per+'</label><input id="rpRerank" type="number" min="0" value="'+(p.rerank_tokens_per_min||0)+'" />';
+    '<label>LLM token / '+t('rate.period.'+per)+'</label><input id="rpLlm" type="number" min="0" value="'+(p.llm_tokens_per_min||0)+'" />'+
+    '<label>ASR '+t('rate.seconds')+' / '+t('rate.period.'+per)+'</label><input id="rpAsr" type="number" min="0" value="'+(p.asr_seconds_per_min||0)+'" />'+
+    '<label>TTS '+t('rate.chars')+' / '+t('rate.period.'+per)+'</label><input id="rpTts" type="number" min="0" value="'+(p.tts_chars_per_min||0)+'" />'+
+    '<label>'+t('rate.embed')+' / '+t('rate.period.'+per)+'</label><input id="rpEmbed" type="number" min="0" value="'+(p.embed_tokens_per_min||0)+'" />'+
+    '<label>'+t('rate.rerank')+' / '+t('rate.period.'+per)+'</label><input id="rpRerank" type="number" min="0" value="'+(p.rerank_tokens_per_min||0)+'" />';
 }
 function rateBodyFromModal(m){
   return {name:m.querySelector('#rpName').value.trim(), description:m.querySelector('#rpDesc').value.trim(),
@@ -4269,13 +4274,34 @@ function rateBodyFromModal(m){
     embed_tokens_per_min:+m.querySelector('#rpEmbed').value, rerank_tokens_per_min:+m.querySelector('#rpRerank').value};
 }
 function ratePolicyModal(p){
-  showModal(p?t('common.edit'):t('rate.addPolicy'), rateFieldsHtml(p), async(m)=>{
+  const m=showModal(p?t('common.edit'):t('rate.addPolicy'), rateFieldsHtml(p), async(m)=>{
     const body=rateBodyFromModal(m);
     const path=p? '/admin/api/rate/policies/'+p.id : '/admin/api/rate/policies';
     const r=await api(path,{method:p?'PATCH':'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok){ alert(fmtErr((await r.json()).detail)); return false; }
     loadRatePolicies(); return true;
   });
+  // 切换时间单位时，动态更新下面各阈值标签的 "/minute" 后缀（label 无 id，按紧邻输入框定位）
+  const sel=m.querySelector('#rpPeriod');
+  if(sel){
+    const relabel=()=>{
+      const u=sel.value||'minute';
+      const pairs=[
+        ['rpReq', t('rate.req')],
+        ['rpLlm', 'LLM token'],
+        ['rpAsr', 'ASR '+t('rate.seconds')],
+        ['rpTts', 'TTS '+t('rate.chars')],
+        ['rpEmbed', t('rate.embed')],
+        ['rpRerank', t('rate.rerank')],
+      ];
+      pairs.forEach(([id,text])=>{
+        const inp=m.querySelector('#'+id);
+        if(inp && inp.previousElementSibling && inp.previousElementSibling.tagName==='LABEL')
+          inp.previousElementSibling.textContent=text+' / '+t('rate.period.'+u);
+      });
+    };
+    sel.onchange=relabel;
+  }
 }
 async function ratePolicyAction(id, op){
   const p=ratePolicies.find(x=>x.id===id)||{};
