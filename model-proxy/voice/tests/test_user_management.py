@@ -45,6 +45,8 @@ def main() -> int:
     voice_db.ensure_schema()
     voice_db.set_auto_seed(True)
     config_store.configure(db_path, None, None)  # status 端点读 config_store
+    # 登录验证码默认开启；本测试用账号密码直接登录，显式关闭以免 400 打断角色断言
+    config_store.instance().bulk({"ADMIN_CAPTCHA": "off"})
     old_home = getattr(admin_panel, "VOICE_HOME_DIR", None)
     admin_panel.init_admin(os.path.join(tmpdir, "voice.conf"), tmpdir)
 

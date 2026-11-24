@@ -138,7 +138,8 @@ def main() -> int:
           f"got={cfg.get('STT_UPSTREAM_MODEL')!r}")
 
     # ── 5) 前端源码：不得再有「没 Key 就 return」的提前阻断 ─────────────
-    src = (_VOICE_DIR / "admin_panel.py").read_text(encoding="utf-8")
+    # 前端 JS 函数在 admin/panel.html 里，不是 admin_panel.py（后者是后端路由）
+    src = (_VOICE_DIR / "admin" / "panel.html").read_text(encoding="utf-8")
     body = src[src.index("async function saveProvConfig"):src.index("function saveSttTable")]
     # hasProvKey 只能用于拼提示文案，不能出现在 return 语句里
     blocking = [ln.strip() for ln in body.splitlines()

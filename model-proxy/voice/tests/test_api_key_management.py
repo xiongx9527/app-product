@@ -34,6 +34,7 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 def main() -> int:
     import admin_panel
     import voice_db
+    import config_store
     import openai_voice_server as srv
     from fastapi.testclient import TestClient
 
@@ -43,6 +44,9 @@ def main() -> int:
     voice_db.set_auto_seed(False)
     voice_db.ensure_schema()
     voice_db.set_auto_seed(True)
+    # 测试用账号密码登录，关闭默认开启的登录验证码以免 400
+    config_store.configure(db_path, None, None)
+    config_store.instance().bulk({"ADMIN_CAPTCHA": "off"})
     old_home = getattr(admin_panel, "VOICE_HOME_DIR", None)
     admin_panel.init_admin(os.path.join(tmpdir, "voice.conf"), tmpdir)
     builtin = admin_panel.load_admin_config()
@@ -96,7 +100,8 @@ def main() -> int:
             srv.config_value = lambda k, d=None: ("off" if k == "VOICE_API_KEY_AUTH" else original_config(k, d))
             check("显式 off 关闭", not srv.api_key_auth_enabled())
             srv.config_value = lambda k, d=None: ("" if k == "VOICE_API_KEY_AUTH" else original_config(k, d))
-            check("未设置+表有 key 视为开启", srv.api_key_auth_enabled())
+            # 新语义：建了 Key 不自动开启鉴权，必须显式 on（避免建测试 Key 就锁死所有接口）
+            check("未设置+表有 key 仍视为关闭", not srv.api_key_auth_enabled())
         finally:
             srv.config_value = original_config
 

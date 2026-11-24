@@ -718,7 +718,7 @@ def openai_responses_to_openai(obj: dict) -> dict:
 _INTERNAL_KEYS = {"base_url", "api_key", "vendor", "protocol", "bypass_catalog", "think", "extra_body", "direct_upstream"}
 
 
-def apply_think(payload: dict, body: dict, wire: str, vendor: str) -> dict:
+def apply_think(payload: dict, body: dict, wire: str, vendor: str, native_ollama: bool = False) -> dict:
     """把统一 think 契约翻译成目标厂商的『是否思考』参数（就地改 payload）。
 
     【默认关闭】未带 think 时按 false 处理（不开启深度思考），而不是沿用上游默认。
@@ -731,8 +731,10 @@ def apply_think(payload: dict, body: dict, wire: str, vendor: str) -> dict:
     # 缺省=不开启深度思考；仅显式 true/false 才覆盖
     think = body.get("think", False)
     enable = bool(think)
-    if vendor == "ollama":
-        # ollama 原生 /api/chat：think=true/false（0.40.x+ 支持）
+    if native_ollama:
+        # ollama 原生 /api/chat：think=true/false（0.40.x+ 支持）。
+        # 仅 protocol 显式为 ollama 旧别名时成立；vendor=ollama 但走 OpenAI 兼容
+        # 端点（如贴 ollama 标签的 deepseek）不能发对方不认的 think 字段。
         payload["think"] = enable
     elif wire == "anthropic_messages":
         # Claude：不带 thinking 字段即不思考；要思考才带 type+budget
@@ -810,7 +812,7 @@ def prepare(
         stream_cls, resp_transform = StreamTranslator, _identity
 
     # 统一收口：思考开关按厂商翻译 + 剔除代理内部字段（_build_openai 用了 dict(body)）
-    apply_think(req.payload, body, wire, vendor)
+    apply_think(req.payload, body, wire, vendor, native_ollama=uses_ollama_native(protocol))
     # 自定义 body 参数：合并到上游 payload（各线协议结构不同，这里统一补齐，
     # setdefault 保证不覆盖协议自身已翻译好的字段）。
     extra_body = body.get("extra_body")

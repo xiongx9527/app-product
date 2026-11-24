@@ -96,7 +96,8 @@ def main() -> int:
         # v12 时 is_default 唯一索引还在（v13 才删），重建它
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_policies_default "
                      "ON rate_policies(is_default) WHERE is_default=1")
-        conn.execute("DELETE FROM schema_version WHERE version IN (13,14)")
+        # 删掉所有高于 12 的版本留痕（当前 SCHEMA_VERSION 已到 19，不能只删 13/14）
+        conn.execute("DELETE FROM schema_version WHERE version > 12")
         conn.commit()
     finally:
         conn.close()

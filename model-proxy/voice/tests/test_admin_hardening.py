@@ -34,6 +34,7 @@ def check(name: str, cond: bool, extra: str = "") -> None:
 def main() -> int:
     import admin_panel
     import voice_db
+    import config_store
     import openai_voice_server as srv
     from fastapi.testclient import TestClient
 
@@ -43,6 +44,9 @@ def main() -> int:
     voice_db.set_auto_seed(False)
     voice_db.ensure_schema()
     voice_db.set_auto_seed(True)
+    # 测试用账号密码登录，关闭默认开启的登录验证码以免 400
+    config_store.configure(db_path, None, None)
+    config_store.instance().bulk({"ADMIN_CAPTCHA": "off"})
 
     old_home = getattr(admin_panel, "VOICE_HOME_DIR", None)
     admin_panel.init_admin(os.path.join(tmpdir, "voice.conf"), tmpdir)
