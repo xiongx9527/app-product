@@ -570,53 +570,6 @@ watch(
         <view class="group-chevron" :class="{ open: isOpen('voice') }" />
       </view>
       <template v-if="isOpen('voice')">
-      <!-- 音频开关放最前，展开服务设置即可见（之前在末尾要往下翻，用户以为没了） -->
-      <!-- 中断前 duck：播报中检测人声开口时压低播报/媒体给 KWS 让路（打断/插话都适用） -->
-      <view class="setting-row">
-        <view class="setting-text">
-          <text class="row-label">{{ t('settings.general.interruptDuck') }}</text>
-          <text class="hint">{{ t('settings.general.interruptDuckHint') }}</text>
-        </view>
-        <switch
-          :checked="appConfig.general.interruptDuck !== false"
-          color="#6c8cff"
-          @change="(e: any) => onInterruptDuckChange(e.detail.value)"
-        />
-      </view>
-      <!-- duck 强度：三种 duck 共用的压低程度；与其它下拉一致用 sub 容器平铺 -->
-      <view class="sub">
-        <SelectRow
-          :title="t('settings.general.duckLevel')"
-          :hint="t('settings.general.duckLevelHint')"
-          :options="duckLevelOptions"
-          :model-value="appConfig.general.duckLevel ?? 'medium'"
-          @update:model-value="onDuckLevelChange"
-        />
-      </view>
-      <!-- 插话开关：默认关（播报期静音、只靠 KWS 打断）；开则恢复播报期上行+插话入队 -->
-      <view class="setting-row">
-        <view class="setting-text">
-          <text class="row-label">{{ t('settings.general.bargeIn') }}</text>
-          <text class="hint">{{ t('settings.general.bargeInHint') }}</text>
-        </view>
-        <switch
-          :checked="appConfig.general.bargeIn === true"
-          color="#6c8cff"
-          @change="(e: any) => onBargeInChange(e.detail.value)"
-        />
-      </view>
-      <!-- 硬件 AEC 开关：开=采集全程用系统 AEC（含播报期），默认开启；四场景实验证明不影响唤醒命中率 -->
-      <view class="setting-row">
-        <view class="setting-text">
-          <text class="row-label">{{ t('settings.playback.aecEnabled') }}</text>
-          <text class="hint">{{ t('settings.playback.aecEnabledHint') }}</text>
-        </view>
-        <switch
-          :checked="appConfig.general.aecEnabled === true"
-          color="#6c8cff"
-          @change="(e: any) => onAecChange(e.detail.value)"
-        />
-      </view>
       <!-- 服务来源固定为「内置」（本地 9529），不暴露选择器；默认即内置，onMounted 兜底非法值回内置。 -->
 
       <!-- 内置：地址与密钥都可改，默认指向本机本地 AI 服务（9529） -->
@@ -846,6 +799,53 @@ watch(
         <view class="group-chevron" :class="{ open: isOpen('dialog') }" />
       </view>
       <template v-if="isOpen('dialog')">
+        <!-- 音频开关放最前，展开对话设置即可见（之前在服务设置，用户以为没了） -->
+        <!-- 中断前 duck：播报中检测人声开口时压低播报/媒体给 KWS 让路（打断/插话都适用） -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.general.interruptDuck') }}</text>
+            <text class="hint">{{ t('settings.general.interruptDuckHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.interruptDuck !== false"
+            color="#6c8cff"
+            @change="(e: any) => onInterruptDuckChange(e.detail.value)"
+          />
+        </view>
+        <!-- duck 强度：三种 duck 共用的压低程度；与其它下拉一致用 sub 容器平铺 -->
+        <view class="sub">
+          <SelectRow
+            :title="t('settings.general.duckLevel')"
+            :hint="t('settings.general.duckLevelHint')"
+            :options="duckLevelOptions"
+            :model-value="appConfig.general.duckLevel ?? 'medium'"
+            @update:model-value="onDuckLevelChange"
+          />
+        </view>
+        <!-- 插话开关：默认关（播报期静音、只靠 KWS 打断）；开则恢复播报期上行+插话入队 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.general.bargeIn') }}</text>
+            <text class="hint">{{ t('settings.general.bargeInHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.bargeIn === true"
+            color="#6c8cff"
+            @change="(e: any) => onBargeInChange(e.detail.value)"
+          />
+        </view>
+        <!-- 硬件 AEC 开关：开=采集全程用系统 AEC（含播报期），默认开启；四场景实验证明不影响唤醒命中率 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.playback.aecEnabled') }}</text>
+            <text class="hint">{{ t('settings.playback.aecEnabledHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.aecEnabled === true"
+            color="#6c8cff"
+            @change="(e: any) => onAecChange(e.detail.value)"
+          />
+        </view>
         <view class="setting-row column">
           <text class="row-label">{{ t('settings.playback.finalizeMaxChars') }}</text>
           <input class="input" type="number" v-model.number="appConfig.playback.finalizeMaxChars" />
