@@ -93,7 +93,7 @@ const zhCN: Messages = {
   'settings.general.autoConnect': '自动开启语音助手',
   'settings.general.autoConnectHint': '开屏即自动开启语音助手并进入待唤醒，免去手动点开关；默认开启',
   'settings.general.duckLevel': '避让音量大小',
-  'settings.general.duckLevelHint': '避让音量大小，档位越高压得越低，三种场景都受影响：1、助手播报时压低背景音乐（始终生效）；2、播报中你一开口，压低播报声音；3、播报中你一开口，压低背景音乐。2、3 需打开「开口避让」',
+  'settings.general.duckLevelHint': '避让音量大小，档位越高压得越低，影响三种场景：\n1、助手播报时压低背景音乐（始终生效）\n2、播报中你一开口，压低播报声音\n3、播报中你一开口，压低背景音乐\n（2、3 需打开「开口避让」）',
   'settings.general.duckLight': '轻',
   'settings.general.duckMedium': '中',
   'settings.general.duckHeavy': '重',
@@ -413,7 +413,7 @@ const enUS: Messages = {
   'settings.general.autoConnectHint':
     'On launch, automatically start the voice assistant and enter standby, so you don’t tap the switch manually. On by default.',
   'settings.general.duckLevel': 'Volume reduction level',
-  'settings.general.duckLevelHint': 'How much sounds are lowered — higher means more. Affects three cases: 1) background music is lowered while the assistant speaks (always on); 2) speech is lowered when you start talking during playback; 3) background music is lowered when you start talking during playback. 2 and 3 need "Open-mouth ducking" on',
+  'settings.general.duckLevelHint': 'How much sounds are lowered — higher means more. Three cases:\n1) background music lowered while the assistant speaks (always on)\n2) speech lowered when you start talking during playback\n3) background music lowered when you start talking during playback\n(2 and 3 need "Open-mouth ducking" on)',
   'settings.general.duckLight': 'Light',
   'settings.general.duckMedium': 'Medium',
   'settings.general.duckHeavy': 'Heavy',

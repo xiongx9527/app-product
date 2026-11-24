@@ -169,6 +169,7 @@ function onSearch(e: Event): void {
   line-height: 1.5;
   color: #6f7691;
   word-break: break-word;
+  white-space: pre-line;
 }
 
 .mask {
