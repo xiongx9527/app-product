@@ -190,6 +190,27 @@ public class GatewayNodeService extends Service {
         return START_STICKY; // 被杀后系统兜底重启（保活，配合前台服务更稳）
     }
 
+    /**
+     * Service 被停止时（主动重启网关 or 系统回收）：杀掉整个 :gateway 进程。
+     * 必须 killProcess——node::Start 跑在 JNI detach 的 std::thread 里、无干净停止句柄，
+     * 只 stopService 不杀进程会让 node 线程残留、8787 端口不释放，主进程重启时二次
+     * node::Start 触发 V8 assert / 端口冲突。杀进程后主进程（GatewayControlModule）延迟
+     * 重新 startForegroundService 拉起干净网关。START_STICKY 可能同时触发系统重建，
+     * 但进程是新建的、onCreate 只调一次，node 不会双启。
+     */
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        Log.i(TAG, "onDestroy: killing :gateway process to stop detached node thread");
+        try {
+            // 删端口/URL 文件，避免重启前被前端误读到旧地址
+            File home = getNoBackupFilesDir();
+            new File(home, PORT_FILE).delete();
+            new File(getFilesDir(), URL_FILE).delete();
+        } catch (Throwable ignored) { }
+        android.os.Process.killProcess(android.os.Process.myPid());
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
         return null;

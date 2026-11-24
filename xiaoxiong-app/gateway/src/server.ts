@@ -69,6 +69,48 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
       // 客户端可经 x-voice-config 头带上当前选中的语音来源配置，使探测按所选来源（如 DashScope）
       // 展开，而非永远探测网关默认的（内置）。响应不含任何密钥。
       // 运行期诊断（只读、本机）：NodeMobile 的 console 不进 logcat，统一从这里查转封装/短链错误。
+      // 轻量存活探针：只回 ok，不碰 buildHealth（健康探测有 15s 缓存、首次可达 10s+），
+      // 反映「8787 事件循环此刻是否真活着」。前端点中间圆球时用它在 2s 内判网关是否卡死；
+      // /api/health 绿但 /api/ping 超时 = 网关缓存假绿、实际卡死。必须排在所有耗时路由前。
+      if (url.pathname === '/api/ping') {
+        writeJson(res, 200, { ok: true }, { 'access-control-allow-origin': '*', 'cache-control': 'no-store' })
+        return
+      }
+      // 软重启（仅回环可调用）：关掉所有 WS 连接 + 清健康探测缓存，让前端重连拿到干净会话。
+      // iOS 同进程无法 kill node 线程，用它做可控的「业务卡死」恢复；事件循环硬卡时本端点也
+      // 调不通，客户端超时后按 gatewayDown 提示用户手动重启 App（不谎称恢复）。
+      // 仅绑 127.0.0.1 的网关本身就隔离了局域网；这里再显式校验 host 防外部实例误开。
+      if (url.pathname === '/api/gateway/soft-restart' && req.method === 'POST') {
+        const host = (req.headers.host ?? '').split(':')[0].toLowerCase()
+        if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') {
+          writeJson(res, 403, { ok: false, message: 'loopback only' })
+          return
+        }
+        try {
+          clearProbeCache()
+          let closed = 0
+          for (const client of wss.clients) {
+            try { client.close(1001, 'gateway soft restart'); closed++ } catch { /* 单个失败忽略 */ }
+          }
+          console.info(`[gateway] soft-restart: closed ${closed} ws clients, cleared probe cache`)
+          writeJson(res, 200, { ok: true, closed })
+        } catch (e) {
+          writeJson(res, 500, { ok: false, message: String(e) })
+        }
+        return
+      }
+      // dev-only：模拟事件循环卡死（真机验证点球重启自愈用）。生产 bundle 不带此端点逻辑
+      // 由 GATEWAY_MODE=embedded 且显式传 query 触发，非 dev 环境直接忽略。
+      if (url.pathname === '/api/debug/block') {
+        const ms = Math.min(120_000, Math.max(0, Number(url.searchParams.get('ms') ?? 0) || 0))
+        if (ms > 0) {
+          const until = Date.now() + ms
+          while (Date.now() < until) { /* 忙等阻塞事件循环，模拟 8787 无响应但进程活着 */ }
+        }
+        writeJson(res, 200, { ok: true, blockedMs: ms })
+        return
+      }
+      // 运行期诊断（只读、本机）：NodeMobile 的 console 不进 logcat，统一从这里查转封装/短链错误。
       // 必须排在 apiBase catch-all 之前，否则会被通用 api 路由抢走。
       if (url.pathname === '/api/diag') {
         writeJson(res, 200, { errors: getStreamDiagnostics() }, { 'access-control-allow-origin': '*' })

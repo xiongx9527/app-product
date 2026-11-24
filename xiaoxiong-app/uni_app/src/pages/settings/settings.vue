@@ -12,6 +12,7 @@ import {
 } from '@/core/config'
 import { t } from '@/core/i18n'
 import { setDuckConfig, setAecUserEnabled } from '@/core/audio/appCapture'
+import { restartGatewayViaNative } from '@/core/transport/gatewayControl'
 import { refreshDuckVolume } from '@/core/audio/musicPlayer'
 import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
@@ -137,6 +138,24 @@ function onResetVoice(): void {
 /** 播放设置恢复默认：清空为百度源、关闭自动收藏、开启自动字幕、关闭自动循环、默认循环 3 次、默认音量 50%。 */
 function onResetPlayback(): void {
   resetPlayback()
+}
+
+/** 手动重启网关：网关卡死（喊话/点球没反应）时点此恢复，复用与点球重启同一原生通道。
+ *  重启后 WS 会断、由 transport 自动重连；此处只显示行内结果，不弹浮层。 */
+const gatewayRestartMsg = ref('')
+const gatewayRestarting = ref(false)
+async function onRestartGateway(): Promise<void> {
+  if (gatewayRestarting.value) return
+  gatewayRestarting.value = true
+  gatewayRestartMsg.value = t('settings.gateway.restarting')
+  try {
+    const ok = await restartGatewayViaNative()
+    gatewayRestartMsg.value = ok ? t('settings.gateway.restarted') : t('settings.gateway.restartUnavailable')
+  } catch {
+    gatewayRestartMsg.value = t('settings.gateway.restartUnavailable')
+  } finally {
+    gatewayRestarting.value = false
+  }
 }
 
 /** 进入「我的收藏」页：查看/播放/移除已收藏的歌。 */
@@ -524,6 +543,13 @@ watch(
               <text class="swatch-label">{{ opt.label }}</text>
             </view>
           </view>
+        </view>
+        <!-- 手动重启网关：卡死时恢复，复用点球重启的原生通道；行内反馈，不弹浮层 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.gateway.restart') }}</text>
+          <text class="hint">{{ t('settings.gateway.restartHint') }}</text>
+          <button class="reset" :disabled="gatewayRestarting" @tap="onRestartGateway">{{ t('settings.gateway.restart') }}</button>
+          <text v-if="gatewayRestartMsg" class="hint">{{ gatewayRestartMsg }}</text>
         </view>
       </template>
     </view>

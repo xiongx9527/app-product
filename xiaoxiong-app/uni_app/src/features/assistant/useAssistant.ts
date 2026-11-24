@@ -48,6 +48,7 @@ import {
 } from '@/core/assistant/types'
 import { createTransport, resolveGatewayHttpBase } from '@/core/transport'
 import { waitForEmbeddedGateway } from '@/core/transport/gatewayBootstrap'
+import { pingGateway, restartGatewayViaNative } from '@/core/transport/gatewayControl'
 import {
   useHealth,
   toHealthItems,
@@ -202,6 +203,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let assistantTextStarted = false
   let capturing = false
   let mode: SessionMode = 'wake'
+
+  // 网关手动重启自愈（点中间圆球/设置页触发）：互斥 + 冷却，防连点循环重启。
+  // 不做自动自愈（用户拍板避免误重启）——只在用户主动点球且 ping 判卡死时才试。
+  let healingInProgress = false
+  let healCooldownUntil = 0
 
   // ===== ASR 上行门控：唯一真相源（2026-11-24 用户拍板）=====
   // 「当前是否该让 ASR 静音」只在这一处判定；前端 onPcm 与 iOS 原生都听这里的结果。
@@ -1613,7 +1619,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   /** 点中间圆球手动开始一轮：等同说「小熊小熊」唤醒，仅待唤醒(standby)态有效。
    * 原则：网关正常才允许唤醒——没连上网关就不放行 WAKE（连不上则 ASR/TTS 都不工作，
    * 「唤醒了但说不了话」是不诚实的状态），此时诚实提示并顺手触发重连。 */
-  function wake(): void {
+  async function wake(): Promise<void> {
     if (state.value !== 'standby') return
     // KWS 加载失败时点圆球 = 重试加载模型（用户明确要求「失败时点中间也能重新加载」）。
     // 重新挂载 KWS 引擎会把 wakeReady 重置回 loading，界面显示「加载中」；这次点球不进对话，
@@ -1629,11 +1635,64 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // KWS 还在加载中时点球：也允许重试一次（幂等保护在 kwsService.start 的 running 标志），
     // 但不打断正在进行的加载；直接放行下面的 wake 流程（网关好了就进对话，点球本就是手动唤醒兜底）。
     if (!canWake()) {
+      // 网关可疑且 WS 还连着：ping 一下确认 8787 是否真卡死。WS 已断的情况交给既有
+      // scheduleReconnect 处理，这里不重复。ping 不通 = 健康缓存假绿、网关事件循环卡死 →
+      // 走「点球重启网关」自愈；ping 通只是 ASR/能力没就绪 → 维持原提示。
+      if (transport.isConnected()) {
+        const alive = await pingGateway()
+        if (!alive) {
+          console.info('[da] SELF-HEAL-TRIGGER ping 失败且 WS 连着，判定网关卡死')
+          await tryGatewayRestart()
+          return
+        }
+      }
       // 原则：网关/ASR 没好时手动点球不放行；但要提示，不静默——播对应原因的提示音
       playPromptCue(wakeBlockedCue())
       return
     }
     dispatch({ type: 'WAKE' })
+  }
+
+  /**
+   * 点中间圆球触发的网关重启自愈（不做自动，避免误重启）。
+   * 调原生重启网关 → 等 health 就绪 → 重连 WS；失败播 gatewayDown 诚实提示。
+   * 互斥 + 60s 冷却防连点循环；WS 断连不在这里处理（交给 transport 重连）。
+   */
+  async function tryGatewayRestart(): Promise<void> {
+    const now = Date.now()
+    if (healingInProgress) {
+      console.info('[da] SELF-HEAL-SKIP 互斥：已有重启进行中')
+      return
+    }
+    if (now < healCooldownUntil) {
+      console.info('[da] SELF-HEAL-SKIP 冷却中，剩余 ' + (healCooldownUntil - now) + 'ms')
+      return
+    }
+    healingInProgress = true
+    console.info('[da] SELF-HEAL-BEGIN 原生重启网关')
+    playPromptCue('gatewayPreparing') // 复用本地提示音，告诉用户"正在恢复"
+    try {
+      const started = await restartGatewayViaNative()
+      console.info('[da] SELF-HEAL-NATIVE started=' + started)
+      if (!started) throw new Error('native restart unavailable')
+      // 等网关重新就绪（复用冷启动同一套健康探测，45s；非内嵌立即 true）
+      const ready = await waitForEmbeddedGateway({ timeoutMs: 45000 })
+      console.info('[da] SELF-HEAL-READY ready=' + ready)
+      if (!ready) throw new Error('gateway not ready after restart')
+      transport.close()
+      await transport.connect(mode)
+      void refreshHealth()
+      console.info('[da] SELF-HEAL-OK 网关已恢复并重连')
+      healCooldownUntil = Date.now() + 60_000
+    } catch (e) {
+      console.warn('[da] SELF-HEAL-FAIL', e)
+      playPromptCue('gatewayDown')
+      announceGatewayDown()
+      // 失败也设冷却，防连点疯狂重启
+      healCooldownUntil = Date.now() + 60_000
+    } finally {
+      healingInProgress = false
+    }
   }
 
   /** 网关掉线后手动重连：沿用当前会话模式，立即清掉待执行的自动重连再建连。
@@ -2060,6 +2119,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     wsConnected,
     connecting,
     retry,
+    restartGateway: tryGatewayRestart,
     wake,
     enable,
     disable,

@@ -125,7 +125,7 @@ puts '[integrate] gateway/ 文件夹引用已在 Copy Bundle Resources'
 wake_group = proj.main_group['HBuilder-Hello'] || proj.main_group
 wake_src = File.expand_path('../native/ios/app/XiaoxiongGateway.xcodeproj', __dir__)
 # AppProductWakeModule + KwsEngine（iOS KWS 常驻唤醒，sherpa-onnx 封装）一并拷入主 target
-%w[AppProductWakeModule.h AppProductWakeModule.m KwsEngine.h KwsEngine.m PcmUploader.h PcmUploader.m].each do |fname|
+%w[AppProductWakeModule.h AppProductWakeModule.m GatewayControlModule.h GatewayControlModule.m KwsEngine.h KwsEngine.m PcmUploader.h PcmUploader.m].each do |fname|
   dst = File.join(shell_root, 'HBuilder-Hello', fname)
   src = File.join(wake_src, fname)
   if File.exist?(src)
@@ -337,6 +337,45 @@ plist_files.each do |pl|
   s.insert(insert_at, plugin)
   File.write(pl, s)
   puts "[wake] Info.plist 已注册 app-product-wake -> AppProductWakeModule (#{pl})"
+end
+
+# app-product-gateway → GatewayControlModule：点圆球/设置页软重启网关（iOS 同进程）
+plist_files.each do |pl|
+  s = File.read(pl)
+  next if s.include?('app-product-gateway') # 幂等
+  marker = '<key>dcloud_uniplugins</key>'
+  idx = s.index(marker)
+  unless idx
+    puts "[gateway-control] 警告：#{pl} 无 dcloud_uniplugins，跳过注册"
+    next
+  end
+  arr_start = s.index('<array>', idx)
+  unless arr_start
+    puts "[gateway-control] 警告：#{pl} dcloud_uniplugins 后无 array，跳过"
+    next
+  end
+  insert_at = arr_start + '<array>'.length
+  plugin = <<~XML.chomp
+    
+    		<dict>
+    			<key>hooksClass</key>
+    			<string>GatewayControlModule</string>
+    			<key>plugins</key>
+    			<array>
+    				<dict>
+    					<key>class</key>
+    					<string>GatewayControlModule</string>
+    					<key>name</key>
+    					<string>app-product-gateway</string>
+    					<key>type</key>
+    					<string>module</string>
+    				</dict>
+    			</array>
+    		</dict>
+  XML
+  s.insert(insert_at, plugin)
+  File.write(pl, s)
+  puts "[gateway-control] Info.plist 已注册 app-product-gateway -> GatewayControlModule (#{pl})"
 end
 
 puts '[integrate] 完成'

@@ -13,6 +13,7 @@ import android.util.Log;
 
 import androidx.core.content.ContextCompat;
 
+import com.xiaoxiong.assistant.gateway.GatewayControlModule;
 import com.xiaoxiong.assistant.gateway.GatewayNodeService;
 import com.xiaoxiong.assistant.wake.WakeModule;
 import io.dcloud.application.DCloudApplication;
@@ -54,6 +55,9 @@ public class App extends DCloudApplication {
         try {
             boolean ok = UniSDKEngine.registerUniModule("app-product-wake", WakeModule.class, false);
             Log.i(TAG, "registerUniModule(app-product-wake) => " + ok);
+            // 网关控制插件：JS 点中间圆球/设置页重启卡死的网关进程
+            boolean gwOk = UniSDKEngine.registerUniModule("app-product-gateway", GatewayControlModule.class, false);
+            Log.i(TAG, "registerUniModule(app-product-gateway) => " + gwOk);
         } catch (Throwable e) {
             Log.e(TAG, "registerUniModule(app-product-wake) failed", e);
         }

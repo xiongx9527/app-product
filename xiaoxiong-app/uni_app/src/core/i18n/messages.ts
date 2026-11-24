@@ -84,6 +84,11 @@ const zhCN: Messages = {
   'settings.notice.text':
     '登录与计费上线后，付费用户可切换到平台托管，无需配置下面的三项。',
   'settings.general.title': '通用设置',
+  'settings.gateway.restart': '重启网关',
+  'settings.gateway.restartHint': '网关卡死、喊话或点球都没反应时点此恢复（约几秒）。重启后会自动重连；若仍无反应请重启 App。',
+  'settings.gateway.restarting': '正在重启网关…',
+  'settings.gateway.restarted': '已发起重启，正在恢复连接…',
+  'settings.gateway.restartUnavailable': '当前环境不支持重启网关（需 App 内嵌网关），请重启 App。',
   'settings.language.title': '语言',
   'settings.language.sub': '唤醒、ASR、TTS 的默认语言',
   'settings.language.hint': '厂商里语言留空时使用这里的值；唤醒识别同样跟随。',
@@ -409,6 +414,11 @@ const enUS: Messages = {
   'settings.notice.text':
     'After login and billing launch, paid users can switch to platform hosting and skip these three sections.',
   'settings.general.title': 'General',
+  'settings.gateway.restart': 'Restart gateway',
+  'settings.gateway.restartHint': 'Use when the gateway is stuck and voice/taps do nothing (takes a few seconds). It reconnects automatically; restart the App if it still does not respond.',
+  'settings.gateway.restarting': 'Restarting gateway…',
+  'settings.gateway.restarted': 'Restart started, reconnecting…',
+  'settings.gateway.restartUnavailable': 'Gateway restart is unavailable here (requires the in-app gateway). Please restart the App.',
   'settings.general.autoConnect': 'Auto-start voice assistant',
   'settings.general.autoConnectHint':
     'On launch, automatically start the voice assistant and enter standby, so you don’t tap the switch manually. On by default.',
