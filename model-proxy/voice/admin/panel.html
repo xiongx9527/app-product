@@ -721,6 +721,19 @@ const I18N = {
     "nav.security": "安全设置",
     "nav.test": "连通测试",
     "nav.logs": "运行日志",
+    "nav.audit": "操作日志",
+    "audit.hint": "记录管理面板内的操作：接口调用、配置保存、登录/验证码等。仅内置管理员可见。",
+    "audit.time": "时间",
+    "audit.actor": "操作者",
+    "audit.action": "动作",
+    "audit.detail": "详情",
+    "audit.search": "搜索操作者 / 动作 / 详情",
+    "audit.lines": "条",
+    "audit.empty": "暂无操作记录",
+    "audit.adminApi": "接口调用",
+    "audit.loginSuccess": "登录成功",
+    "audit.loginFail": "登录失败",
+    "audit.configSave": "保存配置",
     "nav.roles": "角色权限",
     "roles.hint": "权限层级：viewer(只读) < operator(可测试) < admin(全部)。高角色自动拥有低角色权限。后端按角色强制校验，绕过页面直接调接口同样会被拦截。",
     "roles.feature": "功能",
@@ -1260,6 +1273,19 @@ const I18N = {
     "nav.security": "Security",
     "nav.test": "Connectivity test",
     "nav.logs": "Logs",
+    "nav.audit": "Audit log",
+    "audit.hint": "Records actions in the admin panel: API calls, config saves, login/captcha, etc. Built-in admin only.",
+    "audit.time": "Time",
+    "audit.actor": "Actor",
+    "audit.action": "Action",
+    "audit.detail": "Detail",
+    "audit.search": "Search actor / action / detail",
+    "audit.lines": "rows",
+    "audit.empty": "No audit records yet",
+    "audit.adminApi": "API call",
+    "audit.loginSuccess": "Login success",
+    "audit.loginFail": "Login failed",
+    "audit.configSave": "Save config",
     "nav.roles": "Role permissions",
     "roles.hint": "Levels: viewer (read-only) < operator (testing) < admin (full). Higher roles inherit lower permissions. Enforcement is server-side — calling APIs directly is also checked.",
     "roles.feature": "Feature",
@@ -3555,6 +3581,7 @@ async function renderDashboard(){
     {id:'test',     label:t('nav.test'),     icon:'◎', roles:'operator,admin'},
     {id:'roles',    label:t('nav.roles'),    icon:'◈', roles:''},
     {id:'logs',     label:t('nav.logs'),     icon:'▤', roles:''},
+    {id:'audit',    label:t('nav.audit'),    icon:'◷', roles:'admin'},
   ];
   let sidebarCollapsed=false;
   try{ sidebarCollapsed=localStorage.getItem('admin_sidebar_collapsed')==='1'; }catch(e){}
@@ -3585,6 +3612,7 @@ async function renderDashboard(){
       </section>
       <section class="page" data-page="test" hidden></section>
       <section class="page" data-page="logs" hidden></section>
+      <section class="page" data-page="audit" hidden><div class="card"><h2>${t('nav.audit')}</h2><div id="auditBody"></div></div></section>
       <section class="page" data-page="roles" hidden><div class="card"><h2>${t('nav.roles')}</h2><div id="rolesBody"></div></div></section>
     </main>
   </div>`);
@@ -3616,6 +3644,7 @@ async function renderDashboard(){
     layout.querySelector('#sidebar').classList.remove('open');
     if(id==='mcp') loadMcpPage();
     if(id==='roles') renderRolesPage();
+    if(id==='audit') renderAuditPage();
   }
   let startPage='overview';
   try{ startPage=localStorage.getItem('admin_page')||'overview'; }catch(e){}
@@ -5166,6 +5195,63 @@ async function loadLogs(){
 
 function escapeHtml(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
+
+// ── 操作日志（审计表）────────────────────────────────────────────
+const AUDIT_ACTION_LABELS = {
+  admin_api:'audit.adminApi', admin_login_success:'audit.loginSuccess',
+  admin_login_failed:'audit.loginFail', admin_captcha_failed:'audit.loginFail',
+  config_save:'audit.configSave',
+};
+function auditActionText(a){
+  const key = AUDIT_ACTION_LABELS[a];
+  return key ? t(key) : a;
+}
+function renderAuditPage(){
+  const box = document.getElementById('auditBody');
+  if(!box) return;
+  box.innerHTML = `<div class="hint" style="margin-bottom:10px">${t('audit.hint')}</div>
+    <div class="row" style="margin-bottom:10px">
+      <input id="auditSearch" class="hw-input" placeholder="${t('audit.search')}" style="width:320px" />
+      <select id="auditLines" style="width:90px">
+        <option value="100">100</option><option value="200" selected>200</option>
+        <option value="500">500</option><option value="1000">1000</option>
+      </select>
+      <span class="muted">${t('audit.lines')}</span>
+      <button class="sec" id="auditRefresh">${t('log.refresh')}</button>
+    </div>
+    <div id="auditTable" class="muted">${t('common.loadingX')}</div>`;
+  const fire = ()=> loadAudit();
+  document.getElementById('auditRefresh').onclick = fire;
+  document.getElementById('auditSearch').oninput = fire;
+  document.getElementById('auditLines').onchange = fire;
+  fire();
+}
+async function loadAudit(){
+  const box = document.getElementById('auditTable');
+  if(!box) return;
+  const q = (document.getElementById('auditSearch')?.value||'').trim();
+  const n = (document.getElementById('auditLines')?.value)||'200';
+  const params = ['n='+encodeURIComponent(n)];
+  if(q) params.push('q='+encodeURIComponent(q));
+  const r = await api('/admin/api/audit?'+params.join('&'));
+  if(!r.ok){ box.textContent = t('common.loadFailed'); return; }
+  const d = await r.json();
+  const rows = d.rows||[];
+  if(!rows.length){ box.textContent = t('audit.empty'); return; }
+  let h = '<table class="admin-table" style="width:100%"><thead><tr>'
+    + '<th style="width:150px">'+t('audit.time')+'</th>'
+    + '<th style="width:90px">'+t('audit.actor')+'</th>'
+    + '<th style="width:110px">'+t('audit.action')+'</th>'
+    + '<th>'+t('audit.detail')+'</th></tr></thead><tbody>';
+  rows.forEach(row=>{
+    h += '<tr><td style="white-space:nowrap">'+esc(row.time)+'</td>'
+      + '<td>'+esc(row.actor)+'</td>'
+      + '<td>'+esc(auditActionText(row.action))+'</td>'
+      + '<td style="word-break:break-all;line-height:1.4">'+esc(row.detail)+'</td></tr>';
+  });
+  h += '</tbody></table>';
+  box.innerHTML = h;
+}
 
 // 全局接口 loading：拦截 fetch，仅 /admin/ 写操作（保存 / 启停等）进行中时显示全屏遮罩。
 // GET 查询一律不弹——各页面自带「加载中…」占位，且 MCP 页等会周期性 GET，若弹遮罩

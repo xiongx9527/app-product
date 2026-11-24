@@ -244,6 +244,33 @@ def build_router() -> APIRouter:
                                    end_date or None, head=head),
                         media_type="text/plain; charset=utf-8")
 
+    @router.get("/admin/api/audit", dependencies=[Depends(require_admin)])
+    def admin_audit(n: int = 200, q: str = ""):
+        """操作审计日志：谁/何时/做了什么（admin.api、配置保存、登录等）。
+
+        来自数据库 audit 表（与 voice.log 文件日志不同），仅内置管理员可查看。
+        """
+        if n <= 0 or n > 2000:
+            n = 200
+        rows = voice_db.recent_audit(limit=max(n, 200))
+        needle = (q or "").strip().lower()
+        out = []
+        for r in rows:
+            ts = r.get("ts") or 0
+            try:
+                time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+            except (ValueError, OSError, TypeError):
+                time_str = str(ts)
+            item = {"id": r.get("id"), "time": time_str,
+                    "actor": r.get("actor") or "", "action": r.get("action") or "",
+                    "detail": r.get("detail") or ""}
+            if needle:
+                blob = (item["actor"] + " " + item["action"] + " " + item["detail"]).lower()
+                if needle not in blob:
+                    continue
+            out.append(item)
+        return {"ok": True, "total": len(out), "rows": out[-n:]}
+
     @router.post("/admin/api/action", dependencies=[Depends(require_admin)])
     async def admin_action(request: Request):
         try:
