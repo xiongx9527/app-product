@@ -62,8 +62,9 @@ def main() -> int:
         voice_db.grant_set("g_viewer", "config", "admin")
         check("授权后 config 域 effective=admin",
               admin_panel._effective_role("g_viewer", "/admin/api/config") == "admin")
-        check("未授权 mcp 域仍 viewer",
-              admin_panel._effective_role("g_viewer", "/admin/api/mcp/servers") == "viewer")
+        # v21 角色矩阵：viewer 的 mcp 默认禁用 → effective 为 None（拒绝）
+        check("未授权 mcp 域被拒绝",
+              admin_panel._effective_role("g_viewer", "/admin/api/mcp/servers") is None)
         check("授权列表含该条",
               any(g["username"] == "g_viewer" and g["feature"] == "config"
                   for g in voice_db.grants_list()))

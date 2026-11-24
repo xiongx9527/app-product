@@ -236,4 +236,46 @@ def build_router() -> APIRouter:
         )
         return {"ok": True}
 
+    # ── 角色功能矩阵（v21）：仅内置管理员可管理 ────────────────────
+    @router.get("/admin/api/role-features", dependencies=[Depends(require_admin)])
+    def role_features_get():
+        custom = {r["role"] + "/" + r["feature"]: bool(r["enabled"])
+                  for r in voice_db.role_features_list()}
+        roles = ("viewer", "operator", "admin")
+        data = {}
+        for role in roles:
+            data[role] = {
+                f: custom.get(role + "/" + f, voice_db.DEFAULT_ROLE_FEATURES[role][f])
+                for f in voice_db.VALID_GRANT_FEATURES
+            }
+        return {"roles": roles, "features": list(voice_db.VALID_GRANT_FEATURES),
+                "matrix": data, "defaults": voice_db.DEFAULT_ROLE_FEATURES}
+
+    @router.put("/admin/api/role-features/{role}/{feature}", dependencies=[Depends(require_admin)])
+    def role_features_set(request: Request, role: str, feature: str, body: dict[str, Any]):
+        actor = _require_builtin(request)
+        enabled = bool((body or {}).get("enabled"))
+        try:
+            voice_db.role_feature_set(role, feature, enabled)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        voice_db.append_audit(
+            request.client.host if request.client else "unknown", "role_feature_set",
+            f"actor={actor} role={role} feature={feature} enabled={enabled}",
+        )
+        return {"ok": True}
+
+    @router.post("/admin/api/role-features/{role}/reset", dependencies=[Depends(require_admin)])
+    def role_features_reset(request: Request, role: str):
+        actor = _require_builtin(request)
+        try:
+            voice_db.role_features_reset(role)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        voice_db.append_audit(
+            request.client.host if request.client else "unknown", "role_feature_reset",
+            f"actor={actor} role={role}",
+        )
+        return {"ok": True}
+
     return router

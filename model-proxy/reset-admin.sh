@@ -12,6 +12,7 @@
 #   ./reset-admin.sh                 # 重置内置管理员密码（随机生成，打印一次）
 #   ./reset-admin.sh --password XXX  # 指定新密码（至少 8 位）
 #   ./reset-admin.sh --fix           # 修复内置管理员异常（缺失/重复/被禁用/角色被改）
+#   ./reset-admin.sh --fix-roles     # 修复角色功能权限：清空自定义配置，恢复默认矩阵（兜底）
 #   ./reset-admin.sh --list          # 列出所有账号及状态
 #   可选显式覆盖（便于离线验证三库，优先于 env）：
 #   --db-kind sqlite|mysql|postgresql --mysql-dsn DSN --pg-dsn DSN --sqlite-path PATH
@@ -38,6 +39,8 @@ action = "reset"
 password = None
 if "--list" in args:
     action = "list"
+elif "--fix-roles" in args:
+    action = "fix-roles"
 elif "--fix" in args:
     action = "fix"
 if "--password" in args:
@@ -240,6 +243,19 @@ if action == "list":
     sys.exit(0)
 
 db.begin()
+
+# --fix-roles：修复角色功能权限（兜底）。清空自定义配置，回到默认矩阵；
+# 内置管理员恒为全功能，不受此表影响。不重置密码、不动账号。
+if action == "fix-roles":
+    try:
+        db.execute("DELETE FROM role_features")
+        db.commit()
+        print("修复：角色功能权限自定义配置已清空，恢复默认矩阵")
+        print("  viewer = 概览/日志；operator = 概览/日志/连通测试；admin = 全部")
+    except Exception as e:
+        print(f"修复角色功能权限失败（表可能尚未创建）：{e}")
+    sys.exit(0)
+
 builtins = rows("SELECT username, role, enabled FROM admin_users WHERE is_builtin=1")
 
 # --fix：修复异常

@@ -338,10 +338,20 @@ const I18N = {
     "users.add": "新增用户",
     "users.hint": "仅管理员可管理账号；内置管理员不可删/改角色/禁用/重置密码",
     "users.tabUsers": "账号管理",
-    "users.tabGrants": "单独授权",
-    "users.grantNone": "未授权(按角色)",
-    "users.grantHint": "给指定账号在功能域上单独授予更高权限，不改变其角色。仅内置管理员可修改；修改会记入审计日志。内置管理员与 admin 角色账号本身已有全权限，不在此列。",
-    "users.grantEmpty": "暂无可单独授权的账号（内置管理员与 admin 角色账号本身已有全权限）。",
+    "users.tabRoles": "角色权限",
+    "users.roleFeatureHint": "按角色配置各功能是否可用。点击勾/叉切换；admin 恒为全功能不可改。仅内置管理员可修改，操作记入审计。改错可用「重置」恢复默认，或运行 reset-admin.sh 修复。",
+    "users.rfAll": "全选",
+    "users.rfReset": "重置",
+    "users.rfResetConfirm": "确认恢复该角色为默认功能权限？",
+    "rf.overview": "概览 / 运行状态",
+    "rf.logs": "运行日志",
+    "rf.test": "连通测试",
+    "rf.config": "模型配置",
+    "rf.accounts": "账号 / 访问控制",
+    "rf.security": "安全设置",
+    "rf.mcp": "MCP 网关",
+    "rf.correction": "ASR 纠错词表",
+    "rf.service": "服务控制 / 同步",
     "users.name": "账号",
     "users.password": "密码",
     "users.genPwd": "生成",
@@ -583,7 +593,7 @@ const I18N = {
     "llm.defaultProvider": "默认供应商",
     "llm.defaultRoute": "（默认路由）",
     "llm.includeInProvider": "选入提供商",
-    "llm.modelHint": "模型（先选提供商，再选该提供商下的模型）",
+    "llm.modelHint": "模型（可直接选择；如需按厂商筛选，先在上方选提供商）",
     "llm.pickProvider": "（请先选提供商）",
     "llm.mode": "模式",
     "llm.modeChat": "对话（chat/completions）",
@@ -727,6 +737,7 @@ const I18N = {
     "nav.mcp": "MCP网关",
     "mcp.servers": "上游 MCP 服务",
     "mcp.add": "新增网关",
+    "mcp.addTool": "新增工具",
     "mcp.emptyGateway": "暂无网关",
     "mcp.emptyTools": "暂无工具",
     "mcp.name": "名称",
@@ -870,10 +881,20 @@ const I18N = {
     "users.add": "Add user",
     "users.hint": "Admin only; built-in admin cannot be deleted / role-changed / disabled / password-reset",
     "users.tabUsers": "Accounts",
-    "users.tabGrants": "Per-user grants",
-    "users.grantNone": "None (use role)",
-    "users.grantHint": "Grant a user higher access on a specific feature without changing their role. Only the built-in admin can edit; changes are audited. Built-in admin and admin-role users already have full access and are excluded.",
-    "users.grantEmpty": "No users available for per-user grants (built-in admin and admin-role users already have full access).",
+    "users.tabRoles": "Role permissions",
+    "users.roleFeatureHint": "Configure which features each role can use. Click a check/cross to toggle; admin is always full-access and cannot be changed. Only the built-in admin can edit; changes are audited. Use Reset to restore defaults, or run reset-admin.sh to repair.",
+    "users.rfAll": "Select all",
+    "users.rfReset": "Reset",
+    "users.rfResetConfirm": "Restore this role to default feature permissions?",
+    "rf.overview": "Overview / status",
+    "rf.logs": "Runtime logs",
+    "rf.test": "Connectivity tests",
+    "rf.config": "Model config",
+    "rf.accounts": "Accounts / access control",
+    "rf.security": "Security settings",
+    "rf.mcp": "MCP gateway",
+    "rf.correction": "ASR correction wordlist",
+    "rf.service": "Service control / sync",
     "users.name": "Username",
     "users.password": "Password",
     "users.genPwd": "Generate",
@@ -1111,7 +1132,7 @@ const I18N = {
     "llm.defaultProvider": "Default provider",
     "llm.defaultRoute": "(default route)",
     "llm.includeInProvider": "Include in provider",
-    "llm.modelHint": "Model (pick a provider first, then a model under it)",
+    "llm.modelHint": "Model (select directly; pick a provider above to narrow the list)",
     "llm.pickProvider": "(pick a provider first)",
     "llm.mode": "Mode",
     "llm.modeChat": "Chat (chat/completions)",
@@ -1255,6 +1276,7 @@ const I18N = {
     "nav.mcp": "MCP Gateway",
     "mcp.servers": "Upstream MCP servers",
     "mcp.add": "Add gateway",
+    "mcp.addTool": "Add tool",
     "mcp.emptyGateway": "No gateways yet",
     "mcp.emptyTools": "No tools yet",
     "mcp.name": "Name",
@@ -3645,8 +3667,8 @@ async function renderDashboard(){
       <label>${t('common.provider')}</label>
       <select id="llmProvider"><option value="">${t('llm.defaultRoute')}</option></select>
       <label>${t('llm.modelHint')}</label>
-      <select id="llmModel" disabled>
-        <option value="">${t('llm.pickProvider')}</option>
+      <select id="llmModel">
+        <option value="">${t('llm.useUpstreamDefault')}</option>
       </select>
       <div id="llmProtoRow">
         <label>${t('common.protocol')}</label>
@@ -3684,8 +3706,8 @@ async function renderDashboard(){
       <label>${t('common.provider')}</label>
       <select id="embedProvider"><option value="">${t('llm.defaultRoute')}</option></select>
       <label>${t('llm.modelHint')}</label>
-      <select id="embedModel" disabled>
-        <option value="">${t('llm.pickProvider')}</option>
+      <select id="embedModel">
+        <option value="">${t('llm.useUpstreamDefault')}</option>
       </select>
       <div class="hint">${t('llm.embedModelTabHint')}</div>
       <label>${t('llm.embeddingText')}</label>
@@ -3861,7 +3883,8 @@ async function renderDashboard(){
     tabs.forEach(x=>x.classList.remove('active'));
     t.classList.add('active');
     ['llm','asr','tts','embed','rerank','ocr'].forEach(k=>{ const e=document.getElementById('t-'+k); if(e) e.hidden = (t.dataset.tab!==k); });
-    if(t.dataset.tab==='llm' || t.dataset.tab==='embed'){ populateLlmProviders(); }
+    if(t.dataset.tab==='llm'){ populateLlmProviders(); }
+    if(t.dataset.tab==='embed'){ populateEmbedProviders(); }
     if(t.dataset.tab==='rerank'){ populateRerankProviders(); }
   });
 
@@ -4094,21 +4117,50 @@ async function renderDashboard(){
     }catch(e){ status.textContent=t('common.errorPrefix')+e.message; status.className='err'; }
   };
 
-  // 模型下拉按所选提供商联动：没选提供商时禁用；选了才列出该提供商下的模型。
+  // 模型下拉：直接列出所有可用模型，不再强制先选提供商。
   // 归属关系来自 /llm/v1/providers 每条的 vendor + model，见 populateLlmProviders。
-  let llmProviderModels = {};
+  // option value 用 "vendor\u0001model" 组合，选中后解析出 vendor/model 一起下发，
+  // 这样既能「直接选模型」，后端仍能拿到 vendor 做精确路由；「默认路由」则两者都留空。
+  let llmProviderModels = {}, embedProviderModels = {};
+  function pmValue(vendor, model){ return vendor ? (vendor+'\u0001'+model) : model; }
+  function splitPmValue(v){
+    if(!v) return {vendor:'', model:''};
+    const i=v.indexOf('\u0001');
+    return i>=0 ? {vendor:v.slice(0,i), model:v.slice(i+1)} : {vendor:'', model:v};
+  }
+  // 扁平化所有提供商的模型；同名模型跨厂商时分别列出，并用厂商名区分。
+  function allProviderModels(map){
+    const out=[], seen=new Set();
+    Object.keys(map).forEach(v=>{
+      (map[v]||[]).forEach(m=>{
+        const k=v+'\u0001'+m;
+        if(!seen.has(k)){ seen.add(k); out.push({vendor:v, model:m}); }
+      });
+    });
+    return out;
+  }
+  function fillModelSelect(sel, v, map){
+    if(!sel) return;
+    sel.innerHTML='';
+    const head=document.createElement('option');
+    head.value=''; head.textContent=t('llm.useUpstreamDefault');
+    sel.appendChild(head);
+    const list = v
+      ? (map[v]||[]).map(m=>({vendor:v, model:m}))
+      : allProviderModels(map);
+    list.forEach(x=>{
+      const o=document.createElement('option');
+      o.value=pmValue(x.vendor, x.model);
+      o.textContent = x.model + (v ? '' : '（'+vendorLabel(x.vendor)+'）');
+      sel.appendChild(o);
+    });
+    sel.disabled=false;
+    sel.value='';
+  }
   function refreshLlmModels(){
     const prov=document.getElementById('llmProvider'), sel=document.getElementById('llmModel');
     if(!prov || !sel) return;
-    const v=(prov.value||'').trim();
-    const models=llmProviderModels[v]||[];
-    sel.innerHTML='';
-    const head=document.createElement('option');
-    head.value=''; head.textContent = v ? t('llm.useUpstreamDefault') : t('llm.pickProvider');
-    sel.appendChild(head);
-    models.forEach(m=>{ const o=document.createElement('option'); o.value=m; o.textContent=m; sel.appendChild(o); });
-    sel.disabled = !v;
-    sel.value='';
+    fillModelSelect(sel, (prov.value||'').trim(), llmProviderModels);
   }
 
   // LLM 协议下拉的中文说明（选中后展示，与模型测试弹窗共用 PROTOCOL_DESC）
@@ -4120,8 +4172,10 @@ async function renderDashboard(){
   const llmStatus=document.getElementById('llmStatus'), llmOut=document.getElementById('llmOut');
   const llmThinkWrap=document.getElementById('llmThinkWrap'), llmThink=document.getElementById('llmThink');
   document.getElementById('llmGo').onclick = ()=>{
-    const vendor=document.getElementById('llmProvider').value.trim();
-    const model=document.getElementById('llmModel').value.trim();
+    const pm=splitPmValue(document.getElementById('llmModel').value.trim());
+    // 选了模型就带出它所属的 vendor；选「默认路由」时才回退到上方提供商下拉。
+    const vendor=pm.vendor || document.getElementById('llmProvider').value.trim();
+    const model=pm.model;
     const protocol=document.getElementById('llmProtocol').value.trim();
     const needThink=document.getElementById('llmThinkMode') ? document.getElementById('llmThinkMode').checked : false;
     const opts={
@@ -4136,8 +4190,9 @@ async function renderDashboard(){
   document.getElementById('llmStop').onclick = ()=>{ if(llmCtrl) llmCtrl.abort(); };
   // 向量嵌入测试（独立 tab）：发送 / 停止
   document.getElementById('embedGo').onclick = ()=>{
-    const vendor=document.getElementById('embedProvider').value.trim();
-    const model=document.getElementById('embedModel').value.trim();
+    const pm=splitPmValue(document.getElementById('embedModel').value.trim());
+    const vendor=pm.vendor || document.getElementById('embedProvider').value.trim();
+    const model=pm.model;
     const dimEl=document.getElementById('embedDim');
     const raw=dimEl?dimEl.value.trim():'';
     const dims=raw?parseInt(raw,10):null;
@@ -4199,32 +4254,43 @@ async function renderDashboard(){
       sel.onchange = refreshLlmModels;
     }
     refreshLlmModels();
-    // embeddings 测试页的提供商下拉复用同一份 providers 数据
-    const esel=document.getElementById('embedProvider');
-    if(esel){
-      esel.innerHTML='<option value="">'+t('llm.defaultRoute')+'</option>';
-      Object.keys(map).forEach(v=>{
-        const o=document.createElement('option'); o.value=v;
-        o.textContent=vendorLabel(v)+(hosts[v]?('　('+hosts[v]+')'):''); esel.appendChild(o);
-      });
-      esel.onchange = refreshEmbedModels;
-      refreshEmbedModels();
-    }
+    // 向量提供商走独立的 populateEmbedProviders()，不复用 LLM 列表。
   }
 
-  // embeddings 测试页：按所选提供商列出该提供商下的模型（与对话共用 llmProviderModels）
+  // embeddings 测试页：用独立的 /embed/v1/providers 数据，直接列出所有向量模型（选中自动带出 vendor）
   function refreshEmbedModels(){
     const prov=document.getElementById('embedProvider'), sel=document.getElementById('embedModel');
     if(!prov || !sel) return;
-    const v=(prov.value||'').trim();
-    const models=llmProviderModels[v]||[];
-    sel.innerHTML='';
-    const head=document.createElement('option');
-    head.value=''; head.textContent = v ? t('llm.useUpstreamDefault') : t('llm.pickProvider');
-    sel.appendChild(head);
-    models.forEach(m=>{ const o=document.createElement('option'); o.value=m; o.textContent=m; sel.appendChild(o); });
-    sel.disabled = !v;
-    sel.value='';
+    fillModelSelect(sel, (prov.value||'').trim(), embedProviderModels);
+  }
+  // 向量提供商列表：与 LLM 分开加载，避免向量 tab 错列对话模型。
+  async function populateEmbedProviders(){
+    const sel=document.getElementById('embedProvider');
+    const cur=sel ? sel.value : '';
+    const map={}, hosts={};
+    try{
+      const r=await fetch('/embed/v1/providers',{credentials:'same-origin'});
+      if(r.ok){
+        const d=await r.json(); const ps=(d.providers||[]).filter(p=>p.vendor && p.vendor!=='(未指定)');
+        ps.forEach(p=>{
+          const v=p.vendor;
+          if(!map[v]) map[v]=[];
+          if(p.model && !map[v].includes(p.model)) map[v].push(p.model);
+          if(p.host && !hosts[v]) hosts[v]=p.host;
+        });
+      }
+    }catch(_){}
+    embedProviderModels=map;
+    if(sel){
+      sel.innerHTML='<option value="">'+t('llm.defaultRoute')+'</option>';
+      Object.keys(map).forEach(v=>{
+        const o=document.createElement('option'); o.value=v;
+        o.textContent=vendorLabel(v)+(hosts[v]?('　('+hosts[v]+')'):''); sel.appendChild(o);
+      });
+      sel.value = Object.prototype.hasOwnProperty.call(map,cur) ? cur : '';
+      sel.onchange = refreshEmbedModels;
+    }
+    refreshEmbedModels();
   }
 
   // ASR：可录音（直接替换上方试听音频），或一键识别内嵌的固定音频
@@ -4456,6 +4522,7 @@ async function renderDashboard(){
   window.refreshVoiceTestSelects();
 
   populateLlmProviders();  // 初始页就是 LLM，拉提供商并联动刷新模型下拉
+  populateEmbedProviders(); // 向量 tab 走独立数据源，预加载以便切换即可选模型
   loadLogFiles().then(loadLogs);
 }
 
@@ -4550,14 +4617,14 @@ function epochLocal(v){ return v ? Math.floor(new Date(v).getTime()/1000) : null
 function buildUserManage(box){
   box.innerHTML=`<div class="subtabs" id="acctSubTabs">
       <button class="tab active" data-atab="users">${t('users.tabUsers')}</button>
-      <button class="tab" data-atab="grants">${t('users.tabGrants')}</button>
+      <button class="tab" data-atab="grants">${t('users.tabRoles')}</button>
     </div>
     <div class="as-pane" id="acct-users">
       <div class="row" style="margin-bottom:10px"><button id="userAdd">${t('users.add')}</button><span class="muted">${t('users.hint')}</span></div>
       <div id="userList"><span class="muted">${t('common.loadingX')}</span></div>
       <div class="row" id="userPager" style="align-items:center;margin-top:10px"></div>
     </div>
-    <div class="as-pane" id="acct-grants" hidden><div id="grantList"><span class="muted">${t('common.loadingX')}</span></div></div>`;
+    <div class="as-pane" id="acct-grants" hidden><div id="roleFeatureBox"><span class="muted">${t('common.loadingX')}</span></div></div>`;
   box.querySelectorAll('#acctSubTabs .tab').forEach(btn=>{
     btn.onclick=()=>{
       box.querySelectorAll('#acctSubTabs .tab').forEach(x=>x.classList.remove('active'));
@@ -4565,7 +4632,7 @@ function buildUserManage(box){
       const t=btn.dataset.atab;
       box.querySelector('#acct-users').hidden=(t!=='users');
       box.querySelector('#acct-grants').hidden=(t!=='grants');
-      if(t==='grants') loadGrants();
+      if(t==='grants') loadRoleFeatures();
     };
   });
 }
@@ -4594,31 +4661,59 @@ async function loadUsers(page){
   const add=document.getElementById('userAdd'); if(add) add.onclick=()=>userAddModal();
 }
 let _meCache=null;
-async function loadGrants(){
-  const box=document.getElementById('grantList'); if(!box) return;
-  const [gr, mr]=await Promise.all([api('/admin/api/grants'), api('/admin/api/me')]);
-  if(!gr.ok){ box.textContent=t('common.loadFailed'); return; }
-  const data=await gr.json();
+const RF_ICON_Y='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M20 6L9 17l-5-5"/></svg>';
+const RF_ICON_N='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+async function loadRoleFeatures(){
+  const box=document.getElementById('roleFeatureBox'); if(!box) return;
+  const [fr, mr]=await Promise.all([api('/admin/api/role-features'), api('/admin/api/me')]);
+  if(!fr.ok){ box.textContent=t('common.loadFailed'); return; }
+  const data=await fr.json();
   _meCache=mr.ok?await mr.json():null;
   const canEdit=!!(_meCache && _meCache.is_builtin);
-  const grants=data.grants||[], features=data.features||[];
-  const users=await api('/admin/api/users').then(r=>r.ok?r.json():null).catch(()=>null);
-  const all=(users&&users.users||[]).filter(u=>!u.is_builtin && u.role!=='admin');
-  const gmap={}; grants.forEach(g=>{ gmap[g.username+'/'+g.feature]=g.role; });
-  const opt=sel=>['','viewer','operator','admin'].map(v=>
-    '<option value="'+v+'"'+(v===sel?' selected':'')+'>'+(v||t('users.grantNone'))+'</option>').join('');
-  box.innerHTML='<div class="hint" style="margin-bottom:10px">'+esc(t('users.grantHint'))+'</div>'+
-    (all.length? '<table class="admin-table" style="width:100%"><thead><tr><th>'+esc(t('users.name'))+'</th>'+
-      features.map(f=>'<th style="text-align:center">'+esc(f)+'</th>').join('')+'</tr></thead><tbody>'+
-      all.map(u=>'<tr><td class="col-name">'+esc(u.username)+'</td>'+
-        features.map(f=>'<td style="text-align:center"><select data-u="'+esc(u.username)+'" data-f="'+f+'"'+(canEdit?'':' disabled')+' style="width:110px">'+opt(gmap[u.username+'/'+f]||'')+'</select></td>').join('')+
-        '</tr>').join('')+'</tbody></table>' : '<div class="hint">'+esc(t('users.grantEmpty'))+'</div>');
+  const roles=data.roles||[], features=data.features||[], matrix=data.matrix||{};
+  // 功能域展示名（优先 i18n，无则用 feature 原值）
+  const flabel=f=>t('rf.'+f)!==('rf.'+f)?t('rf.'+f):f;
+  const cell=(role,f)=>{
+    const on=!!(matrix[role] && matrix[role][f]);
+    const disabled=(role==='admin'||!canEdit)?' disabled':'';
+    return '<td style="text-align:center;width:90px"><button class="rf-cell" data-role="'+role+'" data-f="'+f+'"'+disabled+
+      ' title="'+esc(flabel(f))+'" style="background:transparent;border:0;cursor:'+(disabled?'default':'pointer')+'">'+
+      (on?RF_ICON_Y:RF_ICON_N)+'</button></td>';
+  };
+  box.innerHTML='<div class="hint" style="margin-bottom:10px">'+esc(t('users.roleFeatureHint'))+'</div>'+
+    '<table class="admin-table" style="width:100%"><thead><tr><th>'+esc(t('roles.feature'))+'</th>'+
+      roles.map(r=>'<th style="text-align:center;width:90px">'+esc(r)+
+        (r!=='admin'&&canEdit?' <button class="sec rf-all" data-role="'+r+'" style="padding:2px 6px;font-size:11px" title="'+esc(t('users.rfAll'))+'">'+esc(t('users.rfAll'))+'</button> '+
+         '<button class="sec rf-reset" data-role="'+r+'" style="padding:2px 6px;font-size:11px" title="'+esc(t('users.rfReset'))+'">'+esc(t('users.rfReset'))+'</button>':'')+
+      '</th>').join('')+'</tr></thead><tbody>'+
+      features.map(f=>'<tr><td class="col-name">'+esc(flabel(f))+'</td>'+roles.map(r=>cell(r,f)).join('')+'</tr>').join('')+
+    '</tbody></table>';
   if(!canEdit) return;
-  box.querySelectorAll('select[data-u]').forEach(s=>{
-    s.onchange=async()=>{
-      const r=await api('/admin/api/grants/'+encodeURIComponent(s.dataset.u)+'/'+s.dataset.f,{
-        method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({role:s.value||null})});
-      if(!r.ok){ alert(fmtErr((await r.json()).detail)); loadGrants(); }
+  const toggle=async(role,f)=>{
+    const cur=!!(matrix[role]&&matrix[role][f]);
+    const r=await api('/admin/api/role-features/'+role+'/'+f,{method:'PUT',
+      headers:{'content-type':'application/json'},body:JSON.stringify({enabled:!cur})});
+    if(!r.ok){ alert(fmtErr((await r.json()).detail)); return; }
+    matrix[role][f]=!cur; loadRoleFeatures();
+  };
+  box.querySelectorAll('.rf-cell').forEach(b=>{ b.onclick=()=>toggle(b.dataset.role,b.dataset.f); });
+  box.querySelectorAll('.rf-all').forEach(b=>{
+    b.onclick=async()=>{
+      const role=b.dataset.role;
+      for(const f of features){ if(!matrix[role][f]){
+        const r=await api('/admin/api/role-features/'+role+'/'+f,{method:'PUT',
+          headers:{'content-type':'application/json'},body:JSON.stringify({enabled:true})});
+        if(!r.ok){ alert(fmtErr((await r.json()).detail)); return; }
+      }}
+      loadRoleFeatures();
+    };
+  });
+  box.querySelectorAll('.rf-reset').forEach(b=>{
+    b.onclick=async()=>{
+      if(!confirm(t('users.rfResetConfirm')+': '+b.dataset.role)) return;
+      const r=await api('/admin/api/role-features/'+b.dataset.role+'/reset',{method:'POST'});
+      if(!r.ok){ alert(fmtErr((await r.json()).detail)); return; }
+      loadRoleFeatures();
     };
   });
 }
@@ -5253,7 +5348,7 @@ function showMcpToolAddModal(servers){
     +'<div class="row" style="margin-top:10px"><button type="button" class="sec" id="mcpTPull">'+t('mcp.refresh')+'</button>'
       +'<span class="hint" id="mcpTStat"></span></div>'
     +'<div id="mcpTList" style="margin-top:10px"><div class="hint">'+t('mcp.selectTools')+'</div></div>';
-  showModal(t('mcp.add'), body, async(m)=>{
+  showModal(t('mcp.addTool'), body, async(m)=>{
     // 勾选的是原始工具名，保存时自动加网关工具前缀 → qualified_name
     const srv=servers.find(x=>x.id===+m.querySelector('#mcpTGw').value);
     const prefix=(srv&&srv.tool_prefix||'').trim()||(srv&&srv.name||'');
@@ -5262,7 +5357,7 @@ function showMcpToolAddModal(servers){
       body:JSON.stringify({tools:picked})});
     if(!r.ok){ alert(t('common.failPrefix')+r.status); return false; }
     loadMcpToolsPage(); return true;
-  }, t('mcp.add'));
+  }, t('mcp.addTool'));
   const m=document.getElementById('genericModal');
   const gsel=m.querySelector('#mcpTGw'), list=m.querySelector('#mcpTList'), stat=m.querySelector('#mcpTStat');
   const pull=async ()=>{
@@ -5329,7 +5424,7 @@ async function loadMcpToolsPage(){
     const pages=Math.max(1, Math.ceil(names.length/PAGE_SIZE));
     if(mcpToolPage>pages) mcpToolPage=pages;
     const slice=names.slice((mcpToolPage-1)*PAGE_SIZE, mcpToolPage*PAGE_SIZE);
-    let h='<div class="row" style="margin-bottom:10px"><button id="mcpToolAdd">'+t('mcp.add')+'</button>'
+    let h='<div class="row" style="margin-bottom:10px"><button id="mcpToolAdd">'+t('mcp.addTool')+'</button>'
       +'<div class="row" style="margin-left:auto"><input id="mcpToolSearch" class="hw-input" placeholder="'+t('mcp.searchTools')+'" style="width:280px" value="'+esc(q)+'" />'
       +'<button id="mcpToolSearchBtn">'+t('common.search')+'</button></div></div>';
     h+='<table class="admin-table" style="width:100%"><thead><tr><th style="width:140px">'+t('mcp.toolId')+'</th><th style="width:80px">'+t('mcp.ownerGateway')+'</th><th style="width:300px">'+t('mcp.toolDesc')+'</th><th style="width:70px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';

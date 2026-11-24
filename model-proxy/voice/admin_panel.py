@@ -279,17 +279,18 @@ def destroy_session(token: str | None) -> None:
 # 角色优先级：viewer < operator < admin
 ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}
 
-# 功能域 → 路径前缀（按请求路径推导，用于单账号单独授权）。顺序：长前缀优先匹配。
+# 功能域 → 路径前缀（按请求路径推导，用于角色功能矩阵 + 单账号授权）。顺序：具体优先。
 GRANT_FEATURE_PATHS: list[tuple[str, tuple[str, ...]]] = [
     ("mcp", ("/admin/api/mcp/",)),
+    ("correction", ("/admin/api/corrections",)),
+    ("service", ("/admin/api/action", "/admin/api/sync")),
     ("accounts", ("/admin/api/users", "/admin/api/api-keys", "/admin/api/rate/")),
     ("config", ("/admin/api/config", "/admin/api/llm-pool", "/admin/api/embed-pool",
-                "/admin/api/rerank-pool", "/admin/api/speech-secrets", "/admin/api/speech-models",
-                "/admin/api/enabled-models", "/admin/api/corrections", "/admin/api/action",
-                "/admin/api/sync", "/admin/api/schema-history")),
+                "/admin/api/rerank-pool", "/admin/api/speech-secrets")),
     ("test", ("/admin/api/probe", "/admin/api/stt-", "/admin/api/tts-", "/admin/api/dashscope-models")),
     ("logs", ("/admin/api/log",)),
-    ("overview", ("/admin/api/overview", "/admin/api/status")),
+    ("overview", ("/admin/api/overview", "/admin/api/status", "/admin/api/schema-history",
+                  "/admin/api/speech-models", "/admin/api/enabled-models")),
 ]
 
 
@@ -301,16 +302,30 @@ def _feature_for_path(path: str) -> str | None:
 
 
 def _effective_role(username: str, path: str) -> str | None:
-    """账号自身角色与「该路径功能域的单独授权」取较高者；无账号/被禁用返回 None。"""
+    """按「角色功能矩阵」+「单账号授权」算有效权限；账号无效/功能被禁返回 None。
+
+    - 角色功能矩阵：内置管理员可配某角色能否用某功能；admin 恒可用（不可锁死）；
+      无配置时用默认矩阵。功能被禁 → 拒绝（返回 None）。
+    - 单账号授权（v20）：仍兼容，给单账号在某功能域提升级别。
+    """
     acct = voice_db.admin_user_get(username)
     if not acct or not acct.get("enabled"):
         return None
     base = acct.get("role") or "viewer"
     feature = _feature_for_path(path)
     if feature:
+        # 单账号授权（v20）优先：显式授权即放行，不受角色矩阵禁用影响
         granted = voice_db.grant_role_for(username, feature)
         if granted and ROLE_ORDER.get(granted, -1) > ROLE_ORDER.get(base, -1):
             return granted
+        # 角色功能矩阵：禁用则拒绝；admin 恒放行
+        if base != "admin":
+            if not voice_db.role_feature_allowed(base, feature):
+                return None
+            # 矩阵把「该角色默认禁止的功能」显式打开 → 视为具备该功能所需的最高级别，
+            # 让 require_admin 等级别依赖通过（否则 operator 开了 config 仍被级别拦住）。
+            if not voice_db.DEFAULT_ROLE_FEATURES.get(base, {}).get(feature, False):
+                return "admin"
     return base
 
 

@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -139,6 +139,8 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         ["col:mcp_servers:tool_prefix:TEXT NOT NULL DEFAULT ''"]),
     20: ("新增 admin_grants 表：给单个账号在指定功能域(feature)上单独授予权限级别(role)，"
         "不改变账号自身角色；鉴权时按路径推导功能域，取账号角色与该域授权的较高者。仅内置管理员可管理", []),
+    21: ("新增 role_features 表：按角色(viewer/operator/admin)配置各功能域(feature)是否可用，"
+        "内置管理员可在面板勾选(全选)，鉴权按角色+功能域查该表(无记录用默认矩阵)。仅内置管理员可管理", []),
 }
 
 def ensure_schema() -> None:
@@ -216,6 +218,14 @@ def ensure_schema() -> None:
             role       TEXT NOT NULL,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (username, feature)
+        );
+        -- 角色功能矩阵（v21）：角色×功能域是否可用。无记录时用代码默认矩阵。
+        CREATE TABLE IF NOT EXISTS role_features (
+            role       TEXT NOT NULL,
+            feature    TEXT NOT NULL,
+            enabled    INTEGER NOT NULL DEFAULT 1,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (role, feature)
         );
         -- API Key（v10）：只存哈希，不存明文。not_before/expires_at 为秒级 epoch（NULL=不限）；
         -- allowed_ips 为 JSON 数组（空=不额外限制）；owner_* 为将来外部用户预留，本期不用。
@@ -807,8 +817,60 @@ def admin_user_change_password(username: str, old_password: str, new_password: s
 
 
 # ── 单账号单独授权（v20）─────────────────────────────────────────────
-VALID_GRANT_FEATURES = ("overview", "logs", "test", "config", "accounts", "security", "mcp")
+VALID_GRANT_FEATURES = ("overview", "logs", "test", "config", "accounts", "security", "mcp", "correction", "service")
 ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}  # 与 admin_panel.ROLE_ORDER 一致
+
+# 角色功能矩阵默认值：{role: {feature: enabled}}
+# 有 role_features 记录时用记录，否则用这里。admin 恒为全功能（不可被剥夺，避免锁死）。
+DEFAULT_ROLE_FEATURES: dict[str, dict[str, bool]] = {
+    "viewer":   {"overview": True, "logs": True, "test": False, "config": False,
+                 "accounts": False, "security": False, "mcp": False, "correction": False, "service": False},
+    "operator": {"overview": True, "logs": True, "test": True, "config": False,
+                 "accounts": False, "security": False, "mcp": False, "correction": False, "service": False},
+    "admin":    {f: True for f in VALID_GRANT_FEATURES},
+}
+
+
+def role_feature_allowed(role: str, feature: str) -> bool:
+    """查角色在某功能域是否可用；admin 恒 True；无记录用默认矩阵。"""
+    if role == "admin":
+        return True
+    r = _conn_get().execute(
+        "SELECT enabled FROM role_features WHERE role=? AND feature=?", (role, feature)
+    ).fetchone()
+    if r is not None:
+        return bool(r["enabled"])
+    return bool(DEFAULT_ROLE_FEATURES.get(role, {}).get(feature, False))
+
+
+def role_features_list() -> list[dict[str, Any]]:
+    rows = _conn_get().execute(
+        "SELECT role, feature, enabled, updated_at FROM role_features ORDER BY role, feature"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def role_feature_set(role: str, feature: str, enabled: bool) -> None:
+    if role not in ROLE_ORDER or role == "admin":
+        raise ValueError("admin 功能不可修改")
+    if feature not in VALID_GRANT_FEATURES:
+        raise ValueError(f"未知功能域：{feature}")
+    with _lock:
+        c = _conn_get()
+        c.execute(
+            "INSERT OR REPLACE INTO role_features(role,feature,enabled,updated_at) VALUES(?,?,?,?)",
+            (role, feature, 1 if enabled else 0, int(time.time())),
+        )
+        c.commit()
+
+
+def role_features_reset(role: str) -> None:
+    if role not in ROLE_ORDER or role == "admin":
+        raise ValueError("admin 功能不可修改")
+    with _lock:
+        c = _conn_get()
+        c.execute("DELETE FROM role_features WHERE role=?", (role,))
+        c.commit()
 
 
 def grant_set(username: str, feature: str, role: str | None) -> None:
