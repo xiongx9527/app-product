@@ -2,7 +2,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode } from '../protocol'
+import type { ClientMessage, DetailContext, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode } from '../protocol'
 import type { GatewayConfig, AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
 import type {
@@ -100,7 +100,8 @@ export interface VoiceSessionDeps {
     autoMemory?: boolean,
     mcpServers?: McpServerConfig[],
     autoLearnEngine?: AutoLearnEngine,
-    promptAddon?: string
+    promptAddon?: string,
+    getDetailContext?: () => DetailContext | null
   ) => AgentService | Promise<AgentService>
   /** 本次会话启用的 skill 模块；由网关按配置加载，会话 start 时各 create 一个实例。 */
   skillModules?: import('./skills/types').SkillModule[]
@@ -241,6 +242,12 @@ export class VoiceSessionService {
   private skills: Skill[] = []
   /** 所有启用 skill 的提示词片段拼接结果（构造 agent 时一次算好，传给 agentFactory）。 */
   private skillPromptAddon = ''
+  /**
+   * 当前打开的结构化详情上下文（通用，不绑死业务 kind）：打开详情时设、关闭/换商品/会话结束时清。
+   * 每轮 reply 前注入 LLM systemPrompt，使助手能基于当前详情介绍、围绕它聊天。
+   * 存在会话层而非 skill 闭包，确保重武装/切来源重建 agent 时不丢。
+   */
+  private detailContext: DetailContext | null = null
   private mode: 'wake' | 'dialog' = 'dialog'
   private sessionRowId = 0
   private agent: AgentService | null = null
@@ -481,7 +488,54 @@ export class VoiceSessionService {
           this.media.syncVolumeFromClient(Number(msg.volume))
         }
         break
+      case 'client.detail':
+        // 客户端打开/关闭单条详情：通用设当前详情上下文并广播 skill（如 detail_chat 反问要不要介绍）。
+        // 不绑死业务 kind，商品/开源项目/未来的产品介绍都走这一条。
+        void this.setCurrentDetail(
+          msg.action === 'select'
+            ? { kind: msg.kind, index: msg.index, title: msg.title, fields: msg.fields ?? [] }
+            : null
+        )
+        break
     }
+  }
+
+  /**
+   * 通用：设置/清除「当前详情上下文」并广播给所有 skill 的 onDetailOpen/onDetailClose 钩子。
+   * 两条入口都汇聚到这里：客户端点详情（client.detail）、网关下发 media.detail(selectedIndex)
+   * （见 sendDetailOpen 拦截）。不绑死业务 kind——任何详情类型都自动获得「反问介绍」等通用能力。
+   */
+  private async setCurrentDetail(context: DetailContext | null): Promise<void> {
+    const prev = this.detailContext
+    // 同一条详情重复 select 不重复反问（幂等）
+    if (context && prev && prev.kind === context.kind && prev.index === context.index
+        && prev.title === context.title && prev.fields.length === context.fields.length) return
+    this.detailContext = context
+    for (const skill of this.skills) {
+      try {
+        if (context) await skill.onDetailOpen?.(context)
+        else await skill.onDetailClose?.()
+      } catch (err) {
+        console.warn('[skills] detail 钩子抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+  }
+
+  /**
+   * 拦截业务 skill 下发的「打开单条详情」事件（media.detail + selectedIndex），
+   * 自动设当前详情上下文并广播——这样业务 skill 只管发详情，不写死任何「介绍」逻辑。
+   * 从 items 里取选中项（1 起）的 title/fields 作通用上下文。
+   */
+  private noteDetailFromEvent(e: ServerEvent): void {
+    if (e.type !== 'media.detail' || e.selectedIndex == null || !e.items.length) return
+    const item = e.items.find((x) => x.index === e.selectedIndex) ?? e.items[e.selectedIndex - 1]
+    if (!item) return
+    void this.setCurrentDetail({
+      kind: e.kind,
+      index: e.selectedIndex,
+      title: item.title,
+      fields: (item.fields ?? []).map((f) => ({ label: f.label, value: f.value })),
+    })
   }
 
   /**
@@ -556,7 +610,12 @@ export class VoiceSessionService {
       get data() { return self.deps.data },
       get memoryStore() { return self.memoryStore },
       get agent() { return self.agent },
-      send: (e) => self.deps.send(e),
+      // 包装 send：任何 skill 下发「打开单条详情」(media.detail + selectedIndex) 都自动
+      // 设当前详情上下文并广播，业务 skill 零改动即获得「反问介绍」等通用能力，不写死业务。
+      send: (e) => {
+        self.noteDetailFromEvent(e)
+        self.deps.send(e)
+      },
       speak: (t) => self.speakReply(t),
       queueRemaining: () => self.queue.length,
       getLocation: () => self.getLocation(),
@@ -704,6 +763,22 @@ export class VoiceSessionService {
       }
     }
     return parts.join('')
+  }
+
+  /**
+   * 详情「要不要介绍」确认：在 dispatchFinalize 之前优先调用，避免 preference 等 skill
+   * 抢先消费「好」。任一 skill 返回 consumed=true 即短路，不再走普通定稿/LLM。
+   */
+  private async dispatchIntroConfirm(text: string): Promise<boolean> {
+    for (const skill of this.skills) {
+      try {
+        const r = await skill.onIntroConfirm?.(text)
+        if (r?.consumed) return true
+      } catch (err) {
+        console.warn('[skills] onIntroConfirm 抛错，已跳过:', (err as Error)?.message)
+      }
+    }
+    return false
   }
 
   /** 一句播完后按序调用所有 skill 的 onAfterSpeak（兜底追问）。 */
@@ -1172,8 +1247,11 @@ export class VoiceSessionService {
     }
     // ── skill 定稿钩子（偏好追问等规则已迁进 skill）──
     // 只在空闲真实对话轮次处理（播报期插话的「好/嗯」会排队，由 runTurn 消费时再确认）。
-    // 任一 skill 的 onFinalize 消费了这句就直接 return，不再走直连命令 / LLM。
     if (!this.playbackPending && !this.processing) {
+      // 详情「要不要介绍」确认优先：必须在偏好追问等 onFinalize 之前，
+      // 否则用户答「好」会被 preference 的 pending 抢先消费。
+      if (await this.dispatchIntroConfirm(text)) return
+      // 任一 skill 的 onFinalize 消费了这句就直接 return，不再走直连命令 / LLM。
       if (await this.dispatchFinalize(text)) return
     }
 
@@ -1343,7 +1421,10 @@ export class VoiceSessionService {
           // 排队回放的句子先过 skill 定稿钩子：播报期问「要不要记」后用户的「好」排到这里，
           // 由 preference skill 此时才真正落库（finalizeUtterance 里 pb=true 不处理确认）；
           // 播报期插话的偏好句也在这里补 stage，runAgent 才能把追问拼进同一段 TTS。
-          if (await this.dispatchFinalize(current)) {
+          // 详情介绍确认同样优先于偏好确认（播报期插话排队的「好」也要能对上）。
+          if (await this.dispatchIntroConfirm(current)) {
+            directHandled = true
+          } else if (await this.dispatchFinalize(current)) {
             directHandled = true
           } else {
             // 排队回放的句子也要走直连拦截（音乐/音量/记忆），不能丢给大模型自动播放；
@@ -1960,7 +2041,8 @@ export class VoiceSessionService {
             this.autoMemory,
             this.mcpServers,
             this.deps.correctionSyncer?.engine,
-            this.skillPromptAddon
+            this.skillPromptAddon,
+            () => this.detailContext
           )
       this.lastLlmKey = llmKey
       return
@@ -2002,7 +2084,8 @@ export class VoiceSessionService {
             this.autoMemory,
             this.mcpServers,
             this.deps.correctionSyncer?.engine,
-            this.skillPromptAddon
+            this.skillPromptAddon,
+            () => this.detailContext
           )
     this.lastLlmKey = llmKey
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())

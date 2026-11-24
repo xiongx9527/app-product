@@ -44,6 +44,17 @@ export interface DetailItem {
   fields?: DetailField[]
 }
 
+/**
+ * 当前打开的详情上下文（通用，供 LLM 基于它介绍/聊天、供 skill 反问）。
+ * 从 DetailItem 提取最小通用信息，不绑死任何业务类型（商品/开源项目/产品介绍等通用）。
+ */
+export interface DetailContext {
+  kind: string
+  index?: number
+  title?: string
+  fields: DetailField[]
+}
+
 export type Lang = 'zh-CN'
 
 /** 设备上报的位置：经纬度必填，address 为系统定位回调附带的可读地址（城市/街道），可选。 */
@@ -159,6 +170,20 @@ export type ClientMessage =
   | { type: 'music.next'; genre?: string }
   /** 客户端拖动音量滑块后回执当前音量（0–1），网关据此保持音量状态同步，供「调大/调小」相对增减用 */
   | { type: 'music.volume'; volume: number }
+  /**
+   * 客户端打开/关闭结构化详情卡片的单条详情（点列表项选中→select，详情退回列表或收起→close）。
+   * 通用机制：网关据此把该条详情设为「当前详情上下文」并广播给所有 skill（如 detail_chat 反问要不要介绍），
+   * 不绑死任何业务 kind——商品/开源项目/未来的产品介绍都走这一条。
+   * title/fields 为客户端 DetailItem 已有数据，网关无本地快照时直接用它作 LLM 上下文。
+   */
+  | {
+      type: 'client.detail'
+      action: 'select' | 'close'
+      kind: string
+      index?: number
+      title?: string
+      fields?: Array<{ label: string; value: string }>
+    }
 
 /** 服务端 → 客户端（文本控制帧），与契约一致 */
 export type ServerEvent =

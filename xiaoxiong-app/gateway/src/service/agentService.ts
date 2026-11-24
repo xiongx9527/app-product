@@ -4,7 +4,7 @@ import { ReasoningChatModel } from './reasoningChatModel'
 import { UserMsg } from '@agentscope-ai/agentscope/message'
 import { EventType } from '@agentscope-ai/agentscope/event'
 import { messages } from '../i18n'
-import type { Lang, McpServerConfig } from '../protocol'
+import type { DetailContext, Lang, McpServerConfig } from '../protocol'
 import type { LlmConfig } from '../config'
 import { createToolkit, registerMcpServers, type LocationProvider, type MemoryStore, type McpClientHandle, type RequestLocation } from './tools'
 import type { AutoLearnEngine } from './autoLearn'
@@ -72,7 +72,9 @@ export async function createAgentService(
   /** 通用自动学习引擎：有则注册 learn_correction 工具并包装所有工具（agent 只依赖此抽象）。 */
   autoLearnEngine?: AutoLearnEngine,
   /** skill 注入的提示词片段：拼进 baseSysPrompt（必须在 refreshNowPlaying 之前），缺省空。 */
-  promptAddon: string = ''
+  promptAddon: string = '',
+  /** 当前打开的详情上下文：每轮 reply 前读最新值拼进 systemPrompt，供 LLM 介绍/围绕商品聊天。 */
+  getDetailContext?: () => DetailContext | null
 ): Promise<AgentService> {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
@@ -102,7 +104,10 @@ export async function createAgentService(
   function refreshNowPlaying(): void {
     const now = getNowPlaying?.()
     const ctx = now ? m.nowPlayingContext(now.title, now.artist, now.contentType) : ''
-    ;(agent as unknown as { _sysPrompt: string })._sysPrompt = baseSysPrompt + ctx
+    // 当前详情上下文：每轮读最新值，随 systemPrompt 重建（跨 agent 重武装不丢——值存在会话层）。
+    const detail = getDetailContext?.()
+    const detailCtx = detail ? m.detailContext(detail) : ''
+    ;(agent as unknown as { _sysPrompt: string })._sysPrompt = baseSysPrompt + ctx + detailCtx
   }
   return {
     mcpClients,

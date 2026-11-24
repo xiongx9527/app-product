@@ -44,7 +44,7 @@ describe('loader：按 GATEWAY_HOME/skills.json 显式启用', () => {
     process.env.GATEWAY_HOME = home
     const mods = loadSkillModules()
     // 缺省全开，但顺序按 priority（不是登记顺序）
-    expect(mods.map((m) => m.id)).toEqual(['preference', 'auspicious', 'time', 'weather', 'news', 'baike', 'poem', 'music', 'deals'])
+    expect(mods.map((m) => m.id)).toEqual(['preference', 'auspicious', 'detailChat', 'time', 'weather', 'news', 'baike', 'poem', 'music', 'deals'])
     rmSync(home, { recursive: true, force: true })
   })
 

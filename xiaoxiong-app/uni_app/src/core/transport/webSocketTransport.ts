@@ -477,6 +477,16 @@ export class WebSocketTransport implements AssistantTransport {
     this.sendJson({ type: 'music.volume', volume })
   }
 
+  sendClientDetail(payload: {
+    action: 'select' | 'close'
+    kind: string
+    index?: number
+    title?: string
+    fields?: Array<{ label: string; value: string }>
+  }): void {
+    this.sendJson({ type: 'client.detail', ...payload })
+  }
+
   notifyPlaybackDone(): void {
     this.sendJson({ type: 'session.playback_done' })
   }

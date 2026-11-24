@@ -8,7 +8,7 @@
  * 与 tools/ 的区别：skill 是「会话行为 + 提示词片段」的胶囊，带状态、接事件；
  * tool 是「LLM 可调用的函数」，无状态。两者互补。
  */
-import type { Lang, ServerEvent } from '../../protocol'
+import type { DetailContext, Lang, ServerEvent } from '../../protocol'
 import type { DataService } from '../dataService'
 import type { MemoryStore } from '../tools'
 import type { AgentService } from '../agentService'
@@ -151,6 +151,19 @@ export interface Skill {
   onAgentReply?(text: string, full: string): AgentReplyResult | void
   /** 一句真正播完后调用，做兜底追问。 */
   onAfterSpeak?(text: string): Promise<void>
+  /**
+   * 通用详情钩子：客户端点开某条详情 或 业务 skill 下发 media.detail(selectedIndex) 时广播。
+   * skill 据此获得「当前打开的详情」，如反问「要不要介绍下」。不传业务专属类型，只给通用 DetailContext。
+   */
+  onDetailOpen?(detail: DetailContext): Promise<void>
+  /** 详情关闭（退回列表/收起）时广播：清掉该详情相关的待确认状态/上下文。 */
+  onDetailClose?(): Promise<void>
+  /**
+   * 详情「要不要介绍」确认钩子：在 dispatchFinalize 遍历普通 skill 之前优先调用，
+   * 避免被其它 skill（如偏好追问）抢先消费「好」。返回 consumed=true 表示这句已消费。
+   * 与 onFinalize 的区别：优先级更高、且只在有详情待确认上下文时有意义。
+   */
+  onIntroConfirm?(text: string): Promise<FinalizeResult | void>
   /** 会话取消/结束/重新开始（重武装）时调用，清掉 skill 内部状态。 */
   onSessionReset?(reason: 'cancel' | 'end' | 'start'): void
 }

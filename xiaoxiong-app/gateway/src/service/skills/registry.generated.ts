@@ -11,12 +11,13 @@ export interface ContentFactories {
 import * as skillMod0 from './auspicious_skill/index'
 import * as skillMod1 from './baike_skill/index'
 import * as skillMod2 from './deals_skill/index'
-import * as skillMod3 from './edu_skill/index'
-import * as skillMod4 from './music_skill/index'
-import * as skillMod5 from './news_skill/index'
-import * as skillMod6 from './preference_skill/index'
-import * as skillMod7 from './time_skill/index'
-import * as skillMod8 from './weather_skill/index'
+import * as skillMod3 from './detail_chat_skill/index'
+import * as skillMod4 from './edu_skill/index'
+import * as skillMod5 from './music_skill/index'
+import * as skillMod6 from './news_skill/index'
+import * as skillMod7 from './preference_skill/index'
+import * as skillMod8 from './time_skill/index'
+import * as skillMod9 from './weather_skill/index'
 
 const mod0 = Object.values(skillMod0).find(
   (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
@@ -45,6 +46,9 @@ const mod7 = Object.values(skillMod7).find(
 const mod8 = Object.values(skillMod8).find(
   (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
 )
+const mod9 = Object.values(skillMod9).find(
+  (v): v is SkillModule => !!v && typeof v === 'object' && 'id' in v && 'create' in v,
+)
 
 export const SKILL_MODULES: Record<string, SkillModule> = {
   ...(mod0 ? { [mod0.id]: mod0 } : {}),
@@ -56,6 +60,7 @@ export const SKILL_MODULES: Record<string, SkillModule> = {
   ...(mod6 ? { [mod6.id]: mod6 } : {}),
   ...(mod7 ? { [mod7.id]: mod7 } : {}),
   ...(mod8 ? { [mod8.id]: mod8 } : {}),
+  ...(mod9 ? { [mod9.id]: mod9 } : {}),
 }
 
 // 各 skill 自注册的内容工厂（后注册的覆盖前者）。
@@ -68,6 +73,7 @@ const cf5 = (skillMod5 as Record<string, unknown>).contentFactories as ContentFa
 const cf6 = (skillMod6 as Record<string, unknown>).contentFactories as ContentFactories | undefined
 const cf7 = (skillMod7 as Record<string, unknown>).contentFactories as ContentFactories | undefined
 const cf8 = (skillMod8 as Record<string, unknown>).contentFactories as ContentFactories | undefined
+const cf9 = (skillMod9 as Record<string, unknown>).contentFactories as ContentFactories | undefined
 
 export const CONTENT_FACTORIES: Partial<ContentFactories> = {
 ...(cf0 ?? {}),
@@ -79,4 +85,5 @@ export const CONTENT_FACTORIES: Partial<ContentFactories> = {
 ...(cf6 ?? {}),
 ...(cf7 ?? {}),
 ...(cf8 ?? {}),
+...(cf9 ?? {}),
 }

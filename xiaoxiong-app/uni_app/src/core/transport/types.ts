@@ -134,6 +134,14 @@ export interface AssistantTransport {
   requestMusicNext(genre?: string): void
   /** 客户端拖动音量滑块后上报当前音量（0–1），让网关保持音量状态同步 */
   reportVolume(volume: number): void
+  /** 打开/关闭结构化详情的单条详情：网关据此设当前详情上下文并广播（通用，不绑死业务 kind） */
+  sendClientDetail(payload: {
+    action: 'select' | 'close'
+    kind: string
+    index?: number
+    title?: string
+    fields?: Array<{ label: string; value: string }>
+  }): void
   close(): void
   onEvent(listener: (event: ServerEvent) => void): () => void
   /** 下行二进制音频帧（TTS PCM）；不支持时返回空订阅函数 */

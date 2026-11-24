@@ -1,4 +1,4 @@
-import type { Lang, ServerErrorCode } from './protocol'
+import type { DetailContext, Lang, ServerErrorCode } from './protocol'
 // skill 自带文案：网关 i18n 只做汇总，文案本体跟 skill 走（避免 skill↔i18n 循环依赖：
 // 这些片段文件是纯数据、不 import 本文件；skill 通过 messages().clock 取用）。
 import { clockI18n, type ClockI18n } from './service/skills/time_skill/i18n'
@@ -11,6 +11,8 @@ export interface Messages {
   systemPrompt: string
   /** 当前正在播放的曲目上下文：拼进系统提示，让助手能回答「现在播的什么、谁的作品」。 */
   nowPlayingContext: (title: string, artist?: string, contentType?: string) => string
+  /** 当前打开的详情上下文：拼进系统提示，让助手能基于详情介绍、围绕它聊天（通用，不绑死业务类型）。 */
+  detailContext: (detail: DetailContext) => string
   errors: Record<ServerErrorCode, string>
   /** 排队提示与拒绝原因，按 lang 本地化后下发给客户端展示 */
   queue: {
@@ -88,6 +90,13 @@ export interface Messages {
     playModePlayer: () => string
     /** 语音切换播放模式：只说切换（客户端自行 toggle） */
     playModeToggled: () => string
+  }
+  /** 通用详情能力：打开详情后反问要不要介绍、确认后由 LLM 介绍（不绑死商品/开源项目等业务类型） */
+  detail: {
+    askIntro: () => string
+    declineIntro: () => string
+    /** 给 LLM 的介绍指令；详情字段已由 detailContext 注入 systemPrompt */
+    introHint: () => string
   }
   /** 商品/好价查询：编号列表话术、选择引导、选中后一句确认（不复述商品内容） */
   deals: {
@@ -208,6 +217,14 @@ const zhCN: Messages = {
       '请直接据此回答，不要说不知道；没有标注创作者时只回答已知的名字，不要编造。'
     )
   },
+  detailContext: (detail) => {
+    const lines = detail.fields.map((f) => `${f.label}：${f.value}`).join('\n')
+    return (
+      `【当前打开的详情】${detail.title ?? '（未命名）'}\n${lines}\n` +
+      '用户可能请你介绍这个、或围绕它追问（值不值/适不适合/有什么特点等）。请仅基于上面给出的字段自然作答，' +
+      '不要编造字段外的价格、参数、评价等信息；字段里没有的就如实说不清楚。'
+    )
+  },
   errors: {
     AUTH_FAILED: '鉴权失败，请重新登录',
     ASR_TIMEOUT: '识别超时',
@@ -280,6 +297,11 @@ const zhCN: Messages = {
     playModeFloat: () => '已切换到悬浮模式。',
     playModePlayer: () => '已切换到播放器模式。',
     playModeToggled: () => '已切换播放模式。',
+  },
+  detail: {
+    askIntro: () => '要不要我帮你介绍下这个？',
+    declineIntro: () => '好的，那就不介绍了。',
+    introHint: () => '用户已同意，请基于当前详情自然地介绍一下，用一两句话讲清主要信息（价格、商城、特点等），语气口语化、简短，不要编造详情里没有的内容。',
   },
   deals: {
     candidates: (items) =>
@@ -386,6 +408,15 @@ const en: Messages = {
       'If no creator is given, only name the title and do not invent one.'
     )
   },
+  detailContext: (detail) => {
+    const lines = detail.fields.map((f) => `${f.label}: ${f.value}`).join('\n')
+    return (
+      `[Current detail] ${detail.title ?? '(untitled)'}\n${lines}\n` +
+      'The user may ask you to introduce this or follow up about it (worth it / suitable / features…). ' +
+      'Answer naturally using only the fields above; never invent prices, specs or reviews not listed. ' +
+      'If something is not in the fields, say you are not sure.'
+    )
+  },
   // 占位播放源提示：英文会话也要拿到本地化展示名与英文文案，不残留中文
   // 逐项显式覆盖：不再用 ...zhCN.music 展开，漏一项 TypeScript 就会报错，
   // 避免英文会话里忽然冒出中文口播。
@@ -445,6 +476,11 @@ const en: Messages = {
       'You MUST call the remember_many tool exactly once and return the consolidated full set (do not omit any unique fact). Do not output any text reply.',
     consolidateTask: (existing) =>
       `Existing memories:\n${existing}\n\nPlease merge and de-duplicate, returning the refined full set of memories.`,
+  },
+  detail: {
+    askIntro: () => 'Would you like me to introduce this for you?',
+    declineIntro: () => "Alright, I won't introduce it.",
+    introHint: () => 'The user agreed. Introduce the current item naturally from its details in one or two short, conversational sentences (price, store, features, etc.). Do not invent anything not in the details.',
   },
   // 与 music 一样逐项显式覆盖，不用 ...zhCN.deals 展开：漏一项 TypeScript 就会报错
   deals: {

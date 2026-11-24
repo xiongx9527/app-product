@@ -1965,28 +1965,39 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   }
 
   /**
-   * 点编号项选中某条详情：纯本地切换 selectedIndex，不上行、不口播。
-   * 与语音「说第二个」落到同一状态（网关下发 media.detail(selectedIndex)）等价：
-   * UI 点选不必惊动网关，也避免再说一句被 TTS 抢词。
+   * 点编号项选中某条详情：本地切 selectedIndex，并把「当前详情」上行给网关。
+   * 网关据此设通用详情上下文并广播 skill（detail_chat 反问「要不要介绍下」），
+   * 与语音选号（网关下发 media.detail(selectedIndex)）走同一套通用机制。
+   * 带上 title/fields（客户端 DetailItem 已有），网关无需抓详情即可作 LLM 上下文。
    */
   function selectDetail(index: number): void {
     const card = detailCard.value
     if (!card || !card.items.some((it) => it.index === index)) return
     detailCard.value = { ...card, selectedIndex: index }
+    const item = card.items.find((it) => it.index === index)
+    transport.sendClientDetail({
+      action: 'select',
+      kind: card.kind,
+      index,
+      ...(item ? { title: item.title, fields: item.fields ?? [] } : {}),
+    })
   }
 
   /**
-   * 关闭详情卡片（页面关闭按钮）。纯展示状态，不影响网关 pendingDeals。
-   * 详情是从列表点进去的，所以关详情先退回列表（items 本来就在快照里，不需要再问网关），
+   * 关闭详情卡片（页面关闭按钮）。不影响网关 pendingDeals。
+   * 详情是从列表点进去的：先退回列表（发 client.detail close 清网关详情上下文），
    * 列表形态下再关才整块收起——否则关一次详情连列表一起没了，用户只能重新问一遍。
    */
   function closeDetailCard(): void {
     const card = detailCard.value
-    if (card && card.selectedIndex != null) {
+    if (!card) return
+    if (card.selectedIndex != null) {
       detailCard.value = { ...card, selectedIndex: null }
+      transport.sendClientDetail({ action: 'close', kind: card.kind })
       return
     }
     detailCard.value = null
+    transport.sendClientDetail({ action: 'close', kind: card.kind })
   }
 
   /**
