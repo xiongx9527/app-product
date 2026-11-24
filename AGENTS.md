@@ -404,8 +404,11 @@ xiaoxiong-app/uni_app/src/
 
 - 目标：「小熊小熊」快、准；待唤醒态**不调 ASR、不联网**，端侧 3.3M KWS 常驻，唤醒后才启 ASR 识别指令。方案见 `docs/kws-wake-interrupt-plan.md`。
 - **单轨（2026-11-21 改定）**：唤醒**只认端侧 KWS**，已删除 ASR 文本匹配兜底（用户硬原则「唤醒前不能调 ASR」）。待唤醒态上行静音（iOS 原生 `_standbyMuted`、Android JS `onPcm` 按 `mode==='wake'` 清零），网关拿不到音频自然不识别；`handleServerEvent` 在 `mode==='wake'` 时直接丢弃所有 `asr.*`。所有命中仍统一走 `useAssistant.handleWakeHit()`，回声窗 + 节流只有一份逻辑。
+  - **注意「单轨」只针对待唤醒(wake)态**：进入对话(dialog)态后上行恢复，播报/播放中网关 ASR 仍会把「你好小熊」识别成文本并命中 `handleWakeHit`（`asr.partial`/`queued`/`final` 多处 `matchWakeWord`）。所以**对话态实际有 KWS 端侧 + ASR 文本两条命中入口**（2026-11-24 真机铁证，播新闻时第一次喊就是 ASR 命中），别误以为全局只有 KWS 一条。
+- **两条命中路径行为不同，唤醒词命中必须停媒体**（2026-11-24 真机修复）：`handleWakeHit`（useAssistant.ts）里 `fromKws=true`（KWS 端侧）走 `stopMusic()+reWake()`；`fromKws=false`（ASR 文本）忙时走 `skipCurrentAndGreet`（内有 stopMusic）、**非忙时走 `else reWake()`**。真机铁证：播新闻（InnerAudioContext 媒体播放，非 TTS 播报）时第一次喊——ASR 命中走 `reWake` 分支，旧代码该分支**不含 stopMusic**，结果只播了「我在」却新闻照放；第二次 KWS 命中才停新闻。修复：`reWake()` 入口（canWake 检查之后）补 `stopMusic()`，两条路径命中都停媒体。日志铁证：修复前第一次 `KWS-DIAG raw=0.19 无 KWS HIT`+greeting+新闻播放器无 baseStop、第二次 `KWS HIT`+新闻 baseStop；修复后新 APK 复现 ASR 路径（无 KWS HIT）第一次命中即 `baseStop` 新闻停 ✓ 已真机验证。
 - **就绪态**：原生 `onReady`（iOS `KwsEngine.startWithError` 成功/失败都回调、`AppProductWakeModule.onReady:` 对已 ready 立即兑现；Android `start()` 里回调）→ 前端 `wakeReady: loading|ready|failed` → 首页提示「加载中可点圆球 / 说小熊小熊唤醒 / 不可用请点圆球」。加载中别让用户白喊，失败必须引导点球（KWS 挂了没有兜底）。
-- **KWS 唤醒静默窗**：KWS 命中后同一句唤醒词仍可能被 ASR 转写一遍（对话态上行已恢复），必须用 `kwsWakeAt`/`isKwsWakeEcho()` 静默窗（≥5s）忽略窗口内的唤醒词文本，否则二次 reWake + 唤醒词残留草稿区（真机踩坑）。
+- **KWS 唤醒静默窗**：KWS 命中后同一句唤醒词仍可能被 ASR 转写一遍（对话态上行已恢复），必须用 `kwsWakeAt`/`isKwsWakeEcho()` 静默窗（8s）忽略窗口内的唤醒词文本，否则二次 reWake + 唤醒词残留草稿区（真机踩坑）。注意此窗**单向**：只防「KWS 先中→ASR 后到」，ASR 先中时不会记 `kwsWakeAt`，随后 KWS 命中无标记可查（潜在重复处理，尚未在真机复现为用户可见问题）。
+- **AEC 不影响唤醒命中率（2026-11-24 四场景 A/B 真机结论）**：稳态待唤醒、网关就绪后、播报中打断、音乐播放中——喊「你好小熊」AEC 开/关命中率一致（均 5/5 或仅 1 遍落在 1.5s `KWS_REARM_MS` 去抖窗内漏检），输入 raw 始终充足（0.05–0.19）。此前「播报期 AEC 双讲抑制把用户声消成 rms=0.0000」的旧结论在本次真机（设备全程 AEC 开、无 `AEC setEnabled:false`）未复现，**不要再把命中率低归咎 AEC**。设置页 AEC 默认开启。
 - **首次启动**：KWS 初始化（1-3s）必须与网关就绪等待并行（在 `enable()` 开头 `startKws()`），否则「首次启动喊好几遍没反应」。网关没好时 dispatch 的 canWake 会拦截命中，安全。
 - Android 依赖不入库：`scripts/download-kws-deps.sh`（AAR 走 gh-proxy.com，模型走 ModelScope，**GitHub 直连仅 30KB/s 弃用**）+ `scripts/prepare-kws-assets.sh`（拷 AAR→sdk/libs、模型→assets/kws），已挂到 `build.sh`。新增大二进制一律配 gitignore，不要提交 .class/.aar/.onnx/xcframework。
 - 关键词表用 **ppinyin** 音素格式（对照模型 tokens.txt 音素集），不是普通拼音。

@@ -12,6 +12,7 @@ import {
 } from '@/core/config'
 import { t } from '@/core/i18n'
 import { setDuckConfig, setAecUserEnabled } from '@/core/audio/appCapture'
+import { refreshDuckVolume } from '@/core/audio/musicPlayer'
 import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
 import { getActiveTransport } from '@/core/transport'
@@ -333,6 +334,7 @@ function onDuckLevelChange(v: string): void {
   appConfig.general.duckLevel = v as DuckLevel
   persistConfig()
   applyDuckConfig()
+  refreshDuckVolume() // 播报中改档位：背景音乐音量立即按新档位生效
 }
 function onInterruptDuckChange(on: boolean): void {
   appConfig.general.interruptDuck = on

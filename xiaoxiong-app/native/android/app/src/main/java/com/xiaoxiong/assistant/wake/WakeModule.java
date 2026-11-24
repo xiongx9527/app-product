@@ -609,16 +609,18 @@ public class WakeModule extends UniModule {
         setAecEnabled(true);
     }
 
-    /** 用户 AEC 开关（设置页对照实验用）：开=采集全程开 AEC（含播报期），关=全程关。默认关。
-     *  打开后播报期的自动 setAecEnabled(false) 不再生效——这正是要对照测的场景。 */
-    private volatile boolean userAecEnabled = false;
+    /** 用户 AEC 开关（设置页）：开=采集全程开 AEC（含播报期），关=全程关。默认开。
+     *  以用户开关为准：开时播报期的自动 setAecEnabled(false) 被忽略，AEC 全程生效。 */
+    private volatile boolean userAecEnabled = true;
 
     /** 开/关采集端 AEC。aec 可能为 null（设备不支持/采集未启动），静默忽略。
-     *  【2026-11-24 对照实验】实际状态以用户开关为准：userAecEnabled=false 全程关；
-     *  =true 全程开（播报期的自动关调用被忽略），用于测 AEC 开/关对唤醒率的影响。 */
+     *  用户开关是总闸：userAecEnabled=false 全程关；=true 时仍跟随动态策略——
+     *  待唤醒开、播报/提示音关。原因（真机铁证）：TTS/提示音一播，AEC 双讲抑制会把
+     *  用户同时说的话一起抵消成静音，播报期喊「你好小熊」KWS 完全收不到、命中率暴跌。
+     *  所以播报期必须关 AEC 才能让 KWS 听见用户；回声由网关文本层 resemblesSpoken 过滤。 */
     private void setAecEnabled(boolean enabled) {
         if (aec == null) return;
-        boolean actual = userAecEnabled;
+        boolean actual = userAecEnabled && enabled;
         try {
             boolean cur = aec.getEnabled();
             if (cur != actual) {

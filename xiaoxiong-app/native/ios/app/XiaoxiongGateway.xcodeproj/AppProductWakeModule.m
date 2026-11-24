@@ -12,6 +12,7 @@
 #import "PcmUploader.h"
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <AudioUnit/AudioUnit.h>
 #import <UIKit/UIKit.h>
 #import <math.h>
 
@@ -66,6 +67,7 @@ static const NSInteger kFrameBytes = 1024;
     BOOL _localDucked;          // 当前是否处于 duck 态
     NSTimeInterval _lastVoiceMs; // 最近一次检测到人声的时刻（秒）
     BOOL _bargeInEnabled;       // 插话开关（预留：开则播报期上行真实帧）
+    BOOL _aecUserEnabled;       // AEC 开关（默认 YES）：YES=系统 VPIO 回声消除生效，NO=bypass VPIO
     float _basePlaybackVolume;  // 设置页设的基础播报音量（duck 恢复回到它，缺省 1.0）
     UniModuleKeepAliveCallback _readyCb; // KWS 就绪回调（JS onReady）
     // 【2026-11-23 修熄屏唤醒】采集"意图"与实际运行状态分离：
@@ -98,6 +100,7 @@ static const NSInteger kFrameBytes = 1024;
         _localDucked = NO;
         _lastVoiceMs = 0;
         _bargeInEnabled = NO;
+        _aecUserEnabled = YES; // 默认启用系统 VPIO 回声消除，与设置页 aecEnabled 默认 true 一致
         _basePlaybackVolume = 1.0f;
         _ttsIdleQueue = dispatch_queue_create("com.xiaoxiong.tts.idle", DISPATCH_QUEUE_SERIAL);
         // 采集自愈基础设施（常驻，不依赖 JS 是否被后台冻结）
@@ -523,6 +526,8 @@ UNI_EXPORT_METHOD(@selector(stopCue))
     }
     _running = YES;
     _lastFrameAt = CFAbsoluteTimeGetCurrent();
+    // 【AEC 真开关】采集启动/自愈重建后，把用户选择的 VPIO bypass 应用到新引擎
+    [self applyAecBypass];
     NSLog(@"%@ capture started: %ldHz/%ldch/%ldbit frame=%ldB actualRate=%.0f want=%d",
           kTag, (long)kSampleRate, (long)kChannels, (long)kBits, (long)kFrameBytes,
           session.sampleRate, _wantRunning);
@@ -956,12 +961,45 @@ UNI_EXPORT_METHOD(@selector(setDuckConfig:duckPercent:bargeIn:))
     NSLog(@"%@ setDuckConfig interruptDuck=%d percent=%ld bargeIn=%d", kTag, interruptDuck, (long)duckPercent, bargeIn);
 }
 
-/** 【对照实验】硬件 AEC 开关。iOS 的 AEC 由 AVAudioSessionModeVoiceChat 提供，
- *  动态切 mode 需 setCategory 重设会话、有杀采集风险，故此处只记录状态不实际切换。
- *  iOS 采集 tap 拿的是 AEC 前原始帧（KWS 喂它不受影响），对照实验主战场在 Android。 */
+/**
+ * 【AEC 真开关·系统级 VPIO】把 bypass 属性写到采集链路底层 AudioUnit。
+ * 走 Apple 官方 kAUVoiceIOProperty_BypassVoiceProcessing（0=启用 VPIO 回声消除，非 0=bypass）。
+ * 这是系统 DSP 层处理开关，不是软件 AEC；只在开关变更/采集启动时写一次属性，
+ * onPcmBuffer 每帧零判断 → 零性能开销；不切 AudioSession mode、不重建采集、不碰保活侧。
+ * 结果全部打日志（subType / au / setOS / readback），真机据此确认是否真的生效——
+ * 若 inputNode.audioUnit 拿不到或属性写入失败，如实反映，绝不假装开关已生效。
+ */
+- (void)applyAecBypass {
+    AudioUnit au = 0;
+    @try {
+        au = [_engine.inputNode audioUnit];
+    } @catch (NSException *e) {
+        NSLog(@"%@ AEC: 取 inputNode.audioUnit 异常: %@", kTag, e.reason);
+        return;
+    }
+    if (!au) {
+        NSLog(@"%@ AEC: inputNode.audioUnit=0，无法设置 bypass（该节点/iOS 版本不支持）", kTag);
+        return;
+    }
+    // 用户开=0(启用 VPIO 回声消除)；用户关=1(bypass，拿原始帧做对照)
+    UInt32 bypass = _aecUserEnabled ? 0 : 1;
+    OSStatus st = AudioUnitSetProperty(au, kAUVoiceIOProperty_BypassVoiceProcessing,
+                                       kAudioUnitScope_Global, 0, &bypass, sizeof(bypass));
+    // 读回确认是否真的生效：setOS!=0 或 readback 与期望不符 → 该路由下属性不可用，如实记录
+    UInt32 readback = 999, rbSize = sizeof(readback);
+    OSStatus rb = AudioUnitGetProperty(au, kAUVoiceIOProperty_BypassVoiceProcessing,
+                                       kAudioUnitScope_Global, 0, &readback, &rbSize);
+    NSLog(@"%@ AEC apply aecUserEnabled=%d bypassSet=%u setOS=%d readback=%u(readOS=%d) %@",
+          kTag, _aecUserEnabled, (unsigned)bypass, (int)st, (unsigned)readback, (int)rb,
+          (st == noErr && readback == bypass) ? @"OK" : @"NOT-EFFECTIVE(check iOS route)");
+}
+
+/** 【对照实验】硬件 AEC 真开关：系统级 VPIO bypass，不引入软件 AEC。 */
 UNI_EXPORT_METHOD(@selector(setAecUserEnabled:))
 - (void)setAecUserEnabled:(BOOL)enabled {
-    NSLog(@"%@ setAecUserEnabled=%d (iOS VPIO by VoiceChat mode, no dynamic switch)", kTag, enabled);
+    _aecUserEnabled = enabled;
+    NSLog(@"%@ setAecUserEnabled=%d → 应用 VPIO bypass", kTag, enabled);
+    [self applyAecBypass];
 }
 
 #pragma mark - 错误上报

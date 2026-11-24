@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_DUCK_LEVEL, DUCK_LEVEL_PERCENT } from '@/core/config/constants'
+
+// duck 音量取决于默认档位（medium=35%），用常量算期望值避免硬编码
+const DUCK_FACTOR = DUCK_LEVEL_PERCENT[DEFAULT_DUCK_LEVEL] / 100
 
 /**
  * 用假 InnerAudioContext 验证播放器与 uni 的接线：
@@ -164,7 +168,7 @@ describe('musicPlayer 进度与时长', () => {
   it('TTS 播报时压低音量，播完恢复', () => {
     player.playMusic('https://x/song.mp3', '歌曲')
     player.duckMusic(true)
-    expect(fake.volume).toBe(0.1)
+    expect(fake.volume).toBeCloseTo(0.5 * DUCK_FACTOR)
     player.duckMusic(false)
     expect(fake.volume).toBe(0.5)
   })
@@ -188,7 +192,7 @@ describe('musicPlayer 进度与时长', () => {
     player.playMusic('https://x/song.mp3', '歌曲')
     player.setMusicVolume(0.5)
     player.duckMusic(true)
-    expect(fake.volume).toBeCloseTo(0.1)
+    expect(fake.volume).toBeCloseTo(0.5 * DUCK_FACTOR)
     player.duckMusic(false)
     expect(fake.volume).toBe(0.5)
   })

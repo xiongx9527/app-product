@@ -99,7 +99,7 @@ export function createDefaultConfig(): AppConfig {
 function createDefaultGeneral(): GeneralConfig {
   return {
     autoConnect: true, theme: 'default', autoCheck: false, autoCheckMs: DEFAULT_AUTO_CHECK_MS,
-    duckLevel: DEFAULT_DUCK_LEVEL, interruptDuck: true, bargeIn: false, aecEnabled: false,
+    duckLevel: DEFAULT_DUCK_LEVEL, interruptDuck: true, bargeIn: false, aecEnabled: true,
   }
 }
 

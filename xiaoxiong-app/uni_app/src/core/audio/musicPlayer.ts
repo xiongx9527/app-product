@@ -1,4 +1,6 @@
 import { ref } from 'vue'
+import { appConfig } from '@/core/config'
+import { DUCK_LEVEL_PERCENT, DEFAULT_DUCK_LEVEL, type DuckLevel } from '@/core/config/constants'
 
 /**
  * 音乐播放器：用独立的 InnerAudioContext 播放网关下发的媒体流（电台/歌曲），
@@ -32,10 +34,21 @@ const loopRemaining = ref(0)
 const musicError = ref(false)
 /** 临时诊断：播放错误详情（errCode/errMsg），定位「B站 mp4 播不了」后删除 */
 const musicErrorDetail = ref('')
-/** 音乐播放音量（0–1）；界面滑块控制，TTS 播报时按 DUCK_FACTOR 压低。 */
+/** 音乐播放音量（0–1）；界面滑块控制，TTS 播报时按「避让音量大小」档位压低。 */
 const musicVolume = ref(0.5)
-/** TTS 播报时压低音乐的系数（与播放器自身音量相乘）。 */
-const DUCK_FACTOR = 0.2
+/**
+ * TTS 播报时压低背景音乐的系数 = 当前档位保留音量百分比 / 100。
+ * 档位 light=50%/medium=35%/heavy=20%，即越强压得越低；缺省 medium=0.35。
+ * 每次 applyVolume 现读配置，设置页改档位后调 refreshDuckVolume() 即时生效。
+ * 普通对象属性读取（不用 Map/解构），避开 App 独立 JS 引擎兼容坑。
+ */
+function duckFactor(): number {
+  const raw = appConfig.general.duckLevel
+  const level = (DUCK_LEVEL_PERCENT as Record<string, number>)[raw ?? DEFAULT_DUCK_LEVEL] !== undefined
+    ? (raw as DuckLevel)
+    : DEFAULT_DUCK_LEVEL
+  return DUCK_LEVEL_PERCENT[level] / 100
+}
 /**
  * 音乐条是否应当显示：只要下发过一首歌（playMusic）就为 true，停止才清掉。
  * 与 playing 解耦——播放被浏览器自动播放策略拦截或地址失效时，playing 会变回
@@ -324,13 +337,13 @@ export function seekMusic(seconds: number): void {
 function applyVolume(): void {
   if (!ctx) return
   try {
-    ctx.volume = musicVolume.value * (ducked ? DUCK_FACTOR : 1)
+    ctx.volume = musicVolume.value * (ducked ? duckFactor() : 1)
   } catch {
     // 某些平台 volume 只读，忽略
   }
 }
 
-/** 设置音乐播放音量（0–1）；TTS 播报时仍会按 DUCK_FACTOR 压低。 */
+/** 设置音乐播放音量（0–1）；TTS 播报时仍会按「避让音量大小」档位压低。 */
 export function setMusicVolume(value: number): void {
   const v = Number(value)
   musicVolume.value = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1
@@ -341,6 +354,11 @@ export function setMusicVolume(value: number): void {
 export function duckMusic(shouldDuck: boolean): void {
   ducked = shouldDuck
   applyVolume()
+}
+
+/** 设置页改「避让音量大小」档位后调用：若正在 duck，立即按新档位重算音量。 */
+export function refreshDuckVolume(): void {
+  if (ducked) applyVolume()
 }
 
 /** 暴露给界面的只读状态 */

@@ -1626,6 +1626,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    * 网关不可用时 dispatch 已拦截 REWAKE，此处不得再单独把阶段设成 listening 造成假象。 */
   function reWake(): void {
     if (!canWake()) return
+    // 唤醒词命中就停媒体（新闻/音乐 InnerAudioContext）：真机铁证——纯媒体播放新闻时
+    // 喊「你好小熊」，ASR 文本命中走 reWake 分支（非 TTS 播报态），旧代码这里不停音乐，
+    // 只播了「我在」却新闻照放，用户体感「没中断」。KWS 分支虽已在 handleWakeHit 里调过
+    // stopMusic（幂等无害），但统一放在 reWake 入口 ensures 两条命中路径都停媒体。
+    stopMusic()
     // 识别到的「小熊小熊」也进「我说」框（用户明确要求唤醒词可见）
     transcript.value = DEFAULT_WAKE_WORDS[0]
     liveText.value = ''
