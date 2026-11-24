@@ -1068,6 +1068,10 @@ async def client_ip_audit_middleware(request: Request, call_next):
     """
     log_ip = client_ip_for_log(request)
     path = request.url.path
+    # 生成 request id 并写入 contextvar：贯穿详情日志/审计/上游调用，便于跨服务排障。
+    rid = request_log.new_request_id()
+    request_log.REQUEST_ID.set(rid)
+    request.state.request_id = rid
     # 请求详情日志（header/query/body）：在 call_next 之前读 body，Starlette 会缓存供下游复用。
     # 仅小 body 读取，音频/图片等大体积按 Content-Length 直接跳过，避免加载进内存/撑爆日志。
     if request_log.enabled() and request.method != "OPTIONS":
@@ -1091,7 +1095,7 @@ async def client_ip_audit_middleware(request: Request, call_next):
         path.startswith(_AUDIT_VOICE_PREFIX)
         or (path == _AUDIT_CONFIG_SAVE and request.method == "POST")
     ):
-        detail = f"{request.method} {path} -> {response.status_code}"
+        detail = f"rid={rid} {request.method} {path} -> {response.status_code}"
         try:
             await asyncio.to_thread(voice_db.append_audit, log_ip, "http.request", detail)
         except Exception:  # noqa: BLE001  审计失败不能影响业务响应
@@ -1100,8 +1104,10 @@ async def client_ip_audit_middleware(request: Request, call_next):
         # 只有代理带来不同来源时额外打一行，避免与去端口后的 access 日志重复刷屏。
         if log_ip != peer:
             logging.getLogger("uvicorn.error").info(
-                "client=%s (forwarded, peer=%s) %s", log_ip, peer, detail
+                "client=%s (forwarded, peer=%s) rid=%s %s", log_ip, peer, rid, detail
             )
+    # 响应头回传 request id：客户端报错时提供该 id 即可精确定位服务端日志
+    response.headers["X-Request-Id"] = rid
     return response
 
 
@@ -4617,6 +4623,37 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def _enforce_production_security() -> None:
+    """生产模式（ENV=production）安全强制校验：弱配置直接拒绝启动。
+
+    生产环境对外接口默认裸奔是最大风险——任何人访问端口就能白嫖付费上游。
+    这里要求核心防线必须就位；留 ALLOW_INSECURE_PRODUCTION=1 作为显式逃生口
+    （如前面已有反代鉴权/WAF 的情况），但需明确知情。
+    """
+    env = (os.environ.get("ENV") or os.environ.get("APP_ENV") or "").strip().lower()
+    if env not in ("production", "prod"):
+        return
+    if os.environ.get("ALLOW_INSECURE_PRODUCTION", "").strip() == "1":
+        _startup_log("[local-ai][安全] 生产模式弱配置豁免已开启（ALLOW_INSECURE_PRODUCTION=1），请确认已有外部鉴权", flush=True)
+        return
+
+    problems: list[str] = []
+    if config_value("VOICE_API_KEY_AUTH", "off").strip().lower() not in ENABLED_VALUES:
+        problems.append("VOICE_API_KEY_AUTH 未开启（对外数据接口须 API Key 鉴权）")
+    if not (config_value("VOICE_IP_ALLOW", "").strip() or os.environ.get("VOICE_IP_ALLOW", "").strip()):
+        problems.append("VOICE_IP_ALLOW 为空（生产建议限制来源 IP/CIDR）")
+    if problems:
+        msg = (
+            "生产模式（ENV=production）安全配置不合格，拒绝启动：\n  - "
+            + "\n  - ".join(problems)
+            + "\n请配置上述项后重启；若已通过反向代理/WAF 完成鉴权，"
+            "可设 ALLOW_INSECURE_PRODUCTION=1 显式豁免。"
+        )
+        _startup_log(f"[local-ai][安全] {msg}", flush=True)
+        raise SystemExit(msg)
+    _startup_log("[local-ai][安全] 生产模式安全校验通过（API Key + IP 白名单）", flush=True)
+
+
 def main(argv=None) -> None:
     args = parse_args(argv)
     if args.config:
@@ -4718,6 +4755,8 @@ def main(argv=None) -> None:
                     flush=True,
                 )
     voice_db.append_event("info", "startup", f"service starting, db={db_path}")
+    # 生产模式安全校验：弱配置（无鉴权/IP白名单）拒绝启动，避免对外裸奔。
+    _enforce_production_security()
 
     # 默认监听 0.0.0.0：网关可能和手机在同一局域网，换机器部署时不用改代码。
     host = config_value("VOICE_HOST", "0.0.0.0").strip() or "0.0.0.0"

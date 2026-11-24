@@ -15,6 +15,8 @@
 #   ./model-proxy/voice.sh log -f                # 持续跟踪日志
 #   ./model-proxy/voice.sh log -n 200            # 查看最近 200 行
 #   ./model-proxy/voice.sh rotate                # 手动轮转日志（按 voice.conf 的 LOG_ROTATE_* 配置）
+#   ./model-proxy/voice.sh backup                # 备份数据库+配置(保留最近 BACKUP_KEEP 份，默认7)
+#   ./model-proxy/voice.sh secure                # 收紧敏感文件权限到 600
 #   ./model-proxy/voice.sh run                   # 前台运行，Ctrl+C 停止
 #
 # 启动前检查依赖环境；缺失时只把安装方法写进日志 / 终端，不会自动安装。
@@ -126,6 +128,58 @@ do_rotate() {
       fi
       log "已按最大个数清理日志归档（保留最新 ${maxfiles} 个）"
     fi
+  fi
+}
+
+do_secure() {
+  # 收紧敏感文件权限到 600（密钥/管理员密码哈希都在 voice.db，voice.conf 含上游密钥）
+  local f
+  for f in "$VOICE_HOME/voice.db" "$VOICE_HOME/voice.conf" "$VOICE_HOME/api-key"; do
+    [ -e "$f" ] || continue
+    chmod 600 "$f" 2>/dev/null || log "权限收紧失败：${f}（可手动 chmod 600）"
+  done
+  log "敏感文件权限已收紧（600）：voice.db / voice.conf / api-key"
+}
+
+do_backup() {
+  # 在线安全备份（sqlite backup API，不锁库）+ 配置文件打包，保留最近 N 份。
+  local keep="${BACKUP_KEEP:-7}"
+  local stamp dir dest db_path
+  stamp=$(date '+%Y%m%d_%H%M%S')
+  dir="${VOICE_HOME}/backups"
+  dest="${dir}/backup_${stamp}"
+  db_path="${VOICE_HOME}/voice.db"
+  mkdir -p "$dest" || die "创建备份目录失败：${dir}"
+  local py="$VENV_PY"; [ -x "$py" ] || py="$(command -v python3 || true)"
+  [ -n "$py" ] || die "未找到 python（无法安全备份 SQLite）"
+  if [ -f "$db_path" ]; then
+    "$py" - "$db_path" "${dest}/voice.db" <<'PYEOF' || die "数据库备份失败"
+import sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+c = sqlite3.connect(src)
+try:
+    with sqlite3.connect(dst) as out:
+        c.backup(out)
+finally:
+    c.close()
+PYEOF
+  fi
+  # 配置文件与密钥（存在才打包）
+  for f in voice.conf api-key; do
+    [ -f "${VOICE_HOME}/${f}" ] && cp -p "${VOICE_HOME}/${f}" "${dest}/${f}"
+  done
+  # 打 tar.gz 并删目录，便于整体搬运
+  (cd "$dir" && tar -czf "backup_${stamp}.tar.gz" "backup_${stamp}") && rm -rf "$dest" \
+    || die "备份打包失败"
+  chmod 600 "${dir}/backup_${stamp}.tar.gz" 2>/dev/null || true
+  log "备份完成：${dir}/backup_${stamp}.tar.gz"
+  # 保留最近 N 份
+  local count
+  count=$(find "$dir" -maxdepth 1 -name 'backup_*.tar.gz' -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$count" -gt "$keep" ] && [ "$keep" -gt 0 ]; then
+    find "$dir" -maxdepth 1 -name 'backup_*.tar.gz' -type f 2>/dev/null \
+      | sort | head -n "$((count - keep))" | while IFS= read -r f; do rm -f "$f"; done
+    log "已清理旧备份，保留最近 ${keep} 份"
   fi
 }
 
@@ -387,10 +441,16 @@ case "$COMMAND" in
     [ -x "$START_SCRIPT" ] || die "未找到可执行脚本：${START_SCRIPT}"
     exec "$START_SCRIPT" "$@"
     ;;
+  backup)
+    do_backup
+    ;;
+  secure)
+    do_secure
+    ;;
   -h | --help | help)
     usage
     ;;
   *)
-    die "未知命令：${COMMAND}（支持 start / stop / restart / status / check / log / rotate / run）"
+    die "未知命令：${COMMAND}（支持 start / stop / restart / status / check / log / rotate / backup / secure / run）"
     ;;
 esac

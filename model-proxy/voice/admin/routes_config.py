@@ -55,6 +55,16 @@ def overview_cache_stats() -> dict[str, Any]:
             "ttl_sec": _OVERVIEW_TTL}
 
 
+def reset_overview_cache_stats() -> dict[str, Any]:
+    """重置命中率计数（管理操作），并让当前缓存失效以便重新采样。"""
+    with _overview_lock:
+        _overview_stats["hit"] = 0
+        _overview_stats["miss"] = 0
+        _overview_cache["at"] = 0.0
+        _overview_cache["data"] = None
+    return overview_cache_stats()
+
+
 def build_router() -> APIRouter:
     """创建「配置与数据」域的 router。"""
     router = APIRouter()
@@ -88,6 +98,10 @@ def build_router() -> APIRouter:
     @router.get("/admin/api/overview-cache-stats", dependencies=[Depends(require_viewer)])
     def admin_overview_cache_stats():
         return overview_cache_stats()
+
+    @router.post("/admin/api/overview-cache-stats/reset", dependencies=[Depends(require_admin)])
+    def admin_overview_cache_stats_reset():
+        return reset_overview_cache_stats()
 
     @router.get("/admin/api/config", dependencies=[Depends(require_admin)])
     def admin_config():

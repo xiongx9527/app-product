@@ -392,6 +392,23 @@ def _migrate() -> None:
 
     row = c.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
     current = int(row["v"] or 0)
+
+    # 迁移前自动备份：老库升级（current < 最新）时先做一份 SQLite 在线备份，
+    # 失败不阻断迁移（备份是尽力而为，避免升级因备份问题卡死）。
+    if current < SCHEMA_VERSION and _db_path:
+        try:
+            import shutil
+            bak = f"{_db_path}.bak-v{current}-{int(time.time())}"
+            src = sqlite3.connect(_db_path)
+            try:
+                with sqlite3.connect(bak) as out:
+                    src.backup(out)
+            finally:
+                src.close()
+            os.chmod(bak, 0o600)
+        except Exception:  # noqa: BLE001
+            pass
+
     was_pre15 = current < 15  # 是否从 <v15 升级上来（用于回填新列默认值，仅一次）
     was_pre16 = current < 16  # 是否从 <v16 升级上来（rerank_tokens_per_min 回填）
 

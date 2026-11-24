@@ -8,11 +8,24 @@
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
+import secrets
 
 import config_store
+
+# 贯穿一次请求链路的 trace id（中间件生成，日志/上游调用可读取）
+REQUEST_ID: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
+
+
+def new_request_id() -> str:
+    return secrets.token_hex(8)
+
+
+def current_request_id() -> str:
+    return REQUEST_ID.get()
 
 # 超过该字节数不读 body（避免把音频/图片整块加载进内存，也避免日志爆炸）
 BODY_READ_MAX = 64 * 1024
@@ -118,7 +131,7 @@ def _format_body(body: bytes, content_type: str) -> str:
 def format_detail(method: str, path: str, raw_query: str, headers, body: bytes, content_type: str) -> str:
     """生成单行详情日志，便于 grep / 日志面板按行读取。"""
     return (
-        f'[REQ_DETAIL] {method} {path} '
+        f'[REQ_DETAIL] rid={current_request_id()} {method} {path} '
         f'query={_format_query(raw_query)} '
         f'headers={_format_headers(headers)} '
         f'body={_format_body(body, content_type)}'

@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <link rel="icon" href="/favicon.ico" type="image/svg+xml" />
-<title data-i18n="app.title">模型代理管理</title>
+<title data-i18n="app.title">模型代理</title>
 <style>
   :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --fg:#e6e8ec; --mut:#9aa3b2;
           --acc:#4f8cff; --ok:#3ecf8e; --warn:#f5a623; --err:#ff5c5c; }
@@ -239,7 +239,7 @@
 </style>
 </head>
 <body>
-<header><button id="navToggle" class="nav-toggle" aria-label="menu" style="display:none">☰</button><h1 data-i18n="app.title">模型代理管理</h1><div class="who-wrap"><span id="who" class="muted"></span><span id="roleTag" class="muted" style="margin-left:6px"></span><button class="sec" id="changePwd" data-i18n="users.changePwd" style="display:none">修改密码</button><a class="sec" id="docsLink" data-i18n="common.docs" href="/docs" target="_blank" rel="noopener">文档</a><a class="sec" id="wsDocsLink" data-i18n="common.wsDocs" href="/docs/ws" target="_blank" rel="noopener">WS 文档</a><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
+<header><button id="navToggle" class="nav-toggle" aria-label="menu" style="display:none">☰</button><h1 data-i18n="app.title">模型代理</h1><div class="who-wrap"><span id="who" class="muted"></span><span id="roleTag" class="muted" style="margin-left:6px"></span><button class="sec" id="changePwd" data-i18n="users.changePwd" style="display:none">修改密码</button><a class="sec" id="docsLink" data-i18n="common.docs" href="/docs" target="_blank" rel="noopener">文档</a><a class="sec" id="wsDocsLink" data-i18n="common.wsDocs" href="/docs/ws" target="_blank" rel="noopener">WS 文档</a><span class="lang-switch"><button class="ls" data-lang="zh-CN">中</button><button class="ls" data-lang="en">EN</button></span><button class="sec" id="logout" data-i18n="app.logout">退出登录</button></div></header>
 <main id="app"></main>
 <div id="panelLoading"><div class="loading-box"><span class="spinner"></span><span data-i18n="common.loading">请求中…</span></div></div>
 
@@ -376,7 +376,7 @@ const I18N = {
     "common.disabled": "停用",
     "common.delete": "删除",
     "app.logout": "退出登录",
-    "app.title": "模型代理管理",
+    "app.title": "模型代理",
     "asr.builtinModel": "内置离线模型（无需外部服务）",
     "asr.builtinNote": "当前 ASR 固定使用内置模型，能否用取决于运行环境（点「测试可用」按需验证）；外部上游以后按具体厂商单独接入。",
     "rerank.builtinModel": "内置离线模型（无需外部服务）",
@@ -704,6 +704,21 @@ const I18N = {
     "nav.security": "安全设置",
     "nav.test": "连通测试",
     "nav.logs": "运行日志",
+    "nav.roles": "角色权限",
+    "roles.hint": "权限层级：viewer(只读) < operator(可测试) < admin(全部)。高角色自动拥有低角色权限。后端按角色强制校验，绕过页面直接调接口同样会被拦截。",
+    "roles.feature": "功能",
+    "roles.overview": "概览 / 运行状态（只读）",
+    "roles.logs": "运行日志（查看/搜索）",
+    "roles.selfPwd": "修改自己的登录密码",
+    "roles.test": "连通测试（ASR/TTS/LLM/向量/重排/OCR/MCP 与上游探测）",
+    "roles.modelCfg": "模型配置（地址/密钥/模型/勾选）",
+    "roles.accounts": "账号管理（增删改/角色/启停）",
+    "roles.apiKeys": "API Key 管理（增删/限流绑定）",
+    "roles.rate": "限流策略（增删/启停/绑定）",
+    "roles.security": "安全设置（鉴权/IP白名单/验证码/大小限制）",
+    "roles.mcp": "MCP 网关（server/工具 ACL/刷新）",
+    "roles.correction": "ASR 纠错词表（管理/审核）",
+    "roles.service": "服务控制（启停/重启/数据库同步）",
     "nav.mcp": "MCP网关",
     "mcp.servers": "上游 MCP 服务",
     "mcp.add": "新增网关",
@@ -888,7 +903,7 @@ const I18N = {
     "common.disabled": "Disabled",
     "common.delete": "Delete",
     "app.logout": "Log out",
-    "app.title": "Model Proxy Admin",
+    "app.title": "Model Proxy",
     "asr.builtinModel": "Built-in offline model (no external service)",
     "asr.builtinNote": "ASR is fixed to the built-in model; whether it works depends on the runtime (click \"Test availability\" to verify on demand); external upstreams will be added per vendor later.",
     "rerank.builtinModel": "Built-in offline model (no external service)",
@@ -1212,6 +1227,21 @@ const I18N = {
     "nav.security": "Security",
     "nav.test": "Connectivity test",
     "nav.logs": "Logs",
+    "nav.roles": "Role permissions",
+    "roles.hint": "Levels: viewer (read-only) < operator (testing) < admin (full). Higher roles inherit lower permissions. Enforcement is server-side — calling APIs directly is also checked.",
+    "roles.feature": "Feature",
+    "roles.overview": "Overview / status (read-only)",
+    "roles.logs": "Runtime logs (view/search)",
+    "roles.selfPwd": "Change own password",
+    "roles.test": "Connectivity tests (ASR/TTS/LLM/Embed/Rerank/OCR/MCP & upstream probe)",
+    "roles.modelCfg": "Model config (address/key/models/selection)",
+    "roles.accounts": "User management (add/edit/role/enable)",
+    "roles.apiKeys": "API Key management (CRUD/rate binding)",
+    "roles.rate": "Rate-limit policies (CRUD/enable/binding)",
+    "roles.security": "Security settings (auth/IP allowlist/captcha/size limits)",
+    "roles.mcp": "MCP gateway (servers/tool ACL/refresh)",
+    "roles.correction": "ASR correction wordlist (manage/review)",
+    "roles.service": "Service control (start/stop/restart/db sync)",
     "nav.mcp": "MCP Gateway",
     "mcp.servers": "Upstream MCP servers",
     "mcp.add": "Add gateway",
@@ -3490,6 +3520,7 @@ async function renderDashboard(){
     {id:'mcp',      label:t('nav.mcp'),      icon:'⌘', roles:'admin'},
     {id:'test',     label:t('nav.test'),     icon:'◎', roles:'operator,admin'},
     {id:'logs',     label:t('nav.logs'),     icon:'▤', roles:''},
+    {id:'roles',    label:t('nav.roles'),    icon:'◈', roles:''},
   ];
   let sidebarCollapsed=false;
   try{ sidebarCollapsed=localStorage.getItem('admin_sidebar_collapsed')==='1'; }catch(e){}
@@ -3520,6 +3551,7 @@ async function renderDashboard(){
       </section>
       <section class="page" data-page="test" hidden></section>
       <section class="page" data-page="logs" hidden></section>
+      <section class="page" data-page="roles" hidden><div class="card"><h2>${t('nav.roles')}</h2><div id="rolesBody"></div></div></section>
     </main>
   </div>`);
   app.appendChild(layout);
@@ -3549,6 +3581,7 @@ async function renderDashboard(){
     try{ localStorage.setItem('admin_page', id); }catch(e){}
     layout.querySelector('#sidebar').classList.remove('open');
     if(id==='mcp') loadMcpPage();
+    if(id==='roles') renderRolesPage();
   }
   let startPage='overview';
   try{ startPage=localStorage.getItem('admin_page')||'overview'; }catch(e){}
@@ -4833,6 +4866,34 @@ async function ratePolicyAction(id, op){
     const r=await api('/admin/api/rate/policies/'+id,{method:'DELETE'});
     if(!r.ok) alert(fmtErr((await r.json()).detail)); else loadRatePolicies(); return; }
 }
+// 角色权限说明（只读矩阵）：viewer < operator < admin，高角色自动拥有低角色权限。
+function renderRolesPage(){
+  const box=document.getElementById('rolesBody'); if(!box || box.dataset.done) return;
+  const Y='✓', N='—';
+  // [功能, viewer, operator, admin]
+  const rows=[
+    [t('roles.overview'), Y, Y, Y],
+    [t('roles.logs'), Y, Y, Y],
+    [t('roles.selfPwd'), Y, Y, Y],
+    [t('roles.test'), N, Y, Y],
+    [t('roles.modelCfg'), N, N, Y],
+    [t('roles.accounts'), N, N, Y],
+    [t('roles.apiKeys'), N, N, Y],
+    [t('roles.rate'), N, N, Y],
+    [t('roles.security'), N, N, Y],
+    [t('roles.mcp'), N, N, Y],
+    [t('roles.correction'), N, N, Y],
+    [t('roles.service'), N, N, Y],
+  ];
+  box.innerHTML='<div class="hint" style="margin-bottom:12px">'+esc(t('roles.hint'))+'</div>'+
+    '<table class="admin-table" style="width:100%"><thead><tr>'+
+    '<th>'+esc(t('roles.feature'))+'</th><th>viewer</th><th>operator</th><th>admin</th></tr></thead><tbody>'+
+    rows.map(r=>'<tr><td>'+esc(r[0])+'</td>'+
+      r.slice(1).map(v=>'<td>'+esc(v)+'</td>').join('')+'</tr>').join('')+
+    '</tbody></table>';
+  box.dataset.done='1';
+}
+
 // 概览页：系统运行信息（进程/CPU/内存/磁盘/网络/DB/缓存/日志）
 async function loadOverview(){
   const box=document.getElementById('overviewBody'); if(!box) return;

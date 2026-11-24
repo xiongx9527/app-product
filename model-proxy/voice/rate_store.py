@@ -19,6 +19,17 @@ KINDS = ("requests", "llm_tokens", "asr_seconds", "tts_chars", "embed_tokens", "
 _backend: "_BaseBackend | None" = None
 _backend_name = "memory"
 _lock = threading.Lock()
+# Redis 运行时故障的降级后端（不与主后端共享状态，仅在异常时顶上，避免业务 500）
+_fallback_memory: "_MemoryBackend | None" = None
+_fallback_lock = threading.Lock()
+
+
+def _fallback() -> "_MemoryBackend":
+    global _fallback_memory
+    with _fallback_lock:
+        if _fallback_memory is None:
+            _fallback_memory = _MemoryBackend()
+        return _fallback_memory
 
 
 class _BaseBackend:
@@ -31,6 +42,9 @@ class _BaseBackend:
 
     def reset(self, key_id: int) -> None:
         raise NotImplementedError
+
+    def window_sum(self, key_id: int, kind: str, period_seconds: int = 60) -> float:
+        return 0.0
 
     def stats(self) -> dict[str, Any]:
         raise NotImplementedError
@@ -101,25 +115,94 @@ class _MemoryBackend(_BaseBackend):
 
 
 class _RedisBackend(_BaseBackend):
-    """Redis 后端（阶段 2 增强，多实例共享计数）。
+    """Redis 后端：多实例共享计数，Lua 脚本原子令牌桶 + ZSET 滑动窗口。
 
-    Lua 脚本原子令牌桶 + ZSET 滑动窗口。未装 redis 或连不上时由 configure 降级到内存。
+    与内存后端同语义：令牌桶每秒补 limit/period，ZSET 记 60s 滑动窗口累计量。
+    用 Redis 服务端 TIME 取时间，避免多实例时钟漂移。连接/脚本异常时由门面降级到内存。
     """
+
+    _PREFIX = "rl:"
+    # 原子令牌桶：KEYS[1]=桶hash ARGV=limit period cost 秒 微秒
+    # 返回 {放行1/0, retry秒}；桶不存在按满桶初始化。
+    _TOKEN_LUA = """
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local period = tonumber(ARGV[2])
+local cost = tonumber(ARGV[3])
+local now = tonumber(ARGV[4]) + tonumber(ARGV[5]) / 1000000
+local t = redis.call('HMGET', key, 'tokens', 'last', 'period')
+local tokens = tonumber(t[1])
+local last = tonumber(t[2])
+local oldp = tonumber(t[3])
+if tokens == nil or last == nil or oldp ~= period then
+  tokens = limit
+  last = now
+end
+local rate = limit / period
+tokens = math.min(limit, tokens + (now - last) * rate)
+if tokens >= cost then
+  redis.call('HMSET', key, 'tokens', tokens - cost, 'last', now, 'period', period)
+  redis.call('PEXPIRE', key, period * 2000)
+  return {1, 0}
+end
+local retry = math.ceil((cost - tokens) / rate)
+return {0, math.max(1, retry)}
+"""
 
     def __init__(self, url: str) -> None:
         import redis  # type: ignore
         self._client = redis.from_url(url, decode_responses=True)
         self._client.ping()
+        self._token_sha = self._client.script_load(self._TOKEN_LUA)
 
-    def check_and_consume(self, key_id: int, kind: str, limit: int, cost: int = 1) -> tuple[bool, int]:
-        # 占位：阶段 2 实现 Lua 令牌桶。当前抛错由 configure 降级到内存。
-        raise NotImplementedError("Redis 限流后端待阶段 2 实现")
+    def _bucket_key(self, key_id: int, kind: str) -> str:
+        return f"{self._PREFIX}b:{key_id}:{kind}"
 
-    def record(self, key_id: int, kind: str, amount: float) -> None:
-        raise NotImplementedError("Redis 限流后端待阶段 2 实现")
+    def _window_key(self, key_id: int, kind: str) -> str:
+        return f"{self._PREFIX}w:{key_id}:{kind}"
+
+    def check_and_consume(self, key_id: int, kind: str, limit: int, cost: int = 1,
+                          period_seconds: int = 60) -> tuple[bool, int]:
+        limit = max(int(limit), 1)
+        period_sec = max(int(period_seconds), 1)
+        sec, usec = self._client.time()
+        res = self._client.evalsha(
+            self._token_sha, 1, self._bucket_key(key_id, kind),
+            limit, period_sec, cost, sec, usec,
+        )
+        return (int(res[0]) == 1, int(res[1]))
+
+    def record(self, key_id: int, kind: str, amount: float, period_seconds: int = 60) -> None:
+        # score=时间戳（按时间范围清理/查询），member 内编码 amount（取 ':' 前段求和）。
+        # member 加随机后缀避免同一时刻同 amount 的条目互相覆盖。
+        import secrets
+        key = self._window_key(key_id, kind)
+        now = time.time()
+        member = f"{float(amount)}:{secrets.token_hex(4)}"
+        self._client.zadd(key, {member: now})
+        # 清理窗口外数据 + 设过期（period 的 2 倍）
+        self._client.zremrangebyscore(key, 0, now - max(period_seconds, 1))
+        self._client.expire(key, max(period_seconds, 1) * 2)
+
+    def window_sum(self, key_id: int, kind: str, period_seconds: int = 60) -> float:
+        key = self._window_key(key_id, kind)
+        now = time.time()
+        members = self._client.zrangebyscore(key, now - max(period_seconds, 1), now)
+        total = 0.0
+        for m in members:
+            try:
+                total += float(str(m).split(":", 1)[0])
+            except (ValueError, TypeError):
+                pass
+        return total
 
     def reset(self, key_id: int) -> None:
-        raise NotImplementedError("Redis 限流后端待阶段 2 实现")
+        pat_b = f"{self._PREFIX}b:{key_id}:*"
+        pat_w = f"{self._PREFIX}w:{key_id}:*"
+        for pat in (pat_b, pat_w):
+            keys = self._client.keys(pat)
+            if keys:
+                self._client.delete(*keys)
 
     def stats(self) -> dict[str, Any]:
         return {"backend": "redis"}
@@ -157,19 +240,34 @@ def _ensure() -> _BaseBackend:
 
 def check_and_consume(key_id: int, kind: str, limit: int, cost: int = 1,
                       period_seconds: int = 60) -> tuple[bool, int]:
-    """判断是否放行。返回 (是否放行, retry_after秒)。同步、微秒级。"""
-    return _ensure().check_and_consume(key_id, kind, limit, cost, period_seconds)
+    """判断是否放行。返回 (是否放行, retry_after秒)。同步、微秒级。
+
+    Redis 后端运行时故障（断连/脚本丢失）时透明降级到进程内存，绝不因限流故障
+    让业务请求 500。降级期间多实例计数不再共享，属可接受的性能退化。
+    """
+    try:
+        return _ensure().check_and_consume(key_id, kind, limit, cost, period_seconds)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("uvicorn.error").warning(
+            "[local-ai] 限流后端故障，降级内存：%s", exc
+        )
+        return _fallback().check_and_consume(key_id, kind, limit, cost, period_seconds)
 
 
 def record(key_id: int, kind: str, amount: float, period_seconds: int = 60) -> None:
     """滑动窗口累加（计量用，阶段 2 埋点调）。"""
-    _ensure().record(key_id, kind, amount, period_seconds)
+    try:
+        _ensure().record(key_id, kind, amount, period_seconds)
+    except Exception:  # noqa: BLE001
+        _fallback().record(key_id, kind, amount, period_seconds)
 
 
 def window_sum(key_id: int, kind: str, period_seconds: int = 60) -> float:
-    """查窗口累计量（仅内存后端，阶段 2 用）。"""
-    b = _ensure()
-    return b.window_sum(key_id, kind, period_seconds) if isinstance(b, _MemoryBackend) else 0.0
+    """查窗口累计量（内存 / Redis 后端都支持）。"""
+    try:
+        return _ensure().window_sum(key_id, kind, period_seconds)
+    except Exception:  # noqa: BLE001
+        return _fallback().window_sum(key_id, kind, period_seconds)
 
 
 def reset(key_id: int) -> None:

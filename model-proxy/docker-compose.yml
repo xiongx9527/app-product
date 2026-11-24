@@ -17,6 +17,15 @@ services:
     image: app-product/model-proxy:local
     container_name: model-proxy
     restart: unless-stopped
+    # 容器加固：丢弃全部 Linux capability、禁止提权、根文件系统只读（仅 /data 卷可写）。
+    # 注意：业务需写 /tmp（ffmpeg/推理临时文件），用 tmpfs 提供可写内存盘。
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
     ports:
       - "19529:19529"
     environment:
