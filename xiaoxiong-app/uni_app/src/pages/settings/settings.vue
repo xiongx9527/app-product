@@ -1330,15 +1330,19 @@ picker {
 .footer-actions .save {
   flex: 1;
   width: auto;
+  min-width: 0;
+  box-sizing: border-box;
   margin-top: 0;
 }
 .restart-btn {
   flex: 1;
   width: auto;
+  min-width: 0;
+  box-sizing: border-box;
   margin: 0;
   height: 44px;
   line-height: 44px;
-  padding: 0 16px;
+  padding: 0;
   border-radius: 22px;
   font-size: 14px;
   font-weight: 600;
