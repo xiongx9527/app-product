@@ -3519,8 +3519,8 @@ async function renderDashboard(){
     {id:'security', label:t('nav.security'), icon:'⛨', roles:'admin'},
     {id:'mcp',      label:t('nav.mcp'),      icon:'⌘', roles:'admin'},
     {id:'test',     label:t('nav.test'),     icon:'◎', roles:'operator,admin'},
-    {id:'logs',     label:t('nav.logs'),     icon:'▤', roles:''},
     {id:'roles',    label:t('nav.roles'),    icon:'◈', roles:''},
+    {id:'logs',     label:t('nav.logs'),     icon:'▤', roles:''},
   ];
   let sidebarCollapsed=false;
   try{ sidebarCollapsed=localStorage.getItem('admin_sidebar_collapsed')==='1'; }catch(e){}
@@ -4869,7 +4869,10 @@ async function ratePolicyAction(id, op){
 // 角色权限说明（只读矩阵）：viewer < operator < admin，高角色自动拥有低角色权限。
 function renderRolesPage(){
   const box=document.getElementById('rolesBody'); if(!box || box.dataset.done) return;
-  const Y='✓', N='—';
+  // 绿色勾 / 红色叉（SVG，跟随主题色）
+  const ICON_Y='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M20 6L9 17l-5-5"/></svg>';
+  const ICON_N='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--err)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+  const Y=true, N=false;
   // [功能, viewer, operator, admin]
   const rows=[
     [t('roles.overview'), Y, Y, Y],
@@ -4887,9 +4890,9 @@ function renderRolesPage(){
   ];
   box.innerHTML='<div class="hint" style="margin-bottom:12px">'+esc(t('roles.hint'))+'</div>'+
     '<table class="admin-table" style="width:100%"><thead><tr>'+
-    '<th>'+esc(t('roles.feature'))+'</th><th>viewer</th><th>operator</th><th>admin</th></tr></thead><tbody>'+
+    '<th>'+esc(t('roles.feature'))+'</th><th style="text-align:center;width:90px">viewer</th><th style="text-align:center;width:90px">operator</th><th style="text-align:center;width:90px">admin</th></tr></thead><tbody>'+
     rows.map(r=>'<tr><td>'+esc(r[0])+'</td>'+
-      r.slice(1).map(v=>'<td>'+esc(v)+'</td>').join('')+'</tr>').join('')+
+      r.slice(1).map(v=>'<td style="text-align:center;width:90px">'+(v?ICON_Y:ICON_N)+'</td>').join('')+'</tr>').join('')+
     '</tbody></table>';
   box.dataset.done='1';
 }
