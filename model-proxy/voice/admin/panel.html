@@ -3582,8 +3582,8 @@ async function renderDashboard(){
     {id:'mcp',      label:t('nav.mcp'),      icon:'⌘', roles:'admin'},
     {id:'test',     label:t('nav.test'),     icon:'◎', roles:'operator,admin'},
     {id:'roles',    label:t('nav.roles'),    icon:'◈', roles:''},
-    {id:'logs',     label:t('nav.logs'),     icon:'▤', roles:''},
     {id:'audit',    label:t('nav.audit'),    icon:'◷', roles:'admin'},
+    {id:'logs',     label:t('nav.logs'),     icon:'▤', roles:''},
   ];
   let sidebarCollapsed=false;
   try{ sidebarCollapsed=localStorage.getItem('admin_sidebar_collapsed')==='1'; }catch(e){}
@@ -3873,7 +3873,7 @@ async function renderDashboard(){
         <option value="500">500</option><option value="1000">1000</option><option value="2000">2000</option>
       </select>
       <span class="muted">${t('log.lines')}</span>
-      <button class="sec" id="logRefresh">${t('log.refresh')}</button></div>
+      <button id="logRefresh">${t('log.refresh')}</button></div>
     <pre id="logs">${t('common.loadingX')}</pre>
   </div>`));
 
@@ -5215,7 +5215,7 @@ function renderAuditPage(){
   box.innerHTML = `<div class="hint" style="margin-bottom:10px">${t('audit.hint')}</div>
     <div class="row" style="margin-bottom:10px">
       <input id="auditSearch" class="hw-input" placeholder="${t('audit.search')}" style="width:320px" />
-      <button class="sec" id="auditRefresh">${t('log.refresh')}</button>
+      <button id="auditRefresh">${t('log.refresh')}</button>
     </div>
     <div id="auditTable" class="muted">${t('common.loadingX')}</div>
     <div class="row" id="auditPager" style="margin-top:8px"></div>`;
