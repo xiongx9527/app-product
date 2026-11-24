@@ -668,6 +668,52 @@ watch(
           <text class="detect-detail">{{ item.detail }}</text>
         </view>
       </view>
+      <!-- 中断前 duck：播报中检测人声开口时压低播报/媒体给 KWS 让路（打断/插话都适用） -->
+      <view class="setting-row">
+        <view class="setting-text">
+          <text class="row-label">{{ t('settings.general.interruptDuck') }}</text>
+          <text class="hint">{{ t('settings.general.interruptDuckHint') }}</text>
+        </view>
+        <switch
+          :checked="appConfig.general.interruptDuck !== false"
+          color="#6c8cff"
+          @change="(e: any) => onInterruptDuckChange(e.detail.value)"
+        />
+      </view>
+      <!-- duck 强度：三种 duck 共用的压低程度；与其它下拉一致用 sub 容器平铺 -->
+      <view class="sub">
+        <SelectRow
+          :title="t('settings.general.duckLevel')"
+          :hint="t('settings.general.duckLevelHint')"
+          :options="duckLevelOptions"
+          :model-value="appConfig.general.duckLevel ?? 'medium'"
+          @update:model-value="onDuckLevelChange"
+        />
+      </view>
+      <!-- 插话开关：默认关（播报期静音、只靠 KWS 打断）；开则恢复播报期上行+插话入队 -->
+      <view class="setting-row">
+        <view class="setting-text">
+          <text class="row-label">{{ t('settings.general.bargeIn') }}</text>
+          <text class="hint">{{ t('settings.general.bargeInHint') }}</text>
+        </view>
+        <switch
+          :checked="appConfig.general.bargeIn === true"
+          color="#6c8cff"
+          @change="(e: any) => onBargeInChange(e.detail.value)"
+        />
+      </view>
+      <!-- 硬件 AEC 开关：开=采集全程用系统 AEC（含播报期），默认开启；四场景实验证明不影响唤醒命中率 -->
+      <view class="setting-row">
+        <view class="setting-text">
+          <text class="row-label">{{ t('settings.playback.aecEnabled') }}</text>
+          <text class="hint">{{ t('settings.playback.aecEnabledHint') }}</text>
+        </view>
+        <switch
+          :checked="appConfig.general.aecEnabled === true"
+          color="#6c8cff"
+          @change="(e: any) => onAecChange(e.detail.value)"
+        />
+      </view>
       </template>
     </view>
     <!-- 播放设置（音乐播放源等），默认折叠 -->
@@ -678,53 +724,6 @@ watch(
       </view>
       <template v-if="isOpen('playback')">
         <!-- 播放源目前仅百度一种，隐藏选择器，无需用户选择；其余设置与播放源无关，全局生效 -->
-
-        <!-- 中断前 duck：播报中检测人声开口时压低播报/媒体给 KWS 让路（打断/插话都适用） -->
-        <view class="setting-row">
-          <view class="setting-text">
-            <text class="row-label">{{ t('settings.general.interruptDuck') }}</text>
-            <text class="hint">{{ t('settings.general.interruptDuckHint') }}</text>
-          </view>
-          <switch
-            :checked="appConfig.general.interruptDuck !== false"
-            color="#6c8cff"
-            @change="(e: any) => onInterruptDuckChange(e.detail.value)"
-          />
-        </view>
-        <!-- duck 强度：三种 duck 共用的压低程度；与其它下拉一致用 sub 容器平铺 -->
-        <view class="sub">
-          <SelectRow
-            :title="t('settings.general.duckLevel')"
-            :hint="t('settings.general.duckLevelHint')"
-            :options="duckLevelOptions"
-            :model-value="appConfig.general.duckLevel ?? 'medium'"
-            @update:model-value="onDuckLevelChange"
-          />
-        </view>
-        <!-- 插话开关：默认关（播报期静音、只靠 KWS 打断）；开则恢复播报期上行+插话入队 -->
-        <view class="setting-row">
-          <view class="setting-text">
-            <text class="row-label">{{ t('settings.general.bargeIn') }}</text>
-            <text class="hint">{{ t('settings.general.bargeInHint') }}</text>
-          </view>
-          <switch
-            :checked="appConfig.general.bargeIn === true"
-            color="#6c8cff"
-            @change="(e: any) => onBargeInChange(e.detail.value)"
-          />
-        </view>
-        <!-- 硬件 AEC 开关：开=采集全程用系统 AEC（含播报期），默认开启；四场景实验证明不影响唤醒命中率 -->
-        <view class="setting-row">
-          <view class="setting-text">
-            <text class="row-label">{{ t('settings.playback.aecEnabled') }}</text>
-            <text class="hint">{{ t('settings.playback.aecEnabledHint') }}</text>
-          </view>
-          <switch
-            :checked="appConfig.general.aecEnabled === true"
-            color="#6c8cff"
-            @change="(e: any) => onAecChange(e.detail.value)"
-          />
-        </view>
 
         <!-- 播放完自动收藏：与播放源无关，全局一个开关 -->
         <view class="setting-row">
