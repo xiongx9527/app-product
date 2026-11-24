@@ -39,6 +39,29 @@ export function createCopyLinkAction(
 }
 
 /**
+ * 打开链接（内嵌 webview 页面）：navigateTo 到通用 webview 页，把 url 编码后透传。
+ * 返回时 uni.navigateBack 自然回到详情卡片（详情状态在上一页，不丢）。
+ * link 为空时禁用——换数据源少了 link 也不崩。通用能力，不绑死任何业务 kind。
+ */
+export function createOpenLinkAction(
+  label: string,
+  link: string | undefined,
+  onUnavailable: () => void,
+): ShareAction {
+  const ok = !!link
+  return {
+    key: 'openLink',
+    label,
+    icon: '/static/icons/open.svg',
+    disabled: !ok,
+    run: async () => {
+      if (!ok || !link) { onUnavailable(); return }
+      uni.navigateTo({ url: `/pages/webview/webview?url=${encodeURIComponent(link)}` })
+    },
+  }
+}
+
+/**
  * 占位操作（分享 / 发朋友圈 / 发邮箱）：接口与真实操作完全一致，
  * 后续接真实能力只需替换 run，详情框容器与内容组件都不用改。
  * 点击回调由业务注入（显示「暂未开放」），core 不持文案、不碰 UI。

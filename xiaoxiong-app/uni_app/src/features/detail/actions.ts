@@ -2,6 +2,7 @@ import type { MediaDetail } from '@/core/transport/types'
 import { t } from '@/core/i18n'
 import {
   createCopyLinkAction,
+  createOpenLinkAction,
   createPlaceholderAction,
   type ActionNotify,
   type ShareAction,
@@ -29,6 +30,8 @@ export function detailActions(detail: MediaDetail, notify: ActionNotify): ShareA
     : createPlaceholderAction('copyLink', t('detail.copyLink'), () => notify(t('detail.noLink')), ICONS.copyLink)
   return [
     copy,
+    // 打开原网页（内嵌 webview，返回回详情卡片）；无 link 时如实提示
+    createOpenLinkAction(t('detail.open'), item?.link, () => notify(t('detail.noLink'))),
     // 收藏先只放按钮（与分享类同样走「暂未开放」），后续接本地收藏库时只换 run，容器与内容组件不动
     createPlaceholderAction('favorite', t('detail.favorite'), () =>
       notify(t('detail.notAvailable')), ICONS.favorite,

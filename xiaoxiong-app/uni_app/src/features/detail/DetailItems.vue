@@ -161,8 +161,10 @@ function listFields(item: DetailItem): DetailField[] {
 }
 .deal-cover {
   width: 100%;
-  height: 160px;
-  border-radius: 10px;
+  /* 详情封面：由 160px 加大到 220px，商品方图/竖图能看清；仍 aspectFit 不裁切。
+     不用 CSS min()/vh——App 端视图层对这些支持不一，固定像素最稳（已知 App 逻辑层/CSS API 差异坑）。 */
+  height: 220px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.06);
 }
 .deal-detail-title {

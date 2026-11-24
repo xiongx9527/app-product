@@ -36,6 +36,13 @@
         "enablePullDownRefresh": true,
         "backgroundTextStyle": "light"
       }
+    },
+    {
+      "path": "pages/webview/webview",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "打开"
+      }
     }
   ],
   "globalStyle": {
