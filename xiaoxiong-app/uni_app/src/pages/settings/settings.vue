@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { FloatPositionKey } from '@/core/adaptation/floatLayer'
 import { SUBTITLE_FONT_SIZE_OPTIONS, SUBTITLE_COLOR_OPTIONS, AUTO_CHECK_INTERVAL_OPTIONS, DUCK_LEVEL_OPTIONS, DUCK_LEVEL_PERCENT, type DuckLevel } from '@/core/config/constants'
 import {
@@ -401,69 +401,8 @@ function applyDuckConfig(): void {
   } catch { /* 旧基座无此接口，忽略 */ }
 }
 
-/** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用），不实时拉取以便国际化。
- *  每条带 model（所属模型），渲染成下拉里的次要列，并随选择下发网关决定真正请求的 TTS 模型。 */
-const ttsVoices = ref<{ value: string; label: string; subtitle?: string; desc?: string }[]>([])
-/** value -> 所属模型 的映射，选中时把对应模型写进配置，随 params.model 下发。 */
-const voiceModelMap = new Map<string, string>()
-const ttsVoiceHint = ref('')
-
-async function loadTtsVoices(): Promise<void> {
-  ttsVoiceHint.value = ''
-  voiceModelMap.clear()
-  try {
-    // 纯字符串拼接，不依赖 URLSearchParams（App 逻辑层 Web API 支持不齐）。
-    const parts = [`provider=builtin`, `lang=${encodeURIComponent(appConfig.language)}`]
-    const res = await secureRequest({
-      url: `${resolveGatewayHttpBase()}/api/admin/tts-voices?${parts.join('&')}`,
-      method: 'GET',
-    })
-    const data = res.data as {
-      default?: string
-      defaultVoice?: string
-      defaultModel?: string
-      voices?: Array<{
-        id?: string
-        value?: string
-        label?: string
-        model?: string
-        descZh?: string
-        descEn?: string
-        isDefault?: boolean
-      }>
-    } | null
-    if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.voices) && data.voices.length) {
-      const en = appConfig.language.toLowerCase().startsWith('en')
-      ttsVoices.value = data.voices.map((m) => {
-        const id = m.id ?? m.value ?? ''
-        voiceModelMap.set(id, m.model ?? '')
-        // 主标签即 id/名称，desc_zh / desc_en 作为描述副行展示。
-        const label = m.label ?? id
-        const desc = en ? (m.descEn ?? '') : (m.descZh ?? '')
-        return { value: id, label, subtitle: m.model || undefined, desc: desc || undefined }
-      })
-      // 不前端强制默认：用户可以不选，未选时由 9529 内部兜底默认音色；仅当已选音色已不在列表里才清空，避免下发非法音色。
-      const s = currentProviderSettings()
-      if (s.voice && !data.voices.some((v) => (v.id ?? v.value) === s.voice)) {
-        s.voice = ''
-        s.voiceModel = ''
-      }
-    } else {
-      ttsVoices.value = []
-      ttsVoiceHint.value = t('settings.voice.ttsVoiceEmpty')
-    }
-  } catch (e) {
-    ttsVoices.value = []
-    ttsVoiceHint.value = t('settings.voice.ttsVoiceFailed')
-  }
-}
-
-/** 选中某个音色：同步写 voice 与它的所属模型（voiceModel），随 params 下发网关。 */
-function onSelectVoice(value: string): void {
-  const s = currentProviderSettings()
-  s.voice = value
-  s.voiceModel = voiceModelMap.get(value) || ''
-}
+/** 音色不再单独选：由 9529 按所选 TTS 模型决定（deepseek-tts→stella/tide）。
+ *  App 只下发 ttsModel（选了才传），voice 由 9529 按模型兜底默认。 */
 
 /** 跳转到独立的「长期记忆」分页列表页。 */
 function openLongMemory(): void {
@@ -477,7 +416,6 @@ const { goBack } = useSubPageBack({ fallbackUrl: '/pages/index/index' })
 
 onMounted(() => {
   void loadLlmModels()
-  void loadTtsVoices()
   void loadAsrModels()
   void loadTtsModels()
   // 上次开了定时检查：进本页即按配置间隔续上定时器（离开页面 onUnmounted 会清）。
@@ -488,13 +426,7 @@ onMounted(() => {
   }
 })
 
-// 语言切换时：（服务端本地化的）音色标签要跟着变；导航栏标题走模板 t()，自动响应式更新。
-watch(
-  () => appConfig.language,
-  () => {
-    void loadTtsVoices()
-  },
-)
+// 导航栏标题走模板 t()，语言切换自动响应式更新；音色已由 9529 按模型决定，无需重新拉取。
 </script>
 
 <template>
@@ -621,14 +553,8 @@ watch(
           :searchable="ttsModels.length > 1"
           @update:model-value="(v: string) => (appConfig.voice.builtin.ttsModel = v)"
         />
-        <text class="row-label">{{ t('settings.voice.ttsVoice') }}</text>
-        <SelectRow
-          :options="ttsVoices"
-          :model-value="appConfig.voice.builtin.voice ?? ''"
-          :disabled="ttsVoices.length === 0"
-          :searchable="ttsVoices.length > 0"
-          @update:model-value="onSelectVoice"
-        />
+        <!-- 音色不再单独选：由 9529 按所选 TTS 模型决定（deepseek-tts→stella/tide）。
+             选了模型才下发模型、音色留空由 9529 兜底；没选模型则都不下发。 -->
       </view>
 
       <!-- 恢复默认 + 一键检测同一行：检测按钮在最右侧 -->

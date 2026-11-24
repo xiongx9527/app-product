@@ -229,7 +229,12 @@ async function listBuiltinVoices(
   const base = (builtinUrl || 'https://25946kt718.goho.co').replace(/\/+$/, '')
   try {
     const headers: Record<string, string> = apiKey ? { Authorization: `Bearer ${apiKey}` } : {}
-    const res = await fetch(`${base}/voice/v1/audio/voices?provider=builtin`, { headers })
+    // 不传 provider：让 9529 返回它「当前实际 TTS 提供商」的音色目录。
+    // 2026-11-24 修：写死 provider=builtin 会拿到 28 个 Edge-TTS/kokoro，
+    // 但 9529 实际 TTS_PROVIDER 已切 deepseek（音色只有 stella/tide），
+    // 导致 App 音色下拉与真实可用音色脱节。App 来源(builtin=本地9529) ≠ 9529 的 TTS 提供商，
+    // 音色必须跟后者走——不传 provider 即可拿到当前生效的那份。
+    const res = await fetch(`${base}/voice/v1/audio/voices`, { headers })
     if (!res.ok) throw new Error(`voice catalog upstream ${res.status}`)
     const data = (await res.json()) as {
       default?: string

@@ -67,29 +67,27 @@ export function activeVoiceConfig(): {
   apiKey: string
   model: string
   asrModel: string
-  ttsModel: string
-  voice: string
+  /** TTS 模型：选了才下发、没选不传——音色由 9529 按模型自己决定（deepseek-tts→stella/tide），
+   *  App 不再单独下发 voice；没选模型则由 9529 用自己的默认（stella）。 */
+  ttsModel?: string
   /** 厂商级通用参数：language 来自通用设置的界面语言（zh-CN→zh / en-US→en），
    *  走 params 下发，网关 asr/http.ts 从 params.language 读取（默认 zh）。
    *  think 为 LLM 深度思考开关，网关透传到 LLM 请求体由语音服务按厂商翻译。 */
-  params?: { voice?: string; language?: string; think?: boolean }
+  params?: { language?: string; think?: boolean }
 } {
   const active = appConfig.voice.builtin
-  const voice = active.voice ?? ''
   return {
     provider: appConfig.voice.provider,
     url: active.url,
     apiKey: active.apiKey,
     model: active.model ?? '',
     // ASR / TTS 模型走独立顶层字段下发：共用 params 通道会被网关按能力剥离（TTS 专用字段不进 ASR），
-    // 塞进去 ASR 根本拿不到。留空即空，由网关沿用来源默认模型。
+    // 塞进去 ASR 根本拿不到。ASR 留空即空、由网关沿用来源默认；TTS 选了才带、没选不传。
     asrModel: active.asrModel ?? '',
-    ttsModel: active.ttsModel ?? '',
-    voice,
+    ...(active.ttsModel ? { ttsModel: active.ttsModel } : {}),
     // 语言走通用参数 params.language 下发：网关 asr/http.ts 从 params.language 读取。
-    // 没有音色时也下发 params（只带 language），保证 ASR 始终拿到通用设置里的语言。
+    // 始终下发 params（只带 language/think），保证 ASR 拿到通用设置里的语言。
     params: {
-      ...(voice ? { voice } : {}),
       language: appConfig.language.toLowerCase().split(/[-_]/)[0] || 'zh',
       // 深度思考开关随 params 下发：网关 sharedParams 只剥 TTS 专用字段（voice/model），
       // think 会进 llm.params → presetGenParams → 请求 body → 9529 翻译成厂商原生思考参数。
