@@ -123,6 +123,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel
 
 
+_MCP_MOUNTED = False  # lifespan 挂载 MCP 网关后置 True，供 /admin/api/overview 展示
+
+
 def _startup_log(msg: str = "", **_kwargs: Any) -> None:
     """启动期打印逐行带时间戳，与 uvicorn 日志前缀一致；兼容 print 的 flush 参数。"""
     print(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}" if msg else "", flush=True)
@@ -696,6 +699,8 @@ async def _lifespan(_app: FastAPI):
         await mcp_gateway.refresh()
         _mcp_asgi = mcp_gateway.sse_app()
         if _mcp_asgi is not None:
+            global _MCP_MOUNTED
+            _MCP_MOUNTED = True  # 供 /admin/api/overview 展示应用运行状态
             _app.mount("/mcp", _mcp_asgi)   # 对外 MCP endpoint（SSE + Streamable，自带 API-Key 鉴权）
             mcp_lifespan = _mcp_asgi.lifespan_context()
             await mcp_lifespan.__aenter__()

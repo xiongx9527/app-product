@@ -71,10 +71,11 @@ _read_conf() {
 LOG_ROTATE_DAYS=$(_read_conf LOG_ROTATE_DAYS); LOG_ROTATE_DAYS=${LOG_ROTATE_DAYS:-7}
 LOG_ROTATE_MAX_MB=$(_read_conf LOG_ROTATE_MAX_MB); LOG_ROTATE_MAX_MB=${LOG_ROTATE_MAX_MB:-10}
 LOG_ROTATE_BY=$(_read_conf LOG_ROTATE_BY); LOG_ROTATE_BY=${LOG_ROTATE_BY:-both}
+LOG_ROTATE_MAX_FILES=$(_read_conf LOG_ROTATE_MAX_FILES); LOG_ROTATE_MAX_FILES=${LOG_ROTATE_MAX_FILES:-20}
 
 do_rotate() {
   [ -f "$LOG_FILE" ] || { log "日志不存在：${LOG_FILE}"; return 0; }
-  local by="$LOG_ROTATE_BY" days="$LOG_ROTATE_DAYS" maxmb="$LOG_ROTATE_MAX_MB"
+  local by="$LOG_ROTATE_BY" days="$LOG_ROTATE_DAYS" maxmb="$LOG_ROTATE_MAX_MB" maxfiles="$LOG_ROTATE_MAX_FILES"
   local today size_mb need=false
   today=$(date '+%Y-%m-%d')
   size_mb=$(( $(wc -c < "$LOG_FILE") / 1048576 ))
@@ -107,6 +108,24 @@ do_rotate() {
   if [ "$days" -gt 0 ]; then
     find "$(dirname "$LOG_FILE")" -maxdepth 1 -name "$(basename "$LOG_FILE").*" -type f -mtime "+${days}" -delete 2>/dev/null || true
     log "已清理 ${days} 天前的日志归档"
+  fi
+  # 清理超过最大个数的归档：按修改时间保留最新 N 个（含当天新切的），0=不按个数限制
+  if [ "$maxfiles" -gt 0 ]; then
+    local base="$(basename "$LOG_FILE")" dir="$(dirname "$LOG_FILE")"
+    local total extra
+    total=$(find "$dir" -maxdepth 1 -name "${base}.*" -type f 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$total" -gt "$maxfiles" ]; then
+      extra=$((total - maxfiles))
+      find "$dir" -maxdepth 1 -name "${base}.*" -type f -printf '%T@ %p\n' 2>/dev/null \
+        | sort -n | head -n "$extra" | cut -d' ' -f2- | while IFS= read -r f; do rm -f "$f"; done \
+        || true
+      # macOS 的 find 无 -printf，退化为按文件名（含日期/序号）排序删最旧的
+      if [ "$(find "$dir" -maxdepth 1 -name "${base}.*" -type f 2>/dev/null | wc -l | tr -d ' ')" -gt "$maxfiles" ]; then
+        find "$dir" -maxdepth 1 -name "${base}.*" -type f 2>/dev/null \
+          | sort | head -n "$extra" | while IFS= read -r f; do rm -f "$f"; done || true
+      fi
+      log "已按最大个数清理日志归档（保留最新 ${maxfiles} 个）"
+    fi
   fi
 }
 

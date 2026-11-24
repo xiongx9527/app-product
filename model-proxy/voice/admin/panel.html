@@ -737,9 +737,9 @@ const I18N = {
     "nav.collapse": "折叠/展开侧栏",
     "ov.process": "进程与资源",
     "ov.uptime": "运行时长",
-    "ov.cpu": "CPU",
+    "ov.cpu": "进程 CPU",
     "ov.load": "系统负载(1min)",
-    "ov.memory": "内存(RSS)",
+    "ov.memory": "进程内存(RSS)",
     "ov.disk": "磁盘",
     "ov.usage": "使用率",
     "ov.total": "总容量",
@@ -758,6 +758,29 @@ const I18N = {
     "ov.log": "日志",
     "ov.lastWrite": "最后写入",
     "ov.logFiles": "文件数量",
+    "ov.maxLogFiles": "最大文件数量",
+    "ov.rotateDays": "保留天数",
+    "ov.rotateMaxMb": "单文件上限(MB)",
+    "ov.rotateBy": "轮转方式",
+    "ov.rotDay": "按天",
+    "ov.rotSize": "按大小",
+    "ov.rotBoth": "按天 + 按大小",
+    "ov.hostCpu": "CPU 使用率",
+    "ov.hostMem": "内存 已用/总量",
+    "ov.hostMemFree": "可用内存",
+    "ov.app": "应用运行情况",
+    "ov.appStatus": "服务状态",
+    "ov.appStt": "语音识别 (STT)",
+    "ov.appTts": "语音合成 (TTS)",
+    "ov.appLlm": "大模型 (LLM)",
+    "ov.appOcr": "文字识别 (OCR)",
+    "ov.appEmbed": "向量模型 (Embed)",
+    "ov.appRerank": "重排模型 (Rerank)",
+    "ov.appMcp": "MCP 网关",
+    "ov.appAuth": "API-Key 鉴权",
+    "ov.appRate": "限流",
+    "ov.switchOn": "已开启",
+    "ov.switchOff": "未开启",
     "ov.os": "操作系统",
     "ov.python": "Python",
     "ov.dbConfig": "配置库",
@@ -1215,9 +1238,9 @@ const I18N = {
     "nav.collapse": "Collapse / expand sidebar",
     "ov.process": "Process & resources",
     "ov.uptime": "Uptime",
-    "ov.cpu": "CPU",
+    "ov.cpu": "Process CPU",
     "ov.load": "Load (1min)",
-    "ov.memory": "Memory (RSS)",
+    "ov.memory": "Process memory (RSS)",
     "ov.disk": "Disk",
     "ov.usage": "Used",
     "ov.total": "Total",
@@ -1236,6 +1259,29 @@ const I18N = {
     "ov.log": "Log",
     "ov.lastWrite": "Last write",
     "ov.logFiles": "Files",
+    "ov.maxLogFiles": "Max files",
+    "ov.rotateDays": "Retention days",
+    "ov.rotateMaxMb": "Max file size (MB)",
+    "ov.rotateBy": "Rotation mode",
+    "ov.rotDay": "Daily",
+    "ov.rotSize": "By size",
+    "ov.rotBoth": "Daily + by size",
+    "ov.hostCpu": "CPU usage",
+    "ov.hostMem": "Memory used/total",
+    "ov.hostMemFree": "Memory available",
+    "ov.app": "Application status",
+    "ov.appStatus": "Service status",
+    "ov.appStt": "Speech-to-text (STT)",
+    "ov.appTts": "Text-to-speech (TTS)",
+    "ov.appLlm": "LLM",
+    "ov.appOcr": "OCR",
+    "ov.appEmbed": "Embedding model",
+    "ov.appRerank": "Rerank model",
+    "ov.appMcp": "MCP gateway",
+    "ov.appAuth": "API-Key auth",
+    "ov.appRate": "Rate limit",
+    "ov.switchOn": "On",
+    "ov.switchOff": "Off",
     "ov.os": "OS",
     "ov.python": "Python",
     "ov.dbConfig": "Config DB",
@@ -4782,13 +4828,21 @@ async function loadOverview(){
   const d=await r.json();
   const group=(title,rows)=>'<div class="card" style="margin-bottom:12px"><h3 style="margin:0 0 8px">'+esc(title)+'</h3>'+
     '<table class="admin-table overview-table"><tbody>'+rows.map(x=>'<tr><td class="col-name">'+esc(x[0])+'</td><td>'+esc(String(x[1]))+'</td></tr>').join('')+'</tbody></table></div>';
-  const p=d.process||{}, k=d.disk||{}, n=d.network||{}, db=d.database||{}, ca=d.cache||{}, lg=d.log||{};
+  const p=d.process||{}, k=d.disk||{}, n=d.network||{}, db=d.database||{}, ca=d.cache||{}, lg=d.log||{},
+        ht=d.host||{}, ap=d.app||{};
+  const okMark=v=>v===true||v==='true'?'ok':'—';
+  const switchMark=v=>v===true||v==='true'?t('ov.switchOn'):t('ov.switchOff');
+  const rotByText=v=>({day:t('ov.rotDay'),size:t('ov.rotSize'),both:t('ov.rotBoth')}[v]||v||'—');
   box.innerHTML=
     group(t('ov.process'), [
       [t('ov.os'), p.os||'—'], [t('ov.python'), p.python||'—'],
       ['PID', p.pid||'—'], [t('ov.uptime'), p.uptime||'—'],
       [t('ov.cpu'), (p.cpu||'—')+' ('+(p.cpu_cores||'—')+' cores)'],
-      [t('ov.load'), p.load1||'—'], [t('ov.memory'), p.memory||'—'],
+      [t('ov.memory'), p.memory||'—'],
+      [t('ov.hostCpu'), (ht.cpu_percent||'—')+' ('+(ht.cpu_cores||'—')+' cores)'],
+      [t('ov.hostMem'), (ht.mem_used||'—')+' / '+(ht.mem_total||'—')+' ('+(ht.mem_percent||'—')+')'],
+      [t('ov.hostMemFree'), ht.mem_available||'—'],
+      [t('ov.load'), p.load1||'—'],
     ])+
     group(t('ov.disk'), [
       [t('ov.usage'), k.used_pct||'—'], [t('ov.total'), k.total||'—'], [t('ov.free'), k.free||'—'], [t('ov.path'), k.home||'—'],
@@ -4801,7 +4855,24 @@ async function loadOverview(){
     group(t('ov.cache'), [
       [t('ov.type'), ca.type||'—'], [t('ov.keys'), ca.keys??'—'], [t('ov.health'), ca.health||'—'],
     ])+
-    group(t('ov.log'), [[t('ov.size'), lg.size||'—'], [t('ov.lastWrite'), lg.last_write||'—'], [t('ov.logFiles'), lg.files??'—']]);
+    group(t('ov.app'), [
+      [t('ov.appStatus'), ap.status||'—'],
+      [t('ov.appStt'), okMark(ap.stt)],
+      [t('ov.appTts'), okMark(ap.tts)],
+      [t('ov.appLlm'), okMark(ap.llm)],
+      [t('ov.appEmbed'), okMark(ap.embed)],
+      [t('ov.appRerank'), okMark(ap.rerank)],
+      [t('ov.appOcr'), okMark(ap.ocr)],
+      [t('ov.appMcp'), okMark(ap.mcp)+' ('+(ap.mcp_tools??0)+')'],
+      [t('ov.appAuth'), switchMark(ap.auth)],
+      [t('ov.appRate'), switchMark(ap.rate)],
+    ])+
+    group(t('ov.log'), [
+      [t('ov.size'), lg.size||'—'], [t('ov.lastWrite'), lg.last_write||'—'],
+      [t('ov.logFiles'), lg.files??'—'], [t('ov.maxLogFiles'), lg.rotate_max_files??'—'],
+      [t('ov.rotateDays'), lg.rotate_days??'—'], [t('ov.rotateMaxMb'), lg.rotate_max_mb??'—'],
+      [t('ov.rotateBy'), rotByText(lg.rotate_by)],
+    ]);
 }
 
 async function loadLogFiles(){
@@ -4858,10 +4929,10 @@ async function loadLogs(){
 function escapeHtml(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
 
-// 全局接口 loading：拦截 fetch，仅 /admin/ 管理接口（保存/刷新等）进行中时显示全屏遮罩
-// （居中转圈），全部请求结束才隐藏（计数防止并发请求互相抵消）。快速请求（<250ms）延迟显示。
-// 能力测试端点 /llm/、/voice/ 自带状态文字与流式进度，不弹这个全屏遮罩——否则弹框测试时
-// 遮罩 z-index(40) 被弹框(50) 压在下面，看起来像「loading 在弹框下面」，且会干扰进度。
+// 全局接口 loading：拦截 fetch，仅 /admin/ 写操作（保存 / 启停等）进行中时显示全屏遮罩。
+// GET 查询一律不弹——各页面自带「加载中…」占位，且 MCP 页等会周期性 GET，若弹遮罩
+// 页面就会莫名变灰。写操作慢才有必要用全屏遮罩防重复点击。
+// 快速请求（<250ms）延迟显示，避免一闪而过。
 (function(){
   let _pending = 0;
   let _timer = null;
@@ -4872,7 +4943,9 @@ function escapeAttr(s){ return (s||'').replace(/"/g,'&quot;'); }
   const _isAdmin = (u) => typeof u === 'string' && u.indexOf('/admin/') >= 0;
   window.fetch = async (...args) => {
     const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
-    if (!_isAdmin(url)) return _orig(...args);
+    const method = ((args[1] && args[1].method) || 'GET').toUpperCase();
+    // 只拦写操作；GET/HEAD 查询不弹遮罩（否则周期性查询会让页面反复变灰）
+    if (!_isAdmin(url) || method === 'GET' || method === 'HEAD') return _orig(...args);
     _pending++;
     if (_timer === null) _timer = setTimeout(_show, 250);
     try { return await _orig(...args); }

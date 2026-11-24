@@ -74,13 +74,15 @@ VOICE_PORT=19529
 # VOICE_LOG_FILE=$VOICE_HOME/voice.log
 #
 # 日志轮转（voice.sh rotate 手动执行，或加入 cron 定时；参数均可配置）：
-#   LOG_ROTATE_DAYS=7     归档保留天数（超过即删，0=不删）
-#   LOG_ROTATE_MAX_MB=10  单文件超过该大小(MB)即切分（0=不按大小切）
-#   LOG_ROTATE_BY=both    day=按天 / size=按大小 / both=两者结合（默认）
+#   LOG_ROTATE_DAYS=7       归档保留天数（超过即删，0=不删）
+#   LOG_ROTATE_MAX_MB=10    单文件超过该大小(MB)即切分（0=不按大小切）
+#   LOG_ROTATE_BY=both      day=按天 / size=按大小 / both=两者结合（默认）
+#   LOG_ROTATE_MAX_FILES=20 最多保留的归档个数（保留最新 N 个，0=不按个数限制）
 # 轮转用 copytruncate（复制后清空原文件），不影响运行中的服务写日志。
 # LOG_ROTATE_DAYS=7
 # LOG_ROTATE_MAX_MB=10
 # LOG_ROTATE_BY=both
+# LOG_ROTATE_MAX_FILES=20
 
 # ── 远程数据库（可选）───────────────────────────────────────────
 # 远端数据库 DSN（如 PostgreSQL / 远端 SQLite）。配置后，本地保存配置、

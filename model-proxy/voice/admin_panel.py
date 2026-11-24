@@ -566,6 +566,72 @@ def _system_overview() -> dict[str, Any]:
             files.append(log_path)
         return len(set(files))
     log_count = safe(_log_file_count, 0)
+    # 日志轮转配置（与 voice.sh do_rotate 同源：config_store / voice.conf，缺省对齐 7/10/both）。
+    # 仅展示，不在此处修改——轮转由 voice.sh rotate 按这些值执行。
+    _lcfg = safe(lambda: config_store.instance().all(), {}) or {}
+    rotate_days = str(_lcfg.get("LOG_ROTATE_DAYS") or "7").strip()
+    rotate_max_mb = str(_lcfg.get("LOG_ROTATE_MAX_MB") or "10").strip()
+    rotate_by = str(_lcfg.get("LOG_ROTATE_BY") or "both").strip()
+    rotate_max_files = str(_lcfg.get("LOG_ROTATE_MAX_FILES") or "20").strip()
+
+    # ── 整机 CPU / 内存（psutil，跨平台；区别于上面单进程的 ps 读数）──
+    def host_info():
+        import psutil
+        vm = psutil.virtual_memory()
+        return {
+            "cpu_percent": f"{psutil.cpu_percent(interval=0.2):.1f}%",
+            "cpu_cores": str(psutil.cpu_count() or ncpu),
+            "mem_total": fmt_bytes(vm.total),
+            "mem_used": fmt_bytes(vm.used),
+            "mem_available": fmt_bytes(vm.available),
+            "mem_percent": f"{vm.percent:.1f}%",
+        }
+    host = safe(host_info, {})
+
+    # ── 应用运行情况（各能力模块就绪状态，复用 health 快照）──
+    # 延迟导入避免循环依赖；只挑状态字段，不返回 base_url / api_key 等敏感值。
+    def app_info():
+        import sys
+        import openai_voice_server as ovs
+        h = ovs.voice_health()
+        # 服务以 `python openai_voice_server.py` 启动时主模块是 __main__，而这里 import 的
+        # openai_voice_server 是第二次导入的独立模块对象；lifespan 把标志写在 __main__ 上，
+        # 故两个模块都要读，避免 MCP 已挂载却显示未就绪。
+        mcp_ready = bool(getattr(sys.modules.get("__main__"), "_MCP_MOUNTED", False)) or \
+                    bool(getattr(ovs, "_MCP_MOUNTED", False))
+        # 已发现的上游工具数（mcp_gateway 是共享单例，不会双导入）
+        mcp_tools = 0
+        try:
+            import mcp_gateway
+            mcp_tools = len(getattr(mcp_gateway, "_upstream_tools", {}) or {})
+        except Exception:
+            pass
+
+        def pool_ok(cap: str) -> bool:
+            """池里有可用（健康且非冷却）上游即 ok。"""
+            for x in ovs.upstream_pool.health_snapshot(cap) or []:
+                if isinstance(x, dict) and x.get("healthy") and not x.get("cooling"):
+                    return True
+            return False
+
+        # TTS：edge / kokoro 任一可用即 ok（与页面"测试可用"口径一致）
+        tts_ok = bool(h.get("tts_edge_ready") or h.get("tts_kokoro_ready"))
+        # LLM 未启用时也算不可用；启用再看健康上游
+        llm_on = bool(ovs.llm_enabled())
+        return {
+            "status": h.get("status") or "—",
+            "stt": bool(h.get("stt_ready")),
+            "tts": tts_ok,
+            "llm": llm_on and pool_ok("LLM"),
+            "embed": bool(ovs.upstream_pool.load_pool("EMBED")) and pool_ok("EMBED"),
+            "rerank": bool(ovs.upstream_pool.load_pool("RERANK")) and pool_ok("RERANK"),
+            "ocr": True,  # OCR 接口常驻可用（内置/DeepSeek 由配置决定，见模型配置页）
+            "mcp": mcp_ready,
+            "mcp_tools": mcp_tools,
+            "auth": bool(h.get("auth_enabled")),
+            "rate": bool(h.get("rate_limit_enabled")),
+        }
+    app = safe(app_info, {})
 
     return {
         "process": {"pid": pid, "cpu": f"{cpu_pct}%", "memory": rss_mb, "load1": load1, "cpu_cores": ncpu,
@@ -574,7 +640,11 @@ def _system_overview() -> dict[str, Any]:
         "network": {"ip": ip, "port": voice_port(), "host": "0.0.0.0"},
         "database": databases,
         "cache": caches,
-        "log": {"size": log_size, "last_write": log_mtime, "files": log_count},
+        "host": host,
+        "app": app,
+        "log": {"size": log_size, "last_write": log_mtime, "files": log_count,
+                "rotate_days": rotate_days, "rotate_max_mb": rotate_max_mb, "rotate_by": rotate_by,
+                "rotate_max_files": rotate_max_files},
     }
 
 
