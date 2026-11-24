@@ -1467,9 +1467,6 @@ async function loadConfig(){
     };
     fillOcrSlot('ocrBuiltin','OCR_BUILTIN_MODELS','OCR_BUILTIN_MODEL','PP-OCRv5');
     fillOcrSlot('ocrDeepseek','OCR_DEEPSEEK_MODELS','OCR_DEEPSEEK_MODEL','deepseek-v4-flash-vision-exp');
-    // DeepSeek Key 只判定是否配置（不回显真值，留空=不修改）
-    provEdit.ocrDeepseek.key=undefined;
-    paintOcrTable();
     // 向量默认模型（embeddings 测试兜底；向后兼容旧的 LLM_EMBED_MODEL）
     embedDefModel = (cfgOrig.EMBED_UPSTREAM_MODEL || cfgOrig.LLM_EMBED_MODEL || '').trim();
     // ASR/TTS 提供商状态回填：provider、上游地址/模型/模型列表（Key 从专用接口回填，与 LLM 编辑框一致）
@@ -1526,12 +1523,16 @@ async function loadConfig(){
         const defRow = en.find(x => x.is_default);
         e.def = defRow ? defRow.model : (e.sel.values().next().value || '');
       });
+      // OCR DeepSeek Key 真值回填（与 STT/TTS 同口径）：从 speech-secrets 预填密码框，
+      // 留空=不修改；接口异常时不回填（保持 undefined），避免误清空已存 Key。
+      provEdit.ocrDeepseek.key = secrets ? (secrets.OCR_DEEPSEEK_API_KEY || '') : undefined;
     }catch(_){}
     await renderLlmTable();
     await renderEmbedTable();
     await renderRerankTable();
     paintAsrTable();
     paintTtsTable();
+    paintOcrTable();
     renderSecTable();
     // 勾选模型可能刚回填，刷新底部测试页的模型/协议联动
     if(window.refreshVoiceTestSelects) window.refreshVoiceTestSelects();

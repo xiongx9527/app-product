@@ -123,6 +123,7 @@ MASKED_KEYS = {
     "TTS_UPSTREAM_API_KEY",
     "STT_DEEPSEEK_API_KEY",
     "TTS_DEEPSEEK_API_KEY",
+    "OCR_DEEPSEEK_API_KEY",   # OCR 的 DeepSeek Vision Key（同上，必须打码+哨兵）
 }
 HIDDEN = "********"
 

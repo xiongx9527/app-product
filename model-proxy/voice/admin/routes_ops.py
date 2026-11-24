@@ -60,6 +60,8 @@ def build_router(
             "TTS_UPSTREAM_API_KEY": cfg.get("TTS_UPSTREAM_API_KEY") or "",
             "STT_DEEPSEEK_API_KEY": cfg.get("STT_DEEPSEEK_API_KEY") or "",
             "TTS_DEEPSEEK_API_KEY": cfg.get("TTS_DEEPSEEK_API_KEY") or "",
+            # OCR 的 DeepSeek Vision Key（配置页 OCR 表格回填用）
+            "OCR_DEEPSEEK_API_KEY": cfg.get("OCR_DEEPSEEK_API_KEY") or "",
         }
 
     def admin_pool(cap: str, def_vendor_key: str, def_model_key: str):
