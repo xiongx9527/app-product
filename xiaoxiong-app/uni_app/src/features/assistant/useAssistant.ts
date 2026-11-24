@@ -1237,11 +1237,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     return 'gatewayDown'
   }
 
-  function dispatch(event: AssistantEvent): void {
-    // 原则（硬保证）：网关或 ASR 没好时，任何「进入唤醒/对话」的事件——手动点球 WAKE、
-    // 语音唤醒词 WAKE、REWAKE——一律不放行，绝不进入 listening。统一在派发处拦截，
-    // 所有路径都绕不过去。提示音由点击入口负责，不在派发处重复播。
+  function dispatch(event: AssistantEvent, force = false): void {
+    // 原则（硬保证）：网关或 ASR 没好时，手动点球/ASR 文本唤醒的 WAKE、REWAKE 不放行，
+    // 绝不进入 listening。但【端侧 KWS 命中例外】——KWS 是本地能力，命中即生效，不受
+    // health/canWake 前置拦（与 handleWakeHit 的 fromKws 放开保持一致）。真机铁证：之前
+    // handleWakeHit 对 KWS 放开了 canWake，却在这里被二次拦截，导致 KWS 命中 3 次全被吞、
+    // 界面一直待唤醒"喊不醒"。force=true 由 KWS 唤醒路径传入，跳过此拦截。
     if (
+      !force &&
       (event.type === 'WAKE' || event.type === 'REWAKE') &&
       !canWake()
     ) {
@@ -1718,8 +1721,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
 
   /** 重新唤醒：对话进行中再次叫「小熊小熊」时，停掉当前轮次并重新招呼。
    * 网关不可用时 dispatch 已拦截 REWAKE，此处不得再单独把阶段设成 listening 造成假象。 */
-  function reWake(): void {
-    if (!canWake()) return
+  function reWake(force = false): void {
+    // force=true：端侧 KWS 命中，本地能力不受 health/canWake 拦（与 dispatch 的 force 配套）
+    if (!canWake() && !force) return
     // 唤醒词命中就停媒体（新闻/音乐 InnerAudioContext）：真机铁证——纯媒体播放新闻时
     // 喊「你好小熊」，ASR 文本命中走 reWake 分支（非 TTS 播报态），旧代码这里不停音乐，
     // 只播了「我在」却新闻照放，用户体感「没中断」。KWS 分支虽已在 handleWakeHit 里调过
@@ -1728,7 +1732,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 识别到的「小熊小熊」也进「我说」框（用户明确要求唤醒词可见）
     transcript.value = DEFAULT_WAKE_WORDS[0]
     liveText.value = ''
-    dispatch({ type: 'REWAKE' })
+    dispatch({ type: 'REWAKE' }, force)
     phase.value = 'listening'
   }
 
@@ -1799,7 +1803,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       if (Date.now() - lastSpokeAt < WAKE_ECHO_MS) return false
       // 记下 KWS/文本唤醒时刻：接下来几秒内 ASR 转写的同一句唤醒词当回显忽略（见 isKwsWakeEcho）。
       kwsWakeAt = Date.now()
-      dispatch({ type: 'WAKE' })
+      // KWS 命中/fromKws 用 force 跳过 dispatch 的 canWake 二次拦截（见 dispatch 注释）
+      dispatch({ type: 'WAKE' }, fromKws)
       return true
     }
     if (throttle) {
@@ -1815,7 +1820,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 只有 ASR 文本命中（fromKws=false）的 busy 插话才保留 skipCurrent（队列继续）。
     if (fromKws) {
       stopMusic()          // KWS 命中：播报停 + 播放停（用户要求）
-      reWake()
+      reWake(true)         // KWS 用 force 跳过 canWake 二次拦截
     } else if (assistantBusy || isSpeaking.value || queuePending.value > 0) {
       skipCurrentAndGreet(text, false)
     } else reWake()
