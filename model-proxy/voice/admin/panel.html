@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="/favicon.ico" type="image/svg+xml" />
 <title data-i18n="app.title">模型代理管理</title>
 <style>
   :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --fg:#e6e8ec; --mut:#9aa3b2;
@@ -56,6 +57,10 @@
   .card.collapsed > h2 { margin-bottom:0; }
   .card.collapsed > h2::after { content:'▸'; opacity:.45; }
   .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  /* 安全设置「请求大小限制」：与上方字段统一为「标签在上、输入框在下、左对齐」 */
+  .size-limits .row { flex-direction:column; align-items:flex-start; gap:0; }
+  .size-limits .row > label { margin:8px 0 4px; }
+  .size-limits .row > input[type=number] { width:200px; flex:none; }
   button { background:var(--acc); color:#fff; border:0; border-radius:8px; padding:8px 14px; cursor:pointer; font-size:13px; }
   button.sec { background:#2a2f3a; color:var(--fg); }
   a.sec { background:#2a2f3a; color:var(--fg); text-decoration:none; padding:5px 12px; border-radius:8px; font-size:13px; line-height:1.4; }
@@ -190,7 +195,17 @@
   .b-ok { background:#13352a; color:var(--ok); }
   .b-err { background:#3a1f24; color:var(--err); }
   .b-mut { background:#23272f; color:var(--mut); }
-  #login { max-width:340px; margin:80px auto; }
+  #login { max-width:440px; margin:9vh auto; padding:32px 36px 30px; }
+  #login h2 { text-align:center; justify-content:center; font-size:22px; letter-spacing:.04em; margin-bottom:26px; }
+  #login label { font-size:13px; margin:14px 0 6px; }
+  #login input[type=text], #login input[type=password] { font-size:15px; padding:11px 12px; }
+  #login #go { font-size:15px; padding:12px 22px; width:100%; }
+  #login .captcha-row { display:flex; align-items:center; gap:10px; margin-top:14px; }
+  #login .captcha-row input[type=text] { flex:1; min-width:0; margin:0; }
+  #login .captcha-img { width:124px; height:42px; border-radius:8px; overflow:hidden; cursor:pointer;
+                        display:flex; align-items:center; justify-content:center; border:1px solid var(--line);
+                        background:#eef2f7; flex:none; }
+  #login .captcha-img svg { display:block; }
   .err { color:var(--err); font-size:13px; font-weight:700; min-height:18px; margin-top:8px; background:#2a1417; border:1px solid #5a2a2f; border-radius:6px; padding:6px 8px; white-space:pre-wrap; word-break:break-all; }
   .err:empty { display:none; }
   .think-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
@@ -597,8 +612,12 @@ const I18N = {
     "login.failed": "登录失败",
     "login.login": "登录",
     "login.password": "密码",
+    "login.captcha": "验证码",
+    "login.captchaPlaceholder": "请输入右侧字符",
+    "login.captchaRefresh": "点击更换验证码",
     "login.badCreds": "账号或密码错误",
     "login.emptyCreds": "请输入账号和密码",
+    "login.captchaErr": "验证码错误或已过期",
     "modal.editPrefix": "编辑：",
     "modal.editTitle": "编辑地址与密钥",
     "modal.keyClearHint": "（留空=清空）",
@@ -788,6 +807,12 @@ const I18N = {
     "sec.maxTts": "TTS 文本(字符)",
     "sec.rateSwitch": "启用限流（全局）",
     "sec.rateSwitchHint": "开启后所有 API Key 都按绑定的限流策略生效（未绑定则用默认策略）；策略在「访问控制 → 限流策略」配置、在「API Key 管理」里为 Key 绑定。",
+    "sec.captchaSwitch": "登录验证码",
+    "sec.default": "默认",
+    "sec.off": "关闭",
+    "sec.captchaHint": "开启后登录管理面板需输入图形验证码；多实例部署会自动通过 Redis 共享验证码，避免校验失败。",
+    "sec.logDetailSwitch": "请求详情日志",
+    "sec.logDetailHint": "开启后在日志里打印每次请求的方法/路径/请求头/query/body（敏感字段打码、超长截断、大于 64KB 的正文仅记大小），方便排障；关闭可显著降低日志量。",
     "access.hint": "账号与 API Key 管理在「模型配置 → 安全」页签内；本页管理 API Key 的限流策略与绑定。",
   },
   'en': {
@@ -1065,8 +1090,12 @@ const I18N = {
     "login.failed": "Login failed",
     "login.login": "Login",
     "login.password": "Password",
+    "login.captcha": "Captcha",
+    "login.captchaPlaceholder": "Enter the characters at right",
+    "login.captchaRefresh": "Click to refresh captcha",
     "login.badCreds": "Incorrect account or password",
     "login.emptyCreds": "Please enter your account and password",
+    "login.captchaErr": "Captcha is incorrect or expired",
     "modal.editPrefix": "Edit: ",
     "modal.editTitle": "Edit URL & Key",
     "modal.keyClearHint": "(leave blank to clear)",
@@ -1257,6 +1286,12 @@ const I18N = {
     "sec.maxTts": "TTS text (chars)",
     "sec.rateSwitch": "Enable rate limit (global)",
     "sec.rateSwitchHint": "When on, all API Keys are limited by their bound policies (unbound keys use the default). Configure policies under Access control → Rate limit, and bind them to Keys under API Key management.",
+    "sec.captchaSwitch": "Login captcha",
+    "sec.default": "default",
+    "sec.off": "Off",
+    "sec.captchaHint": "When on, logging into the admin panel requires a captcha. Multi-instance deployments share captchas via Redis automatically to avoid verification failures.",
+    "sec.logDetailSwitch": "Request detail logs",
+    "sec.logDetailHint": "When on, logs each request's method/path/headers/query/body (sensitive fields masked, long values truncated, bodies over 64KB record size only) for easier troubleshooting. Turn off to cut log volume.",
     "access.hint": "User & API Key management lives under Model config → Security tab; this page manages rate-limit policies and Key bindings.",
   }
 };
@@ -1267,7 +1302,7 @@ const t = (zh) => (I18N[curLang] && I18N[curLang][zh]) || zh;
 // 仅翻译「自定义」供应商的展示文案；底层存储值 '自定义' 保持不变，避免破坏配置落盘
 function vendorLabel(v){ return v==='自定义' ? t('vendor.custom') : v; }
 // 服务端返回的中文错误文案按当前语言转译（已知项），未知项原样显示
-const SERVER_MSG = { '账号或密码错误':'login.badCreds', '请输入账号和密码':'login.emptyCreds' };
+const SERVER_MSG = { '账号或密码错误':'login.badCreds', '请输入账号和密码':'login.emptyCreds', '验证码错误或已过期':'login.captchaErr' };
 // 把后端 detail（可能是字符串 / 对象数组 / 对象）渲染成可读文案，杜绝 [object Object]
 function fmtErr(detail){
   let msg;
@@ -1335,21 +1370,54 @@ function renderLogin(){
     <h2>${t('login.login')}</h2>
     <label>${t('login.account')}</label><input type="text" id="u" autocomplete="username" />
     <label>${t('login.password')}</label><input type="password" id="p" autocomplete="current-password" />
+    <div class="captcha-row" id="captchaRow" hidden>
+      <label style="margin:0;flex:none;width:56px">${t('login.captcha')}</label>
+      <input type="text" id="captcha" autocomplete="off" placeholder="${t('login.captchaPlaceholder')}" />
+      <span class="captcha-img" id="captchaImg" title="${t('login.captchaRefresh')}"></span>
+    </div>
     <div class="err" id="e"></div>
-    <div class="row" style="margin-top:12px; justify-content:center"><button id="go">${t('login.login')}</button></div>
+    <div style="margin-top:18px"><button id="go">${t('login.login')}</button></div>
   </div>`);
   card.querySelector('#u').value = prevU;
   card.querySelector('#p').value = prevP;
   app.appendChild(card);
+
+  // 验证码：询问服务端开关；关闭则隐藏整行。点图片刷新。失败时给出提示但不阻塞账号密码输入。
+  let captchaId = '';
+  const captchaRow = card.querySelector('#captchaRow');
+  const captchaImg = card.querySelector('#captchaImg');
+  const captchaInp = card.querySelector('#captcha');
+  const loadCaptcha = async ()=>{
+    try{
+      const r = await fetch('/admin/api/captcha',{credentials:'same-origin'});
+      const d = await r.json();
+      if(!d.enabled){ captchaRow.hidden = true; return; }
+      captchaRow.hidden = false;
+      captchaId = d.id || '';
+      captchaImg.innerHTML = d.svg || '';
+      captchaInp.value = '';
+    }catch(e){ captchaRow.hidden = true; }
+  };
+  captchaImg.onclick = loadCaptcha;
+  loadCaptcha();
+
   const submit = async ()=>{
+    let body = `user=${encodeURIComponent(document.getElementById('u').value)}&password=${encodeURIComponent(document.getElementById('p').value)}`;
+    if(!captchaRow.hidden) body += `&captcha_id=${encodeURIComponent(captchaId)}&captcha=${encodeURIComponent(captchaInp.value)}`;
     const r = await api('/admin/login', {method:'POST',
       headers:{'content-type':'application/x-www-form-urlencoded'},
-      body:`user=${encodeURIComponent(document.getElementById('u').value)}&password=${encodeURIComponent(document.getElementById('p').value)}`});
+      body});
     if(r.ok){ boot(); }
-    else { document.getElementById('e').textContent = fmtErr((await r.json()).detail); }
+    else {
+      const errEl = document.getElementById('e');
+      errEl.textContent = fmtErr((await r.json()).detail);
+      // 验证码相关失败时自动刷新一张，省得用户手点
+      if(/captcha|验证码/i.test(errEl.textContent)) loadCaptcha();
+    }
   };
   card.querySelector('#go').onclick = submit;
   card.querySelector('#p').addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
+  captchaInp.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
 }
 
 // ── 配置卡片（LLM / ASR / TTS / 安全 四个 tab，置于测试之上）──
@@ -1863,6 +1931,8 @@ function wireConfig(){
     const patch={ VOICE_API_KEY_AUTH: document.getElementById('cfg_VOICE_API_KEY_AUTH').value,
                   VOICE_IP_ALLOW: document.getElementById('cfg_VOICE_IP_ALLOW').value };
     if(rlEl) patch.RATE_LIMIT_ENABLED=rlEl.value;
+    const capEl=document.getElementById('cfg_ADMIN_CAPTCHA'); if(capEl) patch.ADMIN_CAPTCHA=capEl.value;
+    const logdEl=document.getElementById('cfg_LOG_REQUEST_DETAIL'); if(logdEl) patch.LOG_REQUEST_DETAIL=logdEl.value;
     // 请求大小限制（0 = 不限）：6 项统一在安全设置里配置
     ['MAX_LLM_TOKENS','MAX_ASR_MB','MAX_TTS_CHARS','MAX_OCR_MB','MAX_EMBED_TOKENS','MAX_RERANK_TOKENS'].forEach(k=>{
       const e=document.getElementById('cfg_'+k); if(e) patch[k]=String(Math.max(0,Number(e.value)||0));
@@ -2975,6 +3045,9 @@ function renderSecTable(){
   const auth = (cfgOrig['VOICE_API_KEY_AUTH']||'off');
   const ipVal = (cfgOrig['VOICE_IP_ALLOW']||'');
   const rl = (cfgOrig['RATE_LIMIT_ENABLED']||'off');
+  // 登录验证码默认开启：键缺失时按 on 显示，避免升级后静默关闭
+  const cap = (cfgOrig['ADMIN_CAPTCHA']==='off' ? 'off' : 'on');
+  const logd = (cfgOrig['LOG_REQUEST_DETAIL']==='off' ? 'off' : 'on');
   wrap.innerHTML = `
     <div class="row"><label>${t(CFG_LABEL['VOICE_API_KEY_AUTH'])}</label>
       <select id="cfg_VOICE_API_KEY_AUTH">
@@ -2990,22 +3063,38 @@ function renderSecTable(){
       </select>
       <span class="hint-warn">${t('sec.rateSwitchHint')}</span>
     </div>
+    <div class="row"><label>${t('sec.captchaSwitch')}</label>
+      <select id="cfg_ADMIN_CAPTCHA">
+        <option value="on"${cap==='on'?' selected':''}>${t('sec.on')}（${t('sec.default')}）</option>
+        <option value="off"${cap==='off'?' selected':''}>${t('sec.off')}</option>
+      </select>
+      <span class="hint-warn">${t('sec.captchaHint')}</span>
+    </div>
+    <div class="row"><label>${t('sec.logDetailSwitch')}</label>
+      <select id="cfg_LOG_REQUEST_DETAIL">
+        <option value="on"${logd==='on'?' selected':''}>${t('sec.on')}（${t('sec.default')}）</option>
+        <option value="off"${logd==='off'?' selected':''}>${t('sec.off')}</option>
+      </select>
+      <span class="hint-warn">${t('sec.logDetailHint')}</span>
+    </div>
     <div class="row"><label>${t(CFG_LABEL['VOICE_IP_ALLOW'])}</label>
       <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('sec.ipHint')}">${escapeHtml(ipVal)}</textarea>
     </div>
-    <div class="hint" style="margin-top:14px">${t('sec.sizeHint')}</div>
-    <div class="row"><label>${t('sec.maxLlm')}</label>
-      <input id="cfg_MAX_LLM_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_LLM_TOKENS||0)}" /></div>
-    <div class="row"><label>${t('sec.maxEmbed')}</label>
-      <input id="cfg_MAX_EMBED_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_EMBED_TOKENS||0)}" /></div>
-    <div class="row"><label>${t('sec.maxRerank')}</label>
-      <input id="cfg_MAX_RERANK_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_RERANK_TOKENS||0)}" /></div>
-    <div class="row"><label>${t('sec.maxAsr')}</label>
-      <input id="cfg_MAX_ASR_MB" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_ASR_MB||0)}" /></div>
-    <div class="row"><label>${t('sec.maxOcr')}</label>
-      <input id="cfg_MAX_OCR_MB" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_OCR_MB||0)}" /></div>
-    <div class="row"><label>${t('sec.maxTts')}</label>
-      <input id="cfg_MAX_TTS_CHARS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_TTS_CHARS||0)}" /></div>`;
+    <div class="size-limits">
+      <div class="hint" style="margin-top:14px">${t('sec.sizeHint')}</div>
+      <div class="row"><label>${t('sec.maxLlm')}</label>
+        <input id="cfg_MAX_LLM_TOKENS" type="number" min="0" value="${Number(cfgOrig.MAX_LLM_TOKENS||0)}" /></div>
+      <div class="row"><label>${t('sec.maxEmbed')}</label>
+        <input id="cfg_MAX_EMBED_TOKENS" type="number" min="0" value="${Number(cfgOrig.MAX_EMBED_TOKENS||0)}" /></div>
+      <div class="row"><label>${t('sec.maxRerank')}</label>
+        <input id="cfg_MAX_RERANK_TOKENS" type="number" min="0" value="${Number(cfgOrig.MAX_RERANK_TOKENS||0)}" /></div>
+      <div class="row"><label>${t('sec.maxAsr')}</label>
+        <input id="cfg_MAX_ASR_MB" type="number" min="0" value="${Number(cfgOrig.MAX_ASR_MB||0)}" /></div>
+      <div class="row"><label>${t('sec.maxOcr')}</label>
+        <input id="cfg_MAX_OCR_MB" type="number" min="0" value="${Number(cfgOrig.MAX_OCR_MB||0)}" /></div>
+      <div class="row"><label>${t('sec.maxTts')}</label>
+        <input id="cfg_MAX_TTS_CHARS" type="number" min="0" value="${Number(cfgOrig.MAX_TTS_CHARS||0)}" /></div>
+    </div>`;
 }
 
 // ── 可复用的对话测试：测试 tab 与配置表格（提供商/模型）共用，靠 opts 个性化 ──

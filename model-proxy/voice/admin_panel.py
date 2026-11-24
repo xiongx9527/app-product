@@ -27,6 +27,7 @@ import secrets
 import socket
 import sqlite3
 import subprocess
+import threading
 import time
 from typing import Any
 
@@ -34,6 +35,7 @@ import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库
 import upstream_pool  # 上游地址池：配置变更后需要清掉池缓存（见 admin_config_save）
 import voice_db  # 本地库：配置真相源 + 事件 / 审计 + 会话（落库，跨重启一致）
 import rate_store  # 限流门面：删 key 时清计数
+import captcha_store  # 登录验证码：Redis 优先 + 内存降级，多实例可共享
 import voice_correction_store  # ASR 纠错词表（管理端维护；对外同步接口在 openai_voice_server）
 import httpx  # 探测上游连通性（/admin/api/probe）
 import llm_protocols  # 由协议名推导模型列表接口地址（prepare_models）
@@ -698,12 +700,38 @@ def register_admin_routes(
         # 禁缓存：页面逻辑全在这份 HTML 里，浏览器缓存旧版会让人以为改动没生效。
         return HTMLResponse(ADMIN_HTML, headers={"Cache-Control": "no-store, must-revalidate"})
 
+    @app.get("/admin/api/captcha")
+    def admin_captcha():
+        """登录验证码（公开，无需会话）：返回 challenge id + SVG。
+
+        开关关闭时 enabled=false，前端不显示验证码；开启时签发答案到 Redis/内存，
+        答案只留服务端，SVG 仅含图形。多实例部署靠 Redis 共享，校验打到任意实例都对。
+        """
+        if not captcha_store.enabled():
+            return {"enabled": False}
+        answer = captcha_store.new_answer()
+        cid = captcha_store.issue(answer)
+        resp = JSONResponse({"enabled": True, "id": cid, "svg": captcha_store.render_svg(answer)})
+        resp.headers["Cache-Control"] = "no-store, must-revalidate"
+        return resp
+
     @app.post("/admin/login")
-    def admin_login(request: Request, user: str | None = Form(None), password: str | None = Form(None)):
+    def admin_login(
+        request: Request,
+        user: str | None = Form(None),
+        password: str | None = Form(None),
+        captcha_id: str | None = Form(None),
+        captcha: str | None = Form(None),
+    ):
         # 表单缺字段时显式返回可读字符串，避免 FastAPI 默认 422 把 detail 写成对象数组
         if not user or not password:
             raise HTTPException(status_code=400, detail="请输入账号和密码")
         client = request.client.host if request.client else "unknown"
+        # 验证码：默认开启；开关开时必须提交正确答案（一次性消费，防重放）。
+        if captcha_store.enabled():
+            if not captcha_id or not captcha or not captcha_store.verify(captcha_id, captcha):
+                voice_db.append_audit(client, "admin_captcha_failed", f"user={user}")
+                raise HTTPException(status_code=400, detail="验证码错误或已过期")
         # 多账号校验：按 username 查 admin_users（含 enabled 判定）
         if not voice_db.admin_user_auth(user, password):
             voice_db.append_audit(client, "admin_login_failed", f"user={user}")

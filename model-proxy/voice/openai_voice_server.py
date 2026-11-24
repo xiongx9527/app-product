@@ -116,6 +116,7 @@ import config_store  # 统一配置接口：本地缓存 + 本地库 + 远程库
 import voice_correction_store  # ASR 纠错词表统一存储（SQLite/MySQL/PgSQL + Redis 缓存）
 import upstream_pool  # 上游地址池：多地址 + 账号池，健康探测 + 轮询
 import rate_store  # 限流门面：按 api-key 计数，内存/Redis 由配置决定
+import request_log  # 请求详情日志：header/query/body 脱敏+截断打印
 import model_catalog  # 统一模型目录（LLM / TTS / STT 三端口，对齐 fw-plus-ai-native）
 from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -1061,8 +1062,26 @@ async def client_ip_audit_middleware(request: Request, call_next):
     被拒绝的请求也留痕。写库放线程池，避免同步 sqlite 阻塞事件循环。
     """
     log_ip = client_ip_for_log(request)
-    response = await call_next(request)
     path = request.url.path
+    # 请求详情日志（header/query/body）：在 call_next 之前读 body，Starlette 会缓存供下游复用。
+    # 仅小 body 读取，音频/图片等大体积按 Content-Length 直接跳过，避免加载进内存/撑爆日志。
+    if request_log.enabled() and request.method != "OPTIONS":
+        try:
+            cl = request.headers.get("content-length")
+            body: bytes = b""
+            if cl is not None and int(cl) <= request_log.BODY_READ_MAX:
+                body = await request.body()
+            elif cl is None and request.method in ("POST", "PUT", "PATCH"):
+                # 无 Content-Length 的写请求（分块传输）保守起见不读正文
+                body = b"(body not read: no content-length)"
+            line = request_log.format_detail(
+                request.method, path, request.url.query, request.headers,
+                body, request.headers.get("content-type", ""),
+            )
+            logging.getLogger("uvicorn.error").info(line)
+        except Exception:  # noqa: BLE001  详情日志失败绝不影响业务
+            pass
+    response = await call_next(request)
     if request.method != "OPTIONS" and (
         path.startswith(_AUDIT_VOICE_PREFIX)
         or (path == _AUDIT_CONFIG_SAVE and request.method == "POST")
@@ -1710,6 +1729,25 @@ def llm_health() -> dict:
         "auth_enabled": auth_enabled(),
         "upstreams": upstream_pool.health_snapshot("LLM") if enabled else [],
     }
+
+
+# 站点图标：浏览器会自动请求 /favicon.ico，没路由就一直 404 刷日志。
+# 内联 SVG（无需外部文件），现代浏览器均支持 image/svg+xml 作为 favicon。
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="14" fill="#4f8cff"/>'
+    '<path d="M18 26v12a6 6 0 0 0 6 6h4v6h8v-6h2a6 6 0 0 0 6-6V26a6 6 0 0 0-6-6H24a6 6 0 0 0-6 6z" fill="#fff"/>'
+    '<circle cx="28" cy="31" r="3" fill="#4f8cff"/><circle cx="40" cy="31" r="3" fill="#4f8cff"/>'
+    '<path d="M50 26c4 3 4 9 0 12M14 26c-4 3-4 9 0 12" stroke="#fff" stroke-width="3" '
+    'fill="none" stroke-linecap="round"/>'
+    '</svg>'
+)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return Response(content=_FAVICON_SVG, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/")
