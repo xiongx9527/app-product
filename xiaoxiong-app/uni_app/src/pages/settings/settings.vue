@@ -1333,7 +1333,8 @@ picker {
   margin-top: 0;
 }
 .restart-btn {
-  flex: 0 0 auto;
+  flex: 1;
+  width: auto;
   margin: 0;
   height: 44px;
   line-height: 44px;
