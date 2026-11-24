@@ -206,15 +206,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // ===== ASR 上行门控：唯一真相源（2026-11-24 用户拍板）=====
   // 「当前是否该让 ASR 静音」只在这一处判定；前端 onPcm 与 iOS 原生都听这里的结果。
   // 以后要改门控规则，只改 isAsrMuted() 一个方法即可，不用到处找判断。
-  // 【静音】待唤醒(wake，只靠 KWS)、正在思考(thinking)、正在说(replying)、正在播报(speaking)；
-  // 【收音】正在听(listening)、本轮完成(done)。
-  // 【媒体播放期间】由插话开关 bargeIn 决定：关（默认）→静音，新闻/音乐声不进 ASR（真机铁证：
-  //   播新闻时新闻正文被识别成用户话、助手乱答）；开→收音，允许播放期插话（接受回声风险）。
-  //   注意：静音后媒体期收不到 ASR 指令（暂停/停止等），只能点屏幕或喊「你好小熊」中断
-  //   （KWS 端侧不受静音影响）；端侧 KWS 播放控制词尚未实现，网关的语音控制正则保持原样。
+  // 【静音】待唤醒(wake，只靠 KWS)；插话开关关时，思考/说/播报期也静音。
+  // 【收音】正在听(listening)、本轮完成(done)；插话开关开时，思考/说/播报期也收音。
+  // 【插话开关 bargeIn】（实验性，见设置页文案）：
+  //  - 关（默认）：播报/播放/思考全程静音，新闻/音乐外放声不进 ASR（真机铁证：播新闻时正文
+  //    被识别成用户话、助手乱答）；此期间只能点屏幕或喊「你好小熊」中断（KWS 端侧不受静音影响）。
+  //  - 开：放开 thinking/replying/speaking 与媒体播放期的收音，让插话能进——网关 enqueueDuringBusy
+  //    + runTurn 回放链路完整，插话会入队、当前句播完后依次回放。代价：无法可靠区分人声与播放声
+  //    （无文字对比、AEC 无 far-end 参考），外放声可能被误识别，功能不稳定，故标注实验性。
   function isAsrMuted(): boolean {
     if (mode === 'wake') return true
-    if (appConfig.general.bargeIn !== true && musicState.playing.value) return true
+    if (appConfig.general.bargeIn === true) return false
+    if (musicState.playing.value) return true
     return phase.value === 'thinking' || phase.value === 'replying' || phase.value === 'speaking'
   }
   /** 把统一判据同步给原生（iOS 走 PcmUploader 静音；Android 原生此方法是空操作，走 JS onPcm 门控）。 */
