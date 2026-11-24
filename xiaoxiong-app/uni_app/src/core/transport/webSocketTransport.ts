@@ -534,6 +534,10 @@ export class WebSocketTransport implements AssistantTransport {
         defaultLoop: appConfig.playback.defaultLoop,
         defaultVolume: appConfig.playback.defaultVolume,
         autoLoop: appConfig.playback.autoLoop ?? false,
+        // 语音识别兜底定稿（partial 完整句/字数上限/有字超时）：网关据此兜底，
+        // 防 VAD 静音端点失效时卡"正在听"、嘈杂环境无限接收。缺省 30 字 / 10000ms。
+        finalizeMaxChars: appConfig.playback.finalizeMaxChars,
+        finalizeTimeoutMs: appConfig.playback.finalizeTimeoutMs,
       },
       // 推荐条数（好价商品）：来自客户端设置页，网关据此作为工具默认条数（缺省 3、范围 1–10）。
       recommend: {

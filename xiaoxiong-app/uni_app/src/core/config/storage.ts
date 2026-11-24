@@ -53,6 +53,10 @@ const DEFAULT_PLAYBACK: PlaybackConfig = {
   floatPosition: 'top-center',
   subtitleFontSize: DEFAULT_SUBTITLE_FONT_SIZE,
   subtitleColor: DEFAULT_SUBTITLE_COLOR,
+  finalizeMaxChars: 30,
+  finalizeTimeoutMs: 10000,
+  autoExitMs: 30000,
+  autoExitGraceMs: 15000,
 }
 
 /** 默认播放设置：播放源百度，关闭自动收藏，自动字幕开启，关闭自动循环，默认循环 3 次、默认音量 50% */
@@ -68,6 +72,10 @@ export function createDefaultPlayback(): PlaybackConfig {
     floatPosition: DEFAULT_PLAYBACK.floatPosition,
     subtitleFontSize: DEFAULT_PLAYBACK.subtitleFontSize,
     subtitleColor: DEFAULT_PLAYBACK.subtitleColor,
+    finalizeMaxChars: DEFAULT_PLAYBACK.finalizeMaxChars,
+    finalizeTimeoutMs: DEFAULT_PLAYBACK.finalizeTimeoutMs,
+    autoExitMs: DEFAULT_PLAYBACK.autoExitMs,
+    autoExitGraceMs: DEFAULT_PLAYBACK.autoExitGraceMs,
   }
 }
 
@@ -295,6 +303,20 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
   const subtitleColor = (SUBTITLE_COLOR_OPTIONS as readonly string[]).includes(rawColor)
     ? rawColor
     : DEFAULT_SUBTITLE_COLOR
+  // partial 兜底定稿：字数上限缺省30(10-200)、有字超时缺省10000ms(2000-60000)，非法回退默认。
+  const rawChars = Number(source.finalizeMaxChars)
+  const finalizeMaxChars = Number.isFinite(rawChars) && rawChars >= 10
+    ? Math.min(200, Math.floor(rawChars)) : 30
+  const rawTimeout = Number(source.finalizeTimeoutMs)
+  const finalizeTimeoutMs = Number.isFinite(rawTimeout) && rawTimeout >= 2000
+    ? Math.min(60000, Math.floor(rawTimeout)) : 10000
+  // 自动退下时间：T1 静默缺省30000(5000-300000)、T2 宽限缺省15000(3000-120000)。
+  const rawExit = Number(source.autoExitMs)
+  const autoExitMs = Number.isFinite(rawExit) && rawExit >= 5000
+    ? Math.min(300000, Math.floor(rawExit)) : 30000
+  const rawGrace = Number(source.autoExitGraceMs)
+  const autoExitGraceMs = Number.isFinite(rawGrace) && rawGrace >= 3000
+    ? Math.min(120000, Math.floor(rawGrace)) : 15000
   return {
     source: valid.includes(src as PlaybackSource) ? (src as PlaybackSource) : 'baidu',
     autoSave,
@@ -306,6 +328,10 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
     floatPosition,
     subtitleFontSize,
     subtitleColor,
+    finalizeMaxChars,
+    finalizeTimeoutMs,
+    autoExitMs,
+    autoExitGraceMs,
   }
 }
 

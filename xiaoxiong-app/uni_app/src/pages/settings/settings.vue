@@ -830,6 +830,28 @@ watch(
           <text class="hint">{{ t('settings.playback.defaultVolumeHint') }}</text>
         </view>
 
+        <!-- 语音识别兜底定稿 + 自动退下：嘈杂环境/端点失效时兜底，时间可配 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.finalizeMaxChars') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.finalizeMaxChars" />
+          <text class="hint">{{ t('settings.playback.finalizeMaxCharsHint') }}</text>
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.finalizeTimeoutMs') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.finalizeTimeoutMs" />
+          <text class="hint">{{ t('settings.playback.finalizeTimeoutMsHint') }}</text>
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.autoExitMs') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.autoExitMs" />
+          <text class="hint">{{ t('settings.playback.autoExitMsHint') }}</text>
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.autoExitGraceMs') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.autoExitGraceMs" />
+          <text class="hint">{{ t('settings.playback.autoExitGraceMsHint') }}</text>
+        </view>
+
         <!-- 我的收藏入口 -->
         <view class="entry" @tap="openFavorites">
           <text class="entry-label">{{ t('settings.playback.favorites') }}</text>

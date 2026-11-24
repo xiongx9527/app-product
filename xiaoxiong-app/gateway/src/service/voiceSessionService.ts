@@ -172,6 +172,14 @@ export class VoiceSessionService {
   /** 当前是否有一轮回答在跑（含思考、生成、播报） */
   private processing = false
   private endpointTimer: ReturnType<typeof setTimeout> | null = null
+  /** 本轮是否已因 partial 兜底条件（完整句/字数上限）强制定稿过，防同轮重复定稿。 */
+  private forcedFinalizeThisTurn = false
+  /** partial 兜底定稿的字数上限：来自设置页「播放设置」，缺省 30。见 maybeForceFinalizeByPartial。 */
+  private finalizeMaxChars = 30
+  /** partial 兜底定稿的有字超时（ms）：出了字但多久仍无 final 就强制定稿，缺省 10000。 */
+  private finalizeTimeoutMs = 10000
+  /** 本轮首个有效 partial 的时间戳（有字超时兜底用），0=本轮还没有字。 */
+  private firstPartialAt = 0
   private lang: Lang = 'zh-CN'
   /** 用户时区（IANA），时间类工具按它返回；缺省东 8 区 */
   private timezone = 'Asia/Shanghai'
@@ -383,6 +391,12 @@ export class VoiceSessionService {
         this.defaultLoop = typeof pb?.defaultLoop === 'number' ? Math.max(0, Math.floor(pb.defaultLoop)) : 3
         this.defaultVolume = typeof pb?.defaultVolume === 'number' ? Math.min(1, Math.max(0, pb.defaultVolume)) : 0.5
         this.autoLoop = typeof pb?.autoLoop === 'boolean' ? pb.autoLoop : false
+        // partial 兜底定稿字数上限：来自设置页「播放设置」，缺省 30；合法范围 10–200，防误配。
+        this.finalizeMaxChars = typeof pb?.finalizeMaxChars === 'number'
+          ? Math.min(200, Math.max(10, Math.floor(pb.finalizeMaxChars))) : 30
+        // 有字超时兜底：缺省 10000ms，合法范围 2000–60000。
+        this.finalizeTimeoutMs = typeof pb?.finalizeTimeoutMs === 'number'
+          ? Math.min(60000, Math.max(2000, Math.floor(pb.finalizeTimeoutMs))) : 10000
         this.media.syncVolumeFromClient(this.defaultVolume)
         // 自动记忆开关：来自客户端设置页（session.start.memory.auto），缺省关。
         // 仅控制助手是否主动沉淀长期记忆；手动指令（记录下 / 帮我记 等）始终生效。
@@ -959,6 +973,14 @@ export class VoiceSessionService {
             // 否则滚动草稿阶段就先闪一下多余的重复词，定稿又跳一下。
             this.deps.send({ type: 'asr.partial', text: stripTrailingEcho(partial) })
           }
+          // 【partial 兜底定稿】VAD 静音端点在 iOS 上行/嘈杂环境下可能不触发（真机：
+          // "昨天发生了什么？" partial 吐到完整句却无 final，前端卡"正在听"到超时）。
+          // 三个兜底条件（满足其一即定稿，见 maybeForceFinalizeByPartial）：
+          //  ① 完整句：以 。？！ 结尾且正文≥4 字；
+          //  ② 字数上限（设置页「播放设置」可配，缺省30）：嘈杂处环境声被不停转文字时封顶；
+          //  ③ 有字超时：出了字但 N 秒仍无 final（VAD 端点失效兜底）。
+          // 定稿走 asr.finalize() 整段重识别（不是直接用 partial），结果与正常 final 一致。
+          this.maybeForceFinalizeByPartial(partial)
         })
         .catch(() => undefined)
     }
@@ -997,6 +1019,37 @@ export class VoiceSessionService {
         .then(() => this.finalizeUtterance())
         .catch(() => undefined)
     }, wait)
+  }
+
+  /**
+   * partial 兜底定稿：VAD 静音端点在 iOS 上行/嘈杂环境可能不触发，导致 partial 出了完整句
+   * 却永远没有 final、前端卡"正在听"。三个条件满足其一即提前定稿（都基于内容/字数，
+   * 不用纯"开口后N秒"硬上限以免截断正常长句——唯一的时间条件是"出了字之后"的超时）：
+   *  ① 完整句：以 。？！ 结尾且正文≥4 字；
+   *  ② 字数上限 finalizeMaxChars（设置页可配，缺省30）：嘈杂处环境声被不停转文字时封顶；
+   *  ③ 有字超时 finalizeTimeoutMs（设置页可配，缺省10000）：出了字后这么久仍无 final。
+   * 定稿走 asr.finalize() 整段重识别，结果与正常 VAD 端点定稿一致。
+   */
+  private maybeForceFinalizeByPartial(partial: string | null): void {
+    if (!partial || !this.active || this.cancelled) return
+    // 噪声/外语碎片不参与兜底（与 asr.partial 下发同口径），避免把"The/Yeah"定稿成用户话
+    if (isNoise(partial) || isForeignNoise(partial, this.lang)) return
+    const text = stripTrailingEcho(partial).trim()
+    const len = Array.from(text).length
+    if (len === 0) return
+    if (this.firstPartialAt === 0) this.firstPartialAt = Date.now()
+    const complete = /[。？！?!]$/.test(text) && len >= 4
+    const tooLong = len >= this.finalizeMaxChars
+    const timedOut = Date.now() - this.firstPartialAt >= this.finalizeTimeoutMs
+    if (!complete && !tooLong && !timedOut) return
+    if (this.forcedFinalizeThisTurn) return // 同一轮只兜底一次，后续 partial 不再重复
+    this.forcedFinalizeThisTurn = true
+    bargeDiag(`FORCE-FINAL partial="${text}" len=${len} reason=${complete ? 'complete' : tooLong ? 'maxChars' : 'timeout'}`)
+    // 清掉 VAD 端点定时器，避免它与兜底定稿重复触发两次 finalize
+    if (this.endpointTimer) { clearTimeout(this.endpointTimer); this.endpointTimer = null }
+    this.finalizeChain = this.finalizeChain
+      .then(() => this.finalizeUtterance())
+      .catch(() => undefined)
   }
 
   /** 上次「识别失败」提示时间：30s 节流，避免连环失败时提示音刷屏。 */
@@ -1058,8 +1111,14 @@ export class VoiceSessionService {
       // ASR 上游出错/超时：不能静默吞掉让用户以为卡死（用户要求有兜底、有提示）。
       // 节流下发 asr-error 提示音（客户端本地 mp3「没听清，再说一遍」），30s 内不重复。
       this.notifyAsrFailed()
+      this.firstPartialAt = 0
+      this.forcedFinalizeThisTurn = false
       return
     }
+    // 本轮音频已被 asr.finalize() 消费（它内部 reset 了 buffer），复位 partial 兜底标志，
+    // 让下一轮能重新按「完整句/字数上限/有字超时」兜底定稿。
+    this.firstPartialAt = 0
+    this.forcedFinalizeThisTurn = false
     // 【2026-11-24 砍插话】删 bargeInDuringPlayback 标志的读取/清除（插话已砍）。
     if (!this.active || this.cancelled) return
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，

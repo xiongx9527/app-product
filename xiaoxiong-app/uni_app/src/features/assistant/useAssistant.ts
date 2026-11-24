@@ -1321,14 +1321,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         clearT1()
         // 助手还在回答时不启动静默计时，避免长回答中途触发「还在吗」
         if (assistantBusy) break
-        t1Timer = setTimeout(() => dispatch({ type: 'T1_TIMEOUT' }), config.t1SilenceMs)
+        // 静默退下时间来自设置页「播放设置」，缺省用状态机默认值
+        t1Timer = setTimeout(() => dispatch({ type: 'T1_TIMEOUT' }), appConfig.playback.autoExitMs ?? config.t1SilenceMs)
         break
       case 'cancelT1':
         clearT1()
         break
       case 'scheduleT2':
         clearT2()
-        t2Timer = setTimeout(() => dispatch({ type: 'T2_TIMEOUT' }), config.t2GraceMs)
+        t2Timer = setTimeout(() => dispatch({ type: 'T2_TIMEOUT' }), appConfig.playback.autoExitGraceMs ?? config.t2GraceMs)
         break
       case 'cancelT2':
         clearT2()

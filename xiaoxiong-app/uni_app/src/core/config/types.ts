@@ -232,4 +232,23 @@ export interface PlaybackConfig {
   subtitleFontSize?: number
   /** 当前字幕颜色（预设 hex），默认白色 */
   subtitleColor?: string
+  /**
+   * partial 兜底定稿的字数上限：识别到这么多字就强制定稿，防嘈杂环境无限接收。
+   * 随 session.start.playback 下发网关，缺省 30，合法 10–200。
+   */
+  finalizeMaxChars?: number
+  /**
+   * partial 兜底定稿的有字超时（ms）：出了字后这么久仍无 final 就强制定稿，
+   * 解决 iOS/嘈杂环境 VAD 静音端点不触发导致卡"正在听"。缺省 10000，合法 2000–60000。
+   */
+  finalizeTimeoutMs?: number
+  /**
+   * 自动退下：用户静默多久后播「还在吗？」（T1）。缺省 30000ms（30秒），合法 5000–300000。
+   */
+  autoExitMs?: number
+  /**
+   * 自动退下：播「还在吗？」后等待回应的宽限（T2），超时播「退下了」并退出。
+   * 缺省 15000ms（15秒），合法 3000–120000。
+   */
+  autoExitGraceMs?: number
 }
