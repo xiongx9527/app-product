@@ -3831,9 +3831,9 @@ async function renderDashboard(){
     const desc=document.getElementById('ocrModelDesc'); if(!pSel||!mSel) return;
     const prov=pSel.value;
     const list=ocrModels.filter(x=>!prov||x.provider===prov);
-    mSel.innerHTML=list.length
-      ? list.map(x=>'<option value="'+escapeAttr(x.name)+'">'+escapeHtml(x.name)+(x.ready?'':'（'+t('common.unavailable')+'）')+'</option>').join('')
-      : '<option value="">—</option>';
+    // 首项留空=跟随配置默认模型（与 ASR/TTS 测试下拉一致），不自动选中某个具体模型
+    mSel.innerHTML='<option value="">'+t('llm.defaultRoute')+'</option>'
+      +list.map(x=>'<option value="'+escapeAttr(x.name)+'">'+escapeHtml(x.name)+(x.ready?'':'（'+t('common.unavailable')+'）')+'</option>').join('');
     if(desc) desc.textContent=list.map(x=>x.provider+': '+x.name+(x.ready?' ✓':' ✗')).join(' · ')||t('ocr.noFile');
   }
   const pSelEl=document.getElementById('ocrProviderSel'); if(pSelEl) pSelEl.onchange=paintOcrModelSelect;
