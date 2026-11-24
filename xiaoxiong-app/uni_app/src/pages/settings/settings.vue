@@ -141,11 +141,21 @@ function onResetPlayback(): void {
 }
 
 /** 手动重启网关：网关卡死（喊话/点球没反应）时点此恢复，复用与点球重启同一原生通道。
- *  重启后 WS 会断、由 transport 自动重连；此处只显示行内结果，不弹浮层。 */
+ *  点按钮先展开行内红色确认条（说明+确认/取消），确认才真的重启，避免误触。
+ *  重启后 WS 会断、由 transport 自动重连；结果放页面固定区行内文字，不用 toast 浮层。 */
 const gatewayRestartMsg = ref('')
 const gatewayRestarting = ref(false)
+const gatewayRestartConfirm = ref(false)
+function askRestartGateway(): void {
+  gatewayRestartConfirm.value = !gatewayRestartConfirm.value
+  gatewayRestartMsg.value = ''
+}
+function cancelRestartGateway(): void {
+  gatewayRestartConfirm.value = false
+}
 async function onRestartGateway(): Promise<void> {
   if (gatewayRestarting.value) return
+  gatewayRestartConfirm.value = false
   gatewayRestarting.value = true
   gatewayRestartMsg.value = t('settings.gateway.restarting')
   try {
@@ -551,13 +561,6 @@ watch(
             </view>
           </view>
         </view>
-        <!-- 手动重启网关：卡死时恢复，复用点球重启的原生通道；行内反馈，不弹浮层 -->
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.gateway.restart') }}</text>
-          <text class="hint">{{ t('settings.gateway.restartHint') }}</text>
-          <button class="reset" :disabled="gatewayRestarting" @tap="onRestartGateway">{{ t('settings.gateway.restart') }}</button>
-          <text v-if="gatewayRestartMsg" class="hint">{{ gatewayRestartMsg }}</text>
-        </view>
       </template>
     </view>
     <!-- 语音服务（ASR / LLM / TTS 共用一份配置） -->
@@ -919,8 +922,20 @@ watch(
       </view>
       </template>
     </view>
-    <!-- 记忆设置 -->
-    <button class="save" :disabled="saving" @tap="onSave">{{ t('settings.save') }}</button>
+    <!-- 保存配置 + 重启网关 并列 -->
+    <view class="footer-actions">
+      <button class="save" :disabled="saving" @tap="onSave">{{ t('settings.save') }}</button>
+      <button class="restart-btn" :disabled="gatewayRestarting" @tap="askRestartGateway">{{ t('settings.gateway.restart') }}</button>
+    </view>
+    <!-- 重启网关确认条：红色警示，说明+确认/取消，确认才真的重启（避免误触） -->
+    <view v-if="gatewayRestartConfirm" class="restart-confirm">
+      <text class="restart-confirm-text">{{ t('settings.gateway.restartHint') }}</text>
+      <view class="restart-confirm-actions">
+        <button class="restart-confirm-cancel" @tap="cancelRestartGateway">{{ t('settings.gateway.restartCancel') }}</button>
+        <button class="restart-confirm-ok" :disabled="gatewayRestarting" @tap="onRestartGateway">{{ t('settings.gateway.restartConfirm') }}</button>
+      </view>
+    </view>
+    <text v-if="gatewayRestartMsg" class="restart-msg">{{ gatewayRestartMsg }}</text>
     <!-- 仅失败时行内红字报错：连不上网关要如实告知，不谎报成功；成功不显示文字 -->
     <text v-if="saveFailed" class="save-status save-err">{{ t('settings.saveFailGateway') }}{{ saveErrDetail }}</text>
 
@@ -1302,6 +1317,86 @@ picker {
 
 .save::after {
   border: none;
+}
+
+/* 保存配置 + 重启网关 并列 */
+.footer-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  width: 100%;
+  margin-top: 4px;
+}
+.footer-actions .save {
+  flex: 1;
+  width: auto;
+  margin-top: 0;
+}
+.restart-btn {
+  flex: 0 0 auto;
+  margin: 0;
+  height: 44px;
+  line-height: 44px;
+  padding: 0 16px;
+  border-radius: 22px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #ff6b81;
+  background: rgba(255, 107, 129, 0.1);
+  border: 1px solid rgba(255, 107, 129, 0.5);
+}
+.restart-btn::after { border: none; }
+
+/* 重启确认条：红色警示 */
+.restart-confirm {
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: rgba(255, 107, 129, 0.08);
+  border: 1px solid rgba(255, 107, 129, 0.4);
+}
+.restart-confirm-text {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #ff8a9b;
+}
+.restart-confirm-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 10px;
+  margin-top: 10px;
+}
+.restart-confirm-cancel, .restart-confirm-ok {
+  flex: 1;
+  margin: 0;
+  height: 36px;
+  line-height: 36px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.restart-confirm-cancel {
+  color: #aab0c4;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.15);
+}
+.restart-confirm-ok {
+  color: #fff;
+  background: #e5484d;
+  border: none;
+  font-weight: 600;
+}
+.restart-confirm-cancel::after, .restart-confirm-ok::after { border: none; }
+.restart-msg {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #7fd6a8;
 }
 
 .save-mask {
