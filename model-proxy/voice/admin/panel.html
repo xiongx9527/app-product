@@ -725,6 +725,7 @@ const I18N = {
     "audit.hint": "记录管理面板内的操作：接口调用、配置保存、登录/验证码等。仅内置管理员可见。",
     "audit.time": "时间",
     "audit.actor": "操作者",
+    "audit.ip": "IP 地址",
     "audit.action": "动作",
     "audit.detail": "详情",
     "audit.search": "搜索操作者 / 动作 / 详情",
@@ -1277,6 +1278,7 @@ const I18N = {
     "audit.hint": "Records actions in the admin panel: API calls, config saves, login/captcha, etc. Built-in admin only.",
     "audit.time": "Time",
     "audit.actor": "Actor",
+    "audit.ip": "IP address",
     "audit.action": "Action",
     "audit.detail": "Detail",
     "audit.search": "Search actor / action / detail",
@@ -5206,51 +5208,52 @@ function auditActionText(a){
   const key = AUDIT_ACTION_LABELS[a];
   return key ? t(key) : a;
 }
+let auditPage = 1;
 function renderAuditPage(){
   const box = document.getElementById('auditBody');
   if(!box) return;
   box.innerHTML = `<div class="hint" style="margin-bottom:10px">${t('audit.hint')}</div>
     <div class="row" style="margin-bottom:10px">
       <input id="auditSearch" class="hw-input" placeholder="${t('audit.search')}" style="width:320px" />
-      <select id="auditLines" style="width:90px">
-        <option value="100">100</option><option value="200" selected>200</option>
-        <option value="500">500</option><option value="1000">1000</option>
-      </select>
-      <span class="muted">${t('audit.lines')}</span>
       <button class="sec" id="auditRefresh">${t('log.refresh')}</button>
     </div>
-    <div id="auditTable" class="muted">${t('common.loadingX')}</div>`;
-  const fire = ()=> loadAudit();
+    <div id="auditTable" class="muted">${t('common.loadingX')}</div>
+    <div class="row" id="auditPager" style="margin-top:8px"></div>`;
+  const fire = ()=>{ auditPage=1; loadAudit(); };
   document.getElementById('auditRefresh').onclick = fire;
   document.getElementById('auditSearch').oninput = fire;
-  document.getElementById('auditLines').onchange = fire;
   fire();
 }
 async function loadAudit(){
   const box = document.getElementById('auditTable');
   if(!box) return;
   const q = (document.getElementById('auditSearch')?.value||'').trim();
-  const n = (document.getElementById('auditLines')?.value)||'200';
-  const params = ['n='+encodeURIComponent(n)];
+  const params = ['n=5000'];
   if(q) params.push('q='+encodeURIComponent(q));
   const r = await api('/admin/api/audit?'+params.join('&'));
   if(!r.ok){ box.textContent = t('common.loadFailed'); return; }
   const d = await r.json();
-  const rows = d.rows||[];
-  if(!rows.length){ box.textContent = t('audit.empty'); return; }
+  const all = d.rows||[];
+  if(!all.length){ box.textContent = t('audit.empty'); document.getElementById('auditPager').innerHTML=''; return; }
+  const pages = Math.max(1, Math.ceil(all.length/PAGE_SIZE));
+  if(auditPage>pages) auditPage=pages;
+  const rows = all.slice((auditPage-1)*PAGE_SIZE, auditPage*PAGE_SIZE);
   let h = '<table class="admin-table" style="width:100%"><thead><tr>'
     + '<th style="width:150px">'+t('audit.time')+'</th>'
     + '<th style="width:90px">'+t('audit.actor')+'</th>'
+    + '<th style="width:110px">'+t('audit.ip')+'</th>'
     + '<th style="width:110px">'+t('audit.action')+'</th>'
     + '<th>'+t('audit.detail')+'</th></tr></thead><tbody>';
   rows.forEach(row=>{
     h += '<tr><td style="white-space:nowrap">'+esc(row.time)+'</td>'
+      + '<td>'+esc(row.account||'—')+'</td>'
       + '<td>'+esc(row.actor)+'</td>'
       + '<td>'+esc(auditActionText(row.action))+'</td>'
       + '<td style="word-break:break-all;line-height:1.4">'+esc(row.detail)+'</td></tr>';
   });
   h += '</tbody></table>';
   box.innerHTML = h;
+  renderPager('auditPager', auditPage, pages, all.length, p=>{ auditPage=p; loadAudit(); });
 }
 
 // 全局接口 loading：拦截 fetch，仅 /admin/ 写操作（保存 / 启停等）进行中时显示全屏遮罩。

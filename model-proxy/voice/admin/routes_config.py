@@ -249,9 +249,29 @@ def build_router() -> APIRouter:
         """操作审计日志：谁/何时/做了什么（admin.api、配置保存、登录等）。
 
         来自数据库 audit 表（与 voice.log 文件日志不同），仅内置管理员可查看。
+        actor 字段多为客户端 IP，账号从 detail 中解析，单独作为 account 列返回。
         """
-        if n <= 0 or n > 2000:
-            n = 200
+        def account_of(r: dict[str, Any]) -> str:
+            action = r.get("action") or ""
+            actor = (r.get("actor") or "").strip()
+            detail = (r.get("detail") or "").strip()
+            # config.save 的 actor 直接是账号名（非 IP）
+            if action == "config.save":
+                return actor
+            # admin.api: "{who} rid=... METHOD path -> status"
+            if action == "admin.api" and detail and not detail.startswith("rid="):
+                who = detail.split(" ", 1)[0]
+                return "" if who == "anonymous" else who
+            # 其余: detail 里带 actor=xxx 或 user=xxx
+            for prefix in ("actor=", "user="):
+                idx = detail.find(prefix)
+                if idx >= 0:
+                    rest = detail[idx + len(prefix):]
+                    return rest.split()[0].split(",")[0] if rest else ""
+            return ""
+
+        if n <= 0 or n > 5000:
+            n = 5000
         rows = voice_db.recent_audit(limit=max(n, 200))
         needle = (q or "").strip().lower()
         out = []
@@ -261,11 +281,12 @@ def build_router() -> APIRouter:
                 time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
             except (ValueError, OSError, TypeError):
                 time_str = str(ts)
+            account = account_of(r)
             item = {"id": r.get("id"), "time": time_str,
-                    "actor": r.get("actor") or "", "action": r.get("action") or "",
-                    "detail": r.get("detail") or ""}
+                    "actor": r.get("actor") or "", "account": account,
+                    "action": r.get("action") or "", "detail": r.get("detail") or ""}
             if needle:
-                blob = (item["actor"] + " " + item["action"] + " " + item["detail"]).lower()
+                blob = (item["actor"] + " " + account + " " + item["action"] + " " + item["detail"]).lower()
                 if needle not in blob:
                     continue
             out.append(item)
