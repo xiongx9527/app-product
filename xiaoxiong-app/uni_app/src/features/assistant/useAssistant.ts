@@ -208,8 +208,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 以后要改门控规则，只改 isAsrMuted() 一个方法即可，不用到处找判断。
   // 【静音】待唤醒(wake，只靠 KWS)、正在思考(thinking)、正在说(replying)、正在播报(speaking)；
   // 【收音】正在听(listening)、本轮完成(done)。
+  // 【媒体播放期间】由插话开关 bargeIn 决定：关（默认）→静音，新闻/音乐声不进 ASR（真机铁证：
+  //   播新闻时新闻正文被识别成用户话、助手乱答）；开→收音，允许播放期插话（接受回声风险）。
+  //   注意：静音后媒体期收不到 ASR 指令（暂停/停止等），只能点屏幕或喊「你好小熊」中断
+  //   （KWS 端侧不受静音影响）；端侧 KWS 播放控制词尚未实现，网关的语音控制正则保持原样。
   function isAsrMuted(): boolean {
     if (mode === 'wake') return true
+    if (appConfig.general.bargeIn !== true && musicState.playing.value) return true
     return phase.value === 'thinking' || phase.value === 'replying' || phase.value === 'speaking'
   }
   /** 把统一判据同步给原生（iOS 走 PcmUploader 静音；Android 原生此方法是空操作，走 JS onPcm 门控）。 */
@@ -419,6 +424,23 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     lastSpokeAt = Date.now()
     setPhaseDone('onPlaybackSettled')
     markAnswerDone()
+    // 【播媒体时播完确认句→立即回待唤醒】插话开关关（默认）的前提下：媒体（新闻/音乐/电台）
+    // 正在播放、且刚播完的是确认句（无排队、也无后续回答在跑），直接静默退回待唤醒——
+    //  ① 待唤醒态上行天然静音，外放的新闻/音乐声不会被麦克风收回识别成用户话（真机铁证：
+    //     播新闻时「韦东奕在学术论坛中演讲」被识别、助手乱答）；
+    //  ② KWS 仍常驻听原始帧，喊「你好小熊」可随时中断、喊播放控制词可控制（后续接）。
+    // 不这么做的话，状态机会继续走 30s T1 静默→「还在吗」→T2→退下，这段时间界面假显示
+    // 「正在听」、上行接收媒体回声。插话开关开时放行、保留边播边插话，不走此分支。
+    // endSession/cancelSession 只停 TTS、清队列，不碰媒体音轨，播放不会被打断。
+    if (
+      appConfig.general.bargeIn !== true &&
+      musicState.playing.value &&
+      queuePending.value === 0 &&
+      state.value === 'listening'
+    ) {
+      console.info('[da] SETTLED→standby 媒体播放中+插话关，立即回待唤醒')
+      dispatch({ type: 'CANCEL' })
+    }
     // 播完回执：网关等它才消费排队的下一句，保证上一句完整播完。
     // tts.idle 触发时不要再回报——tts.idle 本就是网关下发的播完确认，再回报会形成
     // 「客户端 idle→网关 playback_done→tts.idle→客户端 idle」循环（真机铁证：15 条/300ms）。
@@ -675,9 +697,19 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     if (title && url) addFavorite({ title, url })
   })
 
-  // 媒体播放(音乐/新闻/电台)期间通知原生静音上行：外放声音不经网关TTS、AEC 无参考消不掉，
-  // 否则边播边被麦克风收回识别成用户输入(尤其"第一条"之类被当选号)。KWS 仍照常听、可喊词打断。
-  watch(musicState.playing, (playing) => setMediaPlaying(playing), { immediate: true })
+  // 媒体播放(音乐/新闻/电台)期间静音上行，由插话开关 bargeIn 决定（与 isAsrMuted 同源口径）：
+  //  - 关（默认）：外放声音不经网关 TTS、AEC 无参考信号消不掉回声，新闻/音乐声会被麦克风收回
+  //    识别成用户话、助手乱答（真机铁证：播新闻时"韦东奕在学术论坛中演讲"被识别并触发乱答）。
+  //    故媒体播放期静音上行，KWS 仍照常听原始帧、可喊词打断、可执行播放控制命令。
+  //  - 开：用户明确要边播边插话，则放行上行（接受回声误识别风险）。
+  // 两套机制都要跟上 bargeIn：① JS onPcm 每帧读 isAsrMuted()（已含媒体判断）；② iOS 原生
+  // setMediaPlaying 走 here（Android 原生无此方法、为空操作，靠 ① 生效）。开关切换/播放起停
+  // 都要重算，故 watch 同时监听 playing 与 bargeIn。
+  watch(
+    [musicState.playing, () => appConfig.general.bargeIn],
+    ([playing]) => setMediaPlaying(playing && appConfig.general.bargeIn !== true),
+    { immediate: true },
+  )
 
   function handleServerEvent(event: ServerEvent): void {
     // 待唤醒态不消费任何 ASR 事件：唤醒只认端侧 KWS（「唤醒前不调 ASR」是硬原则）。

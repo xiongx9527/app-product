@@ -675,7 +675,7 @@ watch(
             @change="(e: any) => onBargeInChange(e.detail.value)"
           />
         </view>
-        <!-- 硬件 AEC 开关（实验）：开=采集全程用系统 AEC（含播报期），用于唤醒率对照 -->
+        <!-- 硬件 AEC 开关：开=采集全程用系统 AEC（含播报期），默认开启；四场景实验证明不影响唤醒命中率 -->
         <view class="setting-row">
           <view class="setting-text">
             <text class="row-label">{{ t('settings.playback.aecEnabled') }}</text>
