@@ -4178,23 +4178,41 @@ async def ocr_recognize(request: Request):
         return error_response(400, "请求体不是合法 JSON")
     if not isinstance(body, dict):
         return error_response(400, "请求体必须是 JSON 对象")
-    # 总开关：OCR_ENABLED=on 才允许识别（默认 off，需显式开启）
-    if config_value("OCR_ENABLED", "off").strip().lower() not in ENABLED_VALUES:
-        return error_response(503, "内置 OCR 未开启：请在 voice.conf 设 OCR_ENABLED=on 并运行 install-ocr.sh")
-    raw = body.get("image")
-    if not isinstance(raw, str) or not raw.strip():
-        return error_response(400, "image 不能为空（base64 图片）")
+    # OCR 无独立开关：默认提供商在面板「模型配置 → OCR」表格里选（radio），
+    # 配置即启用；显式 OCR_ENABLED=off 才整体关闭（兼容旧配置）。
+    if config_value("OCR_ENABLED", "on").strip().lower() == "off":
+        return error_response(503, "OCR 已关闭（OCR_ENABLED=off）")
     import base64
     import asyncio
-    try:
-        b64 = raw.strip()
-        if b64.startswith("data:") and "," in b64:
-            b64 = b64.split(",", 1)[1]
-        image_bytes = base64.b64decode(b64, validate=True)
-    except Exception as exc:  # noqa: BLE001
-        return error_response(400, f"image base64 解码失败: {exc}")
-    if not image_bytes:
-        return error_response(400, "image 解码后为空")
+    if body.get("test") is True:
+        # 面板「测试可用」用：服务端现生成一张带字的测试图，免去前端塞大 base64。
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            import io
+            img = Image.new("RGB", (400, 120), "white")
+            d = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", 48)
+            except Exception:  # noqa: BLE001
+                font = ImageFont.load_default()
+            d.text((20, 35), "OCR 测试", fill="black", font=font)
+            buf = io.BytesIO(); img.save(buf, format="PNG")
+            image_bytes = buf.getvalue()
+        except Exception as exc:  # noqa: BLE001
+            return error_response(500, f"生成测试图失败: {exc}")
+    else:
+        raw = body.get("image")
+        if not isinstance(raw, str) or not raw.strip():
+            return error_response(400, "image 不能为空（base64 图片）")
+        try:
+            b64 = raw.strip()
+            if b64.startswith("data:") and "," in b64:
+                b64 = b64.split(",", 1)[1]
+            image_bytes = base64.b64decode(b64, validate=True)
+        except Exception as exc:  # noqa: BLE001
+            return error_response(400, f"image base64 解码失败: {exc}")
+        if not image_bytes:
+            return error_response(400, "image 解码后为空")
     # 提供商：请求体可覆盖，否则用配置（builtin=本地 PaddleOCR / deepseek=官方 Vision API）
     provider = (body.get("provider") or "").strip().lower() or (
         config_value("OCR_PROVIDER", "builtin") or "builtin"
@@ -4221,8 +4239,8 @@ async def ocr_models():
     models = []
     try:
         import builtin_ocr
-        models.append({"name": builtin_ocr.model_name(), "provider": "builtin",
-                       "ready": builtin_ocr.ready()})
+        models.append({"name": (config_value("OCR_BUILTIN_MODEL") or builtin_ocr.model_name()),
+                       "provider": "builtin", "ready": builtin_ocr.ready()})
     except Exception:  # noqa: BLE001
         pass
     models.append({"name": (config_value("OCR_DEEPSEEK_MODEL", "deepseek-v4-flash-vision-exp") or "").strip(),

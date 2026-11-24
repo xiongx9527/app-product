@@ -31,7 +31,8 @@ def ready() -> bool:
 
 
 def model_name() -> str:
-    return os.environ.get("OCR_MODEL_VERSION", "PP-OCRv5")
+    # 面板表格保存落 OCR_BUILTIN_MODEL；兼容旧 OCR_MODEL_VERSION 环境变量
+    return os.environ.get("OCR_BUILTIN_MODEL") or os.environ.get("OCR_MODEL_VERSION") or "PP-OCRv5"
 
 
 def recognize(image_bytes: bytes) -> dict[str, Any]:

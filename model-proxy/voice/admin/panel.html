@@ -510,6 +510,7 @@ const I18N = {
     "cfg.ocrModel": "OCR 模型版本",
     "cfg.builtinEngine": "内置引擎",
     "ocr.builtinDep": "PaddleOCR 本地识别",
+    "ocr.testTitle": "测试内置 OCR 是否可用",
     "config.security": "安全",
     "config.title": "配置",
     "config.asrModels": "模型",
@@ -969,6 +970,7 @@ const I18N = {
     "cfg.ocrModel": "OCR model version",
     "cfg.builtinEngine": "Built-in engine",
     "ocr.builtinDep": "PaddleOCR local recognition",
+    "ocr.testTitle": "Test if built-in OCR is available",
     "config.security": "Security",
     "config.title": "Config",
     "config.asrModels": "Models",
@@ -1437,9 +1439,6 @@ function buildConfigCard(){
       <div class="row" style="margin-top:12px"><button id="cfgSave_rerank">${t('common.save')}</button><span class="hint" id="cfgStat_rerank" style="margin-left:10px"></span></div>
     </div>
     <div id="c-ocr" class="cfgpane" hidden>
-      <label>${t('cfg.ocrEnabled')}</label>
-      <select id="cfg_OCR_ENABLED"><option value="off">off</option><option value="on">on</option></select>
-      <div class="hint" style="margin:6px 0 10px">${t('cfg.ocrHint')}</div>
       <div id="ocrTableWrap" class="hint">${t('common.loadingX')}</div>
       <div class="row" style="margin-top:12px"><button id="cfgSave_ocr">${t('common.save')}</button><span class="hint" id="cfgStat_ocr" style="margin-left:10px"></span></div>
     </div>
@@ -1452,10 +1451,24 @@ async function loadConfig(){
     if(!r.ok) return;
     cfgOrig = await r.json();
     ['llm','asr','tts'].forEach(t=>CFG_TABS[t].forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); }));
-    // OCR 配置回填（开关 + 提供商表格）
-    const oe=document.getElementById('cfg_OCR_ENABLED'); if(oe) oe.value=(cfgOrig.OCR_ENABLED||'off').toLowerCase();
+    // OCR 配置回填（与 ASR/TTS 同构：MODELS 勾选 + MODEL 默认 + PROVIDER）
     ocrProvider=(cfgOrig.OCR_PROVIDER||'builtin').toLowerCase();
-    provEdit.ocrDeepseek.model=cfgOrig.OCR_DEEPSEEK_MODEL||'deepseek-v4-flash-vision-exp';
+    const parseOcrModels=(v)=>{ try{ const a=JSON.parse(v||'[]'); return Array.isArray(a)?a.filter(x=>typeof x==='string'):[]; }catch{ return []; } };
+    const fillOcrSlot=(slot, modelsKey, modelKey, fallback)=>{
+      const s=provEdit[slot]; if(!s) return;
+      const raw=cfgOrig[modelsKey];
+      const models=parseOcrModels(raw);
+      // 未配置过（键不存在）才给默认；显式配置为 [] 表示停用，照抄 ASR/TTS 行为
+      s.cands=(raw===undefined||raw===null)?[fallback]:models;
+      s.sel=new Set(s.cands);
+      const def=(cfgOrig[modelKey]||'').trim();
+      s.def=s.cands.includes(def)?def:s.cands[0];
+      s.avail={};
+    };
+    fillOcrSlot('ocrBuiltin','OCR_BUILTIN_MODELS','OCR_BUILTIN_MODEL','PP-OCRv5');
+    fillOcrSlot('ocrDeepseek','OCR_DEEPSEEK_MODELS','OCR_DEEPSEEK_MODEL','deepseek-v4-flash-vision-exp');
+    // DeepSeek Key 只判定是否配置（不回显真值，留空=不修改）
+    provEdit.ocrDeepseek.key=undefined;
     paintOcrTable();
     // 向量默认模型（embeddings 测试兜底；向后兼容旧的 LLM_EMBED_MODEL）
     embedDefModel = (cfgOrig.EMBED_UPSTREAM_MODEL || cfgOrig.LLM_EMBED_MODEL || '').trim();
@@ -1842,13 +1855,7 @@ function wireConfig(){
   // 调用时（embeddings 路由）只取「向量默认」指向的模型，不走对方（LLM）的地址池。
   const eb=document.getElementById('cfgSave_embed'); if(eb) eb.onclick=()=> savePoolTable('embed','cfgStat_embed');
   const rb=document.getElementById('cfgSave_rerank'); if(rb) rb.onclick=()=> savePoolTable('rerank','cfgStat_rerank');
-  const ob=document.getElementById('cfgSave_ocr'); if(ob) ob.onclick=()=>{
-    const patch={ OCR_ENABLED: (document.getElementById('cfg_OCR_ENABLED')||{}).value||'off',
-                  OCR_PROVIDER: ocrProvider,
-                  OCR_MODEL_VERSION: ((document.getElementById('ocrBuiltinModel')||{}).value||'PP-OCRv5').trim(),
-                  OCR_DEEPSEEK_MODEL: ((document.getElementById('ocrDsModel')||{}).value||'deepseek-v4-flash-vision-exp').trim() };
-    return postConfig(patch,'cfgStat_ocr');
-  };
+  const ob=document.getElementById('cfgSave_ocr'); if(ob) ob.onclick=()=>saveProvConfig('ocr');
   const lb=document.getElementById('cfgSave_llm'); if(lb) lb.onclick=()=>saveLlmTable();
   const ab=document.getElementById('cfgSave_asr'); if(ab) ab.onclick=saveSttTable;
   const tb=document.getElementById('cfgSave_tts'); if(tb) tb.onclick=saveTtsTable;
@@ -2257,11 +2264,11 @@ function saveProvModal(){
 // 保存 ASR/TTS 提供商配置：提供商类型 + 协议 + 协议列表 + 上游地址/Key/模型/模型列表 全部落库。
 // 勾了上游但地址/模型没填时不阻止保存（可以先存一部分），但给出行内提示；语音调用时会如实报错。
 async function saveProvConfig(kind){
-  const stat = document.getElementById(kind === 'stt' ? 'cfgStat_asr' : 'cfgStat_tts');
+  const stat = document.getElementById(kind === 'stt' ? 'cfgStat_asr' : kind === 'ocr' ? 'cfgStat_ocr' : 'cfgStat_tts');
   const cap = kind.toUpperCase();
   const e = provEdit[kind];
   const bi = provEdit[kind + 'Builtin'];   // 内置引擎（edge-tts / kokoro）子表
-  const sel = kind === 'stt' ? asrProvider : ttsProvider;   // 'builtin' | 'custom' | 'deepseek'
+  const sel = kind === 'stt' ? asrProvider : kind === 'ocr' ? ocrProvider : ttsProvider;   // 'builtin' | 'custom' | 'deepseek'
   const prov = sel === 'custom' ? 'dashscope' : (sel === 'deepseek' ? 'deepseek' : 'builtin');
   const patch = {};
   patch[cap + '_PROVIDER'] = prov;
@@ -2537,7 +2544,9 @@ let provEdit = {
   // DeepSeek 官方语音（地址固定、只填 api-key；ASR/TTS 各自一把 Key）
   sttDeepseek: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
   ttsDeepseek: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
-  // OCR：内置 PaddleOCR + DeepSeek Vision（地址固定，只填 key + 模型）
+  // OCR：内置 PaddleOCR + DeepSeek Vision（与 ASR/TTS 同构的模型子表）
+  ocr: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
+  ocrBuiltin: { cands: ['PP-OCRv5'], sel: new Set(['PP-OCRv5']), def: 'PP-OCRv5' },
   ocrDeepseek: { url: '', key: undefined, model: '', cands: [], sel: new Set(), def: '', avail: {} },
 };
 let ocrProvider = 'builtin';   // OCR 表格选中的提供商（radio；保存落库 OCR_PROVIDER）
@@ -2650,12 +2659,15 @@ function buildUpstreamModelPick(kind, readonly, nameLabel){
     const av = (e.avail || {})[m];
     const badge = av === 'ok' ? '<span class="badge b-ok">'+t('common.available')+'</span>'
                 : av === 'err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
+                : av === 'testing' ? '<span class="badge b-mut">'+t('common.detecting')+'</span>'
                 : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
     const testBtn = noDefault ? '' :
       (kind === 'sttBuiltin'
         ? `<button class="mini asr-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('asr.detectingTitle')}">${t('common.testShort')}</button>`
         : kind === 'ttsBuiltin'
         ? `<button class="mini tts-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('tts.synthTitle')}">${t('common.testShort')}</button>`
+        : kind === 'ocrBuiltin'
+        ? `<button class="mini ocr-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('ocr.testTitle')}">${t('common.testShort')}</button>`
         : `<button class="mini up-test" data-kind="${kind}" data-m="${escapeAttr(m)}" data-provider="${kind.endsWith('Deepseek') ? 'deepseek' : 'dashscope'}" title="${t('llm.testAvail')}">${t('common.testShort')}</button>`);
     const opCell = noDefault ? '' : `<td class="row-act">${testBtn}</td>`;
     const stCell = noDefault ? '' : `<td>${badge}</td>`;
@@ -2701,6 +2713,17 @@ document.addEventListener('click', async (ev) => {
   const kind = rb.dataset.upRefresh;
   const e = provEdit[kind];
   if (!e) return;
+  // OCR 的 ↻ 走 /ocr/v1/models（DeepSeek Vision 模型），不查 ASR/TTS 的 speech-models
+  if (kind.startsWith('ocr')) {
+    rb.disabled = true;
+    try{
+      const d = await fetch('/ocr/v1/models',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null);
+      const rows = (d && Array.isArray(d.models)) ? d.models.filter(x=>x.provider==='deepseek') : [];
+      const names = rows.map(x=>x.name).filter(Boolean);
+      if (names.length) { e.cands = names; e.sel = new Set(names); if(!e.def) e.def = names[0]; }
+    }catch(err){ console.error('[刷新 OCR 模型]', err); }
+    rb.disabled = false; paintOcrTable(); return;
+  }
   const provider = kind.endsWith('Deepseek') ? 'deepseek' : 'dashscope';
   const cap = kind.startsWith('stt') ? 'stt' : 'tts';
   rb.disabled = true;
@@ -2821,25 +2844,52 @@ function paintOcrTable(){
   let html='<table class="cfg-table"><thead><tr>'
     +'<th>'+t('common.default')+'</th><th>'+t('common.provider')+'</th>'
     +'<th>'+t('common.deps')+'</th><th>'+t('common.model')+'</th></tr></thead><tbody>';
-  // 内置：PaddleOCR 本地识别
+  // 内置：PaddleOCR（模型子表与 ASR/TTS 内置行同构）
   html+='<tr class="ocr-builtin">'
     +'<td class="row-act"><input type="radio" name="ocrDefault" value="builtin" '+(ocrProvider==='builtin'?'checked':'')+' title="'+t('llm.defaultProvider')+'" /></td>'
     +'<td class="prov-cell"><b>'+t('cfg.builtinEngine')+'</b></td>'
     +'<td class="env-cell"><span class="muted">'+t('ocr.builtinDep')+'</span></td>'
-    +'<td class="model-cell"><input class="hw-input" id="ocrBuiltinModel" value="'+escapeAttr(cfgOrig.OCR_MODEL_VERSION||'PP-OCRv5')+'" style="width:150px" /></td></tr>';
-  // DeepSeek Vision：地址固定 https://api.deepseek.com，只填 key + 模型
+    +'<td class="model-cell">'+buildUpstreamModelPick('ocrBuiltin')+'</td></tr>';
+  // DeepSeek Vision（地址固定 api.deepseek.com，只填 key + 模型子表）
   const dsCfg=hasProvKey('OCR_DEEPSEEK_API_KEY', provEdit.ocrDeepseek)
     ? '<span class="acc-url" title="'+t('cfg.dsUrlFixed')+'">'+t('cfg.provUrlFixedShort')+'</span>'
     : '<span class="muted">'+t('cfg.provNeedKeyShort')+'</span>';
   html+='<tr class="ocr-deepseek">'
     +'<td class="row-act"><input type="radio" name="ocrDefault" value="deepseek" '+(ocrProvider==='deepseek'?'checked':'')+' title="'+t('llm.defaultProvider')+'" /></td>'
-    +'<td class="prov-cell"><b>'+t('cfg.deepseek')+'</b></td>'
+    +'<td class="prov-cell"><b>'+t('cfg.deepseek')+'</b> <button class="mini" data-up-refresh="ocrDeepseek" title="'+t('llm.refreshModels')+'">↻</button></td>'
     +'<td class="env-cell prov-edit-cell" data-prov="ocr:deepseek" title="'+t('cfg.provEditPrefix')+'">'+dsCfg+'</td>'
-    +'<td class="model-cell"><input class="hw-input" id="ocrDsModel" value="'+escapeAttr(cfgOrig.OCR_DEEPSEEK_MODEL||'deepseek-v4-flash-vision-exp')+'" style="width:210px" /></td></tr>';
+    +'<td class="model-cell">'+buildUpstreamModelPick('ocrDeepseek')+'</td></tr>';
   html+='</tbody></table>';
   wrap.className=''; wrap.innerHTML=html;
   wrap.querySelectorAll('.prov-edit-cell').forEach(c=> c.onclick=()=>openProvModal('ocr','deepseek'));
+  bindUpstreamModelPick('ocrBuiltin');
+  bindUpstreamModelPick('ocrDeepseek');
+  wrap.querySelectorAll('.ocr-builtin-test').forEach(b=> b.onclick=()=>testOcrBuiltin(b.dataset.builtinModel));
+  wrap.querySelectorAll('.up-test').forEach(b=> b.onclick=()=>testOcrUpstream(b.dataset.m));
   wrap.querySelectorAll('input[name=ocrDefault]').forEach(r=> r.onchange=()=>{ ocrProvider=r.value; paintOcrTable(); });
+}
+
+// OCR 内置行「测试可用」：用一张最小中文图走 /ocr/v1/ocr（内置）识别，验证 PaddleOCR 是否就绪。
+async function testOcrBuiltin(model){
+  const e=provEdit.ocrBuiltin;
+  const setAv=(av)=>{ (e.avail=e.avail||{})[model]=av; paintOcrTable(); };
+  setAv('testing');
+  try{
+    // 服务端现生成测试图（带字），验证链路与模型就绪
+    const r=await api('/ocr/v1/ocr',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({test:true,provider:'builtin'})});
+    setAv((r.ok && (await r.json().catch(()=>({}))).ok) ? 'ok' : 'err');
+  }catch(e){ setAv('err'); }
+}
+
+// OCR DeepSeek 行「测试可用」：调一次 /ocr/v1/ocr 带 provider=deepseek 验证 key/网络。
+async function testOcrUpstream(model){
+  const e=provEdit.ocrDeepseek;
+  const setAv=(av)=>{ (e.avail=e.avail||{})[model]=av; paintOcrTable(); };
+  setAv('testing');
+  try{
+    const r=await api('/ocr/v1/ocr',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({test:true,provider:'deepseek',model:model})});
+    setAv((r.ok && (await r.json().catch(()=>({}))).ok) ? 'ok' : 'err');
+  }catch(e){ setAv('err'); }
 }
 
 // TTS 内置按需检测：按 model（edge-tts / kokoro）真实合成一句，启动阶段不做。

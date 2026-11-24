@@ -547,7 +547,7 @@ VOICE_DASHSCOPE_URL=https://dashscope.aliyuncs.com
 ```bash
 ./model-proxy/install-ocr.sh          # 装内置 PaddleOCR（paddlepaddle + paddleocr，钉住 numpy1.26 保护内置重排）
 ./model-proxy/install-ocr.sh --verify # 仅验证环境
-# 面板「模型配置 → OCR」：开 OCR_ENABLED、选默认提供商、填对应配置
+# 面板「模型配置 → OCR」：与 ASR/TTS 同款表格，radio 选默认提供商，填对应配置
 ```
 
 接口：
