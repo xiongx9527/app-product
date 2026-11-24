@@ -11,8 +11,8 @@ import { detailActions } from './actions'
 export interface DetailKindMeta {
   /** 卡片标题（i18n） */
   title: (detail: MediaDetail) => string
-  /** 该类的操作栏项；容器只渲染数组，不写死项 */
-  actions: (detail: MediaDetail, notify: ActionNotify) => ShareAction[]
+  /** 该类的操作栏项；容器只渲染数组，不写死项。onOpenWeb 由容器注入，用于详情框内打开原网页。 */
+  actions: (detail: MediaDetail, notify: ActionNotify, onOpenWeb?: () => void) => ShareAction[]
 }
 
 /** 未知 kind 的中性兜底：不让新类型或脏数据把卡片弄崩。 */

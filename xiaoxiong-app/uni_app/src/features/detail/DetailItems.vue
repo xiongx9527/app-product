@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { t } from '@/core/i18n'
 import type { DetailField, DetailItem, MediaDetail } from '@/core/transport/types'
 
@@ -10,8 +10,8 @@ import type { DetailField, DetailItem, MediaDetail } from '@/core/transport/type
  * 固定槽位只有 index/title/image/imageLarge/link，其余属性一律走 fields[]：换数据源、加字段、
  * 新源字段多少不一都不改本组件——缺字段不显示、无图不占位、无链接不阻断，不崩不白屏。
  */
-const props = defineProps<{ detail: MediaDetail }>()
-const emit = defineEmits<{ select: [index: number] }>()
+const props = defineProps<{ detail: MediaDetail; showWeb?: boolean }>()
+const emit = defineEmits<{ select: [index: number]; closeWeb: [] }>()
 
 /** selectedIndex 对应 DetailItem.index（1 起）；无 / null 表示列表形态。 */
 const selected = computed<DetailItem | null>(() => {
@@ -34,17 +34,6 @@ const SHORT_VALUE_CAP = 24
 function listFields(item: DetailItem): DetailField[] {
   return (item.fields ?? []).filter((f) => f.value.length <= SHORT_VALUE_CAP).slice(0, LIST_FIELD_CAP)
 }
-
-/**
- * 详情内切换「字段视图 ↔ 原网页视图」：不弹新页面、不丢详情状态。
- * web-view 是原生组件、层级最高，会盖住普通 view，所以网页态下字段区整块换成 web-view，
- * 顶部返回条用 cover-view 盖在 web-view 上。切换选中项/关详情时自动回到字段态。
- */
-const showWeb = ref(false)
-watch(
-  () => [props.detail.selectedIndex, props.detail.kind] as const,
-  () => { showWeb.value = false },
-)
 </script>
 
 <template>
@@ -77,7 +66,7 @@ watch(
     <!-- 网页态：web-view 原生组件层级最高，占满这块区域；返回条用 cover-view 盖其上 -->
     <view v-if="showWeb && selected?.link" class="web-wrap">
       <web-view :src="selected.link" class="web-view" />
-      <cover-view class="web-back" @tap="showWeb = false">‹ {{ t('detail.backToDetail') }}</cover-view>
+      <cover-view class="web-back" @tap="emit('closeWeb')">‹ {{ t('detail.backToDetail') }}</cover-view>
     </view>
     <!-- 字段态（默认）：有图才显示封面（优先大图、缺省回退缩略图），无图不占一块空白 -->
     <template v-else>
@@ -93,12 +82,7 @@ watch(
         <text class="deal-field-value">{{ f.value }}</text>
       </view>
       <text v-if="!selected.fields?.length" class="deal-empty">{{ t('detail.empty') }}</text>
-      <!-- 打开原网页：详情内切换到网页视图（不弹新页面） -->
-      <view v-if="selected.link" class="open-link" @tap="showWeb = true">
-        <text class="open-link-text">{{ t('detail.open') }}</text>
-        <text class="open-link-arrow">›</text>
-      </view>
-      <text v-else class="deal-no-link">{{ t('detail.noLink') }}</text>
+      <text v-if="!selected.link" class="deal-no-link">{{ t('detail.noLink') }}</text>
     </template>
   </view>
 </template>
@@ -213,26 +197,6 @@ watch(
   color: #9be8cd;
   font-size: 13px;
   border-radius: 0 0 10px 0;
-}
-/* 打开原网页入口行：与字段区风格一致，点它详情内切到网页 */
-.open-link {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(var(--accent-rgb), 0.12);
-  border: 1px solid rgba(var(--accent-rgb), 0.25);
-}
-.open-link-text {
-  font-size: 13px;
-  color: var(--accent);
-}
-.open-link-arrow {
-  font-size: 18px;
-  color: var(--accent);
-  line-height: 1;
 }
 .deal-detail-title {
   font-size: 14px;

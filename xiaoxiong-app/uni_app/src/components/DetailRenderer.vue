@@ -6,7 +6,7 @@
   >
     <!-- 所有 kind 的 items 都是同一个 DetailItem 形状，因此一个渲染器通吃；
          新增内容类型只加 registry 表项（标题/操作栏），这里一行都不用改。 -->
-    <DetailItems :detail="detail" @select="onSelect" />
+    <DetailItems :detail="detail" :show-web="showWeb" @select="onSelect" @close-web="showWeb = false" />
 
     <template #actions>
       <view v-if="actions.length" class="detail-action-row">
@@ -29,7 +29,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import type { MediaDetail } from '@/core/transport/types'
 import type { ShareAction } from '@/core/share/actions'
 import { t } from '@/core/i18n'
@@ -45,7 +45,18 @@ const props = defineProps<{ detail: MediaDetail }>()
 const emit = defineEmits<{ select: [index: number]; close: [] }>()
 
 const meta = computed(() => resolveDetailMeta(props.detail.kind))
-const actions = computed<ShareAction[]>(() => meta.value.actions(props.detail, notify))
+/**
+ * 详情框内「字段 ↔ 原网页」切换状态：由操作栏的「打开」图标按钮置 true，
+ * 由网页内返回条（DetailItems emit close-web）清回 false；换详情/收起时自动复位。
+ */
+const showWeb = ref(false)
+const actions = computed<ShareAction[]>(() =>
+  meta.value.actions(props.detail, notify, () => { showWeb.value = true }),
+)
+watch(
+  () => [props.detail.selectedIndex, props.detail.kind] as const,
+  () => { showWeb.value = false },
+)
 
 const hint = ref('')
 let hintTimer: ReturnType<typeof setTimeout> | null = null

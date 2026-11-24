@@ -39,6 +39,26 @@ export function createCopyLinkAction(
 }
 
 /**
+ * 打开原网页（图标按钮，与其它操作同款）：run 不在此执行，而是把 onOpen 回调交给容器，
+ * 由容器在当前详情框内切换到网页视图（不弹新页面、不丢详情状态）。
+ * link 为空时禁用——换数据源少了 link 也不崩。通用能力，不绑死任何业务 kind。
+ */
+export function createOpenLinkAction(
+  label: string,
+  link: string | undefined,
+  onOpen: () => void,
+): ShareAction {
+  const ok = !!link
+  return {
+    key: 'openLink',
+    label,
+    icon: '/static/icons/open.svg',
+    disabled: !ok,
+    run: () => { if (ok) onOpen() },
+  }
+}
+
+/**
  * 占位操作（分享 / 发朋友圈 / 发邮箱）：接口与真实操作完全一致，
  * 后续接真实能力只需替换 run，详情框容器与内容组件都不用改。
  * 点击回调由业务注入（显示「暂未开放」），core 不持文案、不碰 UI。
