@@ -253,16 +253,28 @@ async function listBuiltinVoices(
       protocol?: string
       voices?: Array<{ id: string; model?: string; desc_zh?: string; desc_en?: string; is_default?: boolean }>
     }
-    const voices: VoiceOption[] = (data.voices ?? []).map((v) => ({
+    // provider=builtin 的目录里 edge-tts 与 kokoro 混在一起（各带 model 字段），
+    // 9529 不认 model 查询参数，所以在网关本地按选中 model 再过滤一次：
+    // 选 edge-tts 只留 edge-tts 音色，不再混入 kokoro；没选 model 则不过滤。
+    const catalog = model
+      ? (data.voices ?? []).filter((v) => (v.model ?? data.model) === model)
+      : (data.voices ?? [])
+    const voices: VoiceOption[] = catalog.map((v) => ({
       value: v.id,
       label: v.id,
       model: v.model ?? data.model ?? 'edge-tts',
       descZh: v.desc_zh || undefined,
       descEn: v.desc_en || undefined,
     }))
+    // 默认音色必须属于过滤后的列表，否则前端「沿用来源默认」会指向一个不在下拉里的音色。
+    const inList = (id?: string) => !!id && catalog.some((v) => v.id === id)
+    const defaultVoice = inList(data.default)
+      ? data.default!
+      : (catalog.find((v) => v.is_default)?.id ?? voices[0]?.value
+         ?? BUILTIN_VOICES_FALLBACK[0].id)
     return {
-      defaultVoice: data.default ?? (BUILTIN_VOICES_FALLBACK.find((v) => v.isDefault)?.id ?? BUILTIN_VOICES_FALLBACK[0].id),
-      defaultModel: data.model ?? 'edge-tts',
+      defaultVoice,
+      defaultModel: model ?? data.model ?? 'edge-tts',
       protocol: data.protocol || 'http',
       voices,
     }

@@ -136,6 +136,42 @@ describe('内置 TTS 音色目录中转 9529（与真实引擎同源，不再另
     expect(seenUrl).toContain('provider=builtin')
   })
 
+  it('选 edge-tts 时按 model 过滤，不混入 kokoro；默认音色也在过滤后列表内', async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({
+        default: 'zh-CN-XiaoxiaoNeural', model: 'edge-tts', protocol: 'http',
+        voices: [
+          { id: 'zh-CN-XiaoxiaoNeural', model: 'edge-tts', is_default: true },
+          { id: 'zh-CN-YunxiNeural', model: 'edge-tts' },
+          { id: 'zf_xiaobei', model: 'kokoro' },
+        ],
+      }),
+      { status: 200 },
+    )) as unknown as typeof fetch
+
+    const list = await listTtsVoices('builtin', 'zh-CN', { voiceBuiltinUrl: 'http://127.0.0.1:9529', model: 'edge-tts' })
+    expect(list.voices.map((v) => v.value)).toEqual(['zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural'])
+    expect(list.voices.some((v) => v.value === 'zf_xiaobei')).toBe(false)
+    expect(list.defaultVoice).toBe('zh-CN-XiaoxiaoNeural')
+  })
+
+  it('选 kokoro 时默认音色收敛到 kokoro 自己的音色，不指向 edge 的 default', async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({
+        default: 'zh-CN-XiaoxiaoNeural', model: 'edge-tts', protocol: 'http',
+        voices: [
+          { id: 'zh-CN-XiaoxiaoNeural', model: 'edge-tts', is_default: true },
+          { id: 'zf_xiaobei', model: 'kokoro', is_default: true },
+        ],
+      }),
+      { status: 200 },
+    )) as unknown as typeof fetch
+
+    const list = await listTtsVoices('builtin', 'zh-CN', { voiceBuiltinUrl: 'http://127.0.0.1:9529', model: 'kokoro' })
+    expect(list.voices.map((v) => v.value)).toEqual(['zf_xiaobei'])
+    expect(list.defaultVoice).toBe('zf_xiaobei')
+  })
+
   it('9529 开启鉴权：带 api-key 时把 Bearer 头透传给音色目录接口', async () => {
     let seenAuth = ''
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
