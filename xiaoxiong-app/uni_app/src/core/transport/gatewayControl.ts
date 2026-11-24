@@ -44,6 +44,19 @@ export function pingGateway(timeoutMs = 2000): Promise<boolean> {
 }
 
 /**
+ * 轮询 ping 等网关恢复：重启发起后调用，最多等 timeoutMs。
+ * 网关重启要杀旧进程+重新解包+起 node，通常 2-5s；给足 30s。
+ */
+export async function waitGatewayAlive(timeoutMs = 30000, pollMs = 1000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await pingGateway()) return true
+    await new Promise((r) => setTimeout(r, pollMs))
+  }
+  return false
+}
+
+/**
  * 调原生重启网关（Android 重启 :gateway 进程 / iOS 软重启网关引擎）。
  * 原生插件 app-product-gateway 未注入（H5/旧基座）时返回 false，由调用方降级提示。
  */

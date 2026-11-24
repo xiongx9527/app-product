@@ -12,7 +12,7 @@ import {
 } from '@/core/config'
 import { t } from '@/core/i18n'
 import { setDuckConfig, setAecUserEnabled } from '@/core/audio/appCapture'
-import { restartGatewayViaNative } from '@/core/transport/gatewayControl'
+import { restartGatewayViaNative, waitGatewayAlive } from '@/core/transport/gatewayControl'
 import { refreshDuckVolume } from '@/core/audio/musicPlayer'
 import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
@@ -150,7 +150,14 @@ async function onRestartGateway(): Promise<void> {
   gatewayRestartMsg.value = t('settings.gateway.restarting')
   try {
     const ok = await restartGatewayViaNative()
-    gatewayRestartMsg.value = ok ? t('settings.gateway.restarted') : t('settings.gateway.restartUnavailable')
+    if (!ok) {
+      gatewayRestartMsg.value = t('settings.gateway.restartUnavailable')
+      return
+    }
+    // 重启已发起：轮询 ping 等真正恢复，别让文字永远停在"正在恢复连接…"误导用户
+    gatewayRestartMsg.value = t('settings.gateway.restarted')
+    const alive = await waitGatewayAlive(30000)
+    gatewayRestartMsg.value = alive ? t('settings.gateway.recovered') : t('settings.gateway.recoverTimeout')
   } catch {
     gatewayRestartMsg.value = t('settings.gateway.restartUnavailable')
   } finally {

@@ -88,6 +88,8 @@ const zhCN: Messages = {
   'settings.gateway.restartHint': '网关卡死、喊话或点球都没反应时点此恢复（约几秒）。重启后会自动重连；若仍无反应请重启 App。',
   'settings.gateway.restarting': '正在重启网关…',
   'settings.gateway.restarted': '已发起重启，正在恢复连接…',
+  'settings.gateway.recovered': '网关已恢复。',
+  'settings.gateway.recoverTimeout': '恢复超时，请重启 App。',
   'settings.gateway.restartUnavailable': '当前环境不支持重启网关（需 App 内嵌网关），请重启 App。',
   'settings.language.title': '语言',
   'settings.language.sub': '唤醒、ASR、TTS 的默认语言',
@@ -418,6 +420,8 @@ const enUS: Messages = {
   'settings.gateway.restartHint': 'Use when the gateway is stuck and voice/taps do nothing (takes a few seconds). It reconnects automatically; restart the App if it still does not respond.',
   'settings.gateway.restarting': 'Restarting gateway…',
   'settings.gateway.restarted': 'Restart started, reconnecting…',
+  'settings.gateway.recovered': 'Gateway recovered.',
+  'settings.gateway.recoverTimeout': 'Recovery timed out. Please restart the App.',
   'settings.gateway.restartUnavailable': 'Gateway restart is unavailable here (requires the in-app gateway). Please restart the App.',
   'settings.general.autoConnect': 'Auto-start voice assistant',
   'settings.general.autoConnectHint':
