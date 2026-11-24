@@ -234,9 +234,17 @@ async function listBuiltinVoices(
     // 2026-11-24 修：写死 provider=builtin 会拿到 28 个 Edge-TTS/kokoro，
     // 但 9529 实际 TTS_PROVIDER 已切 deepseek（音色只有 stella/tide），
     // 导致 App 音色下拉与真实可用音色脱节。App 来源(builtin=本地9529) ≠ 9529 的 TTS 提供商，
-    // 音色必须跟后者走——不传 provider 即可拿到当前生效的那份。
-    // model：用户选中的 TTS 模型才带、没选不带，让 9529 只返回该模型下的音色。
-    const qs = model ? `?model=${encodeURIComponent(model)}` : ''
+    // 音色必须跟后者走。
+    // 9529 音色目录按 provider 过滤（不认 model 参数）：
+    //  - 选了 edge-tts / kokoro → provider=builtin（拿到 Edge-TTS/kokoro 音色）
+    //  - 选了 deepseek-tts    → provider=deepseek（stella/tide）
+    //  - 没选模型            → 不传 provider，用 9529 当前实际提供商的音色
+    // 这样切 TTS 模型时音色列表才会跟着变。
+    let qs = ''
+    if (model) {
+      const provider = /deepseek/i.test(model) ? 'deepseek' : 'builtin'
+      qs = `?provider=${provider}`
+    }
     const res = await fetch(`${base}/voice/v1/audio/voices${qs}`, { headers })
     if (!res.ok) throw new Error(`voice catalog upstream ${res.status}`)
     const data = (await res.json()) as {

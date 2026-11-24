@@ -437,14 +437,16 @@ async function loadTtsVoices(): Promise<void> {
     } | null
     if (res.statusCode >= 200 && res.statusCode < 300 && data && Array.isArray(data.voices) && data.voices.length) {
       const en = appConfig.language.toLowerCase().startsWith('en')
-      ttsVoices.value = data.voices.map((m) => {
+      // 首项「沿用来源默认」空值：不选音色时由 9529 按当前模型兜底（如 deepseek-tts→stella）。
+      ttsVoices.value = [{ ...USE_SOURCE_DEFAULT.value }]
+      ttsVoices.value.push(...data.voices.map((m) => {
         const id = m.id ?? m.value ?? ''
         voiceModelMap.set(id, m.model ?? '')
         // 主标签即 id/名称，desc_zh / desc_en 作为描述副行展示。
         const label = m.label ?? id
         const desc = en ? (m.descEn ?? '') : (m.descZh ?? '')
         return { value: id, label, subtitle: m.model || undefined, desc: desc || undefined }
-      })
+      }))
       // 不前端强制默认：用户可以不选，未选时由 9529 内部兜底默认音色；仅当已选音色已不在列表里才清空，避免下发非法音色。
       const s = currentProviderSettings()
       if (s.voice && !data.voices.some((v) => (v.id ?? v.value) === s.voice)) {
