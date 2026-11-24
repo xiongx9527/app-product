@@ -238,6 +238,7 @@ const zhCN: Messages = {
   'settings.playback.autoExitGraceMs': '退下宽限时间（毫秒）',
   'settings.playback.autoExitGraceMsHint': '问「还在吗？」后再等多久没回应就退下（3000–120000，默认15000即15秒）。',
 
+  'settings.dialog.title': '对话设置',
   'settings.recommend.title': '好价设置',
   'settings.recommend.dealsCount': '推荐数量',
   'settings.recommend.dealsCountHint': '每次推荐好价商品展示几条，1–10，默认 3',
@@ -583,6 +584,7 @@ const enUS: Messages = {
   'settings.playback.autoExitGraceMs': 'Exit grace time (ms)',
   'settings.playback.autoExitGraceMsHint': 'After "Still there?", how long to wait before stepping away (3000–120000, default 15000 = 15s).',
 
+  'settings.dialog.title': 'Conversation settings',
   'settings.mcp.title': 'MCP settings',
   'settings.mcp.pageTitle': 'MCP services',
   'settings.mcp.sub': 'Configure your own MCP servers; after saving, Xiong calls their tools in conversations.',

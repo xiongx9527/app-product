@@ -194,7 +194,7 @@ function setConsolidateEvery(e: any): void {
 
 /** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
  * 各分区一律默认折叠，样式一致（标题右侧带收起/展开箭头）。 */
-type SettingsGroup = 'general' | 'voice' | 'playback' | 'recommend' | 'memory'
+type SettingsGroup = 'general' | 'voice' | 'playback' | 'dialog' | 'recommend' | 'memory'
 const expanded = ref<SettingsGroup | null>(null)
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
@@ -830,7 +830,22 @@ watch(
           <text class="hint">{{ t('settings.playback.defaultVolumeHint') }}</text>
         </view>
 
-        <!-- 语音识别兜底定稿 + 自动退下：嘈杂环境/端点失效时兜底，时间可配 -->
+        <!-- 我的收藏入口 -->
+        <view class="entry" @tap="openFavorites">
+          <text class="entry-label">{{ t('settings.playback.favorites') }}</text>
+          <text class="entry-arrow">›</text>
+        </view>
+
+        <button class="reset" @tap="onResetPlayback">{{ t('settings.reset') }}</button>
+      </template>
+    </view>
+    <!-- 对话设置：识别兜底定稿 + 自动退下时间，默认折叠，位于播放设置之后 -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('dialog')">
+        <text class="group-title">{{ t('settings.dialog.title') }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('dialog') }" />
+      </view>
+      <template v-if="isOpen('dialog')">
         <view class="setting-row column">
           <text class="row-label">{{ t('settings.playback.finalizeMaxChars') }}</text>
           <input class="input" type="number" v-model.number="appConfig.playback.finalizeMaxChars" />
@@ -851,14 +866,6 @@ watch(
           <input class="input" type="number" v-model.number="appConfig.playback.autoExitGraceMs" />
           <text class="hint">{{ t('settings.playback.autoExitGraceMsHint') }}</text>
         </view>
-
-        <!-- 我的收藏入口 -->
-        <view class="entry" @tap="openFavorites">
-          <text class="entry-label">{{ t('settings.playback.favorites') }}</text>
-          <text class="entry-arrow">›</text>
-        </view>
-
-        <button class="reset" @tap="onResetPlayback">{{ t('settings.reset') }}</button>
       </template>
     </view>
     <!-- 好价设置（好价商品推荐条数），默认折叠，位于播放设置之后 -->
