@@ -297,10 +297,11 @@ async function runDetection(): Promise<void> {
 /** 定时检查：开关默认关闭，开启后本页按配置的间隔自动重跑检测、刷新结果。
  *  间隔可选 10/30/60/120 秒（见 AUTO_CHECK_INTERVAL_OPTIONS）。
  *  只在语音设置页打开期间生效，离开页面即清理定时器，不在全局后台跑。 */
-const autoCheckIntervalOptions = AUTO_CHECK_INTERVAL_OPTIONS.map((ms) => ({
+// 用 computed 包：t() 的 label 随语言切换重算，别像以前那样在模块加载时固化成单一语言
+const autoCheckIntervalOptions = computed(() => AUTO_CHECK_INTERVAL_OPTIONS.map((ms) => ({
   value: String(ms),
   label: t('settings.voice.autoCheckInterval', { seconds: String(ms / 1000) }),
-}))
+})))
 let autoCheckTimer: ReturnType<typeof setInterval> | null = null
 function stopAutoCheck(): void {
   if (autoCheckTimer) {
@@ -326,10 +327,11 @@ function onAutoCheckIntervalChange(ms: string): void {
 onUnmounted(stopAutoCheck)
 
 // duck 强度档位选项（与 duckLevel 配置对应）
-const duckLevelOptions = DUCK_LEVEL_OPTIONS.map((level) => ({
+// 用 computed 包：档位 label 随语言切换重算，否则切换语言后仍是加载时的旧语言（真机：中文界面显示英文值）
+const duckLevelOptions = computed(() => DUCK_LEVEL_OPTIONS.map((level) => ({
   value: level,
   label: t(`settings.general.duck${level.charAt(0).toUpperCase()}${level.slice(1)}`),
-}))
+})))
 function onDuckLevelChange(v: string): void {
   appConfig.general.duckLevel = v as DuckLevel
   persistConfig()
