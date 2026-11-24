@@ -225,6 +225,7 @@ export function resolveDashscopeVoice(model: string, voice: string): string {
 async function listBuiltinVoices(
   builtinUrl: string,
   apiKey?: string,
+  model?: string,
 ): Promise<VoiceList> {
   const base = (builtinUrl || 'https://25946kt718.goho.co').replace(/\/+$/, '')
   try {
@@ -234,7 +235,9 @@ async function listBuiltinVoices(
     // 但 9529 实际 TTS_PROVIDER 已切 deepseek（音色只有 stella/tide），
     // 导致 App 音色下拉与真实可用音色脱节。App 来源(builtin=本地9529) ≠ 9529 的 TTS 提供商，
     // 音色必须跟后者走——不传 provider 即可拿到当前生效的那份。
-    const res = await fetch(`${base}/voice/v1/audio/voices`, { headers })
+    // model：用户选中的 TTS 模型才带、没选不带，让 9529 只返回该模型下的音色。
+    const qs = model ? `?model=${encodeURIComponent(model)}` : ''
+    const res = await fetch(`${base}/voice/v1/audio/voices${qs}`, { headers })
     if (!res.ok) throw new Error(`voice catalog upstream ${res.status}`)
     const data = (await res.json()) as {
       default?: string
@@ -275,7 +278,7 @@ async function listBuiltinVoices(
 export async function listTtsVoices(
   provider: 'builtin' | 'dashscope',
   lang?: string,
-  config?: { voiceBuiltinUrl?: string; apiKey?: string },
+  config?: { voiceBuiltinUrl?: string; apiKey?: string; model?: string },
 ): Promise<VoiceList> {
   if (provider === 'dashscope') {
     return {
@@ -284,5 +287,5 @@ export async function listTtsVoices(
       voices: DASHSCOPE_VOICES.map((v) => dashscopeFormat(v, lang)),
     }
   }
-  return listBuiltinVoices(config?.voiceBuiltinUrl ?? '', config?.apiKey)
+  return listBuiltinVoices(config?.voiceBuiltinUrl ?? '', config?.apiKey, config?.model)
 }

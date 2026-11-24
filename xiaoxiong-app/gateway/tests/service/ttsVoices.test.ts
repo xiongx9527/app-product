@@ -113,6 +113,26 @@ describe('内置 TTS 音色目录中转 9529（与真实引擎同源，不再另
     expect(list.voices[0].descEn).toBe('Female · gentle and natural (default)')
   })
 
+  it('音色目录请求不带 provider(用 9529 当前实际提供商)，选了 model 才带 model', async () => {
+    let seenUrl = ''
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrl = String(url)
+      return new Response(
+        JSON.stringify({ default: 'stella', provider: 'deepseek', model: 'deepseek-tts', voices: [{ id: 'stella', model: 'deepseek-tts' }] }),
+        { status: 200 },
+      )
+    }) as unknown as typeof fetch
+
+    // 没选 model：URL 不带 provider、也不带 model
+    await listTtsVoices('builtin', 'zh-CN', { voiceBuiltinUrl: 'http://127.0.0.1:9529' })
+    expect(seenUrl).not.toContain('provider=')
+    expect(seenUrl).not.toContain('model=')
+    // 选了 model：URL 带 model
+    await listTtsVoices('builtin', 'zh-CN', { voiceBuiltinUrl: 'http://127.0.0.1:9529', model: 'deepseek-tts' })
+    expect(seenUrl).toContain('model=deepseek-tts')
+    expect(seenUrl).not.toContain('provider=')
+  })
+
   it('9529 开启鉴权：带 api-key 时把 Bearer 头透传给音色目录接口', async () => {
     let seenAuth = ''
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {

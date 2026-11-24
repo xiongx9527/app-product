@@ -224,6 +224,8 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
       const provider = query.get('provider')
       const lang = query.get('lang') ?? undefined
       const apiKey = query.get('apiKey') ?? undefined
+      // model：用户选中的 TTS 模型，选了才传、没选不带，透传给 9529 决定该模型下的音色列表。
+      const model = query.get('model') ?? undefined
       if (provider !== 'builtin' && provider !== 'dashscope') {
         return { status: 400, body: { error: 'provider 仅支持 builtin / dashscope' } }
       }
@@ -231,6 +233,7 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
         const result = await listTtsVoices(provider as 'builtin' | 'dashscope', lang, {
           voiceBuiltinUrl: config.voiceBuiltinUrl,
           apiKey,
+          model,
         })
         return { status: 200, body: result }
       } catch (err) {
