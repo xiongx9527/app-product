@@ -51,6 +51,8 @@ services:
       # 鉴权开关：需要 API-Key 时设 on（api-key 文件随 /data 挂载）：
       # VOICE_API_KEY_AUTH: "on"
     volumes:
+      # 源码挂载：代码改动后只需 restart 容器即可生效，无需重建镜像重下 torch 等大依赖。
+      - ./voice:/app/voice:ro
       # 宿主运行目录整体挂进容器：voice.conf / voice.db / models / api-key / 日志。
       - ${VOICE_HOME:-$HOME/.app-product/voice}:/data
       # 只读挂载 docker.sock：让概览页能自动读到宿主机 Docker 引擎版本（无写权限）。
