@@ -2995,16 +2995,16 @@ function renderSecTable(){
     </div>
     <div class="hint" style="margin-top:14px">${t('sec.sizeHint')}</div>
     <div class="row"><label>${t('sec.maxLlm')}</label>
-      <input id="cfg_MAX_LLM_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_LLM_TOKENS||0)}" />
-      <label style="margin-left:14px">${t('sec.maxEmbed')}</label>
-      <input id="cfg_MAX_EMBED_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_EMBED_TOKENS||0)}" />
-      <label style="margin-left:14px">${t('sec.maxRerank')}</label>
+      <input id="cfg_MAX_LLM_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_LLM_TOKENS||0)}" /></div>
+    <div class="row"><label>${t('sec.maxEmbed')}</label>
+      <input id="cfg_MAX_EMBED_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_EMBED_TOKENS||0)}" /></div>
+    <div class="row"><label>${t('sec.maxRerank')}</label>
       <input id="cfg_MAX_RERANK_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_RERANK_TOKENS||0)}" /></div>
     <div class="row"><label>${t('sec.maxAsr')}</label>
-      <input id="cfg_MAX_ASR_MB" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_ASR_MB||0)}" />
-      <label style="margin-left:14px">${t('sec.maxOcr')}</label>
-      <input id="cfg_MAX_OCR_MB" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_OCR_MB||0)}" />
-      <label style="margin-left:14px">${t('sec.maxTts')}</label>
+      <input id="cfg_MAX_ASR_MB" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_ASR_MB||0)}" /></div>
+    <div class="row"><label>${t('sec.maxOcr')}</label>
+      <input id="cfg_MAX_OCR_MB" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_OCR_MB||0)}" /></div>
+    <div class="row"><label>${t('sec.maxTts')}</label>
       <input id="cfg_MAX_TTS_CHARS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_TTS_CHARS||0)}" /></div>`;
 }
 
