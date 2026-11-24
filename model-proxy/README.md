@@ -534,26 +534,35 @@ VOICE_DASHSCOPE_URL=https://dashscope.aliyuncs.com
 - 统一服务管理 `services.sh start / stop / restart / status / check / log` 与 macOS 一致；
 - 语音服务依赖 Python 3.10+ 与 ffmpeg（用系统包管理器安装），模型 / 虚拟环境目录与 macOS 相同。
 
-## 内置 OCR（PaddleOCR / PP-OCRv5）
+## OCR 文字识别（内置 PaddleOCR + DeepSeek）
 
-图片文字识别，独立能力前缀 `/ocr`（不放在 `/voice` 下），**单端口 19529、不加新端口**。
+独立能力前缀 `/ocr`（不放在 `/voice` 下），**单端口 19529、不加新端口**。
+配置页「OCR」tab 与 ASR/TTS 同款表格，radio 选默认提供商：
+
+| 提供商 | 说明 | 配置 |
+|---|---|---|
+| 内置引擎 | PaddleOCR / PP-OCRv5 本地识别 | 模型版本 `OCR_MODEL_VERSION`；先跑 install-ocr.sh |
+| DeepSeek | 官方 Vision API（`deepseek-v4-flash-vision-exp`） | 填 `OCR_DEEPSEEK_API_KEY` + 模型 `OCR_DEEPSEEK_MODEL`，地址固定 api.deepseek.com |
 
 ```bash
-./model-proxy/install-ocr.sh          # 安装（paddlepaddle + paddleocr，钉住 numpy1.26 保护内置重排）
+./model-proxy/install-ocr.sh          # 装内置 PaddleOCR（paddlepaddle + paddleocr，钉住 numpy1.26 保护内置重排）
 ./model-proxy/install-ocr.sh --verify # 仅验证环境
-# 开启：voice.conf 设 OCR_ENABLED=on（或面板/DB 配置），重启服务
+# 面板「模型配置 → OCR」：开 OCR_ENABLED、选默认提供商、填对应配置
 ```
 
 接口：
-- `POST /ocr/v1/ocr`：`{"image": "<base64 图片>"}` → `{"ok": true, "texts": [{text,score,box}], "full_text": "..."}`
-- `GET /ocr/v1/models`：内置 OCR 模型信息
-- 管理面板「连通测试」页新增「文字识别 OCR」tab，可上传图片直接测试。
+- `POST /ocr/v1/ocr`：`{"image": "<base64 图片>", "provider": "builtin|deepseek"}`（provider 可省略，用配置默认值）
+  → `{"ok": true, "provider": "...", "texts": [{text,score,box}], "full_text": "..."}`
+- `GET /ocr/v1/models`：两个提供商的模型信息与默认项
+- 面板「模型配置 → OCR」配置；「连通测试 → 文字识别 OCR」上传图片测试。
 
 **架构说明**（重要）：torch2.2（内置重排）与 paddle3.0 的 C++ 扩展**无法同进程共存**
-（同进程调用 OCR 会 segfault）。因此 OCR 在**短生命周期子进程**里跑
+（同进程调用 OCR 会 segfault）。因此内置 OCR 在**短生命周期子进程**里跑
 （`voice/ocr_worker.py`，从 stdin 读 base64、stdout 出 JSON），主服务进程只做调度，
-**不监听额外端口**。单次识别含模型加载约 2-3 秒，模型首次自动下载到 `~/.paddlex/official_models/`。
-Docker 容器内同样可用（venv 已含 paddle 依赖；OCR_ENABLED=on 开启）。
+**不监听额外端口**。DeepSeek 提供商走云端 API，不启子进程。
+单次内置识别含模型加载约 2-3 秒，模型首次自动下载到 `~/.paddlex/official_models/`。
+注意：Docker 镜像内 paddlepaddle 可能有 CPU 指令集问题（`Illegal instruction`），
+容器内建议用 DeepSeek 提供商；本机跑内置 OCR 正常。
 
 ## Docker Compose（容器部署）
 

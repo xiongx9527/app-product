@@ -785,7 +785,7 @@ def _public_openapi():
     schema["paths"]["/ocr/v1/ocr"] = {
         "post": {
             "tags": ["OCR"], "summary": "图片文字识别（PaddleOCR 内置）",
-            "description": "内置 OCR：POST {image: base64} → {ok, texts:[{text,score,box}], full_text}。需 OCR_ENABLED=on 且已安装 paddleocr。",
+            "description": "OCR 文字识别：POST {image: base64, provider?: builtin|deepseek} → {ok, provider, texts:[{text,score,box}], full_text}。内置走 PaddleOCR（需 install-ocr.sh 且 OCR_ENABLED=on），deepseek 走官方 Vision API（需 OCR_DEEPSEEK_API_KEY）。provider 省略时用配置 OCR_PROVIDER 默认值。",
             "security": _bearer,
             "responses": {"200": {"description": "识别结果"},
                           "400": {"description": "image 缺失或 base64 非法"},
@@ -1430,7 +1430,11 @@ async def tts_builtin_check(model: str | None = None) -> dict:
                 synthesize_kokoro_wav, text, KOKORO_DEFAULT_VOICE, 1.0
             )
         else:
-            mp3 = await synthesize_edge_mp3(text, resolve_voice(tts_voice()), tts_rate(1.0))
+            # 配置音色可能属于 DeepSeek/DashScope（如 stella），内置 edge 不认；
+            # 非 edge 合法音色时回退到内置默认，避免「Invalid voice」误判内置不可用。
+            cfg_voice = resolve_voice(tts_voice())
+            edge_voice = cfg_voice if is_edge_voice(cfg_voice) else "zh-CN-XiaoxiaoNeural"
+            mp3 = await synthesize_edge_mp3(text, edge_voice, tts_rate(1.0))
             audio, _ = await asyncio.to_thread(transcode_mp3, mp3, "wav")
         ok = bool(audio)
         detail = "" if ok else "合成结果为空"
@@ -2136,6 +2140,43 @@ async def deepseek_asr_text(audio: bytes, key: str) -> str:
         raise RuntimeError(f"DeepSeek ASR 返回无法解析: {r.text[:150]}") from exc
 
 
+async def deepseek_ocr_text(image_bytes: bytes, key: str, model: str | None = None) -> str:
+    """DeepSeek OCR：走官方 Vision API（OpenAI 兼容 chat/completions）。
+
+    deepseek-v4-flash-vision-exp 支持 base64 图片；用提示词要求原样提取图中文字。
+    返回纯文本（多行即多段），由上层包成统一 OCR 结果。
+    """
+    if not key:
+        raise RuntimeError("DeepSeek OCR 未配置 api-key（设置页填 OCR_DEEPSEEK_API_KEY）")
+    import base64
+
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    guess_mime = "image/png" if image_bytes[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+    model = (model or "").strip() or config_value("OCR_DEEPSEEK_MODEL", "deepseek-v4-flash-vision-exp")
+    payload = {
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "请原样提取图片中的所有文字，按行输出，不要解释、不要添加标记。"},
+                {"type": "image_url", "image_url": {"url": f"data:{guess_mime};base64,{b64}", "detail": "high"}},
+            ],
+        }],
+    }
+    r = await _shared_http_client().post(
+        DEEPSEEK_BASE + "/v1/chat/completions",
+        json=payload,
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=_upstream_timeout(120),
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(f"DeepSeek OCR 失败（{r.status_code}）: {r.text[:200]}")
+    try:
+        return ((r.json()["choices"][0]["message"]["content"]) or "").strip()
+    except (ValueError, KeyError, IndexError) as exc:
+        raise RuntimeError(f"DeepSeek OCR 返回无法解析: {r.text[:150]}") from exc
+
+
 def _deepseek_default_model(kind: str) -> str:
     """DeepSeek 官方 ASR/TTS 没有模型参数，这里给目录里的模型名做占位。"""
     return voice_db.default_speech_model(kind, "deepseek") or (
@@ -2500,7 +2541,11 @@ async def speech(body: SpeechBody):
             # kokoro 音色与 edge 不通用；网关固定传 XiaoxiaoNeural，这里换回 kokoro 默认中文音色。
             voice = voice_req if is_kokoro_voice(voice_req) else KOKORO_DEFAULT_VOICE
         else:
-            voice = resolve_voice(voice_req)
+            # edge-tts：请求音色或配置音色若属于 DeepSeek/DashScope（如 stella），edge 不认，
+            # 回退到内置默认音色，避免「Invalid voice」误判内置 TTS 不可用。
+            voice = resolve_voice(voice_req or tts_voice())
+            if not is_edge_voice(voice):
+                voice = "zh-CN-XiaoxiaoNeural"
     else:
         # 上游模式：空音色保持为空，交给 _tts_synthesize 用该 provider 的默认音色，
         # 避免内置默认音色触发上游的音色校验误报。
@@ -4150,26 +4195,40 @@ async def ocr_recognize(request: Request):
         return error_response(400, f"image base64 解码失败: {exc}")
     if not image_bytes:
         return error_response(400, "image 解码后为空")
+    # 提供商：请求体可覆盖，否则用配置（builtin=本地 PaddleOCR / deepseek=官方 Vision API）
+    provider = (body.get("provider") or "").strip().lower() or (
+        config_value("OCR_PROVIDER", "builtin") or "builtin"
+    ).strip().lower()
     try:
+        if provider == "deepseek":
+            key = _deepseek_key("OCR")
+            full = await deepseek_ocr_text(image_bytes, key, body.get("model"))
+            texts = [{"text": ln.strip(), "score": 1.0, "box": []}
+                     for ln in full.splitlines() if ln.strip()]
+            return JSONResponse({"ok": True, "provider": "deepseek", "texts": texts, "full_text": full})
+        # 内置：OCR 在独立子进程里跑（builtin_ocr 用 subprocess，paddle 不进主进程）
         import builtin_ocr
-        # OCR 在独立子进程里跑（builtin_ocr 用 subprocess，paddle 不进主进程），
-        # to_thread 只等子进程，不污染主进程，也避免阻塞事件循环。
-        import asyncio
         result = await asyncio.to_thread(builtin_ocr.recognize, image_bytes)
+        result["provider"] = "builtin"
         return JSONResponse(result)
     except Exception as exc:  # noqa: BLE001
-        return error_response(500, f"OCR 识别失败: {exc}")
+        return error_response(500, f"OCR 识别失败（{provider}）: {exc}")
 
 
 @app.get("/ocr/v1/models")
 async def ocr_models():
-    """OCR 模型信息（内置引擎，供面板/对接方查询）。"""
+    """OCR 提供商/模型信息（内置 PaddleOCR + DeepSeek Vision），供面板/对接方查询。"""
+    models = []
     try:
         import builtin_ocr
-        return {"models": [{"name": builtin_ocr.model_name(), "provider": "builtin",
-                            "ready": builtin_ocr.ready()}]}
-    except Exception as exc:  # noqa: BLE001
-        return {"models": [], "error": str(exc)[:200]}
+        models.append({"name": builtin_ocr.model_name(), "provider": "builtin",
+                       "ready": builtin_ocr.ready()})
+    except Exception:  # noqa: BLE001
+        pass
+    models.append({"name": (config_value("OCR_DEEPSEEK_MODEL", "deepseek-v4-flash-vision-exp") or "").strip(),
+                   "provider": "deepseek",
+                   "ready": bool(_deepseek_key("OCR"))})
+    return {"models": models, "default": (config_value("OCR_PROVIDER", "builtin") or "builtin").strip()}
 
 
 @app.get("/llm/v1/providers")
