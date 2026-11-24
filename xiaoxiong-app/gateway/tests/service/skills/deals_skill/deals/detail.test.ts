@@ -69,6 +69,21 @@ describe('toDetailItems（统一字段契约）', () => {
     }
   })
 
+  it('详情补充字段（店铺/历史价）映射进 fields，两源共用同一契约', () => {
+    const [item] = toDetailItems(
+      [{ ...deal, shop: '全友家居官方旗舰店', historyPrices: '常购价 ¥2819、30天最低 ¥2790.81' }],
+      'zh-CN',
+    )
+    expect(item.fields?.find((f) => f.label === '店铺')?.value).toBe('全友家居官方旗舰店')
+    expect(item.fields?.find((f) => f.label === '历史价')?.value).toBe('常购价 ¥2819、30天最低 ¥2790.81')
+  })
+
+  it('英文下新字段 label 本地化', () => {
+    const [item] = toDetailItems([{ ...deal, shop: 'X', historyPrices: 'Y' }], 'en-US')
+    expect(item.fields?.map((f) => f.label)).toContain('Shop')
+    expect(item.fields?.map((f) => f.label)).toContain('Price history')
+  })
+
   it('大图槽位透传（缺省时客户端回退缩略图）', () => {
     const [withLarge] = toDetailItems(
       [{ ...deal, imageLarge: 'https://img.xxx/a.jpg_d800.jpg' }],

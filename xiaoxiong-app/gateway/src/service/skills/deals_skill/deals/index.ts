@@ -5,7 +5,7 @@ import { createZhizhizhiSource } from './zhizhizhi/zhizhizhiSource'
 export type { Deal, DealDetail, DealsSource, DealsFetcher, DealsOptions, DealsSnapshot } from './types'
 export { formatDeals, filterDeals, splitKeywordTerms } from './types'
 export { createSmzdmSource, parseDeals, parseTagDeals, parseDealDetail } from './smzdm'
-export { createZhizhizhiSource, parseZhizhizhiHtml } from './zhizhizhi/zhizhizhiSource'
+export { createZhizhizhiSource, parseZhizhizhiHtml, parseZhizhizhiDetail } from './zhizhizhi/zhizhizhiSource'
 export { toDetailItems } from './detail'
 
 /**

@@ -7,7 +7,7 @@
  *
  * 本源不绑定全局 fetch，抓取器由工具层注入。
  */
-import type { Deal, DealsSource } from '../types'
+import type { Deal, DealDetail, DealsSource } from '../types'
 
 const BASE = 'https://www.zhizhizhi.com'
 const USER_AGENT =
@@ -86,10 +86,68 @@ export function parseZhizhizhiHtml(html: string): Deal[] {
   return deals
 }
 
+/**
+ * 详情页补充信息 → 通用 DealDetail 契约（与什么值得买共用同一组字段）。
+ * 只取页面真实渲染的字段，解析不出就留空；绝不因为详情页改版让卡片打不开。
+ *
+ * 每张详情页可稳定抓到（2026-11-24 实测 /n/drvoe）：
+ * - meta[name=description]：购买方案（店铺、面价、领券步骤），作 desc；
+ * - 优惠说明尖括号里的「店铺 XXX」；
+ * - 常购价 / 30天最低 / 618价 / 双11价的价格分析（只收有数值的，'-' 跳过）；
+ * - 品牌：<a>；发布于 YYYY-M-D HH:mm；og 图或首张 upfiles 主图（大图槽位）。
+ */
+export function parseZhizhizhiDetail(html: string): DealDetail {
+  const out: DealDetail = {}
+
+  // 购买方案：meta[name=description]，值值值把它写成「标题. 购买方案 1 店铺 ... 2 领券 ...」。
+  // 去掉标题前缀、压到合理长度；过长/站点通用描述都当没有。
+  const meta = /<meta\s+name="description"\s+content="([^"]*)"/i.exec(html)?.[1] ?? ''
+  let desc = decodeEntities(meta)
+  const planAt = desc.indexOf('购买方案')
+  if (planAt > 0) desc = desc.slice(planAt)
+  desc = desc.trim()
+  // meta 可能是站点按字数截断的，末尾常留半个「（领取链」这类残词，去掉未闭合的括号段。
+  desc = desc.replace(/[（(][^）)]*$/, '').trim()
+  if (desc && desc.length <= 300) out.desc = desc
+
+  // 店铺名：购买方案里的「店铺 XXX，」或「店铺 XXX,」；只取短的一段。
+  const shop = /店铺\s+([^,，。;；]{1,40})/.exec(meta)?.[1]
+  if (shop) out.shop = decodeEntities(shop)
+
+  // 品牌：底部「品牌：<a ...>名称</a>」。
+  const brand = /品牌：\s*<a[^>]*>\s*([^<]{1,40}?)\s*<\/a>/.exec(html)?.[1]
+  if (brand) out.brand = decodeEntities(brand)
+
+  // 历史价格：遍历 des/price 对，只收有真实数值的（'-' / 空跳过），拼成可读串。
+  // price 容器里常带 <em>¥</em> 标签，去掉标签再判断。
+  const history: string[] = []
+  for (const m of html.matchAll(/class="des">([^<]+)<\/div>\s*<div class="price">([\s\S]*?)<\/div>/g)) {
+    const label = decodeEntities(m[1])
+    const value = decodeEntities(m[2].replace(/<[^>]+>/g, '')).trim()
+    if (value && value !== '-' && /[0-9]/.test(value)) history.push(`${label} ${value}`)
+  }
+  if (history.length) out.historyPrices = history.join('、')
+
+  // 发布时间：「发布于 2026-4-17 10:20」，按本地时区（网关在用户机器上）。
+  const pub = /发布于\s*(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})/.exec(html)
+  if (pub) {
+    const ts = new Date(+pub[1], +pub[2] - 1, +pub[3], +pub[4], +pub[5]).getTime()
+    if (Number.isFinite(ts) && ts > 0) out.time = Math.floor(ts / 1000)
+  }
+
+  // 大图：优先 og:image，否则首张 upfiles 商品主图（排除站徽 220x220）。
+  const og = /<meta\s+property="og:image"\s+content="([^"]+)"/i.exec(html)?.[1]
+  const mainImg = /<img[^>]*src="(https:\/\/img\.zhizhizhi\.com\/upfiles\/[^"]+)"/.exec(html)?.[1]
+  const image = og || mainImg
+  if (image && !/220x220/.test(image)) out.imageLarge = decodeEntities(image)
+
+  return out
+}
+
 /** 该源需要对搜索结果再做本地关键词过滤（分类页不是精确搜索）。 */
 export const ZHIZHIZHI_FILTER_SEARCH = true
 
-/** 创建值值值降级源：关键词→分类页，解析列表。无详情页（列表已含链接）。 */
+/** 创建值值值源：关键词→分类页，解析列表 + 详情页补充（映射通用 DealDetail）。 */
 export function createZhizhizhiSource(): DealsSource & { categoryFor(keyword: string): string } {
   return {
     name: 'zhizhizhi',
@@ -108,6 +166,11 @@ export function createZhizhizhiSource(): DealsSource & { categoryFor(keyword: st
       return cat ? `${BASE}/c/${cat}` : ''
     },
     parseSearch: parseZhizhizhiHtml,
+    // 列表项 link 就是详情页地址，选中后补抓
+    detailUrl(deal: Deal) {
+      return deal.link || undefined
+    },
+    parseDetail: parseZhizhizhiDetail,
   }
 }
 

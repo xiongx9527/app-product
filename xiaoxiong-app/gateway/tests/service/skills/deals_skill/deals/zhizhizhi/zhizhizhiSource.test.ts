@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseZhizhizhiHtml, createZhizhizhiSource } from '../../../../../../src/service/skills/deals_skill/deals/zhizhizhi/zhizhizhiSource'
+import { parseZhizhizhiHtml, parseZhizhizhiDetail, createZhizhizhiSource } from '../../../../../../src/service/skills/deals_skill/deals/zhizhizhi/zhizhizhiSource'
 
 /** 反映值值值真实列表页结构（post_item / ht3 / dprice / shop 链接） */
 function html(items: Array<{ title: string; price: string; link: string; mall: string }>): string {
@@ -70,5 +70,40 @@ describe('createZhizhizhiSource', () => {
     const source = createZhizhizhiSource()
     expect(source.userAgent).toContain('Android')
     expect(source.filterSearch).toBe(true)
+  })
+
+  it('详情地址 = 列表项 link；声明了通用详情解析', () => {
+    const source = createZhizhizhiSource()
+    expect(source.detailUrl?.({ title: 'x', price: '1元', mall: '', tags: [], link: 'https://www.zhizhizhi.com/n/abc' })).toBe('https://www.zhizhizhi.com/n/abc')
+    expect(typeof source.parseDetail).toBe('function')
+  })
+})
+
+describe('parseZhizhizhiDetail（映射到通用 DealDetail）', () => {
+  const detailHtml =
+    '<meta name="description" content="全友家居 飞鸟沙发. 购买方案 1 店铺 全友家居官方旗舰店 ,商品面价3523.75元 2 领券 国补至高30%"/>' +
+    '<div class="price-analysis"><ul>' +
+    '<li><div class="des">常购价</div><div class="price"><em>¥</em>2819</div></li>' +
+    '<li><div class="des">30天最低</div><div class="price"><em>¥</em>2790.81</div></li>' +
+    '<li><div class="des">618价</div><div class="price">-</div></li>' +
+    '</ul></div>' +
+    '<li>商家：<a href="x">京东商城</a> 品牌：<a href="y">全友家居 QUANU</a></li>' +
+    '<div class="tit_bar_1_lf">发布于 2026-4-17 10:20</div>' +
+    '<img src="https://img.zhizhizhi.com/upfiles/2026/04/main.jpg"/>'
+
+  it('抓购买方案/店铺/品牌/历史价(跳过"-")/发布时间/大图', () => {
+    const d = parseZhizhizhiDetail(detailHtml)
+    expect(d.desc).toContain('购买方案')
+    expect(d.shop).toBe('全友家居官方旗舰店')
+    expect(d.brand).toBe('全友家居 QUANU')
+    expect(d.historyPrices).toContain('常购价 ¥2819')
+    expect(d.historyPrices).toContain('30天最低 ¥2790.81')
+    expect(d.historyPrices).not.toContain('618')
+    expect(d.imageLarge).toContain('upfiles')
+    expect(d.time).toBeGreaterThan(0)
+  })
+
+  it('解析不出时返回空对象，不抛错', () => {
+    expect(parseZhizhizhiDetail('<html>无详情</html>')).toEqual({})
   })
 })

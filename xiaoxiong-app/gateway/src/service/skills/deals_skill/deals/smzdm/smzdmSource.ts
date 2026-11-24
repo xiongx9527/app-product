@@ -84,9 +84,22 @@ export function parseDealDetail(html: string): DealDetail {
   // 详情页的 og:description 有时是站点通用描述，过长/过短都当没有
   if (desc && desc.length <= 300) out.desc = desc
 
+  // 店铺：购买说明里常写「店铺 XXX」，与值值值共用同一通用字段（抓不到就留空）
+  const shop = /店铺\s+([^,，。;；]{1,40})/.exec(desc)?.[1]?.trim()
+  if (shop) out.shop = shop
+
   // 品牌：详情页内嵌的 data.brand（列表页没有）
   const brand = html.match(/"brand"\s*:\s*"([^"]{1,30})"/)?.[1]?.trim()
   if (brand) out.brand = brand
+
+  // 历史价格参考：部分详情页内嵌「历史最低/常购价」结构；只收真实带数值的文案，
+  // 站点没有就留空——与值值值共用 historyPrices 通用字段，换源不改卡片。
+  const hist: string[] = []
+  for (const label of ['历史最低', '历史低价', '常购价']) {
+    const v = html.match(new RegExp(`${label}[^0-9]{0,8}([0-9]+(?:\\.[0-9]+)?)\\s*元`))?.[1]
+    if (v) hist.push(`${label} ¥${v}`)
+  }
+  if (hist.length) out.historyPrices = hist.join('、')
 
   // JSON-LD：{ "pubDate": "2026-11-11T18:27:33" }，站点显示的是北京时间，补 +08:00 再解析，
   // 避免网关跑在别的时区时整体偏几小时。

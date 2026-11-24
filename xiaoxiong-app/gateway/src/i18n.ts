@@ -103,9 +103,11 @@ export interface Messages {
     fieldLabels: {
       price: () => string
       mall: () => string
+      shop: () => string
       brand: () => string
       tags: () => string
       desc: () => string
+      historyPrices: () => string
       time: () => string
       source: () => string
     }
@@ -288,9 +290,11 @@ const zhCN: Messages = {
     fieldLabels: {
       price: () => '现价',
       mall: () => '商城',
+      shop: () => '店铺',
       brand: () => '品牌',
       tags: () => '优惠',
       desc: () => '优惠详情',
+      historyPrices: () => '历史价',
       time: () => '发布时间',
       source: () => '来源',
     },
@@ -452,9 +456,11 @@ const en: Messages = {
     fieldLabels: {
       price: () => 'Price',
       mall: () => 'Store',
+      shop: () => 'Shop',
       brand: () => 'Brand',
       tags: () => 'Tags',
       desc: () => 'Details',
+      historyPrices: () => 'Price history',
       time: () => 'Posted',
       source: () => 'Source',
     },

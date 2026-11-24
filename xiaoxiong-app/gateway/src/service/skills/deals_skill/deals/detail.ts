@@ -38,9 +38,11 @@ export function toDetailItems(
     const fields: DetailField[] = []
     if (d.price) fields.push({ label: labels.price(), value: d.price })
     if (d.mall) fields.push({ label: labels.mall(), value: d.mall })
+    if (d.shop) fields.push({ label: labels.shop(), value: d.shop })
     if (d.brand) fields.push({ label: labels.brand(), value: d.brand })
     if (d.tags?.length) fields.push({ label: labels.tags(), value: d.tags.join(sep) })
     if (d.desc) fields.push({ label: labels.desc(), value: d.desc })
+    if (d.historyPrices) fields.push({ label: labels.historyPrices(), value: d.historyPrices })
     if (d.time && Number.isFinite(d.time)) {
       const when = formatTime(d.time)
       // 解析不出可信时间就不显示这行，不留「-1-11-29」这类脏值
