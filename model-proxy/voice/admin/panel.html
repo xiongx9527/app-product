@@ -201,6 +201,8 @@
   #login input[type=text], #login input[type=password] { font-size:15px; padding:11px 12px; }
   #login #go { font-size:15px; padding:12px 22px; width:100%; }
   #login .captcha-row { display:flex; align-items:center; gap:10px; margin-top:14px; }
+  /* hidden 属性优先级低于 class 的 display:flex，必须显式覆盖，否则关闭验证码后输入框仍显示 */
+  #login .captcha-row[hidden] { display:none; }
   #login .captcha-row input[type=text] { flex:1; min-width:0; margin:0; }
   #login .captcha-img { width:124px; height:42px; border-radius:8px; overflow:hidden; cursor:pointer;
                         display:flex; align-items:center; justify-content:center; border:1px solid var(--line);
