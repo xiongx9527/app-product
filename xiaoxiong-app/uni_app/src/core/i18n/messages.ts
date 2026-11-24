@@ -99,7 +99,7 @@ const zhCN: Messages = {
   'settings.general.duckHeavy': '重',
   'settings.general.interruptDuck': '开口避让',
   'settings.general.interruptDuckHint': '播报中检测到你开口，就压低播报与媒体：喊“你好小熊”打断时适用（普通插话暂未接入），回声更小、让打断、插话更容易。关掉后播报音量恒定（避让音量大小仍管播报压背景音乐）',
-  'settings.general.bargeIn': '允许播报播放插话',
+  'settings.general.bargeIn': '允许播报播放插话（实验）',
   'settings.general.bargeInHint': '关（默认）：播报/播放期间不收音，新闻、音乐的外放声不会被误识别成你的话；此期间不能用语音暂停/停止，请点屏幕按钮或喊“你好小熊”中断。开（实验性）：允许播报/播放期间插话，但外放声可能被麦克风收回、误识别成你的话导致助手乱答，且无法可靠区分你的声音和播放声——功能不稳定、效果看运气，仅作实验体验，不建议日常开启。',
   'settings.playback.aecEnabled': '硬件 AEC',
   'settings.playback.aecEnabledHint': '开启后采集全程使用系统回声消除（含播报期），减少播报回声被误识别。默认开启',
@@ -371,7 +371,7 @@ const enUS: Messages = {
   'error.gatewayConnectFailed': 'Cannot connect to gateway: {url}',
 
   'hint.idle': 'Turn on the assistant to start listening',
-  'hint.standby': 'Say “Xiaoxiong Xiaoxiong”, or tap the orb to start',
+  'hint.standby': 'Say “Ni Hao Xiaoxiong” (你好小熊), or tap the orb to start',
   'hint.wakeLoading': 'Voice wake is loading, or tap the orb to start',
   'hint.wakeFailed': 'Voice wake unavailable. Tap the orb to start',
   'hint.listening': 'I am listening. Pause when you finish',
@@ -419,7 +419,7 @@ const enUS: Messages = {
   'settings.general.duckHeavy': 'Heavy',
   'settings.general.interruptDuck': 'Open-mouth ducking',
   'settings.general.interruptDuckHint': 'When you start talking during speech, speech and media are lowered for less echo and to make interrupting and barge-in easier — applies to interrupting by saying "你好小熊" (regular barge-in not yet available); off keeps speech volume constant (the volume reduction level still lowers background music during speech)',
-  'settings.general.bargeIn': 'Allow barge-in during speech & playback',
+  'settings.general.bargeIn': 'Allow barge-in during speech & playback (experimental)',
   'settings.general.bargeInHint': 'Off (default): audio input is muted during speech/playback, so played news or music is not mistaken for your voice; use on-screen buttons or say "你好小熊" to interrupt (no voice pause/stop during playback). On (experimental): allows barge-in during speech/playback, but played audio may be picked up by the mic and misrecognized as your speech, causing wrong replies; your voice cannot be reliably distinguished from playback — unstable, results vary, for experimentation only, not recommended for daily use.',
   'settings.playback.aecEnabled': 'Hardware AEC',
   'settings.playback.aecEnabledHint': 'When on, use system echo cancellation throughout capture (including playback) to reduce echo being misrecognized. On by default',
@@ -640,6 +640,17 @@ const enUS: Messages = {
   'detail.noImage': 'No image',
   'detail.share': 'Share',
   'detail.email': 'Email',
+
+  'settings.recommend.title': 'Deal settings',
+  'settings.recommend.dealsCount': 'Number of recommendations',
+  'settings.recommend.dealsCountHint': 'How many deal items to show per recommendation, 1–10, default 3',
+  'settings.recommend.deals': 'Saved deals',
+  'deals.title': 'Saved deals',
+  'deals.empty': 'No recommendations yet. Ask the assistant to "recommend deals" and recommended items will be saved here',
+  'deals.open': 'Open',
+  'deals.remove': 'Remove',
+  'deals.addedAt': 'Recommended at {time}',
+  'deals.cleared': 'Cleared',
 }
 
 export const MESSAGES: Record<Locale, Messages> = {
