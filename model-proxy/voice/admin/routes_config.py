@@ -25,21 +25,34 @@ import admin_panel as ap  # 共享辅助/状态；调用时根模块已完全加
 _OVERVIEW_TTL = 2.0
 _overview_cache: dict[str, Any] = {"at": 0.0, "data": None}
 _overview_lock = threading.Lock()
+_overview_stats: dict[str, int] = {"hit": 0, "miss": 0}
 
 
-def _cached_overview() -> dict[str, Any]:
+def _cached_overview() -> tuple[dict[str, Any], bool]:
+    """返回 (数据, 是否命中缓存)；命中率可用 overview_cache_stats() 读取。"""
     now = time.monotonic()
     cached = _overview_cache
     if cached["data"] is not None and (now - cached["at"]) < _OVERVIEW_TTL:
-        return cached["data"]
+        _overview_stats["hit"] += 1
+        return cached["data"], True
     with _overview_lock:
         now = time.monotonic()
         if _overview_cache["data"] is not None and (now - _overview_cache["at"]) < _OVERVIEW_TTL:
-            return _overview_cache["data"]  # 双检：等锁期间可能已被别的线程刷新
+            _overview_stats["hit"] += 1
+            return _overview_cache["data"], True  # 双检：等锁期间可能已被别的线程刷新
         data = ap._system_overview()
         _overview_cache["at"] = now
         _overview_cache["data"] = data
-        return data
+        _overview_stats["miss"] += 1
+        return data, False
+
+
+def overview_cache_stats() -> dict[str, Any]:
+    """概览缓存命中率统计（供诊断/管理页展示）。"""
+    h, m = _overview_stats["hit"], _overview_stats["miss"]
+    return {"hit": h, "miss": m,
+            "hit_rate": round(100.0 * h / (h + m), 1) if (h + m) else 0.0,
+            "ttl_sec": _OVERVIEW_TTL}
 
 
 def build_router() -> APIRouter:
@@ -64,7 +77,17 @@ def build_router() -> APIRouter:
 
     @router.get("/admin/api/overview", dependencies=[Depends(require_viewer)])
     def admin_overview():
-        return _cached_overview()
+        data, hit = _cached_overview()
+        resp = Response(
+            content=json.dumps(data, ensure_ascii=False),
+            media_type="application/json",
+        )
+        resp.headers["X-Overview-Cache"] = "HIT" if hit else "MISS"
+        return resp
+
+    @router.get("/admin/api/overview-cache-stats", dependencies=[Depends(require_viewer)])
+    def admin_overview_cache_stats():
+        return overview_cache_stats()
 
     @router.get("/admin/api/config", dependencies=[Depends(require_admin)])
     def admin_config():
