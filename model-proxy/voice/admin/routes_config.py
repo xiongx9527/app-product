@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -16,6 +18,28 @@ import upstream_pool
 import voice_db
 import voice_correction_store
 import admin_panel as ap  # 共享辅助/状态；调用时根模块已完全加载
+
+
+# 概览缓存：监控类数据，短 TTL 即可，避免高频刷新/多人查看时反复采样 psutil + 连库查询。
+# 2 秒内重复请求直接返回缓存，过期后重算；锁防止并发惊群。
+_OVERVIEW_TTL = 2.0
+_overview_cache: dict[str, Any] = {"at": 0.0, "data": None}
+_overview_lock = threading.Lock()
+
+
+def _cached_overview() -> dict[str, Any]:
+    now = time.monotonic()
+    cached = _overview_cache
+    if cached["data"] is not None and (now - cached["at"]) < _OVERVIEW_TTL:
+        return cached["data"]
+    with _overview_lock:
+        now = time.monotonic()
+        if _overview_cache["data"] is not None and (now - _overview_cache["at"]) < _OVERVIEW_TTL:
+            return _overview_cache["data"]  # 双检：等锁期间可能已被别的线程刷新
+        data = ap._system_overview()
+        _overview_cache["at"] = now
+        _overview_cache["data"] = data
+        return data
 
 
 def build_router() -> APIRouter:
@@ -40,7 +64,7 @@ def build_router() -> APIRouter:
 
     @router.get("/admin/api/overview", dependencies=[Depends(require_viewer)])
     def admin_overview():
-        return _system_overview()
+        return _cached_overview()
 
     @router.get("/admin/api/config", dependencies=[Depends(require_admin)])
     def admin_config():
