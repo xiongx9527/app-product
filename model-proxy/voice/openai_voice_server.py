@@ -1106,6 +1106,16 @@ async def client_ip_audit_middleware(request: Request, call_next):
             logging.getLogger("uvicorn.error").info(
                 "client=%s (forwarded, peer=%s) rid=%s %s", log_ip, peer, rid, detail
             )
+    # 所有 /admin/api/* 接口统一审计：谁、何时、什么操作、结果状态码（写库，不刷日志文件）。
+    if path.startswith("/admin/api/"):
+        try:
+            tok = request.cookies.get(admin_panel.SESSION_COOKIE)
+            user = voice_db.session_username(tok) if tok else None
+            who = user or "anonymous"
+            detail = (f"rid={rid} {request.method} {path} -> {response.status_code}")
+            await asyncio.to_thread(voice_db.append_audit, log_ip, "admin.api", f"{who} {detail}")
+        except Exception:  # noqa: BLE001  审计失败绝不影响业务响应
+            pass
     # 响应头回传 request id：客户端报错时提供该 id 即可精确定位服务端日志
     response.headers["X-Request-Id"] = rid
     return response

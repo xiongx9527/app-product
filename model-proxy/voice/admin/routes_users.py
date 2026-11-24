@@ -206,4 +206,34 @@ def build_router() -> APIRouter:
                               "rate_binding_update", f"key_id={key_id}")
         return {"ok": True}
 
+    # ── 单账号单独授权（v20）：仅内置管理员可管理 ──────────────────
+    def _require_builtin(request: Request) -> str:
+        tok = request.cookies.get(ap.SESSION_COOKIE)
+        user = voice_db.session_username(tok) if tok else None
+        acct = voice_db.admin_user_get(user) if user else None
+        if not acct or not acct.get("is_builtin") or not acct.get("enabled"):
+            raise HTTPException(status_code=403, detail="仅内置管理员可管理角色权限")
+        return user
+
+    @router.get("/admin/api/grants", dependencies=[Depends(require_admin)])
+    def grants_list():
+        return {"grants": voice_db.grants_list(), "features": list(voice_db.VALID_GRANT_FEATURES)}
+
+    @router.put("/admin/api/grants/{username}/{feature}", dependencies=[Depends(require_admin)])
+    def grants_set(request: Request, username: str, feature: str, body: dict[str, Any]):
+        actor = _require_builtin(request)
+        role = (body or {}).get("role") or None  # null/空 = 撤销
+        if role == "":
+            role = None
+        try:
+            voice_db.grant_set(username, feature, role)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        action = "grant_revoke" if role is None else "grant_set"
+        voice_db.append_audit(
+            request.client.host if request.client else "unknown", action,
+            f"actor={actor} user={username} feature={feature} role={role or '-'}",
+        )
+        return {"ok": True}
+
     return router

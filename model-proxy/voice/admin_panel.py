@@ -279,6 +279,40 @@ def destroy_session(token: str | None) -> None:
 # 角色优先级：viewer < operator < admin
 ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}
 
+# 功能域 → 路径前缀（按请求路径推导，用于单账号单独授权）。顺序：长前缀优先匹配。
+GRANT_FEATURE_PATHS: list[tuple[str, tuple[str, ...]]] = [
+    ("mcp", ("/admin/api/mcp/",)),
+    ("accounts", ("/admin/api/users", "/admin/api/api-keys", "/admin/api/rate/")),
+    ("config", ("/admin/api/config", "/admin/api/llm-pool", "/admin/api/embed-pool",
+                "/admin/api/rerank-pool", "/admin/api/speech-secrets", "/admin/api/speech-models",
+                "/admin/api/enabled-models", "/admin/api/corrections", "/admin/api/action",
+                "/admin/api/sync", "/admin/api/schema-history")),
+    ("test", ("/admin/api/probe", "/admin/api/stt-", "/admin/api/tts-", "/admin/api/dashscope-models")),
+    ("logs", ("/admin/api/log",)),
+    ("overview", ("/admin/api/overview", "/admin/api/status")),
+]
+
+
+def _feature_for_path(path: str) -> str | None:
+    for feature, prefixes in GRANT_FEATURE_PATHS:
+        if any(path.startswith(p) for p in prefixes):
+            return feature
+    return None
+
+
+def _effective_role(username: str, path: str) -> str | None:
+    """账号自身角色与「该路径功能域的单独授权」取较高者；无账号/被禁用返回 None。"""
+    acct = voice_db.admin_user_get(username)
+    if not acct or not acct.get("enabled"):
+        return None
+    base = acct.get("role") or "viewer"
+    feature = _feature_for_path(path)
+    if feature:
+        granted = voice_db.grant_role_for(username, feature)
+        if granted and ROLE_ORDER.get(granted, -1) > ROLE_ORDER.get(base, -1):
+            return granted
+    return base
+
 
 def require_role(min_role: str):
     """构造一个 FastAPI 依赖：会话有效 + 账号启用 + 角色达到 min_role。
@@ -286,10 +320,12 @@ def require_role(min_role: str):
     会话无效 401；账号禁用/删除 401；角色不足 403。替代原 require_admin，
     实现后端强制分级——绕过前端直接调接口也拦得住。
     """
-    def _dep(session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> None:
+    def _dep(request: Request, session: str | None = Cookie(default=None, alias=SESSION_COOKIE)) -> None:
         if not valid_session(session):
             raise HTTPException(status_code=401, detail="未登录或会话已过期")
-        role = session_role(session)
+        username = voice_db.session_username(session)
+        # 按请求路径推导功能域，取「账号角色」与「该域单独授权」的较高者
+        role = _effective_role(username, request.url.path) if username else None
         if role is None or ROLE_ORDER.get(role, -1) < ROLE_ORDER.get(min_role, 99):
             raise HTTPException(status_code=403, detail="权限不足")
     return _dep

@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -137,8 +137,9 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
          "col:admin_api_keys:askdata_pass:TEXT NOT NULL DEFAULT ''"]),
     19: ("mcp_servers 加 tool_prefix 列：工具前缀独立字段（默认空=沿用 name），避免网关名用中文导致工具名非法",
         ["col:mcp_servers:tool_prefix:TEXT NOT NULL DEFAULT ''"]),
+    20: ("新增 admin_grants 表：给单个账号在指定功能域(feature)上单独授予权限级别(role)，"
+        "不改变账号自身角色；鉴权时按路径推导功能域，取账号角色与该域授权的较高者。仅内置管理员可管理", []),
 }
-
 
 def ensure_schema() -> None:
     """建表（幂等）+ 版本管理。首次运行、或升级新增表 / 列时都安全。"""
@@ -207,6 +208,15 @@ def ensure_schema() -> None:
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_admin_users_builtin
             ON admin_users(is_builtin) WHERE is_builtin = 1;
+        -- 单账号单独授权（v20）：在指定功能域上授予权限级别，不改变账号自身角色。
+        -- 鉴权时按请求路径推导功能域，取「账号角色」与「该域授权」的较高者与路由要求比较。
+        CREATE TABLE IF NOT EXISTS admin_grants (
+            username   TEXT NOT NULL,
+            feature    TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (username, feature)
+        );
         -- API Key（v10）：只存哈希，不存明文。not_before/expires_at 为秒级 epoch（NULL=不限）；
         -- allowed_ips 为 JSON 数组（空=不额外限制）；owner_* 为将来外部用户预留，本期不用。
         CREATE TABLE IF NOT EXISTS admin_api_keys (
@@ -698,6 +708,7 @@ def admin_user_delete(username: str) -> None:
                 raise ValueError("不能删除最后一个启用的管理员")
         c.execute("DELETE FROM admin_users WHERE username=?", (username,))
         c.execute("DELETE FROM admin_sessions WHERE username=?", (username,))
+        c.execute("DELETE FROM admin_grants WHERE username=?", (username,))
         c.commit()
 
 
@@ -793,6 +804,54 @@ def admin_user_change_password(username: str, old_password: str, new_password: s
         c.execute("DELETE FROM admin_sessions WHERE username=?", (username,))
         c.commit()
         return True
+
+
+# ── 单账号单独授权（v20）─────────────────────────────────────────────
+VALID_GRANT_FEATURES = ("overview", "logs", "test", "config", "accounts", "security", "mcp")
+ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}  # 与 admin_panel.ROLE_ORDER 一致
+
+
+def grant_set(username: str, feature: str, role: str | None) -> None:
+    """给账号在指定功能域设置授权级别；role=None 表示撤销该授权。"""
+    if feature not in VALID_GRANT_FEATURES:
+        raise ValueError(f"未知功能域：{feature}")
+    if role is not None and role not in ROLE_ORDER:
+        raise ValueError(f"未知角色：{role}")
+    if not admin_user_get(username):
+        raise ValueError(f"账号不存在：{username}")
+    with _lock:
+        c = _conn_get()
+        if role is None:
+            c.execute("DELETE FROM admin_grants WHERE username=? AND feature=?", (username, feature))
+        else:
+            c.execute(
+                "INSERT OR REPLACE INTO admin_grants(username,feature,role,updated_at) VALUES(?,?,?,?)",
+                (username, feature, role, int(time.time())),
+            )
+        c.commit()
+
+
+def grants_list(username: str | None = None) -> list[dict[str, Any]]:
+    rows = _conn_get().execute(
+        "SELECT username, feature, role, updated_at FROM admin_grants"
+        + (" WHERE username=?" if username else "") + " ORDER BY username, feature",
+        (username,) if username else (),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def grant_role_for(username: str, feature: str) -> str | None:
+    r = _conn_get().execute(
+        "SELECT role FROM admin_grants WHERE username=? AND feature=?", (username, feature)
+    ).fetchone()
+    return r["role"] if r else None
+
+
+def grants_delete_user(username: str) -> None:
+    with _lock:
+        c = _conn_get()
+        c.execute("DELETE FROM admin_grants WHERE username=?", (username,))
+        c.commit()
 
 
 # ── API Key（哈希管理，v10）─────────────────────────────────────────
