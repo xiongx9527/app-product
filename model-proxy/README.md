@@ -551,10 +551,14 @@ VOICE_DASHSCOPE_URL=https://dashscope.aliyuncs.com
 ```
 
 接口：
-- `POST /ocr/v1/ocr`：`{"image": "<base64 图片>", "provider": "builtin|deepseek"}`（provider 可省略，用配置默认值）
-  → `{"ok": true, "provider": "...", "texts": [{text,score,box}], "full_text": "..."}`
+- `POST /ocr/v1/ocr`：`{"image": "<base64 图片或 PDF>", "provider": "builtin|deepseek", "max_pages": 20}`
+  （provider 可省略用配置默认值；**图片/PDF 按魔数自动识别，无需 kind 参数**；max_pages 可选，PDF 页数上限 100）
+  - 图片 → `{"ok": true, "kind": "image", "texts": [{text,score,box}], "full_text": "..."}`
+  - PDF → `{"ok": true, "kind": "pdf", "page_count": N,
+    "pages": [{"page": 1, "texts": [...], "full_text": "..."}], "texts": [...], "full_text": "..."}`
+    （按页分组 + 顶层合并全文，业界通用结构；PDF 用内置引擎，DeepSeek 暂不支持 PDF）
 - `GET /ocr/v1/models`：两个提供商的模型信息与默认项
-- 面板「模型配置 → OCR」配置；「连通测试 → 文字识别 OCR」上传图片测试。
+- 面板「模型配置 → OCR」配置；「连通测试 → 文字识别 OCR」上传图片或 PDF 测试。
 
 **架构说明**（重要）：torch2.2（内置重排）与 paddle3.0 的 C++ 扩展**无法同进程共存**
 （同进程调用 OCR 会 segfault）。因此内置 OCR 在**短生命周期子进程**里跑

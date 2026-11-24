@@ -35,8 +35,12 @@ def model_name() -> str:
     return os.environ.get("OCR_BUILTIN_MODEL") or os.environ.get("OCR_MODEL_VERSION") or "PP-OCRv5"
 
 
-def recognize(image_bytes: bytes) -> dict[str, Any]:
-    """识别图片文字。起独立子进程跑 PaddleOCR，返回 {ok,texts,full_text}。"""
+def recognize(image_bytes: bytes, max_pages: int = 20) -> dict[str, Any]:
+    """识别图片或 PDF 文字（worker 按魔数自动判断类型，调用方无需指定）。
+
+    图片返回 {ok,kind:"image",texts,full_text}；
+    PDF 返回 {ok,kind:"pdf",page_count,pages:[{page,texts,full_text}],texts,full_text}。
+    """
     if not image_bytes:
         raise ValueError("图片内容为空")
     if not os.path.isfile(_WORKER):
@@ -44,7 +48,7 @@ def recognize(image_bytes: bytes) -> dict[str, Any]:
     # stdin 传 base64（纯文本，避免二进制在管道里被截断/编码问题）
     import base64
 
-    payload = json.dumps({"image": base64.b64encode(image_bytes).decode("ascii")})
+    payload = json.dumps({"image": base64.b64encode(image_bytes).decode("ascii"), "max_pages": max_pages})
     proc = subprocess.run(
         [sys.executable, _WORKER],
         input=payload.encode("utf-8"),

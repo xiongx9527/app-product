@@ -3539,7 +3539,7 @@ async function renderDashboard(){
       <div class="hint" id="ocrModelDesc" style="margin-top:4px"></div>
       <div class="muted" style="margin:10px 0 8px">${t('ocr.hint')}</div>
       <div class="row">
-        <input id="ocrFile" type="file" accept="image/*" style="display:none" />
+        <input id="ocrFile" type="file" accept="image/*,application/pdf" style="display:none" />
         <button id="ocrPick" class="sec">${t('ocr.pick')}</button>
         <span class="hint" id="ocrFileName">${t('ocr.noFile')}</span>
         <span class="hint" id="ocrStatus" style="margin-left:auto">${t('ocr.statusIdle')}</span>

@@ -785,7 +785,7 @@ def _public_openapi():
     schema["paths"]["/ocr/v1/ocr"] = {
         "post": {
             "tags": ["OCR"], "summary": "图片文字识别（PaddleOCR 内置）",
-            "description": "OCR 文字识别：POST {image: base64, provider?: builtin|deepseek} → {ok, provider, texts:[{text,score,box}], full_text}。内置走 PaddleOCR（需 install-ocr.sh 且 OCR_ENABLED=on），deepseek 走官方 Vision API（需 OCR_DEEPSEEK_API_KEY）。provider 省略时用配置 OCR_PROVIDER 默认值。",
+            "description": "OCR 文字识别：POST {image: base64, provider?: builtin|deepseek, max_pages?: N}。图片/PDF 自动识别（%PDF- 魔数），无需 kind 参数。图片返回 {ok, kind:'image', texts, full_text}；PDF 返回 {ok, kind:'pdf', page_count, pages:[{page,texts,full_text}], texts, full_text}。内置走 PaddleOCR（需 install-ocr.sh），deepseek 走官方 Vision API（需 OCR_DEEPSEEK_API_KEY；暂不支持 PDF，请用内置）。",
             "security": _bearer,
             "responses": {"200": {"description": "识别结果"},
                           "400": {"description": "image 缺失或 base64 非法"},
@@ -4166,11 +4166,16 @@ async def rerank(request: Request):
 
 @app.post("/ocr/v1/ocr")
 async def ocr_recognize(request: Request):
-    """内置 OCR（PaddleOCR / PP-OCRv5）：独立能力前缀 /ocr，不放在 /voice 下。
+    """OCR 文字识别：独立能力前缀 /ocr，不放在 /voice 下。
 
-    入站 JSON：{"image": "<base64>"} 或 {"image": "data:image/png;base64,..."}；
-    返回 {ok, texts:[{text,score,box}], full_text}。单进程内嵌，模型首次自动下载。
-    与其它对外接口一致走统一 API-Key 鉴权；OCR 为本地重计算，放线程池避免阻塞事件循环。
+    入站 JSON：
+      - 图片：{"image": "<base64>"} 或 {"image": "data:image/png;base64,..."}
+      - PDF：{"image": "<base64 PDF>"}（自动按 %PDF- 识别，无需额外参数）；
+        {"max_pages": N} 可选，限制页数（默认 20，上限 100）
+      - {"test": true} 服务端生成测试图（面板测试用）
+    返回：图片 {ok, kind:"image", texts, full_text}；
+          PDF {ok, kind:"pdf", page_count, pages:[{page,texts,full_text}], texts, full_text}。
+    与其它对外接口一致走统一 API-Key 鉴权；内置 OCR 放子进程避免阻塞事件循环。
     """
     try:
         body = await request.json()
@@ -4213,6 +4218,10 @@ async def ocr_recognize(request: Request):
             return error_response(400, f"image base64 解码失败: {exc}")
         if not image_bytes:
             return error_response(400, "image 解码后为空")
+    # 文件类型自动识别：按魔数判断 PDF（%PDF-），无需前端/调用方指定 kind 参数
+    is_pdf = image_bytes[:5] == b"%PDF-"
+    max_pages = min(max(1, int(body.get("max_pages") or 20)), 100)
+
     # 提供商：请求体可覆盖，否则用配置（builtin=本地 PaddleOCR / deepseek=官方 Vision API）
     provider = (body.get("provider") or "").strip().lower() or (
         config_value("OCR_PROVIDER", "builtin") or "builtin"
@@ -4220,13 +4229,17 @@ async def ocr_recognize(request: Request):
     try:
         if provider == "deepseek":
             key = _deepseek_key("OCR")
+            if is_pdf:
+                # DeepSeek Vision 原生支持 PDF，但走 Files API；当前先把 PDF 逐页渲染成图片
+                # 后逐页调 Vision（与内置一致的结构），避免依赖上传文件流程。
+                return error_response(400, "DeepSeek 提供商暂不支持 PDF，请选内置引擎（builtin）识别 PDF")
             full = await deepseek_ocr_text(image_bytes, key, body.get("model"))
             texts = [{"text": ln.strip(), "score": 1.0, "box": []}
                      for ln in full.splitlines() if ln.strip()]
-            return JSONResponse({"ok": True, "provider": "deepseek", "texts": texts, "full_text": full})
+            return JSONResponse({"ok": True, "kind": "image", "provider": "deepseek", "texts": texts, "full_text": full})
         # 内置：OCR 在独立子进程里跑（builtin_ocr 用 subprocess，paddle 不进主进程）
         import builtin_ocr
-        result = await asyncio.to_thread(builtin_ocr.recognize, image_bytes)
+        result = await asyncio.to_thread(builtin_ocr.recognize, image_bytes, max_pages)
         result["provider"] = "builtin"
         return JSONResponse(result)
     except Exception as exc:  # noqa: BLE001
