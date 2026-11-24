@@ -12,7 +12,7 @@ import type {
 import { formatMemories, type MemoryStore, type RequestLocation } from './tools'
 import { preferenceKeywords } from './memory'
 import { ensureAdtsFile, adtsKeyFor } from './media/mediaAdts'
-import { MediaPlaybackCapability, createMediaPlaybackDeps, type MediaResolver } from './media/mediaPlaybackCapability'
+import { MediaPlaybackCapability, createMediaPlaybackDeps, type MediaResolver } from './media/MediaPlaybackCapability'
 import { MediaControl, detectVolumeCommand, detectSubtitleCommand, detectPlayModeCommand } from './media/mediaDetect'
 import { cacheExternalAudio, getCachedAudioDuration, type MediaFetcher } from './media/mediaCache'
 import { messages } from '../i18n'
@@ -1585,9 +1585,14 @@ export class VoiceSessionService {
         }
       },
       (delta) => {
-        // 思考过程只给界面看，不进 buffer、不进 TTS
+        // 思考过程只给界面看，不进 buffer、不进 TTS。
+        // 【深度思考开关】关（默认，params.think 非 true）时不下发 llm.thinking：上游推理模型
+        // 即便仍返回 reasoning_content（9529 统一映射成 thinking block），也不该显示思考框——
+        // 用户既然关了深度思考，就不想看到推理链。仍要 bumpLlmTimeout（思考期模型在工作，
+        // 不能因「没吐答案字」被当卡死），只是把思考内容丢弃。答案 content 照常走 onDelta。
         if (stale() || timedOut) return
         bumpLlmTimeout()
+        if (!thinkEnabled) return
         this.deps.send({ type: 'llm.thinking', text: delta })
       }
     )

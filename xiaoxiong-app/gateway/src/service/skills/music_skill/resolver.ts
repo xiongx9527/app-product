@@ -10,7 +10,7 @@
  *  - ResolvedTrack{url,title,artist,channel,cover} → MediaAsset（加 source:'music'）
  *  - getSubtitle(title,artist) 注意 MusicSource 签名是 (artist,title)，这里交换参数顺序。
  */
-import type { MediaAsset, MediaResolver } from '../../media/mediaPlaybackCapability'
+import type { MediaAsset, MediaResolver } from '../../media/MediaPlaybackCapability'
 import type { SubtitleLine } from '../../../protocol'
 import type { MusicSource } from './music'
 

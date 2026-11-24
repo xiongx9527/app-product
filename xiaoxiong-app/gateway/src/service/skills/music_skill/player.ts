@@ -14,7 +14,7 @@
  *  - 问句「谁唱的歌/这首歌叫什么」不触发点歌，交 LLM 从正在播放上下文回答；
  *  - 措辞按 contentType：评书/戏曲/影视不说「这首歌」。
  */
-import type { MediaAsset } from '../../media/mediaPlaybackCapability'
+import type { MediaAsset } from '../../media/MediaPlaybackCapability'
 import type { ContentSource, ContentExecutor, ContentExecutorDeps, ContentAction, ContentCandidate } from '../../content/types'
 import { pickI18n, type MusicI18n } from './i18n_player'
 import { detectMusicCommand } from './detect'

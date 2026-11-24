@@ -5,7 +5,7 @@
  * 全部由装配层（controller）构造具体实现后注入。换源/换内容业务不改核心、不改本契约。
  */
 import type { ServerEvent, SubtitleLine } from '../../protocol'
-import type { MediaPlaybackCapability, MediaResolver } from '../media/mediaPlaybackCapability'
+import type { MediaPlaybackCapability, MediaResolver } from '../media/MediaPlaybackCapability'
 
 /** 通用内容源：把口语关键词解析成可播放媒体。backed by 具体实现（音乐源等），换源只换实现。 */
 export interface ContentSource {

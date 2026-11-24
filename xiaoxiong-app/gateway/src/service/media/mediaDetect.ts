@@ -15,7 +15,7 @@
  *  - replay 优先 tts（百科/诗词），其次音乐曲目（能力层 replay() 已实现此优先级）。
  */
 import type { ServerEvent } from '../../protocol'
-import type { MediaPlaybackCapability } from './mediaPlaybackCapability'
+import type { MediaPlaybackCapability } from './MediaPlaybackCapability'
 import { parseLoopCount } from './mediaIntent'
 import { pickI18n } from './mediaControlI18n'
 

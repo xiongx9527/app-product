@@ -12,7 +12,7 @@ import type { Lang, ServerEvent } from '../../protocol'
 import type { DataService } from '../dataService'
 import type { MemoryStore } from '../tools'
 import type { AgentService } from '../agentService'
-import type { MediaPlaybackCapability } from '../media/mediaPlaybackCapability'
+import type { MediaPlaybackCapability } from '../media/MediaPlaybackCapability'
 import type { ContentCandidate } from '../content/types'
 import type { LocationInfo } from '../../protocol'
 

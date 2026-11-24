@@ -721,14 +721,15 @@ _INTERNAL_KEYS = {"base_url", "api_key", "vendor", "protocol", "bypass_catalog",
 def apply_think(payload: dict, body: dict, wire: str, vendor: str) -> dict:
     """把统一 think 契约翻译成目标厂商的『是否思考』参数（就地改 payload）。
 
-    未带 think 时不干预上游默认行为。通用 OpenAI 兼容端点没有统一标准，保守
-    不下发任何思考参数（宁可沿用上游默认，也不发对方不认的字段）。
+    【默认关闭】未带 think 时按 false 处理（不开启深度思考），而不是沿用上游默认。
+    原因：推理模型（deepseek-r1 等）默认会思考、返回 reasoning_content，若缺省沿用
+    上游默认，客户端没显式要思考也会冒出思考框/白烧推理 token。要思考必须显式
+    X-Proxy-Think: true（前端深度思考开关打开时才传）。
     """
     for k in _INTERNAL_KEYS:
         payload.pop(k, None)
-    think = body.get("think")
-    if think is None:
-        return payload
+    # 缺省=不开启深度思考；仅显式 true/false 才覆盖
+    think = body.get("think", False)
     enable = bool(think)
     if vendor == "ollama":
         # ollama 原生 /api/chat：think=true/false（0.40.x+ 支持）
