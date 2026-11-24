@@ -781,6 +781,13 @@ const I18N = {
     "ov.appRate": "限流",
     "ov.switchOn": "已开启",
     "ov.switchOff": "未开启",
+    "ov.dbName": "库名",
+    "ov.runtime": "运行环境",
+    "ov.runtimeDocker": "Docker 容器",
+    "ov.runtimeHost": "本机进程",
+    "ov.container": "容器 名称/ID",
+    "ov.image": "镜像",
+    "ov.dockerVer": "Docker 版本",
     "ov.os": "操作系统",
     "ov.python": "Python",
     "ov.dbConfig": "配置库",
@@ -1282,6 +1289,13 @@ const I18N = {
     "ov.appRate": "Rate limit",
     "ov.switchOn": "On",
     "ov.switchOff": "Off",
+    "ov.dbName": "DB name",
+    "ov.runtime": "Runtime",
+    "ov.runtimeDocker": "Docker container",
+    "ov.runtimeHost": "Host process",
+    "ov.container": "Container name/ID",
+    "ov.image": "Image",
+    "ov.dockerVer": "Docker version",
     "ov.os": "OS",
     "ov.python": "Python",
     "ov.dbConfig": "Config DB",
@@ -4835,6 +4849,12 @@ async function loadOverview(){
   const rotByText=v=>({day:t('ov.rotDay'),size:t('ov.rotSize'),both:t('ov.rotBoth')}[v]||v||'—');
   box.innerHTML=
     group(t('ov.process'), [
+      [t('ov.runtime'), p.in_docker===true||p.in_docker==='true'?t('ov.runtimeDocker'):t('ov.runtimeHost')],
+      ...((p.in_docker===true||p.in_docker==='true') ? [
+        [t('ov.dockerVer'), p.docker_version||'—'],
+        [t('ov.image'), p.image||'—'],
+        [t('ov.container'), (p.container_name||'—')+' / '+(p.container_id||'—')],
+      ] : []),
       [t('ov.os'), p.os||'—'], [t('ov.python'), p.python||'—'],
       ['PID', p.pid||'—'], [t('ov.uptime'), p.uptime||'—'],
       [t('ov.cpu'), (p.cpu||'—')+' ('+(p.cpu_cores||'—')+' cores)'],
@@ -4849,11 +4869,12 @@ async function loadOverview(){
     ])+
     group(t('ov.network'), [[t('ov.ip'), n.ip||'—'], [t('ov.port'), n.port||'—']])+
     group(t('ov.database'), [
-      [t('ov.type'), db.type||'—'], [t('ov.version'), db.version||'—'],
+      [t('ov.type'), db.type||'—'], [t('ov.dbName'), db.name||'—'], [t('ov.version'), db.version||'—'],
       [t('ov.health'), db.health||'—'], [t('ov.size'), db.size||'—'], [t('ov.schemaVersion'), db.schema_version||'—'],
     ])+
     group(t('ov.cache'), [
-      [t('ov.type'), ca.type||'—'], [t('ov.keys'), ca.keys??'—'], [t('ov.health'), ca.health||'—'],
+      [t('ov.type'), ca.type||'—'], [t('ov.dbName'), ca.name||'—'], [t('ov.version'), ca.version||'—'],
+      [t('ov.keys'), ca.keys??'—'], [t('ov.health'), ca.health||'—'],
     ])+
     group(t('ov.app'), [
       [t('ov.appStatus'), ap.status||'—'],

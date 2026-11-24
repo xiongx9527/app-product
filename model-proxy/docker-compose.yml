@@ -23,6 +23,11 @@ services:
       VOICE_HOME: /data
       VOICE_HOST: 0.0.0.0
       VOICE_PORT: "19529"
+      # 容器身份信息（供管理面板概览页展示；hostname 自动给出容器 ID 前 12 位）
+      CONTAINER_NAME: model-proxy
+      IMAGE_NAME: app-product/model-proxy:local
+      # 可选：不挂 docker.sock 时可手动指定 Docker 版本；留空则经 sock 自动读取
+      DOCKER_VERSION: ${DOCKER_VERSION:-}
       # 缓存/限流走 Redis（连不上自动降级到内存）：
       REDIS_URL: redis://redis:6379/0
       # 纠错词表缓存：redis(走 Redis) | memory(不走缓存)，默认跟随 REDIS_URL
@@ -39,6 +44,9 @@ services:
     volumes:
       # 宿主运行目录整体挂进容器：voice.conf / voice.db / models / api-key / 日志。
       - ${VOICE_HOME:-$HOME/.app-product/voice}:/data
+      # 只读挂载 docker.sock：让概览页能自动读到宿主机 Docker 引擎版本（无写权限）。
+      # 若出于安全不想挂载，可删掉此行，改用环境变量 DOCKER_VERSION 手动注入版本号。
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       redis:
         condition: service_started

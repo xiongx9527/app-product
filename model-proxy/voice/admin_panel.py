@@ -43,6 +43,8 @@ import llm_protocols  # 由协议名推导模型列表接口地址（prepare_mod
 from fastapi import Cookie, Depends, Form, HTTPException, Request
 
 _START_TS = time.time()  # 面板模块加载时间，供概览页算 uptime
+_DOCKER_VERSION_CACHE: str | None = None  # Docker 引擎版本缓存（不变的值，只读一次 sock）
+_SERVER_VERSION_CACHE: dict[str, str] = {}  # MySQL/Redis 版本缓存（版本号不变，避免每次连库查询）
 
 # 热词词性校验：jieba 懒加载（首次调用才载入词典，避免拖慢服务启动）。
 # 返回 [(词, 词性标记)]；依赖缺失返回 None，调用方据此降级为只做字数校验。
@@ -444,12 +446,20 @@ def _system_overview() -> dict[str, Any]:
 
     # ── 进程 / CPU / 内存 ──
     pid = os.getpid()
-    cpu_pct, rss_kb = "—", "—"
+    # 进程 CPU/内存：优先 psutil（不依赖 ps 命令，Docker 精简镜像里没有 ps）；
+    # 退化时才用 ps。cpu_percent 需采样间隔，取一段时间均值更有意义。
     def ps_info():
-        out = subprocess.run(["ps", "-p", str(pid), "-o", "%cpu=", "-o", "rss="],
-                             capture_output=True, text=True, timeout=2).stdout.split()
-        return (out[0], out[1]) if len(out) >= 2 else ("—", "—")
+        import psutil
+        p = psutil.Process(pid)
+        # interval=None 非阻塞（基于上次调用差值）；概览周期刷新，第二次起即准确
+        return (f"{p.cpu_percent(interval=None):.1f}", str(int(p.memory_info().rss / 1024)))
     cpu_pct, rss_kb = safe(ps_info, ("—", "—"))
+    if cpu_pct == "—":
+        def ps_fallback():
+            out = subprocess.run(["ps", "-p", str(pid), "-o", "%cpu=", "-o", "rss="],
+                                 capture_output=True, text=True, timeout=2).stdout.split()
+            return (out[0], out[1]) if len(out) >= 2 else ("—", "—")
+        cpu_pct, rss_kb = safe(ps_fallback, ("—", "—"))
     try:
         rss_mb = f"{int(rss_kb)/1024:.1f} MB" if rss_kb != "—" else "—"
     except (ValueError, TypeError):
@@ -458,6 +468,40 @@ def _system_overview() -> dict[str, Any]:
     ncpu = safe(os.cpu_count, "—")
     os_info = safe(lambda: f"{platform.system()} {platform.release()} ({platform.machine()})")
     python_ver = safe(lambda: platform.python_version())
+
+    # 是否运行在 Docker 容器内：优先 /.dockerenv，其次 /proc/1/cgroup 关键字（Linux 容器）。
+    def in_docker() -> bool:
+        if os.path.exists("/.dockerenv"):
+            return True
+        try:
+            with open("/proc/1/cgroup", encoding="utf-8", errors="ignore") as f:
+                return any(k in f.read() for k in ("docker", "kubepods", "containerd"))
+        except Exception:
+            return False
+    docker_flag = safe(in_docker, False)
+
+    # Docker 引擎版本：优先环境变量 DOCKER_VERSION；否则经只读挂载的 docker.sock 自动查。
+    def docker_version() -> str:
+        global _DOCKER_VERSION_CACHE
+        v = os.environ.get("DOCKER_VERSION", "").strip()
+        if v:
+            return v
+        if _DOCKER_VERSION_CACHE is not None:
+            return _DOCKER_VERSION_CACHE
+        if not docker_flag:
+            return "—"
+        try:
+            import httpx
+            with httpx.Client(transport=httpx.HTTPTransport(uds="/var/run/docker.sock"), timeout=2) as c:
+                r = c.get("http://docker/version")
+                if r.status_code == 200:
+                    _DOCKER_VERSION_CACHE = str(r.json().get("Version", "—"))
+                    return _DOCKER_VERSION_CACHE
+        except Exception:
+            pass
+        _DOCKER_VERSION_CACHE = "—"  # 失败也缓存，避免反复重试拖慢概览
+        return _DOCKER_VERSION_CACHE
+    docker_ver = safe(docker_version, "—")
 
     # ── 磁盘（voice home 所在盘）──
     disk_total = disk_free = disk_pct = "—"
@@ -513,7 +557,64 @@ def _system_overview() -> dict[str, Any]:
         corr_type = "sqlite"
     # 数据库类型：主库 SQLite；纠错库可能另配 mysql/pgsql
     db_type = "SQLite" if corr_type == "sqlite" else ("PostgreSQL" if corr_type == "postgresql" else corr_type.upper())
-    db_ver = sqlite3.sqlite_version if corr_type == "sqlite" else "—"
+
+    def _query_server_version(kind: str) -> str:
+        """查后端服务器版本号（MySQL/PG/Redis）；失败返回 —，不阻塞概览。"""
+        try:
+            if kind == "mysql":
+                import pymysql
+                from urllib.parse import urlparse, unquote
+                dsn = os.environ.get("VOICE_MYSQL_DSN", "").strip()
+                u = urlparse(dsn)
+                c = pymysql.connect(host=u.hostname, port=u.port or 3306,
+                                    user=unquote(u.username or ""), password=unquote(u.password or ""),
+                                    database=(u.path or "").lstrip("/"), charset="utf8mb4",
+                                    connect_timeout=2, read_timeout=2)
+                try:
+                    with c.cursor() as cur:
+                        cur.execute("SELECT VERSION()")
+                        return str(cur.fetchone()[0])
+                finally:
+                    c.close()
+            if kind == "postgresql":
+                import psycopg
+                dsn = os.environ.get("VOICE_REMOTE_DSN", "").strip()
+                with psycopg.connect(dsn, connect_timeout=2) as c:
+                    return str(c.execute("SHOW server_version").fetchone()[0])
+            if kind == "redis":
+                import redis  # type: ignore
+                url = os.environ.get("REDIS_URL", "").strip()
+                c = redis.from_url(url, socket_connect_timeout=2, socket_timeout=2, decode_responses=True)
+                info = c.info("server")
+                return str(info.get("redis_version", "—"))
+        except Exception:
+            return "—"
+        return "—"
+
+    def server_version(kind: str) -> str:
+        """带缓存：版本不变，查过一次就不再连库/连 Redis。"""
+        if kind not in _SERVER_VERSION_CACHE:
+            _SERVER_VERSION_CACHE[kind] = _query_server_version(kind)
+        return _SERVER_VERSION_CACHE[kind]
+
+    if corr_type == "sqlite":
+        db_ver = sqlite3.sqlite_version
+    elif corr_type in ("mysql", "postgresql"):
+        db_ver = safe(lambda: server_version(corr_type), "—")
+    else:
+        db_ver = "—"
+
+    # 具体用了哪个库：MySQL/PG 从 DSN 取库名；SQLite 显示本地文件名。
+    if corr_type == "sqlite":
+        db_name = os.path.basename(db_path) or "voice.db"
+    elif corr_type == "mysql":
+        dsn = os.environ.get("VOICE_MYSQL_DSN", "").strip()
+        db_name = dsn_info(dsn)[2] if dsn else "—"
+    elif corr_type == "postgresql":
+        dsn = os.environ.get("VOICE_REMOTE_DSN", "").strip()
+        db_name = dsn_info(dsn)[2] if dsn else "—"
+    else:
+        db_name = "—"
     # 健康：SELECT 1 计时
     def db_health():
         t0 = time.time()
@@ -521,6 +622,7 @@ def _system_overview() -> dict[str, Any]:
         return f"正常（{(time.time()-t0)*1000:.1f}ms）"
     databases = {
         "type": db_type,
+        "name": db_name,
         "version": db_ver,
         "health": safe(db_health, "异常"),
         "size": db_size,
@@ -551,8 +653,18 @@ def _system_overview() -> dict[str, Any]:
             cache_health = "正常" if rook else "未知"
     else:
         cache_health = "正常（进程内存）"
-    caches = {"type": cache_type, "keys": cache_keys, "health": cache_health,
-              "switch": "memory" if cache_disabled else "redis"}
+    cache_ver = safe(lambda: server_version("redis"), "—") if cache_type == "Redis" else "—"
+    # Redis 具体 DB 编号（redis://.../0 → db0）；内存缓存显示 —
+    cache_name = "—"
+    if cache_type == "Redis" and redis_url:
+        try:
+            from urllib.parse import urlparse
+            path = urlparse(redis_url).path.lstrip("/")
+            cache_name = f"db{path}" if path.isdigit() else (path or "db0")
+        except Exception:
+            cache_name = "—"
+    caches = {"type": cache_type, "name": cache_name, "version": cache_ver, "keys": cache_keys,
+              "health": cache_health, "switch": "memory" if cache_disabled else "redis"}
 
     # ── 日志 ──
     log_path = os.path.join(VOICE_HOME_DIR, "voice.log")
@@ -579,7 +691,7 @@ def _system_overview() -> dict[str, Any]:
         import psutil
         vm = psutil.virtual_memory()
         return {
-            "cpu_percent": f"{psutil.cpu_percent(interval=0.2):.1f}%",
+            "cpu_percent": f"{psutil.cpu_percent(interval=None):.1f}%",  # 非阻塞
             "cpu_cores": str(psutil.cpu_count() or ncpu),
             "mem_total": fmt_bytes(vm.total),
             "mem_used": fmt_bytes(vm.used),
@@ -643,7 +755,13 @@ def _system_overview() -> dict[str, Any]:
 
     return {
         "process": {"pid": pid, "cpu": f"{cpu_pct}%", "memory": rss_mb, "load1": load1, "cpu_cores": ncpu,
-                    "uptime": f"{int(time.time()-_START_TS)}s", "os": os_info, "python": python_ver},
+                    "uptime": f"{int(time.time()-_START_TS)}s", "os": os_info, "python": python_ver,
+                    "in_docker": bool(docker_flag),
+                    # 容器信息：hostname 即容器 ID 前 12 位；名称/镜像由 compose 环境变量传入
+                    "container_id": safe(socket.gethostname, "")[:12] if docker_flag else "",
+                    "container_name": os.environ.get("CONTAINER_NAME", "") if docker_flag else "",
+                    "image": os.environ.get("IMAGE_NAME", "") if docker_flag else "",
+                    "docker_version": docker_ver},
         "disk": {"total": disk_total, "free": disk_free, "used_pct": disk_pct, "home": VOICE_HOME_DIR},
         "network": {"ip": ip, "port": voice_port(), "host": "0.0.0.0"},
         "database": databases,
