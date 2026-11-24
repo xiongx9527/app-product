@@ -630,7 +630,8 @@ const I18N = {
     "test.tabRerank": "重排 Rerank",
     "test.tabTts": "语音合成 TTS",
     "test.tabOcr": "文字识别 OCR",
-    "ocr.hint": "上传图片，用内置 PaddleOCR 识别其中文字（需先开启 OCR_ENABLED 并安装依赖）。",
+    "ocr.hint": "上传图片识别其中文字。内置走本地 PaddleOCR，DeepSeek 走云端 Vision API。",
+    "ocr.pick": "选择图片",
     "ocr.statusIdle": "未开始",
     "ocr.recognize": "识别图片",
     "ocr.outPlaceholder": "识别结果将在这里显示。",
@@ -1090,7 +1091,8 @@ const I18N = {
     "test.tabRerank": "Rerank",
     "test.tabTts": "Speech Synthesis TTS",
     "test.tabOcr": "OCR Recognition",
-    "ocr.hint": "Upload an image and recognize its text with built-in PaddleOCR (requires OCR_ENABLED=on and dependencies installed).",
+    "ocr.hint": "Upload an image to recognize its text. Built-in uses local PaddleOCR; DeepSeek uses cloud Vision API.",
+    "ocr.pick": "Choose image",
     "ocr.statusIdle": "Idle",
     "ocr.recognize": "Recognize",
     "ocr.outPlaceholder": "Recognition result will appear here.",
@@ -3526,11 +3528,24 @@ async function renderDashboard(){
     </div>
 
     <div id="t-ocr" class="tabpane" hidden>
-      <label>${t('ocr.hint')}</label>
-      <input id="ocrFile" type="file" accept="image/*" style="margin-top:4px" />
-      <div class="hint" id="ocrStatus" style="margin-top:6px">${t('ocr.statusIdle')}</div>
-      <button id="ocrGo" class="full" style="margin-top:12px">${t('ocr.recognize')}</button>
+      <label>${t('common.provider')}</label>
+      <select id="ocrProviderSel">
+        <option value="">${t('llm.defaultRoute')}</option>
+        <option value="builtin">${t('test.builtin')}</option>
+        <option value="deepseek">DeepSeek</option>
+      </select>
+      <label>${t('common.model')}</label>
+      <select id="ocrModelSel"></select>
+      <div class="hint" id="ocrModelDesc" style="margin-top:4px"></div>
+      <div class="muted" style="margin:10px 0 8px">${t('ocr.hint')}</div>
+      <div class="row">
+        <input id="ocrFile" type="file" accept="image/*" style="display:none" />
+        <button id="ocrPick" class="sec">${t('ocr.pick')}</button>
+        <span class="hint" id="ocrFileName">${t('ocr.noFile')}</span>
+        <span class="hint" id="ocrStatus" style="margin-left:auto">${t('ocr.statusIdle')}</span>
+      </div>
       <pre class="m-out" id="ocrOut" style="margin-top:10px;white-space:pre-wrap">${t('ocr.outPlaceholder')}</pre>
+      <button id="ocrGo" class="full" style="margin-top:12px">${t('ocr.recognize')}</button>
     </div>
 
     <div id="t-rerank" class="tabpane" hidden>
@@ -3796,7 +3811,42 @@ async function renderDashboard(){
     }catch(e){ msg.textContent=t('common.errorPrefix')+e.message; msg.className='err'; }
   };
 
-  // OCR 图片识别测试：读文件为 base64 → POST /ocr/v1/ocr → 显示文字。
+  // OCR 测试：提供商/模型下拉（同 ASR/TTS）+ 文件选择美化 + 识别结果。
+  let ocrModels = [];        // /ocr/v1/models 返回的 [{provider,name,ready}]
+  async function populateOcrModels(){
+    const pSel=document.getElementById('ocrProviderSel'), mSel=document.getElementById('ocrModelSel');
+    const desc=document.getElementById('ocrModelDesc'); if(!pSel||!mSel) return;
+    try{
+      const d=await fetch('/ocr/v1/models',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null);
+      ocrModels=(d&&Array.isArray(d.models))?d.models:[];
+      const cur=pSel.value||(d&&d.default)||'';
+      const provs=[...new Set(ocrModels.map(x=>x.provider))];
+      pSel.innerHTML='<option value="">'+t('llm.defaultRoute')+'</option>'
+        +provs.map(p=>'<option value="'+escapeAttr(p)+'"'+(p===cur?' selected':'')+'>'+escapeHtml(p==='deepseek'?'DeepSeek':t('test.builtin'))+'</option>').join('');
+      paintOcrModelSelect();
+    }catch(e){ if(desc) desc.textContent=t('common.errorPrefix')+e.message; }
+  }
+  function paintOcrModelSelect(){
+    const pSel=document.getElementById('ocrProviderSel'), mSel=document.getElementById('ocrModelSel');
+    const desc=document.getElementById('ocrModelDesc'); if(!pSel||!mSel) return;
+    const prov=pSel.value;
+    const list=ocrModels.filter(x=>!prov||x.provider===prov);
+    mSel.innerHTML=list.length
+      ? list.map(x=>'<option value="'+escapeAttr(x.name)+'">'+escapeHtml(x.name)+(x.ready?'':'（'+t('common.unavailable')+'）')+'</option>').join('')
+      : '<option value="">—</option>';
+    if(desc) desc.textContent=list.map(x=>x.provider+': '+x.name+(x.ready?' ✓':' ✗')).join(' · ')||t('ocr.noFile');
+  }
+  const pSelEl=document.getElementById('ocrProviderSel'); if(pSelEl) pSelEl.onchange=paintOcrModelSelect;
+  populateOcrModels();
+  // 美化文件选择：隐藏原生 input，按钮触发，旁边显示文件名。
+  const ocrPick=document.getElementById('ocrPick'), ocrFileEl=document.getElementById('ocrFile');
+  if(ocrPick&&ocrFileEl){
+    ocrPick.onclick=()=>ocrFileEl.click();
+    ocrFileEl.onchange=()=>{
+      const fn=document.getElementById('ocrFileName');
+      if(fn) fn.textContent=(ocrFileEl.files&&ocrFileEl.files[0])?ocrFileEl.files[0].name:t('ocr.noFile');
+    };
+  }
   const ocrGo=document.getElementById('ocrGo');
   if(ocrGo) ocrGo.onclick=async ()=>{
     const status=document.getElementById('ocrStatus'), out=document.getElementById('ocrOut');
@@ -3809,8 +3859,11 @@ async function renderDashboard(){
       const b64=await new Promise((resolve,reject)=>{
         const fr=new FileReader(); fr.onload=()=>resolve(String(fr.result).split(',')[1]||''); fr.onerror=reject; fr.readAsDataURL(file);
       });
+      const provider=(document.getElementById('ocrProviderSel')||{}).value||undefined;
+      const model=(document.getElementById('ocrModelSel')||{}).value||undefined;
+      const body={image:b64}; if(provider) body.provider=provider; if(model) body.model=model;
       const r=await fetch(testOrigin+'/ocr/v1/ocr',{method:'POST',credentials:'same-origin',
-        headers:{'content-type':'application/json',...authHdr()}, body:JSON.stringify({image:b64})});
+        headers:{'content-type':'application/json',...authHdr()}, body:JSON.stringify(body)});
       const d=await r.json().catch(()=>({}));
       if(!r.ok || !d.ok){ status.textContent=t('common.failed')+' '+r.status+'：'+((d&&d.error&&d.error.message)||'').slice(0,200); status.className='err'; return; }
       status.textContent=t('common.done')+'（'+(d.texts||[]).length+' 条）'; status.className='hint';
