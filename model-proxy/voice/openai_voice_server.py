@@ -945,6 +945,45 @@ def _rerank_token_limit_check(key_id: int | None, body: dict) -> JSONResponse | 
     )
 
 
+# ── 请求大小限制（安全设置统一配置）───────────────────────────────
+# 配置项：MAX_LLM_TOKENS / MAX_ASR_MB / MAX_TTS_CHARS / MAX_OCR_MB /
+#         MAX_EMBED_TOKENS / MAX_RERANK_TOKENS（0 或留空 = 不限）
+# 超限返回 413，与限流(429)独立。
+def _cfg_limit_int(key: str) -> int:
+    try:
+        raw = config_value(key, "0")
+        if raw is None or raw == "":
+            return 0
+        return max(0, int(float(str(raw).strip())))
+    except (ValueError, TypeError, AttributeError):
+        return 0
+
+
+def size_limit_check(kind: str, *, data_bytes: int = 0, text: str = "", token_text: str | None = None) -> JSONResponse | None:
+    """按 kind 检查请求大小上限，超限返回 413，否则 None。
+
+    kind: llm | asr | tts | ocr | embed | rerank
+    - asr/ocr 用 data_bytes（字节，配置单位是 MB）
+    - tts 用 text 字符数
+    - llm/embed/rerank 用 token_text（缺省用 text）估算 token 数
+    """
+    if kind in ("asr", "ocr"):
+        limit = _cfg_limit_int(f"MAX_{kind.upper()}_MB")
+        if limit > 0 and data_bytes > limit * 1024 * 1024:
+            return error_response(413, f"{kind.upper()} 文件超过大小限制 {limit}MB")
+    elif kind == "tts":
+        limit = _cfg_limit_int("MAX_TTS_CHARS")
+        if limit > 0 and len(text) > limit:
+            return error_response(413, f"TTS 文本超过长度限制 {limit} 字符")
+    elif kind in ("llm", "embed", "rerank"):
+        limit = _cfg_limit_int(f"MAX_{kind.upper()}_TOKENS")
+        if limit > 0:
+            tokens = _estimate_tokens_chars(token_text if token_text is not None else text)
+            if tokens > limit:
+                return error_response(413, f"{kind.upper()} 输入超过限制 {limit} tokens（估算 {tokens}）")
+    return None
+
+
 def _rate_limit_response(key_id: int) -> JSONResponse | None:
     """HTTP 限流超限 → 429；否则 None。"""
     ok, retry, limit = _rate_limit_check(key_id)
@@ -2513,6 +2552,9 @@ async def speech(body: SpeechBody):
     text = (body.input or "").strip()
     if not text:
         return error_response(400, "input 不能为空")
+    limited = size_limit_check("tts", text=text)
+    if limited is not None:
+        return limited
 
     fmt = (body.response_format or "wav").strip().lower()
     if fmt not in ("wav", "mp3", "pcm"):
@@ -2708,6 +2750,9 @@ async def transcriptions(
     payload = await file.read()
     if not payload:
         return error_response(400, "上传的音频为空")
+    limited = size_limit_check("asr", data_bytes=len(payload))
+    if limited is not None:
+        return limited
 
     stt_provider = (provider or "").strip().lower() or (
         config_value("STT_PROVIDER", "builtin") or "builtin"
@@ -3481,6 +3526,15 @@ async def chat_completions(request: Request):
     if not isinstance(body, dict):
         return error_response(400, "请求体必须是 JSON 对象")
 
+    # LLM 输入大小限制（安全设置 MAX_LLM_TOKENS，0=不限）
+    _msgs = body.get("messages")
+    _llm_text = "\n".join(
+        str(m.get("content", "")) for m in _msgs if isinstance(m, dict)
+    ) if isinstance(_msgs, list) else ""
+    limited = size_limit_check("llm", token_text=_llm_text)
+    if limited is not None:
+        return limited
+
     # 是否思考：对外固定用请求头 X-Proxy-Think（不落存储、客户端每次自带），
     # 代理读入后转成内部统一字段，再由 apply_think 翻译成上游厂商原生的 body 参数。
     # 这是「代理自用的控制头」，不会原样透传给上游（上游的 think 在 body 里）。
@@ -3845,6 +3899,13 @@ async def embeddings(request: Request):
     if not isinstance(body, dict):
         return error_response(400, "请求体必须是 JSON 对象")
 
+    # 向量输入大小限制（安全设置 MAX_EMBED_TOKENS，0=不限）
+    _inp = body.get("input")
+    _embed_text = "\n".join(str(x) for x in _inp if isinstance(x, str)) if isinstance(_inp, list) else (str(_inp) if isinstance(_inp, str) else "")
+    limited = size_limit_check("embed", token_text=_embed_text)
+    if limited is not None:
+        return limited
+
     # 向量 token 限流（按 key 策略的 embed_tokens_per_min，预扣估算 token）。
     # 鉴权关闭时无 key_id → 放行；与 middleware 的 requests 限流独立叠加。
     limited = _embed_token_limit_check(getattr(request.state, "api_key_id", None), body)
@@ -4055,6 +4116,14 @@ async def rerank(request: Request):
     if not isinstance(body, dict):
         return error_response(400, "请求体必须是 JSON 对象")
 
+    # 重排输入大小限制（安全设置 MAX_RERANK_TOKENS，0=不限）
+    _docs = body.get("documents")
+    _rerank_text = str(body.get("query") or "") + "\n" + (
+        "\n".join(str(d) for d in _docs) if isinstance(_docs, list) else "")
+    limited = size_limit_check("rerank", token_text=_rerank_text)
+    if limited is not None:
+        return limited
+
     # 重排 token 限流（与 embed 独立，kind=rerank_tokens）
     limited = _rerank_token_limit_check(getattr(request.state, "api_key_id", None), body)
     if limited is not None:
@@ -4218,6 +4287,10 @@ async def ocr_recognize(request: Request):
             return error_response(400, f"image base64 解码失败: {exc}")
         if not image_bytes:
             return error_response(400, "image 解码后为空")
+    # OCR 文件大小限制（安全设置 MAX_OCR_MB，0=不限）
+    limited = size_limit_check("ocr", data_bytes=len(image_bytes))
+    if limited is not None:
+        return limited
     # 文件类型自动识别：按魔数判断 PDF（%PDF-），无需前端/调用方指定 kind 参数
     is_pdf = image_bytes[:5] == b"%PDF-"
     max_pages = min(max(1, int(body.get("max_pages") or 20)), 100)

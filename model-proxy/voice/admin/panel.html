@@ -630,12 +630,12 @@ const I18N = {
     "test.tabRerank": "重排 Rerank",
     "test.tabTts": "语音合成 TTS",
     "test.tabOcr": "文字识别 OCR",
-    "ocr.hint": "上传图片识别其中文字。内置走本地 PaddleOCR，DeepSeek 走云端 Vision API。",
-    "ocr.pick": "选择图片",
+    "ocr.hint": "上传图片或 PDF 识别其中文字（格式自动识别，无需选择）。内置走本地 PaddleOCR，DeepSeek 走云端 Vision API。",
+    "ocr.pick": "选择文件",
     "ocr.statusIdle": "未开始",
     "ocr.recognize": "识别图片",
     "ocr.outPlaceholder": "识别结果将在这里显示。",
-    "ocr.noFile": "请先选择图片",
+    "ocr.noFile": "请先选择图片或 PDF",
     "ocr.workingX": "正在识别 {name}…",
     "ocr.empty": "（未识别到文字）",
     "tts.builtinNote": "内置 TTS 可选 edge-tts（在线）或 kokoro（纯本地）；勾选/设默认后保存即生效，点「测试可用」按需验证。",
@@ -779,6 +779,13 @@ const I18N = {
     "ov.redisStatus": "Redis 层",
     "ov.noCache": "未启用缓存，直接读数据库",
     "sec.rateGlobalHint": "全局限流开关在 voice.conf 的 RATE_LIMIT_ENABLED 配置；单个 Key 的限流开关与策略绑定见「访问控制 → 限流」。",
+    "sec.sizeHint": "请求大小限制（0 = 不限）：单位是 tokens / MB / 字符，超限返回 413。",
+    "sec.maxLlm": "LLM tokens",
+    "sec.maxEmbed": "向量 tokens",
+    "sec.maxRerank": "重排 tokens",
+    "sec.maxAsr": "ASR 音频(MB)",
+    "sec.maxOcr": "OCR 文件(MB)",
+    "sec.maxTts": "TTS 文本(字符)",
     "sec.rateSwitch": "启用限流（全局）",
     "sec.rateSwitchHint": "开启后所有 API Key 都按绑定的限流策略生效（未绑定则用默认策略）；策略在「访问控制 → 限流策略」配置、在「API Key 管理」里为 Key 绑定。",
     "access.hint": "账号与 API Key 管理在「模型配置 → 安全」页签内；本页管理 API Key 的限流策略与绑定。",
@@ -1091,12 +1098,12 @@ const I18N = {
     "test.tabRerank": "Rerank",
     "test.tabTts": "Speech Synthesis TTS",
     "test.tabOcr": "OCR Recognition",
-    "ocr.hint": "Upload an image to recognize its text. Built-in uses local PaddleOCR; DeepSeek uses cloud Vision API.",
-    "ocr.pick": "Choose image",
+    "ocr.hint": "Upload an image or PDF to recognize its text (format auto-detected, no selection needed). Built-in uses local PaddleOCR; DeepSeek uses cloud Vision API.",
+    "ocr.pick": "Choose file",
     "ocr.statusIdle": "Idle",
     "ocr.recognize": "Recognize",
     "ocr.outPlaceholder": "Recognition result will appear here.",
-    "ocr.noFile": "Please choose an image first",
+    "ocr.noFile": "Please choose an image or PDF first",
     "ocr.workingX": "Recognizing {name}…",
     "ocr.empty": "(no text recognized)",
     "tts.builtinNote": "Built-in TTS offers edge-tts (online) or kokoro (fully local); pick a default and save to apply, use \"Test availability\" to verify on demand.",
@@ -1241,6 +1248,13 @@ const I18N = {
     "ov.redisStatus": "Redis layer",
     "ov.noCache": "No cache, reads DB directly",
     "sec.rateGlobalHint": "Global rate-limit switch is RATE_LIMIT_ENABLED in voice.conf; per-Key switch and policy binding are under Access control → Rate limit.",
+    "sec.sizeHint": "Request size limits (0 = unlimited): units are tokens / MB / characters; exceeding returns 413.",
+    "sec.maxLlm": "LLM tokens",
+    "sec.maxEmbed": "Embed tokens",
+    "sec.maxRerank": "Rerank tokens",
+    "sec.maxAsr": "ASR audio (MB)",
+    "sec.maxOcr": "OCR file (MB)",
+    "sec.maxTts": "TTS text (chars)",
     "sec.rateSwitch": "Enable rate limit (global)",
     "sec.rateSwitchHint": "When on, all API Keys are limited by their bound policies (unbound keys use the default). Configure policies under Access control → Rate limit, and bind them to Keys under API Key management.",
     "access.hint": "User & API Key management lives under Model config → Security tab; this page manages rate-limit policies and Key bindings.",
@@ -1849,6 +1863,10 @@ function wireConfig(){
     const patch={ VOICE_API_KEY_AUTH: document.getElementById('cfg_VOICE_API_KEY_AUTH').value,
                   VOICE_IP_ALLOW: document.getElementById('cfg_VOICE_IP_ALLOW').value };
     if(rlEl) patch.RATE_LIMIT_ENABLED=rlEl.value;
+    // 请求大小限制（0 = 不限）：6 项统一在安全设置里配置
+    ['MAX_LLM_TOKENS','MAX_ASR_MB','MAX_TTS_CHARS','MAX_OCR_MB','MAX_EMBED_TOKENS','MAX_RERANK_TOKENS'].forEach(k=>{
+      const e=document.getElementById('cfg_'+k); if(e) patch[k]=String(Math.max(0,Number(e.value)||0));
+    });
     return postConfig(patch, 'cfgStat_sec');
   };
   ['tts'].forEach(t=>{ const b=document.getElementById('cfgSave_'+t); if(b) b.onclick=()=>save(t,CFG_TABS[t],'cfgStat_'+t); });
@@ -2974,7 +2992,20 @@ function renderSecTable(){
     </div>
     <div class="row"><label>${t(CFG_LABEL['VOICE_IP_ALLOW'])}</label>
       <textarea id="cfg_VOICE_IP_ALLOW" rows="3" style="width:100%;box-sizing:border-box;font-family:monospace" placeholder="${t('sec.ipHint')}">${escapeHtml(ipVal)}</textarea>
-    </div>`;
+    </div>
+    <div class="hint" style="margin-top:14px">${t('sec.sizeHint')}</div>
+    <div class="row"><label>${t('sec.maxLlm')}</label>
+      <input id="cfg_MAX_LLM_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_LLM_TOKENS||0)}" />
+      <label style="margin-left:14px">${t('sec.maxEmbed')}</label>
+      <input id="cfg_MAX_EMBED_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_EMBED_TOKENS||0)}" />
+      <label style="margin-left:14px">${t('sec.maxRerank')}</label>
+      <input id="cfg_MAX_RERANK_TOKENS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_RERANK_TOKENS||0)}" /></div>
+    <div class="row"><label>${t('sec.maxAsr')}</label>
+      <input id="cfg_MAX_ASR_MB" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_ASR_MB||0)}" />
+      <label style="margin-left:14px">${t('sec.maxOcr')}</label>
+      <input id="cfg_MAX_OCR_MB" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_OCR_MB||0)}" />
+      <label style="margin-left:14px">${t('sec.maxTts')}</label>
+      <input id="cfg_MAX_TTS_CHARS" type="number" min="0" style="width:140px" value="${Number(cfgOrig.MAX_TTS_CHARS||0)}" /></div>`;
 }
 
 // ── 可复用的对话测试：测试 tab 与配置表格（提供商/模型）共用，靠 opts 个性化 ──

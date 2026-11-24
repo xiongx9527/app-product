@@ -242,7 +242,8 @@ ADMIN_PASSWORD=改成一个强密码
 - LLM / Embedding：上游地址池（多地址 / 多账号）、全局默认 provider 与默认模型
   （**按提供商维度各自有默认模型**，与默认提供商解耦）、协议、密钥；
 - ASR / TTS：内置 / DashScope / DeepSeek 的地址、密钥、默认模型、默认音色；
-- 安全：`VOICE_IP_ALLOW`（IP / CIDR 白名单）、`VOICE_API_KEY_AUTH`、API Key 列表；
+- 安全：`VOICE_IP_ALLOW`（IP / CIDR 白名单）、`VOICE_API_KEY_AUTH`、API Key 列表，
+  以及**请求大小限制**（见下）；
 - 模型测试：LLM 对话、Embeddings、ASR（录音 / 恢复 / 识别）、TTS（合成）四个页签；
 - 运行日志、远程同步（推 / 拉）、schema 历史。
 
@@ -256,6 +257,19 @@ ADMIN_PASSWORD=改成一个强密码
 | `VOICE_IP_ALLOW` | 空 | IP / CIDR 白名单（逗号 / 换行 / 空格分隔）。非空时白名单外的请求（**含 `/admin`**）直接 403；本机环回恒定放行，配错也不会把自己锁在面板外 |
 | `VOICE_API_KEY_AUTH` | `off` | `on` 开启 API-Key 鉴权；`off` 显式关闭；留空时向后兼容旧语义（`VOICE_API_KEY` 非 off 即开启） |
 | `VOICE_API_KEY` | `off` | `off` / `none` / `false` 关闭；`auto` 读取或随机生成 Key 文件；其它值作为显式 Key（支持逗号 / 换行分隔多个） |
+
+**请求大小限制**（面板「安全设置 → 配置」里配置，`0` 或留空 = 不限，超限返回 `413`）：
+
+| 配置 | 单位 | 作用接口 |
+|---|---|---|
+| `MAX_LLM_TOKENS` | tokens | `/llm/v1/chat/completions` |
+| `MAX_ASR_MB` | MB | `/voice/v1/audio/transcriptions` |
+| `MAX_TTS_CHARS` | 字符 | `/voice/v1/audio/speech` |
+| `MAX_OCR_MB` | MB | `/ocr/v1/ocr`（图片/PDF 解码后大小） |
+| `MAX_EMBED_TOKENS` | tokens | `/embed/v1/embeddings` |
+| `MAX_RERANK_TOKENS` | tokens | `/rerank/v1/rerank` |
+
+token 数用字符估算（CJK 1 字≈1 token、其它 4 字符≈1 token），与限流口径一致，不用于计费。
 
 开启 API-Key 后，除下列路径外的 HTTP 接口都需要 `Authorization: Bearer <key>`：
 `/`、`/health`、`/voice`、`/voice/health`、`/llm`、`/llm/health` 与文档
