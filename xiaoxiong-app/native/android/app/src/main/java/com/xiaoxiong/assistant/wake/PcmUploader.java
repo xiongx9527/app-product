@@ -36,6 +36,11 @@ public final class PcmUploader {
         void onTtsFrame(byte[] pcm);
     }
 
+    /** 下行文本控制帧回调（如 tts.stop）：网关从 role=pcm 连接下发，原生据此丢弃在途音频帧。 */
+    public interface TtsControlListener {
+        void onTtsControl(String type);
+    }
+
     private final Context context;
     private final OkHttpClient client;
     private WebSocket ws;
@@ -43,9 +48,14 @@ public final class PcmUploader {
     private volatile boolean enabled = false;
     private volatile long lastConnectAttempt = 0;
     private volatile TtsFrameListener ttsListener;
+    private volatile TtsControlListener ttsControlListener;
 
     public void setTtsFrameListener(TtsFrameListener l) {
         this.ttsListener = l;
+    }
+
+    public void setTtsControlListener(TtsControlListener l) {
+        this.ttsControlListener = l;
     }
 
     private PcmUploader(Context context) {
@@ -150,6 +160,18 @@ public final class PcmUploader {
                         } catch (Throwable e) {
                             Log.w(TAG, "tts frame failed: " + e.getMessage());
                         }
+                    }
+                }
+                /** 网关下发的文本控制帧（如 {"type":"tts.stop"}）：原生据此丢弃在途音频帧。 */
+                @Override
+                public void onMessage(WebSocket webSocket, String text) {
+                    TtsControlListener l = ttsControlListener;
+                    if (l == null || text == null) return;
+                    try {
+                        String type = new org.json.JSONObject(text).optString("type", "");
+                        if (!type.isEmpty()) l.onTtsControl(type);
+                    } catch (Throwable e) {
+                        Log.w(TAG, "tts control parse failed: " + e.getMessage());
                     }
                 }
                 @Override

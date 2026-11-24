@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { FloatPositionKey } from '@/core/adaptation/floatLayer'
-import { SUBTITLE_FONT_SIZE_OPTIONS, SUBTITLE_COLOR_OPTIONS, AUTO_CHECK_INTERVAL_OPTIONS } from '@/core/config/constants'
+import { SUBTITLE_FONT_SIZE_OPTIONS, SUBTITLE_COLOR_OPTIONS, AUTO_CHECK_INTERVAL_OPTIONS, DUCK_LEVEL_OPTIONS, DUCK_LEVEL_PERCENT, type DuckLevel } from '@/core/config/constants'
 import {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
@@ -11,6 +11,7 @@ import {
   resetVoice,
 } from '@/core/config'
 import { t } from '@/core/i18n'
+import { setDuckConfig, setAecUserEnabled } from '@/core/audio/appCapture'
 import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
 import { getActiveTransport } from '@/core/transport'
@@ -323,6 +324,43 @@ function onAutoCheckIntervalChange(ms: string): void {
 }
 onUnmounted(stopAutoCheck)
 
+// duck 强度档位选项（与 duckLevel 配置对应）
+const duckLevelOptions = DUCK_LEVEL_OPTIONS.map((level) => ({
+  value: level,
+  label: t(`settings.general.duck${level.charAt(0).toUpperCase()}${level.slice(1)}`),
+}))
+function onDuckLevelChange(v: string): void {
+  appConfig.general.duckLevel = v as DuckLevel
+  persistConfig()
+  applyDuckConfig()
+}
+function onInterruptDuckChange(on: boolean): void {
+  appConfig.general.interruptDuck = on
+  persistConfig()
+  applyDuckConfig()
+}
+function onBargeInChange(on: boolean): void {
+  appConfig.general.bargeIn = on
+  persistConfig()
+  applyDuckConfig()
+}
+function onAecChange(on: boolean): void {
+  appConfig.general.aecEnabled = on
+  persistConfig()
+  applyDuckConfig()
+}
+/** 把配置下发到原生（duck 强度 + 中断前 duck + 插话 + AEC）。UI 改动即生效，不必重启。 */
+function applyDuckConfig(): void {
+  try {
+    setDuckConfig(
+      appConfig.general.interruptDuck !== false,
+      DUCK_LEVEL_PERCENT[appConfig.general.duckLevel ?? 'medium'],
+      appConfig.general.bargeIn === true,
+    )
+    setAecUserEnabled(appConfig.general.aecEnabled === true)
+  } catch { /* 旧基座无此接口，忽略 */ }
+}
+
 /** 音色下拉：选项来自网关的固定精选目录（内置=Edge-TTS 常用），不实时拉取以便国际化。
  *  每条带 model（所属模型），渲染成下拉里的次要列，并随选择下发网关决定真正请求的 TTS 模型。 */
 const ttsVoices = ref<{ value: string; label: string; subtitle?: string; desc?: string }[]>([])
@@ -600,6 +638,53 @@ watch(
       </view>
       <template v-if="isOpen('playback')">
         <!-- 播放源目前仅百度一种，隐藏选择器，无需用户选择；其余设置与播放源无关，全局生效 -->
+
+        <!-- 中断前 duck：播报中检测人声开口时压低播报/媒体给 KWS 让路（打断/插话都适用） -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.general.interruptDuck') }}</text>
+            <text class="hint">{{ t('settings.general.interruptDuckHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.interruptDuck !== false"
+            color="#6c8cff"
+            @change="(e: any) => onInterruptDuckChange(e.detail.value)"
+          />
+        </view>
+        <!-- duck 强度：三种 duck 共用的压低程度；与其它下拉一致用 sub 容器平铺 -->
+        <view class="sub">
+          <SelectRow
+            :title="t('settings.general.duckLevel')"
+            :hint="t('settings.general.duckLevelHint')"
+            :options="duckLevelOptions"
+            :model-value="appConfig.general.duckLevel ?? 'medium'"
+            @update:model-value="onDuckLevelChange"
+          />
+        </view>
+        <!-- 插话开关：默认关（播报期静音、只靠 KWS 打断）；开则恢复播报期上行+插话入队 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.general.bargeIn') }}</text>
+            <text class="hint">{{ t('settings.general.bargeInHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.bargeIn === true"
+            color="#6c8cff"
+            @change="(e: any) => onBargeInChange(e.detail.value)"
+          />
+        </view>
+        <!-- 硬件 AEC 开关（实验）：开=采集全程用系统 AEC（含播报期），用于唤醒率对照 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.playback.aecEnabled') }}</text>
+            <text class="hint">{{ t('settings.playback.aecEnabledHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.aecEnabled === true"
+            color="#6c8cff"
+            @change="(e: any) => onAecChange(e.detail.value)"
+          />
+        </view>
 
         <!-- 播放完自动收藏：与播放源无关，全局一个开关 -->
         <view class="setting-row">

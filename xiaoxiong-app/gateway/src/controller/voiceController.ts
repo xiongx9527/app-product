@@ -124,6 +124,12 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
     // 没有原生直连（H5/旧基座）才回退 JS 主连接。
     sendAudioTo(deviceId, ws, bytes)
   }
+  // tts.stop 时往 role=pcm 原生直连发文本控制帧：原生据此丢弃在途音频帧，
+  // 避免 cancel 后已发出的帧重启 AudioTrack（真机：打断后 236ms 又在播）。无 pcm 连接则跳过。
+  const sendPcmControl = (event: { type: string }): void => {
+    const pcm = deviceId ? pcmConnections.get(deviceId) : undefined
+    if (pcm && pcm.readyState === WebSocket.OPEN) pcm.send(JSON.stringify(event))
+  }
   /** 当前会话绑定的 socket；旧连接滞后断开时据此判断是否需要清会话 */
   let boundWs: WebSocket | null = null
 
@@ -157,6 +163,7 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       contentDashDeps,
       send,
       sendAudio,
+      sendPcmControl,
       asrEndpointMs: config.asr.endpointMs,
       // 自动记忆（抽取 + 摘要）：合并阈值/频率来自网关配置（可经环境变量覆盖），不写死在逻辑里
       consolidateThreshold: config.memory.consolidateThreshold,

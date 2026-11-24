@@ -114,6 +114,9 @@ export interface VoiceSessionDeps {
   correctionSyncer?: CorrectionSyncer
   send: (event: ServerEvent) => void
   sendAudio: (bytes: Uint8Array) => void
+  /** 往 role=pcm 原生直连发文本控制帧（如 tts.stop）。原生据此丢弃在途音频帧，
+   *  避免 cancel 后已发出的帧重启 AudioTrack（真机：打断后 236ms 又在播）。H5/旧基座无此字段则跳过。 */
+  sendPcmControl?: (event: { type: string }) => void
   asrEndpointMs: number
   /** 构造内容源（按客户端 playback.source）；测试可注入桩避免联网，缺省由装配层提供内置源。 */
   contentSourceFactory: ContentSourceFactory
@@ -265,18 +268,18 @@ export class VoiceSessionService {
   private readonly echo = new EchoGuard()
   /** 当前是否已通知客户端处于半双工，避免重复下发。 */
   private halfDuplex = false
-  /** barge-in duck：播报期检测真人开口时压低 TTS；避免重复下发，记住当前 duck 态。 */
-  private ducked = false
-  /** 本次 utterance 期间是否在播报期检测到真人开口。播报期插话定稿常拖到播报结束后
-   *  （pb 已 false），单凭 playbackPending 会漏判、把插话当普通对话而非队列项。此标志
-   *  在 setDuck(true) 且 playbackPending 时置位，定稿时读取并清除。 */
-  private bargeInDuringPlayback = false
-  /** duck 后多久没再有人声就恢复音量（用户说完一句的尾音余量）。 */
-  private duckReleaseTimer: ReturnType<typeof setTimeout> | null = null
+  // 【2026-11-24 砍插话+duck】删除 ducked / bargeInDuringPlayback / duckReleaseTimer 三字段，
+  // 连同 updateDuck/setDuck/forceFeed/bargeIn 整条"播报期插话"链。播报期上行已静音，
+  // 用户的打断只靠端侧 KWS 喊唤醒词（session.cancel），ASR 不再在播报期收声。
   /** 当前轮还没播完时识别到的用户插话，播完后依次交给大模型。 */
   private readonly queue: string[] = []
   /** 最近送进 TTS 的原文，用于把「收回来的自己的声音」判成回声丢弃。 */
   private readonly spoken: string[] = []
+  /** 最近几句"用户自己说过的话"（定稿）。用于拦播报期的尾音重复定稿：
+   *  真机铁证 2026-11-24：用户说"今天的天气怎么样？"定稿后，尾部"今天的天气。"的音频
+   *  被 ASR 缓存 3 秒、在播报期才定稿(pb=true)，被当插话入队出现"1 条排队"。
+   *  这不是回声（rms 真人级 0.07、不在 spoken 里），是用户自己话的延迟尾音。 */
+  private readonly userSaid: string[] = []
   /**
    * 最后一次下发音频之后的回声保护窗口（毫秒）：窗口内定稿的文本一律按回声对待。
    * 播放结束（含被打断）后仍留一小段尾巴，盖住扬声器余音经空气/回路传回麦克风的延迟。
@@ -771,7 +774,7 @@ export class VoiceSessionService {
       const playback = this.armPlaybackWait()
       this.speaking = true
       this.playbackPending = true
-      this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
+      this.emitTtsStart()
       this.deps.send({ type: 'llm.delta', text })
       this.deps.send({ type: 'llm.done' })
       await this.speakSentence(text, turn)
@@ -786,7 +789,7 @@ export class VoiceSessionService {
     // runTurn 链内：状态、事件、音频都发，但 turn/等待全归 runTurn
     this.speaking = true
     this.playbackPending = true
-    this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
+    this.emitTtsStart()
     this.deps.send({ type: 'llm.delta', text })
     this.deps.send({ type: 'llm.done' })
     await this.speakSentence(text, this.turn)
@@ -909,10 +912,8 @@ export class VoiceSessionService {
     // VAD/ASR 用消除回声后的帧，与思考/空闲期同一套门槛，不加 strict。
     const vad = this.vad.push(cleanChunk)
     setDiagStage('frame-done') // 【心跳埋点·长期保留】
-    // barge-in duck：播报期能量超过阈值（真人开口，非 TTS 底噪）就压低 TTS。
-    // 不再依赖 vad.started——真人说话帧断续时 VAD 连续 2 帧门槛满足不了，started 几乎不触发。
-    this.updateDuck(vad.voiced, frameRms > 0.02)
-    // 临时诊断：播报期每 400ms 记一条能量/门槛/VAD 结论，定位「播报时插话识别不到」卡在哪
+    // 【2026-11-24 砍 duck】删 updateDuck 调用（播报期上行已静音，无真人帧可检测）。
+    // 临时诊断：播报期每 400ms 记一条能量/门槛/VAD 结论（保留作常驻诊断）
     const diagNow = Date.now()
     if (this.playbackPending && diagNow - bargeDiagAt >= 400) {
       bargeDiagAt = diagNow
@@ -930,16 +931,12 @@ export class VoiceSessionService {
         + `frames=${vad.frames.length} half=${this.halfDuplex} echoMuted=${this.echo.muted()}`
       )
     }
-    // 播报期 duck 且能量超阈值时，即使 VAD 因帧断续没确认 inSpeech（frames 为空），
-    // 也把当前人声帧喂给 ASR——否则 ASR 只收到零碎帧+TTS 回声，识别成「滕王格式文字版」乱码。
-    const forceFeed = this.playbackPending && this.ducked && frameRms > 0.02 && vad.frames.length === 0
-    // 喂 ASR 的帧必须是 AEC 消除回声后的，否则等于把 TTS 回声送进识别
-    const framesToFeed = forceFeed ? [cleanChunk] : vad.frames
-    for (const frame of framesToFeed) {
-      // forceFeed 是插话强喂（已用原始 frameRms>0.02 把关、且是 AEC 后帧），不过门控，
-      // 否则误杀播报期插话。vad.frames（含 started 时的整段 preroll）逐帧过绝对下限，
+    // 【2026-11-24 砍插话+duck】删 forceFeed（播报期强喂人声帧给 ASR）：插话已砍、
+    // 播报期 ASR 上行静音，没有真人帧需要强喂。只喂 AEC 消除回声后的 vad.frames。
+    for (const frame of vad.frames) {
+      // vad.frames（含 started 时的整段 preroll）逐帧过绝对下限，
       // 挡掉混进前缓冲的远场背景声/杂音——按用户原则"宁愿不出来也不要错"。
-      if (!forceFeed && pcmRms(frame) < ABS_FLOOR_RMS) continue
+      if (pcmRms(frame) < ABS_FLOOR_RMS) continue
       void this.asr.push(frame)
         .then((partial) => {
           // 临时诊断：记录每一条 ASR 返回的草稿原文与过滤决策
@@ -966,12 +963,9 @@ export class VoiceSessionService {
         .catch(() => undefined)
     }
     // 只有「AEC 消除回声后的真实人声」才重置句末计时：静音帧持续到达也会让计时器自然到期。
-    // 播报期 forceFeed 用原始帧能量（含 TTS 回声）判断，只负责把帧强喂给 ASR 保识别率，
-    // 绝不能用它重置 endpoint——TTS 一直播时回声让 frameRms 恒 >0.02、forceFeed 恒真，
-    // endpoint 被每帧 clear 重设、永远凑不满静音窗口 → 定稿拖到播报结束、期间多次插话被
-    // 合并成一句（用户 2026-11-19 真机实锤：「播完才进队列」「插话和之前的合并」）。
-    // 空闲期没有回声问题，forceFeed 仍可作为兜底重置（理论上空闲期 forceFeed 恒 false）。
-    if (vad.voiced || (!this.playbackPending && forceFeed)) this.armEndpoint()
+    // 【2026-11-24 砍插话+duck】删掉 forceFeed 兜底重置分支——forceFeed 是播报期强喂插话帧的
+    // 遗留逻辑，插话已砍。只用 vad.voiced（AEC 后真实人声）重置，静音帧让计时自然到期。
+    if (vad.voiced) this.armEndpoint()
   }
 
   /** 半双工状态只在切换时下发一次，避免每帧都刷事件。 */
@@ -982,40 +976,9 @@ export class VoiceSessionService {
     this.deps.send({ type: 'audio.duplex', mode: half ? 'half' : 'full' })
   }
 
-  /**
-   * barge-in duck：播报期检测到真人声能量（rms>阈值）时压低 TTS，让麦克风只收到人声、
-   * ASR 识别准；用户说完后自动恢复。这是「播报插话识别成乱码」的治本——
-   * 真机诊断：播放音乐时插话顺（音乐 duck 到 0.1），TTS 播报满音量时回声把插话搅成乱码。
-   * 不用 vad.started：真人说话帧断续时 VAD 连续 2 帧门槛满足不了，started 几乎不触发。
-   * @param voiced 本帧 VAD 是否有人声（含尾音保留）
-   * @param energyHit 本帧能量是否超过「真人开口」阈值
-   */
-  private updateDuck(voiced: boolean, energyHit: boolean): void {
-    if (!this.playbackPending) {
-      // 不在播报期：若还 duck 着就恢复（兜底，正常由播放结束路径恢复）
-      if (this.ducked) this.setDuck(false)
-      return
-    }
-    // 真人开口（能量超阈值）：立刻 duck
-    if (energyHit && !this.ducked) this.setDuck(true)
-    // 还在说话（能量或 VAD 有人声）：续期释放定时器
-    if (this.ducked && (energyHit || voiced)) {
-      if (this.duckReleaseTimer) clearTimeout(this.duckReleaseTimer)
-      this.duckReleaseTimer = setTimeout(() => {
-        this.duckReleaseTimer = null
-        this.setDuck(false)
-      }, 1500)
-    }
-  }
-
-  private setDuck(duck: boolean): void {
-    if (duck === this.ducked) return
-    this.ducked = duck
-    // 播报期真人开口：记住这句是"插话"，供定稿时判断入队（即使那时光播报已结束）
-    if (duck && this.playbackPending) this.bargeInDuringPlayback = true
-    bargeDiag(`DUCK duck=${duck}`)
-    this.deps.send({ type: 'audio.duck', duck })
-  }
+  // 【2026-11-24 砍插话+duck】updateDuck/setDuck 整块删除：插话已砍、播报期 ASR 上行静音，
+  // 检测真人开口压 TTS 音量的逻辑已成死代码。播报音量恒定，打断只靠端侧 KWS。
+  // 注意：前端 duckMusic（播报压低媒体播放音量，播报优先于播放）是独立逻辑，保留不动。
 
   private armEndpoint(): void {
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
@@ -1097,9 +1060,7 @@ export class VoiceSessionService {
       this.notifyAsrFailed()
       return
     }
-    // 取出并清除"播报期插话"标志：定稿后无论走哪条分支都不该污染下一句
-    const bargeIn = this.bargeInDuringPlayback
-    this.bargeInDuringPlayback = false
+    // 【2026-11-24 砍插话】删 bargeInDuringPlayback 标志的读取/清除（插话已砍）。
     if (!this.active || this.cancelled) return
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
     // 不进模型也不进队列，避免凭空多出一轮回答和 TTS。
@@ -1178,13 +1139,20 @@ export class VoiceSessionService {
     // 命中则客户端发 session.skip_current 跳当前句（招呼由客户端本地播），网关据 dropText
     // 把这句唤醒词从队列移除。助手自己刚念过的原话（回声）静默丢弃，且此分支不触发
     // 回声兜底静音，否则会连用户想用来打断的唤醒词一起掐掉。
-    // 入队条件：播报进行中，或"这句是播报期开的口"（定稿可能拖到播报结束后、pb 已 false）。
-    // bargeIn 在 setDuck(true) 且播报期时置位，定稿时已取出并清字段。
-    if (this.playbackPending || bargeIn) {
+    // 入队条件：播报进行中（播报期 ASR 已静音，正常收不到，仅兜底延迟定稿）。
+    // 【2026-11-24 砍插话】删 bargeIn 分支（setDuck/bargeInDuringPlayback 已删）。
+    if (this.playbackPending) {
       // 【2026-11-23 修播报回声自激】去掉 echoUntil 时间窗口：真机铁证播报结束后 22 秒才
       // 定稿出回声("第一条。")，8s/1.2s 窗口都拦不住。spoken 本身只留最近 6 句（短期记忆），
       // resemblesSpoken 用子串/75%严格匹配，像"刚播报过的内容"就是回声，无需时间窗口。
       if (resemblesSpoken(text, this.spoken)) return
+      // 【2026-11-24 拦播报期尾音重复定稿】用户刚说过的话的尾部被 ASR 缓存、播报期才定稿
+      // （"今天的天气怎么样？"→尾音"今天的天气。"），不是回声也不是新插话，是同一句的尾巴。
+      // 与 userSaid（用户最近定稿）相似就丢弃，不入队、不产生"1 条排队"。
+      if (resemblesSpoken(text, this.userSaid)) {
+        bargeDiag(`TAIL-ECHO-DROP text="${text}" (与刚说过的话重复)`)
+        return
+      }
       this.enqueueDuringBusy(text)
       return
     }
@@ -1231,6 +1199,9 @@ export class VoiceSessionService {
     // 改为首句也统一走 runTurn：runTurn 内 processing=true，speakReply 走「不 await playback」
     // 分支，播放等待由 runTurn 自己的 await playback 统一管理；runTurn 内也会再拦一次直连
     // 命令（幂等，见 runTurn 里的注释）。这样 finalizeChain 在下发后立刻释放，插话能及时定稿。
+    // 记住这句用户定稿，供后续拦"播报期尾音重复定稿"（见 userSaid 字段注释）
+    this.userSaid.push(text)
+    if (this.userSaid.length > 4) this.userSaid.shift()
     this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
     void this.runTurn(text)
   }
@@ -1380,13 +1351,8 @@ export class VoiceSessionService {
         if (this.playbackTimer) clearTimeout(this.playbackTimer)
         this.playbackTimer = null
         this.playbackResolve = null
-        // 播完（或超时）后关闭回声门控窗口，并恢复 duck 的播报音量（兜底）
+        // 播完（或超时）后关闭回声门控窗口（duck 已砍，无需恢复音量）
         this.playbackPending = false
-        if (this.duckReleaseTimer) {
-          clearTimeout(this.duckReleaseTimer)
-          this.duckReleaseTimer = null
-        }
-        this.setDuck(false)
         // 计时器自然到期（回执可能丢失）：补发一次 tts.idle，避免前端卡「正在播报」直到 watchdog。
         // 原生回执正常到达时走不到这（timer 已被 resolvePlayback 清掉），对 Android 零影响。
         if (fallback) this.emitTtsIdle('playback-timeout')
@@ -1410,7 +1376,7 @@ export class VoiceSessionService {
       this.playbackPending = false
       this.playbackTimer = null
       this.playbackResolve = null
-      this.setDuck(false)
+      // duck 已砍，无需恢复音量
       // 长播报整轮兜底计时器到期：回执大概率丢了，补发 tts.idle（幂等）
       done(true)
     }, ms)
@@ -1461,6 +1427,39 @@ export class VoiceSessionService {
     // 传 false：这是「回执到了」触发的解除等待，tts.idle 由调用方走 emitTtsIdle 统一发。
     // TTS 失败路径也调它解除等待，那些路径本就不该发 tts.idle。
     this.playbackResolve?.(false)
+  }
+
+  /**
+   * 下发 tts.stop：除了给 JS 主连接的 ServerEvent，还必须在 role=pcm 原生直连上发一条文本帧。
+   * 真机铁证：cancel 后已发出的音频帧还在 WS/原生队列里，236ms 后到达原生 → writePcmFrame
+   * 看到 !playRunning 又 startPlayback，把刚停掉的播报重新拉起来，多响 6~12 秒。
+   * 原生收到这条文本帧后设 discard 标志，丢弃在途帧直到下一个 tts.start（新句）才放行。
+   */
+  /**
+   * 让原生丢弃在途音频帧。必须无条件调用（不受 wasPlaying 限制）：
+   * 真机铁证打断时 playbackPending 可能已是 false，若按 wasPlaying 判断就不发控制帧，
+   * 在途帧 236ms 后重启 AudioTrack，而控制帧下一次才到（晚 15s），discard 形同虚设。
+   * 没在播时发 discard 也无害——下一个 tts.start 会清除标志。
+   */
+  private discardInFlightAudio(source: string): void {
+    try {
+      this.deps.sendPcmControl?.({ type: 'tts.stop' })
+      bargeDiag(`PCM-CTRL tts.stop sent source=${source} turn=${this.turn}`)
+    } catch { /* 控制帧失败不影响主流程（旧基座没有该通道） */ }
+  }
+
+  private emitTtsStop(): void {
+    this.deps.send({ type: 'tts.stop' })
+    this.discardInFlightAudio('emitTtsStop')
+  }
+
+  /** 下发 tts.start：同步经 pcm 连接告知原生"新句开始、清除 discard 标志"。
+   *  与 emitTtsStop 配对——tts.stop 让原生丢在途帧，tts.start 让原生放行新句帧。 */
+  private emitTtsStart(): void {
+    this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
+    try {
+      this.deps.sendPcmControl?.({ type: 'tts.start' })
+    } catch { /* 控制帧失败不影响主流程 */ }
   }
 
   /**
@@ -1533,7 +1532,7 @@ export class VoiceSessionService {
       ttsStarted = true
       this.speaking = true
       this.playbackPending = true
-      this.deps.send({ type: 'tts.start', format: 'pcm16', sampleRate: 24000 })
+      this.emitTtsStart()
       // 延长 playback 兜底等待覆盖整轮分批（否则 armPlaybackWait 的 30s 兜底在早期批次就到期，
       // 提前 resolve await playback → 退下掐掉剩余批次）。整轮下发完后 tighten 会再按实际时长收紧。
       const totalChars = chunks.reduce((n, c) => n + c.length, 0)
@@ -1659,7 +1658,7 @@ export class VoiceSessionService {
       // 若提前解除，下一句会在兜底句还在播时下发，被客户端 isSpeaking 抗重复挡掉而无声，
       // asr.final 也被挡导致排队角标不动（「排队卡死」的完整因果链，2026-11-16 实锤）。
       timedOut = true
-      if (ttsStarted) this.deps.send({ type: 'tts.stop' })
+      if (ttsStarted) this.emitTtsStop()
       this.speaking = false
       this.playbackPending = false
       // LLM 失败兜底改用本地 mp3 提示音，不再用 TTS 念 llmUnavailable 文本——
@@ -1948,7 +1947,13 @@ export class VoiceSessionService {
   private cancel(): void {
     // 手动打断：作废当前轮、清空排队，在途回调靠 turn 号退出
     this.dispatchSessionReset('cancel')
-    const wasSpeaking = this.speaking
+    // 无条件让原生丢弃在途音频帧（不受 wasPlaying 判断限制，见 discardInFlightAudio 注释）
+    this.discardInFlightAudio('cancel')
+    // 【2026-11-23 真机铁证·播报打断后多响12秒】必须把 playbackPending 也算进来。
+    // 音频已全部下发（speaking=false）但还在等原生播空回执（playbackPending=true）时，
+    // 旧判断 wasSpeaking=false → 不发 tts.stop → 原生继续播那 25s 音频直到自然播完回执，
+    // 界面已清（done）但还在响。与 skipCurrent 的 wasPlaying 口径对齐，打断必发 tts.stop。
+    const wasPlaying = this.playbackPending || this.speaking
     this.turn += 1
     this.cancelled = true
     this.processing = false
@@ -1962,7 +1967,7 @@ export class VoiceSessionService {
     // 候选列表只在新会话(start 全新分支)与会话结束(end)时清空。
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait('session-cancel')
-    if (wasSpeaking) this.deps.send({ type: 'tts.stop' })
+    if (wasPlaying) this.emitTtsStop()
     // 手动打断证明是真人，解除回声兜底
     this.echo.release()
     this.syncDuplex()
@@ -1986,6 +1991,8 @@ export class VoiceSessionService {
     if (!this.active || this.cancelled) return
     // 没有正在跑的轮次就没什么可跳的，避免误伤空闲态
     if (!this.processing && !this.playbackPending) return
+    // 无条件让原生丢弃在途音频帧（见 discardInFlightAudio 注释）
+    this.discardInFlightAudio('skipCurrent')
     // 唤醒词本身不该进队列：从尾部找，确保删的是「刚识别的这一句」而非更早的重复文本。
     if (dropText) {
       const i = this.queue.lastIndexOf(dropText)
@@ -2001,7 +2008,7 @@ export class VoiceSessionService {
     // 解除「等播完」阻塞：runTurn 的 await playback 立即返回，随后检查 turn/cancelled
     // 均未变（不在 break 条件里加 skipRequested），于是继续 shift 队列下一句。
     this.cancelPlaybackWait('skip-current')
-    if (wasPlaying) this.deps.send({ type: 'tts.stop' })
+    if (wasPlaying) this.emitTtsStop()
     // 真人打断，解除回声兜底，恢复全双工拾音，让下一句能被正常识别
     this.echo.release()
     this.syncDuplex()

@@ -34,7 +34,8 @@ import {
   setAppPlaybackVolume,
   markPlaybackInFlight,
 } from '@/core/audio/appPlayback'
-import { isAppCaptureSupported, requestMicPermission, resumeAppCapture, setAppScreenOn, setMediaPlaying, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
+import { isAppCaptureSupported, requestMicPermission, resumeAppCapture, setAppScreenOn, setMediaPlaying, setDuckConfig, setAecUserEnabled, startAppCapture, stopAppCapture } from '@/core/audio/appCapture'
+import { DUCK_LEVEL_PERCENT } from '@/core/config/constants'
 import { t } from '@/core/i18n'
 import { transition } from '@/core/assistant/stateMachine'
 import {
@@ -201,6 +202,25 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let assistantTextStarted = false
   let capturing = false
   let mode: SessionMode = 'wake'
+
+  // ===== ASR 上行门控：唯一真相源（2026-11-24 用户拍板）=====
+  // 「当前是否该让 ASR 静音」只在这一处判定；前端 onPcm 与 iOS 原生都听这里的结果。
+  // 以后要改门控规则，只改 isAsrMuted() 一个方法即可，不用到处找判断。
+  // 【静音】待唤醒(wake，只靠 KWS)、正在思考(thinking)、正在说(replying)、正在播报(speaking)；
+  // 【收音】正在听(listening)、本轮完成(done)。
+  function isAsrMuted(): boolean {
+    if (mode === 'wake') return true
+    return phase.value === 'thinking' || phase.value === 'replying' || phase.value === 'speaking'
+  }
+  /** 把统一判据同步给原生（iOS 走 PcmUploader 静音；Android 原生此方法是空操作，走 JS onPcm 门控）。 */
+  function syncAsrGate(): void {
+    try {
+      kwsService.setStandbyMuted(isAsrMuted())
+    } catch { /* kwsService 尚未就绪时忽略，enterWake 会再同步一次 */ }
+  }
+  // phase 一变就重新判定门控（thinking→replying→speaking→done→listening 全自动）
+  watch(phase, () => syncAsrGate())
+
   /** 助手正在思考/回答/播报：此时挂起 T1 静默计时，否则长回答会被「还在吗」打断 */
   let assistantBusy = false
   /** 本轮回答是否已经开始 TTS：llm.done 早于 tts.end，不能提前算空闲 */
@@ -1286,9 +1306,9 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 回待唤醒：恢复自动熄屏。对话期间为保定位/防后台 CPU 超限被杀一直常亮，
     // 回到待唤醒后必须放开，否则永远不熄屏、耗尽电量（KWS 仍常驻，熄屏也能喊词唤醒）。
     setAppScreenOn(false)
-    // 唤醒前不调 ASR（硬原则）：待唤醒态把上行 PCM 置静音，网关收不到有效音频就不会触发识别。
+    // 唤醒前不调 ASR（硬原则）：走统一门控 isAsrMuted()（mode=wake→静音）。
     // 端侧 KWS 在本地跑，不依赖上行，照常能唤醒。
-    kwsService.setStandbyMuted(true)
+    syncAsrGate()
     // 回到待唤醒态：停掉 30s 健康轮询（KWS 常驻，唤醒前不调 ASR，无需重复探测）。
     stopHealthPolling()
     // 每次开启唤醒重新武装掉线播报，让一次新的「开启」能重新提示一次
@@ -1317,8 +1337,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 对话期间保持屏幕常亮：① 后台拿不到定位（天气首次问失败）② 后台高 CPU 触发系统杀进程。
     // 对话结束回待唤醒（enterWake）时恢复自动熄屏。
     setAppScreenOn(true)
-    // 进入对话态必须恢复上行：用户说的话要送 ASR。静音只属于待唤醒态。
-    kwsService.setStandbyMuted(false)
+    // 进入对话态走统一门控：刚唤醒 phase 还是 listening/idle → 不静音，用户说的话送 ASR。
+    syncAsrGate()
     // 进入对话态才启动 30s 健康轮询：对话中要用 ASR/LLM/TTS，需持续掌握可用性。
     startHealthPolling()
     if (transport.isConnected()) {
@@ -1362,14 +1382,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     // 改为「仅待唤醒态掐麦」后，对话态永不掐麦，从根上斩断循环。
     let pcmDiagAt = 0
     const onPcm = (pcm: ArrayBuffer): void => {
-      // 与原生 _standbyMuted 同一判据：只有待唤醒态静音上行（Android 走 JS 这条路，
-      // iOS 走 PcmUploader 原生直连、由原生侧静音，两边等价）。
-      const muted = mode === 'wake'
+      // ASR 上行门控：唯一判据 isAsrMuted()（见文件上部定义），前端与 iOS 原生共用。
+      // 静音时上行全 0，网关 ASR 收不到音频——待唤醒靠 KWS、思考/说/播报期杜绝回声自激。
+      const muted = isAsrMuted()
       const now = Date.now()
       if (now - pcmDiagAt > 3000) {
         pcmDiagAt = now
-        console.info('[da] ONPCM mode=' + mode + ' muted=' + muted + ' state=' + state.value
-          + ' phase=' + phase.value + ' connected=' + transport.isConnected())
+        console.info('[da] ONPCM muted=' + muted + ' mode=' + mode + ' phase=' + phase.value
+          + ' connected=' + transport.isConnected())
       }
       transport.sendAudioChunk(muted ? new ArrayBuffer(pcm.byteLength) : pcm)
     }
@@ -1440,6 +1460,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     if (enabling) return // 防重入：connect 触发的连接恢复回调会试图自动重开
     enabling = true
     try {
+      // 把落盘的 duck 配置下发到原生（冷启动时原生还没收到设置页的配置）
+      setDuckConfig(
+        appConfig.general.interruptDuck !== false,
+        DUCK_LEVEL_PERCENT[appConfig.general.duckLevel ?? 'medium'],
+        appConfig.general.bargeIn === true,
+      )
+      setAecUserEnabled(appConfig.general.aecEnabled === true)
       gatewayPreparing.value = true
       gatewayFailed.value = false
       errorMessage.value = ''
@@ -1618,8 +1645,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       trace: `SKIP-CURRENT called drop=${dropText ?? ''} canWake=${canWake()} fromKws=${fromKws} pb=${isSpeaking.value}`,
     })
     if (!canWake() && !fromKws) return
-    // KWS 命中：播放也停（用户要求"播报停止、播放也停止"）
-    if (fromKws) stopMusic()
+    // 唤醒词命中打断：播报停、播放也停（用户明确要求）。
+    // 不能只认 fromKws——真机铁证播报期 KWS 常漏检，唤醒词其实走 ASR 文本兜底
+    // （fromKws=false）进来。走到这个函数本身就是唤醒词匹配通过的，两种来源都要停音乐。
+    stopMusic()
     // 识别到的「小熊小熊」也要进「我说」框：用它原文（无参数时用默认唤醒词）。
     // 用户明确要求唤醒词和普通插话一样在「我说」框可见。
     transcript.value = dropText || DEFAULT_WAKE_WORDS[0]
@@ -1678,11 +1707,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       if (Date.now() - lastPartialSkipAt < PARTIAL_SKIP_MS) return false
       lastPartialSkipAt = Date.now()
     }
-    if (assistantBusy || isSpeaking.value || queuePending.value > 0) skipCurrentAndGreet(text, fromKws)
-    else if (fromKws) {
-      // KWS 命中（即使当前空闲）：播报停 + 播放停（用户要求），再进新一轮。
-      stopMusic()
+    // 【2026-11-24 真机铁证·播报中 KWS 打断后识别不进 LLM】
+    // 旧逻辑：busy 时一律 skipCurrentAndGreet → interruptSpeech → fromKws 走 sendCancel
+    // （整轮 cancel 但**不重新 session.start**）→ 网关 cancelled=true 丢弃后续 asr.final，
+    // 用户接着说的话进不了 LLM、界面卡"正在听"草稿不动。
+    // 修复：KWS 命中（fromKws）无论忙闲都走 reWake()——它 dispatch(REWAKE) 的 effects 含
+    // cancelSession + startSession，cancel 后必然重新 start，会话活着才能收音→LLM。
+    // 只有 ASR 文本命中（fromKws=false）的 busy 插话才保留 skipCurrent（队列继续）。
+    if (fromKws) {
+      stopMusic()          // KWS 命中：播报停 + 播放停（用户要求）
       reWake()
+    } else if (assistantBusy || isSpeaking.value || queuePending.value > 0) {
+      skipCurrentAndGreet(text, false)
     } else reWake()
     return true
   }

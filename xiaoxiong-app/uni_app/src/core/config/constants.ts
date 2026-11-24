@@ -29,6 +29,22 @@ export const DEFAULT_SUBTITLE_COLOR = '#ffffff'
 export const AUTO_CHECK_INTERVAL_OPTIONS = [10_000, 30_000, 60_000, 120_000] as const
 export const DEFAULT_AUTO_CHECK_MS = 30_000
 
+/**
+ * duck 强度档位（2026-11-24）：三种 duck 共用一个强度。
+ * 值是"压低后保留的音量的百分比"（0-100），传给原生 setDuckConfig。
+ * 播报 duck 播放（TTS 说话时压背景媒体）不受开关控制、只受此强度控制，永远生效；
+ * 中断前 duck（检测人声开口压播报/媒体给 KWS 让路）受 interruptDuck 开关 + 此强度控制。
+ */
+export const DUCK_LEVEL_OPTIONS = ['light', 'medium', 'heavy'] as const
+export type DuckLevel = (typeof DUCK_LEVEL_OPTIONS)[number]
+/** 各档位压低后保留的音量百分比（0-100），原生/媒体 duck 共用。 */
+export const DUCK_LEVEL_PERCENT: Record<DuckLevel, number> = {
+  light: 50,
+  medium: 35,
+  heavy: 20,
+}
+export const DEFAULT_DUCK_LEVEL: DuckLevel = 'medium'
+
 /** 把任意输入收敛到列表里的合法时区，非法或缺省回退东 8 区 */
 export function normalizeTimezone(value: unknown): string {
   const raw = String(value ?? '').trim()

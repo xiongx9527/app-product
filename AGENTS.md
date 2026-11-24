@@ -6,7 +6,13 @@
 
 语音助手客户端。一套 uni-app（Vue3 + TypeScript + Vite）代码，目标端**只有 Android / iOS App（自定义基座 + 原生插件）**。
 
-主链路：**本地唤醒「小熊小熊」→ 本地招呼「我在」→ 语音对话 → T1 静默提示 → T2 退出本轮 → 回到待唤醒**。
+主链路：**本地唤醒「你好小熊」→ 本地招呼「我在」→ 语音对话 → T1 静默提示 → T2 退出本轮 → 回到待唤醒**。
+
+### 术语约定（务必分清，用户反复强调）
+
+- **播报 = TTS 播报**：助手把文字合成语音念出来（`tts.start` → 原生 AudioTrack/AudioQueue 播放 PCM）。对应 `stopTts()`。
+- **播放 = 媒体内容播放**：新闻、百科、诗词、音乐等非 TTS 的音频/音轨（`media.play` → `InnerAudioContext` 或 `audioPath` 本地文件）。对应 `stopMusic()`（`musicPlayer.ts` 的 `ctx`）。
+- 两者是**完全独立的音频通道**。用户说"播报停了但播放没停"= TTS 停了但媒体还在放；"命中后播报停止、播放也停止"要求两条都停。排查/改动时必须指明是哪一条，不可混用。
 
 H5 **仅开发阶段调试用**（当前在 `:5173` 上验证 UI 与链路），保留可编译与最小降级即可。微信小程序与 HarmonyOS **确定不支持**，不要为它们增加分支或降级逻辑。
 
@@ -508,3 +514,11 @@ xiaoxiong-app/uni_app/src/
   57. **【2026-11-23 ★AEC 完全不生效真因=延迟补偿没用上】** 恢复上行真实帧后 duck 生效（音量变小）但插话失败，`AEC-ENERGY raw=0.0530 clean=0.0530`、`raw=0.1492 clean=0.1492`（raw==clean 完全相同=AEC 一点回声没消）。根因：`EchoCanceller` 分配了 4000 样本"延迟补偿余量"(refBuf=M+4000)但 `process()` 的 `winEnd=refWrite-n+k` **没用余量**、只取最近 M 个样本；实际回声延迟 100ms+(1600 样本)超窗口 → w 永不收敛。修：加 `ECHO_DELAY=1600` 样本，`winEnd=refWrite-n+k-ECHO_DELAY` 把参考窗口往回移对齐 100ms 前播放的 TTS；M 恢复 2048。验证：AEC-ENERGY 的 clean 明显 < raw 才生效，仍相等则 ECHO_DELAY 需按设备校准。教训：AEC 延迟补偿余量分配了必须用上，否则滤波器对齐不到回声、完全无效。另：恢复上行真实帧是为对齐 Android barge-in duck（静音上行堵死插话），回声改靠这个 AEC 消。详忆 `project_ios_screenoff_wake_fix.md`。
   58. **【2026-11-23 插话/echo 最终定稿·iOS 接受不能普通插话】** 用户拍板"不能插话就别 duck（音量别变小），变小了识别也不准"。iOS 无硬件 AEC 死结：上行真实帧→TTS 回声(rms 0.045)混进 ASR→duck 音量变小但识别的是回声不准；静音上行→无回声但普通插话进不去。**最终**：`AppProductWakeModule.m` muteUplink 加回 `_playRunning`（TTS 播报期静音上行）；`useAssistant.ts` 的 `audio.duck` 忽略 duck=true（只在 duck=false 恢复音量）、播报音量全程正常；插话只靠端侧 KWS 喊「小熊小熊」打断。AEC M=256 不卡。**勿再在此死结反复改**，用户已拍板此方向，除非明确要求。详忆 `project_ios_screenoff_wake_fix.md`。
   59. **【2026-11-23 最终需求·砍插话保 KWS 必命中】** 用户拍板：iOS/Android 两端砍掉普通插话，「小熊小熊」必须快速准确命中，命中后播报停+播放停。"喊3遍才命中"真凶不是 KWS 识别差，是 `handleWakeHit`/`skipCurrentAndGreet` 的 `canWake()`（health 刚启动未就绪）静默吞掉 KWS 命中。修：`handleWakeHit(text,throttle,fromKws)` 加 fromKws，KWS onWake 传 true 跳过 canWake（端侧本地能力不受 health 拦）；KWS 命中 dialog 态调 `stopMusic()`（停播报+播放）、空闲态也 stopMusic+reWake；ASR 文本唤醒保留 canWake。教训：端侧 KWS 命中不该被 health/网络前置拦，那是"喊词没反应"隐藏真凶。详忆 `project_ios_screenoff_wake_fix.md`。
+
+  60. **【2026-11-24 唤醒词改「你好小熊」+ 播报/播放打断收口】** ① **唤醒词**：用户拍板从「小熊小熊」改「你好小熊」——旧词 token `x iǎo x ióng` 连重复两遍，KWS 解码路径歧义真机喊7遍中1遍；新词四音节无重复，真机第2遍即中。改动点：6 个 keywords.txt 音素表（`n ǐ h ǎo x iǎo x ióng @你好小熊`）、原生硬编码判断（Android `WakeModule.java`、iOS `AppProductWakeModule.m`）、前端 `DEFAULT_WAKE_WORDS`、i18n 文案、网关 `noiseFilter.ts` 保护词。② **播报（TTS）打断立即停声**：真机铁证 cancel 后 236ms 在途音频帧又 `startPlayback` 重启播报多响 6~12s。几轮试错结论：**pcm 文本控制帧通道不可靠（发了 `PCM-CTRL tts.stop sent` 但原生收不到），别依赖它**；最终修在原生 `WakeModule.stopPlayback()`（weex 入口，稳定到达）同步设 `discardTtsFrames=true`，`writePcmFrame` discard 时丢在途帧、`startPlayback` 清标志放行。③ **播放（媒体）打断停**：播报期 KWS 常漏检、唤醒词走 ASR 兜底 `SKIP-CURRENT fromKws=false`，而 `skipCurrentAndGreet` 原 `if(fromKws) stopMusic()` 漏停媒体 → 改无条件 `stopMusic()`。④ **术语**：播报=TTS、播放=新闻/百科/诗词/音乐（InnerAudioContext），两条独立通道。详忆 `project_wake_word_change.md`。
+
+  61. **【2026-11-24 砍插话收口·统一 ASR 门控 + 砍 duck + duckMusic 保留】** 用户拍板三件事：① **播报=TTS、播放=新闻/百科/诗词/音乐（InnerAudioContext）**，两条独立通道，术语别混（见开头「术语约定」）。② **ASR 上行门控统一成一个方法**：`useAssistant.ts` 的 `isAsrMuted()` 是唯一真相源——`mode==='wake'` 或 `phase in (thinking,replying,speaking)` 则静音，`listening`/`done` 收音。`watch(phase)` 自动同步，enterWake/enterDialog 也走它；前端 `onPcm` 只读它发全0；iOS 原生 `setStandbyMuted` 收的就是这个统一结果（`_standbyMuted`），原生只留 `_playRunning`/提示音/尾音瞬时物理兜底。**以后改门控规则只改 `isAsrMuted()` 一处**。③ **砍 duck**：删原生 `WakeModule.java` 本地 duck（LOCAL_DUCK_RMS/localDucked/整块触发，播报音量恒为 playbackVolume 不再忽大忽小）+ 网关 `voiceSessionService.ts` 的 `updateDuck`/`setDuck`/`audio.duck`/`forceFeed`/`bargeInDuringPlayback` 整条死链（播报期上行已静音，无真人帧可检测）。**保留 `duckMusic()`**（播报时压低媒体播放音量，播报优先于播放，用户明确要）——它与 KWS 打断无关：KWS 是端侧原生检测原始帧、不经过媒体音量链路，duck 不影响"你好小熊"打断（真机需验证确认）。
+
+  62. **【2026-11-24 界面"网关启动失败"但网关其实健康=health 探测超时撞车】** 现象：界面红字"网关启动失败，点一下中间重试"，但 `adb forward` 后 curl `/api/health` HTTP 200、ok=true、asr/llm/tts/network 全绿，进程也在。根因：`gatewayBootstrap.ts` 的 `probeGatewayHealth` 单次超时 15000ms，而 health 功能探测真机实测 **10.6s（不带 deep）/15.05s（deep）**，15s 超时与之撞车 → 频繁超时返回 false → `waitForEmbeddedGateway` 45s 后判失败。修：`probeGatewayHealth` 超时 15s→**25s**（Promise 兜底 27s），判据 `isGatewayHealthAllOk`（d.ok + configured/reachable）匹配 health 返回无需改。**排查铁律**：界面报"网关启动失败"先 curl health 看是真挂还是误判——health 200 全绿就是前端超时误判，别去查网关/后端；health 慢是后端花生壳域名功能探测固有耗时，不是卡死。
+
+  63. **【2026-11-24 三种 duck 定义 + 配置 + AEC 方案放弃】** 用户厘清 duck 发生在【中断之前】（播报中检测人声开口→压低音量→KWS听清"你好小熊"→命中后才真中断）。三种：① **播报 duck 播放**=duckMusic(TTS说话压背景媒体)，**无开关永远生效、只受强度控制**（用户原话"必须的，和开关没关系"）；② 中断前 duck 播报=检测人声压TTS；③ 中断前 duck 播放=检测人声压媒体。配置 `GeneralConfig`：`duckLevel`(light50/medium35/heavy20)、`interruptDuck`(默认true)、`bargeIn`(插话开关默认false)。链路：settings.vue→setDuckConfig(interruptDuck,percent,bargeIn)→appCapture门面→原生；enable()冷启动下发一次。Android WakeModule + iOS AppProductWakeModule 都加 setDuckConfig + 采集线程rms检测(每帧512乘加可忽略)duck到强度值、0.8s恢复、用_basePlaybackVolume复原。**iOS 性能雷区**：软件AEC(M=2048)曾在iOS V8满速跑被task_exceeded_cpulimit杀进程，AEC若要做得走VoiceProcessingIO系统级。**★AEC方案最终放弃**：真机铁证播报期开硬件AEC把人声消成静音(rms 0.1→0.0000, WakeModule.java:290)——硬件/system AEC为全双工设计，本场景(设备播报+用户喊唤醒词)正是双讲，原理上不适合，开了适得其反。duck(主动压低从源头减回声)才是正解，行业惯例。详忆 `project_duck_config.md`。

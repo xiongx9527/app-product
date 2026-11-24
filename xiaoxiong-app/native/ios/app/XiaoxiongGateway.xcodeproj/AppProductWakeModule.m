@@ -60,6 +60,13 @@ static const NSInteger kFrameBytes = 1024;
     dispatch_queue_t _ttsIdleQueue;  // 播空检测定时器队列（串行，独立于采集/WS 线程）
     dispatch_source_t _ttsIdleTimer; // 播空检测定时器（见 startTtsIdleTimer）
     BOOL _standbyMuted;         // 待唤醒态：上行全静音（唤醒前不调 ASR），KWS 照常听
+    // 【2026-11-24 两端统一 duck】中断前 duck：播报期检测人声开口压 TTS(AudioQueue) 给 KWS 让路
+    BOOL _duckEnabled;          // 中断前 duck 开关（默认开）
+    float _duckVolume;          // duck 时压到的音量（0-1，设置页强度档位，缺省 0.35）
+    BOOL _localDucked;          // 当前是否处于 duck 态
+    NSTimeInterval _lastVoiceMs; // 最近一次检测到人声的时刻（秒）
+    BOOL _bargeInEnabled;       // 插话开关（预留：开则播报期上行真实帧）
+    float _basePlaybackVolume;  // 设置页设的基础播报音量（duck 恢复回到它，缺省 1.0）
     UniModuleKeepAliveCallback _readyCb; // KWS 就绪回调（JS onReady）
     // 【2026-11-23 修熄屏唤醒】采集"意图"与实际运行状态分离：
     // _wantRunning=用户/JS 希望常驻采集（startPcm=YES, stopPcm=NO）；_running=AVAudioEngine 当前真的在跑。
@@ -85,6 +92,13 @@ static const NSInteger kFrameBytes = 1024;
         _ttsLock = [[NSLock alloc] init];
         _ttsHasData = NO;
         _playRunning = NO;
+        // 两端统一 duck：默认开、强度 0.35、插话默认关
+        _duckEnabled = YES;
+        _duckVolume = 0.35f;
+        _localDucked = NO;
+        _lastVoiceMs = 0;
+        _bargeInEnabled = NO;
+        _basePlaybackVolume = 1.0f;
         _ttsIdleQueue = dispatch_queue_create("com.xiaoxiong.tts.idle", DISPATCH_QUEUE_SERIAL);
         // 采集自愈基础设施（常驻，不依赖 JS 是否被后台冻结）
         _wantRunning = NO;
@@ -272,6 +286,10 @@ UNI_EXPORT_METHOD(@selector(onReady:))
 
 UNI_EXPORT_METHOD(@selector(setStandbyMuted:))
 - (void)setStandbyMuted:(BOOL)muted {
+    // 【2026-11-24 统一门控】_standbyMuted 现是前端 isAsrMuted() 的统一判定结果：
+    // 待唤醒 + thinking/replying/speaking 都为 true（静音上行），listening/done 为 false。
+    // 「哪几种阶段静音」的规则只在前端 useAssistant.ts 的 isAsrMuted() 一处定义，改那里即可。
+    // 本原生层不再另立规则，只保留 _playRunning/提示音/尾音这些瞬时物理状态兜底。
     _standbyMuted = muted;
     NSLog(@"%@ setStandbyMuted=%d", kTag, muted);
 }
@@ -523,12 +541,14 @@ UNI_EXPORT_METHOD(@selector(stopCue))
     NSUInteger outCount = (NSUInteger)llround((double)n * kSampleRate / inSR);
     NSMutableData *pcm = [NSMutableData dataWithCapacity:outCount * 2];   // 增益后，给 ASR/上行
     NSMutableData *kwsPcm = [NSMutableData dataWithCapacity:outCount * 2]; // 原始，给 KWS
+    double rawSum = 0; // 原始帧能量（中断前 duck 检测人声开口用）
     for (NSUInteger o = 0; o < outCount; o++) {
         double srcPos = (double)o * inSR / kSampleRate;      // 对应输入样本位置（浮点）
         NSUInteger i0 = (NSUInteger)srcPos;
         NSUInteger i1 = i0 + 1 < n ? i0 + 1 : i0;
         float frac = (float)(srcPos - (double)i0);
         float raw = ch[i0] * (1.0f - frac) + ch[i1] * frac;  // 线性插值后的原始幅度
+        rawSum += raw * raw; // 仅一次乘加，采集线程每帧512样本，开销可忽略
         // KWS 用温和放大(kKwsGain=6x)+钳位0.95 的帧：既达到模型可用音量(原始太小)，
         // 又避免 12x 满幅削波成方波导致声学特征失真（唤醒词难命中、要喊好几遍）。
         float kws = raw * kKwsGain;
@@ -543,6 +563,21 @@ UNI_EXPORT_METHOD(@selector(stopCue))
     // KWS 用原始帧（常驻唤醒）；KwsEngine 内部后台推理，不在此线程阻塞。
     if (_kwsEngine) {
         [_kwsEngine feedPCM:(const int16_t *)kwsPcm.bytes count:outCount];
+    }
+    // 【两端统一·中断前 duck】播报期检测到人声开口(raw rms>阈值)压低 TTS(AudioQueue) 给 KWS 让路。
+    // 只在 _duckEnabled && _playRunning 时算，开销极小（一次 sqrt + 一次比较）。
+    if (_duckEnabled && _playRunning && outCount > 0) {
+        double rms = sqrt(rawSum / outCount);
+        NSTimeInterval now = CFAbsoluteTimeGetCurrent();
+        if (rms > 0.02) _lastVoiceMs = now;
+        BOOL shouldDuck = (now - _lastVoiceMs) < 0.8;
+        if (shouldDuck != _localDucked) {
+            _localDucked = shouldDuck;
+            if (_ttsQueue) {
+                AudioQueueSetParameter(_ttsQueue, kAudioQueueParam_Volume, shouldDuck ? _duckVolume : _basePlaybackVolume);
+            }
+            NSLog(@"%@ LOCAL-DUCK %@ rms=%.4f", kTag, shouldDuck ? @"on" : @"off", rms);
+        }
     }
     [_carry appendData:pcm];
 
@@ -572,6 +607,10 @@ UNI_EXPORT_METHOD(@selector(stopCue))
         // 网关收不到回声、不误触发 duck、播报音量稳定。插话只靠端侧 KWS 喊「小熊小熊」
         // 打断（走原生原始帧、不受上行静音影响）。这与 Android 不同——Android 有硬件 AEC
         // 才能边播边插话，iOS 架构上做不到，接受此限制。
+        // muteUplink 判据：
+        //  - _standbyMuted = 前端统一门控 isAsrMuted() 的结果（待唤醒/思考/说/播报期静音，规则在前端一处）
+        //  - _playRunning / _cuePlayer.isPlaying / _soundTailMuteUntil = 原生瞬时物理状态兜底
+        //    （TTS 首帧同步延迟、提示音、播报尾音——前端 phase 无法精确表达的几毫秒~2秒窗口）
         BOOL muteUplink = _playRunning || (_cuePlayer && _cuePlayer.isPlaying) || _standbyMuted
                           || (CFAbsoluteTimeGetCurrent() < _soundTailMuteUntil);
         if (!muteUplink) {
@@ -898,10 +937,31 @@ UNI_EXPORT_METHOD(@selector(onPlaybackIdle:))
 
 UNI_EXPORT_METHOD(@selector(setPlaybackVolume:))
 - (void)setPlaybackVolume:(NSInteger)percent {
-    if (_ttsQueue) {
-        float v = MAX(0, MIN(1, percent / 100.0f));
-        AudioQueueSetParameter(_ttsQueue, kAudioQueueParam_Volume, v);
+    _basePlaybackVolume = MAX(0, MIN(1, percent / 100.0f));
+    if (_ttsQueue && !_localDucked) {
+        AudioQueueSetParameter(_ttsQueue, kAudioQueueParam_Volume, _basePlaybackVolume);
     }
+}
+
+/** 【2026-11-24 两端统一 duck】设置页 duck 配置（与 Android 同签名）。 */
+UNI_EXPORT_METHOD(@selector(setDuckConfig:duckPercent:bargeIn:))
+- (void)setDuckConfig:(BOOL)interruptDuck duckPercent:(NSInteger)duckPercent bargeIn:(BOOL)bargeIn {
+    _duckEnabled = interruptDuck;
+    _duckVolume = MAX(0, MIN(1, duckPercent / 100.0f));
+    _bargeInEnabled = bargeIn;
+    if (!interruptDuck && _localDucked) {
+        _localDucked = NO;
+        if (_ttsQueue) AudioQueueSetParameter(_ttsQueue, kAudioQueueParam_Volume, _basePlaybackVolume);
+    }
+    NSLog(@"%@ setDuckConfig interruptDuck=%d percent=%ld bargeIn=%d", kTag, interruptDuck, (long)duckPercent, bargeIn);
+}
+
+/** 【对照实验】硬件 AEC 开关。iOS 的 AEC 由 AVAudioSessionModeVoiceChat 提供，
+ *  动态切 mode 需 setCategory 重设会话、有杀采集风险，故此处只记录状态不实际切换。
+ *  iOS 采集 tap 拿的是 AEC 前原始帧（KWS 喂它不受影响），对照实验主战场在 Android。 */
+UNI_EXPORT_METHOD(@selector(setAecUserEnabled:))
+- (void)setAecUserEnabled:(BOOL)enabled {
+    NSLog(@"%@ setAecUserEnabled=%d (iOS VPIO by VoiceChat mode, no dynamic switch)", kTag, enabled);
 }
 
 #pragma mark - 错误上报

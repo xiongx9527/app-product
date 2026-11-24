@@ -39,6 +39,10 @@ interface NativePcmModule {
   keepScreenOn?(on: boolean): void
   /** iOS 专用：媒体播放器(音乐/新闻)播放期间静音上行，防外放声音被麦克风收回识别成用户输入 */
   setMediaPlaying?(on: boolean): void
+  /** duck 配置：中断前 duck 开关 + 强度百分比 + 插话开关。旧基座无此方法则降级。 */
+  setDuckConfig?(interruptDuck: boolean, percent: number, bargeIn: boolean): void
+  /** 硬件 AEC 开关（对照实验）：开=采集全程开系统 AEC（含播报期）。旧基座降级。 */
+  setAecUserEnabled?(enabled: boolean): void
   onPcmFrame?(callback: (frame: ArrayBuffer) => void): void
   onPcmError?(callback: (payload: { message?: string } | string) => void): void
 }
@@ -261,6 +265,29 @@ export function setMediaPlaying(on: boolean): void {
   if (!instance || typeof instance.setMediaPlaying !== 'function') return
   try {
     instance.setMediaPlaying(on)
+  } catch {
+    // 旧基座无此方法：降级
+  }
+}
+
+/** 下发 duck 配置到原生：中断前 duck 开关、强度百分比（压低后保留音量）、插话开关。
+ *  设置页改动即调；启动 Assistant 时也调一次把落盘配置同步到原生。旧基座无此方法降级。 */
+export function setDuckConfig(interruptDuck: boolean, percent: number, bargeIn: boolean): void {
+  const instance = boundInstance ?? mod ?? loadPcmModule()
+  if (!instance || typeof instance.setDuckConfig !== 'function') return
+  try {
+    instance.setDuckConfig(interruptDuck, percent, bargeIn)
+  } catch {
+    // 旧基座无此方法：降级
+  }
+}
+
+/** 硬件 AEC 开关（对照实验）：下发到原生控制采集源 AEC 全程开/关。 */
+export function setAecUserEnabled(enabled: boolean): void {
+  const instance = boundInstance ?? mod ?? loadPcmModule()
+  if (!instance || typeof instance.setAecUserEnabled !== 'function') return
+  try {
+    instance.setAecUserEnabled(enabled)
   } catch {
     // 旧基座无此方法：降级
   }

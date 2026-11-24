@@ -1,4 +1,5 @@
 import type { FloatPositionKey } from '../adaptation/floatLayer'
+import type { DuckLevel } from './constants'
 
 /**
  * 运行模式：
@@ -114,6 +115,21 @@ export interface GeneralConfig {
   autoCheck?: boolean
   /** 定时检查间隔（毫秒），只取 AUTO_CHECK_INTERVAL_OPTIONS 里的合法档位；缺省 30s。 */
   autoCheckMs?: number
+  /**
+   * duck 强度档位（三种 duck 共用）：light/medium/heavy，缺省 medium。
+   * 播报 duck 播放（TTS 说话时压背景媒体）不受开关控制、只受此强度控制；
+   * 中断前 duck（检测人声开口给 KWS 让路）也按此强度压。
+   */
+  duckLevel?: DuckLevel
+  /** 中断前 duck 开关：播报中检测到人声开口是否压低播报/媒体给 KWS 让路。缺省开。
+   *  关掉后播报音量恒定，但"播报 duck 播放"（duckMusic）仍按 duckLevel 生效。 */
+  interruptDuck?: boolean
+  /** 插话开关：默认关（播报期上行静音、只靠 KWS 打断）。开则恢复播报期上行+插话入队。
+   *  duck 机制保留是为插话铺垫——插话开时 duck 让 KWS/ASR 听清开口。 */
+  bargeIn?: boolean
+  /** 硬件 AEC 开关（对照实验用）：默认关。开=采集全程开系统 AEC（含播报期），
+   *  关=全程关。用于测 AEC 开/关对播报中唤醒率的影响。 */
+  aecEnabled?: boolean
 }
 
 /** 记忆设置 */

@@ -72,12 +72,20 @@ public class WakeModule extends UniModule {
      *  （已用原生 PCM 直连修复），降音量并非解药、反让播报太小声，故调回清晰值。
      *  前端 useAssistant.ts 的 TTS_VOLUME_NORMAL/TTS_VOLUME_DUCK 须与此同步。 */
     private static final float PLAYBACK_VOLUME = 0.7f;
-    /** duck 时压到的音量：必须够低，否则残余 TTS 回声盖住用户说话、ASR 把中文「停一下」识别成
-     *  Yeah/Okay/The 等英文碎片并被当噪声过滤，插话文字就出不来（真机实锤：0.25 时全是英文碎片，
-     *  0.05 时中文能识别）。用户开口瞬间压低、说完恢复 0.7，平时播报音量不受影响。 */
-    private static final float DUCK_VOLUME = 0.05f;
-    /** 当前播报音量（0–1），可被 duck 动态改写；起播时按此值 setVolume。 */
+    /** 【2026-11-24 两端统一温和 duck】播报期检测到真人声就把 TTS 压到 0.35（压一半，仍听得清），
+     *  给端侧 KWS 让路、让播报中"你好小熊"能打断。不要压太小（旧值 0.05 用户明确反对）。 */
+    private static final float DEFAULT_DUCK_VOLUME = 0.35f;
+    /** duck 时压到的音量（设置页强度档位改写，缺省 0.35）。 */
+    private volatile float duckVolume = DEFAULT_DUCK_VOLUME;
+    /** 当前播报音量（0–1），由设置页 setPlaybackVolume 改写；duck 时临时压到 duckVolume。 */
     private volatile float playbackVolume = PLAYBACK_VOLUME;
+    // 温和 duck：播报期检测到人声压低 TTS，静音超时恢复；按时间戳去抖避免刷屏。
+    private static final double LOCAL_DUCK_RMS = 0.02;
+    private static final long LOCAL_DUCK_RELEASE_MS = 800;
+    private volatile boolean localDucked = false;
+    private volatile long lastVoiceMs = 0;
+    /** 设置页开关：播报期温和 duck 是否启用（默认开，可在设置页关掉）。 */
+    private volatile boolean duckEnabled = true;
 
     public WakeModule() {
         Log.i(TAG, "WakeModule instantiated");
@@ -99,6 +107,8 @@ public class WakeModule extends UniModule {
     /** 已累计写入的帧数（1 帧 = 1 个 16bit 采样），用于判断播放头是否追上写入进度。 */
     private volatile long writtenFrames = 0;
     private volatile boolean playRunning = false;
+    /** tts.stop 控制帧收到后为 true：丢弃在途音频帧，直到下一个 startPlayback（新句 tts.start）清除。 */
+    private volatile boolean discardTtsFrames = false;
     private Thread idlePollThread;
     /** 提示音（MediaPlayer）正在播放：期间关 AEC，避免把同时说话的唤醒词抵消 */
     private volatile boolean cueActive = false;
@@ -110,16 +120,8 @@ public class WakeModule extends UniModule {
     private static final long IDLE_CONFIRM_MS = 600;
     private final Object playLock = new Object();
 
-    // ---- 原生本地 barge-in duck ----
-    // 为什么在原生做：网关 audio.duck 事件要经 weex 下行回 JS 再回调原生 setPlaybackVolume，
-    // 而播报期 weex 回调被 TTS 下行冲击丢弃（与上行 PCM keepAlive 失效同一根因），duck 指令到不了。
-    // 原生采集循环手里就有每帧 rms 和 playRunning，直接据此压/放 AudioTrack 音量，绕开整条不可靠链路。
-    /** 人声能量阈值：超过就认定用户开口（与网关 FRAME 诊断 0.02 同量级） */
-    private static final double LOCAL_DUCK_RMS = 0.02;
-    /** 静音多久恢复播报音量 */
-    private static final long LOCAL_DUCK_RELEASE_MS = 800;
-    private volatile boolean localDucked = false;
-    private volatile long lastVoiceMs = 0;
+    // 【2026-11-24 砍 duck】原生的本地 barge-in duck 相关字段全删（LOCAL_DUCK_RMS /
+    // LOCAL_DUCK_RELEASE_MS / localDucked / lastVoiceMs）。插话已砍，播报音量全程稳定。
 
     // JS 侧注册的回调；keepAlive 模式可多次调用。
     private UniJSCallback pcmFrameCb;
@@ -183,6 +185,26 @@ public class WakeModule extends UniModule {
                     playPcmBytes(pcm);
                 }
             });
+            // tts.stop 控制帧：网关 cancel/skip 时经 role=pcm 文本帧下发。设 discard 标志
+            // 丢弃在途音频帧——真机铁证：stop 后 236ms 在途帧又 startPlayback，多响 6~12 秒。
+            pcmUploader.setTtsControlListener(new PcmUploader.TtsControlListener() {
+                @Override
+                public void onTtsControl(String type) {
+                    if ("tts.stop".equals(type)) {
+                        synchronized (playLock) {
+                            discardTtsFrames = true;
+                        }
+                        Log.i(TAG, "TTS-STOP control recv, discard in-flight frames");
+                        stopPlayback();
+                    } else if ("tts.start".equals(type)) {
+                        // 新句开始：清除 discard，后续音频帧才能正常起播。
+                        synchronized (playLock) {
+                            discardTtsFrames = false;
+                        }
+                        Log.i(TAG, "TTS-START control recv, clear discard");
+                    }
+                }
+            });
             pcmUploader.configure(deviceId);
             Log.i(TAG, "configureDirectUpload called");
         } catch (Throwable e) {
@@ -233,6 +255,9 @@ public class WakeModule extends UniModule {
         Log.i(TAG, "startPlayback called, sampleRate=" + sampleRate);
         synchronized (playLock) {
         stopPlaybackInternal();
+        // 真正的新句起播：清除 discard 标志，放行新句音频帧。
+        // 在途旧帧被 writePcmFrame 的 discard 检查拦掉，根本走不到这里。
+        discardTtsFrames = false;
         playSampleRate = sampleRate > 0 ? sampleRate : 24000;
         try {
             int minBuf = AudioTrack.getMinBufferSize(
@@ -252,7 +277,7 @@ public class WakeModule extends UniModule {
                 playTrack = null;
                 return;
             }
-            // 新句开始：清掉上一句的本地 duck 状态，从正常音量起播（第一帧若仍有人声会立刻再 duck）
+            // 新句开始：清掉上一句的本地 duck 状态，从正常音量起播
             localDucked = false;
             applyPlaybackVolume();
             playTrack.play();
@@ -282,15 +307,34 @@ public class WakeModule extends UniModule {
     public void setPlaybackVolume(int percent) {
         playbackVolume = Math.max(0f, Math.min(1f, percent / 100f));
         applyPlaybackVolume();
-        Log.i(TAG, "setPlaybackVolume: percent=" + percent + " volume=" + playbackVolume + " localDucked=" + localDucked);
+        Log.i(TAG, "setPlaybackVolume: percent=" + percent + " volume=" + playbackVolume);
     }
 
-    /** 把当前音量应用到 AudioTrack：原生本地 duck 优先于 JS 设的 playbackVolume。
+    /**
+     * 【2026-11-24】设置页 duck 配置（与 iOS 同签名）：
+     * @param interruptDuck 中断前 duck 开关（检测人声压 TTS 给 KWS 让路）
+     * @param duckPercent   强度：压低后保留的音量百分比（0-100），如 light=50/medium=35/heavy=20
+     * @param bargeIn       插话开关（预留：开则播报期上行真实帧，本端上行由 JS 门控统一管）
+     * 标量 int/bool 可靠过桥；Default 强度 35。
+     */
+    @UniJSMethod(uiThread = false)
+    public void setDuckConfig(boolean interruptDuck, int duckPercent, boolean bargeIn) {
+        duckEnabled = interruptDuck;
+        duckVolume = Math.max(0f, Math.min(1f, duckPercent / 100f));
+        if (!interruptDuck && localDucked) {
+            localDucked = false;
+            applyPlaybackVolume();
+        }
+        Log.i(TAG, "setDuckConfig interruptDuck=" + interruptDuck + " percent=" + duckPercent + " bargeIn=" + bargeIn);
+    }
+
+    /** 把当前音量应用到 AudioTrack：duck 开着时压到 duckVolume，否则 playbackVolume。
      *  setVolume 与 write/stop/release 同一把锁（AudioTrack 非线程安全）。 */
+
     private void applyPlaybackVolume() {
         synchronized (playLock) {
             if (playTrack == null) return;
-            float v = localDucked ? DUCK_VOLUME : playbackVolume;
+            float v = localDucked ? duckVolume : playbackVolume;
             try {
                 playTrack.setVolume(v);
             } catch (Throwable ignored) {
@@ -338,6 +382,9 @@ public class WakeModule extends UniModule {
      *  create/play/write/stop/release/setVolume/getPosition 必须同一把锁，否则 native abort(signal 6)。 */
     private void writePcmFrame(byte[] pcm) {
         synchronized (playLock) {
+            // tts.stop 后的在途帧：直接丢弃，绝不能 startPlayback——否则停掉的播报被在途帧
+            // 重新拉起来（真机铁证：stop 后 236ms AudioTrack started 又响 6~12 秒）。
+            if (discardTtsFrames) return;
             if (playTrack == null || !playRunning) startPlayback(playSampleRate);
             if (playTrack == null) return;
             int written = playTrack.write(pcm, 0, pcm.length);
@@ -352,6 +399,13 @@ public class WakeModule extends UniModule {
     @UniJSMethod(uiThread = false)
     public void stopPlayback() {
         Log.i(TAG, "stopPlayback called");
+        // 真机铁证：前端 stopTts 经 weex 调到这里后，在途音频帧 82ms 后又 startPlayback 重启播报。
+        // 必须在这里同步设 discard 标志，让在途帧直接被 writePcmFrame 丢弃。
+        // tts.stop 的 pcm 控制帧通道不可靠（实测丢失），不能依赖它；weex stopPlayback 是可靠到达的。
+        // 新句靠 startPlayback()/tts.start 控制帧清标志放行。
+        synchronized (playLock) {
+            discardTtsFrames = true;
+        }
         stopPlaybackInternal();
     }
 
@@ -555,17 +609,33 @@ public class WakeModule extends UniModule {
         setAecEnabled(true);
     }
 
-    /** 开/关采集端 AEC（播报期关、播完开）。aec 可能为 null（设备不支持/采集未启动），静默忽略。 */
+    /** 用户 AEC 开关（设置页对照实验用）：开=采集全程开 AEC（含播报期），关=全程关。默认关。
+     *  打开后播报期的自动 setAecEnabled(false) 不再生效——这正是要对照测的场景。 */
+    private volatile boolean userAecEnabled = false;
+
+    /** 开/关采集端 AEC。aec 可能为 null（设备不支持/采集未启动），静默忽略。
+     *  【2026-11-24 对照实验】实际状态以用户开关为准：userAecEnabled=false 全程关；
+     *  =true 全程开（播报期的自动关调用被忽略），用于测 AEC 开/关对唤醒率的影响。 */
     private void setAecEnabled(boolean enabled) {
         if (aec == null) return;
+        boolean actual = userAecEnabled;
         try {
             boolean cur = aec.getEnabled();
-            if (cur != enabled) {
-                aec.setEnabled(enabled);
-                Log.i(TAG, "AEC setEnabled: " + enabled + " (playRunning=" + playRunning + ")");
+            if (cur != actual) {
+                aec.setEnabled(actual);
+                Log.i(TAG, "AEC setEnabled: " + actual + " (req=" + enabled + " user=" + userAecEnabled
+                    + " playRunning=" + playRunning + ")");
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    /** 设置页 AEC 开关：控制采集源上那路 AcousticEchoCanceler 全程开/关（含播报期）。 */
+    @UniJSMethod(uiThread = false)
+    public void setAecUserEnabled(boolean enabled) {
+        userAecEnabled = enabled;
+        setAecEnabled(enabled);
+        Log.i(TAG, "setAecUserEnabled=" + enabled);
     }
 
     // ---- 声学唤醒接口（providers/native.ts 使用）----
@@ -823,9 +893,9 @@ public class WakeModule extends UniModule {
             // 端侧 KWS：每帧喂一份给关键词检测（与 ASR 共用这条 AEC 后的采集）。
             // 播报期的回声已由 AEC 抵消，命中即回调 JS（word），由 handleWakeHit 统一路由/节流。
             feedKws(frame, rms);
-            // 原生本地 duck：播报期检测到真人开口就压低 TTS，静音超时恢复。
-            // 只在 playRunning 时生效，不碰非播报期；按时间戳去抖，避免每帧 setVolume 刷屏。
-            if (playRunning) {
+            // 【2026-11-24 两端统一温和 duck】播报期检测到人声(rms>阈值)压低 TTS 到 0.35
+            // 给端侧 KWS 让路，静音 800ms 后恢复。只为 KWS 打断服务（不用于插话——插话已砍）。
+            if (playRunning && duckEnabled) {
                 if (rms > LOCAL_DUCK_RMS) lastVoiceMs = nowMs;
                 boolean shouldDuck = (nowMs - lastVoiceMs) < LOCAL_DUCK_RELEASE_MS;
                 if (shouldDuck != localDucked) {

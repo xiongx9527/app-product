@@ -205,7 +205,10 @@ export function isGatewayHealthAllOk(raw: unknown): boolean {
  * 误报就绪，用户对着没真正准备好的网关喊唤醒自然唤不醒。
  * 用 uni.request（原生网络栈，无 webview CORS/明文限制），无 uni 环境返回 false。
  */
-function probeGatewayHealth(httpBase: string, timeoutMs = 15000): Promise<boolean> {
+// 【2026-11-24】health 功能探测真机实测约 15.05s（deep 探 asr/llm/tts 功能请求），
+// 原 15s 超时与之撞车 → 频繁超时返回 false → 界面误报"网关启动失败"（health 本身 200 全绿）。
+// 提到 25s 留足余量；waitForEmbeddedGateway 整体 45s 足够容纳一次探测。
+function probeGatewayHealth(httpBase: string, timeoutMs = 25000): Promise<boolean> {
   return new Promise((resolve) => {
     // Promise 级超时兜底：uni.request 的 timeout 参数在部分基座版本失效，
     // 既不 success 也不 fail 时 Promise 永挂 → waitForEmbeddedGateway 卡死 → 界面永远「网关启动中」。

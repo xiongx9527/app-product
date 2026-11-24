@@ -8,6 +8,8 @@ import {
   DEFAULT_SUBTITLE_COLOR,
   AUTO_CHECK_INTERVAL_OPTIONS,
   DEFAULT_AUTO_CHECK_MS,
+  DUCK_LEVEL_OPTIONS,
+  DEFAULT_DUCK_LEVEL,
 } from './constants'
 import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
 import type { AppConfig, GeneralConfig, MemoryConfig, McpConfig, McpServerConfig, McpTransport, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
@@ -95,7 +97,10 @@ export function createDefaultConfig(): AppConfig {
 
 /** 通用设置默认值：自动连接网关默认开启（开屏即连网关进入待唤醒，免去手动点开关）；定时检查默认关闭。 */
 function createDefaultGeneral(): GeneralConfig {
-  return { autoConnect: true, theme: 'default', autoCheck: false, autoCheckMs: DEFAULT_AUTO_CHECK_MS }
+  return {
+    autoConnect: true, theme: 'default', autoCheck: false, autoCheckMs: DEFAULT_AUTO_CHECK_MS,
+    duckLevel: DEFAULT_DUCK_LEVEL, interruptDuck: true, bargeIn: false, aecEnabled: false,
+  }
 }
 
 const THEME_IDS = ['default', 'purple', 'teal', 'amber'] as const
@@ -113,7 +118,16 @@ function normalizeGeneral(raw: unknown): GeneralConfig {
   const theme = THEME_IDS.includes(source.theme as (typeof THEME_IDS)[number])
     ? (source.theme as GeneralConfig['theme'])
     : createDefaultGeneral().theme
-  return { autoConnect, theme, autoCheck, autoCheckMs }
+  const duckLevel = DUCK_LEVEL_OPTIONS.includes(source.duckLevel as (typeof DUCK_LEVEL_OPTIONS)[number])
+    ? (source.duckLevel as GeneralConfig['duckLevel'])
+    : DEFAULT_DUCK_LEVEL
+  const interruptDuck =
+    typeof source.interruptDuck === 'boolean' ? source.interruptDuck : createDefaultGeneral().interruptDuck
+  const bargeIn =
+    typeof source.bargeIn === 'boolean' ? source.bargeIn : createDefaultGeneral().bargeIn
+  const aecEnabled =
+    typeof source.aecEnabled === 'boolean' ? source.aecEnabled : createDefaultGeneral().aecEnabled
+  return { autoConnect, theme, autoCheck, autoCheckMs, duckLevel, interruptDuck, bargeIn, aecEnabled }
 }
 
 /** 记忆设置默认值：自动记忆（自动抽取）默认关闭，手动指令不受此开关影响。 */
