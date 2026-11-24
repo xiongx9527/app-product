@@ -504,6 +504,10 @@ const I18N = {
     "config.blankNoChange": "（留空则不修改）",
     "config.embed": "Embed",
     "config.rerank": "Rerank",
+    "config.ocr": "OCR",
+    "cfg.ocrEnabled": "OCR 开关（on/off）",
+    "cfg.ocrHint": "内置 PaddleOCR 文字识别，需先运行 install-ocr.sh。开启后可在「连通测试 → 文字识别 OCR」上传图片测试。",
+    "cfg.ocrModel": "OCR 模型版本",
     "config.security": "安全",
     "config.title": "配置",
     "config.asrModels": "模型",
@@ -957,6 +961,10 @@ const I18N = {
     "config.blankNoChange": "(blank = no change)",
     "config.embed": "Embed",
     "config.rerank": "Rerank",
+    "config.ocr": "OCR",
+    "cfg.ocrEnabled": "OCR enabled (on/off)",
+    "cfg.ocrHint": "Built-in PaddleOCR text recognition; run install-ocr.sh first. Once enabled, test via Connectivity test → OCR tab.",
+    "cfg.ocrModel": "OCR model version",
     "config.security": "Security",
     "config.title": "Config",
     "config.asrModels": "Models",
@@ -1354,6 +1362,7 @@ function buildConfigCard(){
       <button class="tab" data-ctab="rerank">${t('config.rerank')}</button>
       <button class="tab" data-ctab="asr">ASR</button>
       <button class="tab" data-ctab="tts">TTS</button>
+      <button class="tab" data-ctab="ocr">${t('config.ocr')}</button>
     </div>
     <div id="c-llm" class="cfgpane"><div id="llmTableWrap" class="hint">${t('common.loadingX')}</div>
       <div class="row" style="margin-top:12px"><button id="cfgSave_llm">${t('common.save')}</button><span class="hint" id="cfgStat_llm" style="margin-left:10px"></span></div></div>
@@ -1423,6 +1432,15 @@ function buildConfigCard(){
       <div id="rerankTableWrap" class="hint">${t('common.loadingX')}</div>
       <div class="row" style="margin-top:12px"><button id="cfgSave_rerank">${t('common.save')}</button><span class="hint" id="cfgStat_rerank" style="margin-left:10px"></span></div>
     </div>
+    <div id="c-ocr" class="cfgpane" hidden>
+      <label>${t('cfg.ocrEnabled')}</label>
+      <select id="cfg_OCR_ENABLED"><option value="off">off</option><option value="on">on</option></select>
+      <div class="hint" style="margin-top:6px">${t('cfg.ocrHint')}</div>
+      <label style="margin-top:10px">${t('cfg.ocrModel')}</label>
+      <input id="cfg_OCR_MODEL_VERSION" placeholder="PP-OCRv5" />
+      <div class="hint" id="ocrCfgStat" style="margin-top:6px"></div>
+      <div class="row" style="margin-top:12px"><button id="cfgSave_ocr">${t('common.save')}</button><span class="hint" id="cfgStat_ocr" style="margin-left:10px"></span></div>
+    </div>
   </div>`);
 }
 
@@ -1432,6 +1450,9 @@ async function loadConfig(){
     if(!r.ok) return;
     cfgOrig = await r.json();
     ['llm','asr','tts'].forEach(t=>CFG_TABS[t].forEach(k=>{ const inp=document.getElementById('cfg_'+k); if(inp) inp.value = isSecret(k)?'':(cfgOrig[k]||''); }));
+    // OCR 配置回填
+    const oe=document.getElementById('cfg_OCR_ENABLED'); if(oe) oe.value=(cfgOrig.OCR_ENABLED||'off').toLowerCase();
+    const om=document.getElementById('cfg_OCR_MODEL_VERSION'); if(om) om.value=cfgOrig.OCR_MODEL_VERSION||'PP-OCRv5';
     // 向量默认模型（embeddings 测试兜底；向后兼容旧的 LLM_EMBED_MODEL）
     embedDefModel = (cfgOrig.EMBED_UPSTREAM_MODEL || cfgOrig.LLM_EMBED_MODEL || '').trim();
     // ASR/TTS 提供商状态回填：provider、上游地址/模型/模型列表（Key 从专用接口回填，与 LLM 编辑框一致）
@@ -1743,7 +1764,7 @@ async function loadReview(){
 function wireConfig(){
   document.querySelectorAll('#cfgTabs .tab').forEach(t=>{
     t.onclick=()=>{ document.querySelectorAll('#cfgTabs .tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
-      ['llm','asr','tts','embed','rerank','sec'].forEach(p=>{ const e=document.getElementById('c-'+p); if(e) e.hidden=(t.dataset.ctab!==p); }); };
+      ['llm','asr','tts','embed','rerank','sec','ocr'].forEach(p=>{ const e=document.getElementById('c-'+p); if(e) e.hidden=(t.dataset.ctab!==p); }); };
   });
   // ASR 内的子 tab：模型 / 热词
   document.querySelectorAll('#asrSubTabs .tab').forEach(t=>{
@@ -1816,6 +1837,11 @@ function wireConfig(){
   // 调用时（embeddings 路由）只取「向量默认」指向的模型，不走对方（LLM）的地址池。
   const eb=document.getElementById('cfgSave_embed'); if(eb) eb.onclick=()=> savePoolTable('embed','cfgStat_embed');
   const rb=document.getElementById('cfgSave_rerank'); if(rb) rb.onclick=()=> savePoolTable('rerank','cfgStat_rerank');
+  const ob=document.getElementById('cfgSave_ocr'); if(ob) ob.onclick=()=>{
+    const patch={ OCR_ENABLED: (document.getElementById('cfg_OCR_ENABLED')||{}).value||'off',
+                  OCR_MODEL_VERSION: ((document.getElementById('cfg_OCR_MODEL_VERSION')||{}).value||'PP-OCRv5').trim() };
+    return postConfig(patch,'cfgStat_ocr');
+  };
   const lb=document.getElementById('cfgSave_llm'); if(lb) lb.onclick=()=>saveLlmTable();
   const ab=document.getElementById('cfgSave_asr'); if(ab) ab.onclick=saveSttTable;
   const tb=document.getElementById('cfgSave_tts'); if(tb) tb.onclick=saveTtsTable;
