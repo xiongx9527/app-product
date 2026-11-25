@@ -206,8 +206,10 @@ async def _call_http_tool(tool: dict[str, Any], arguments: dict[str, Any]) -> st
             body[k] = v
     timeout = int(tool.get("timeout_sec") or 30)
     try:
+        # 保留 URL 自带的 query（如高德 key），再合并工具参数；httpx 的 params= 会覆盖原有 query。
+        final_url = httpx.URL(url).copy_merge_params(query) if query else httpx.URL(url)
         async with httpx.AsyncClient(timeout=timeout) as cli:
-            r = await cli.request(method, url, params=query or None,
+            r = await cli.request(method, final_url,
                                   headers=hdrs, json=body if body else None)
         return f"HTTP {r.status_code}\n{r.text[:4000]}"
     except Exception as exc:

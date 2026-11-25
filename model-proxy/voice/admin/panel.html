@@ -399,6 +399,9 @@ const I18N = {
     "common.ok": "确定",
     "common.enabled": "启用",
     "common.disabled": "停用",
+    "common.enable": "启用",
+    "common.disable": "停用",
+    "common.confirmDelete": "确认删除？",
     "common.delete": "删除",
     "app.logout": "退出登录",
     "app.title": "模型代理",
@@ -996,6 +999,9 @@ const I18N = {
     "common.ok": "OK",
     "common.enabled": "Enabled",
     "common.disabled": "Disabled",
+    "common.enable": "Enable",
+    "common.disable": "Disable",
+    "common.confirmDelete": "Delete?",
     "common.delete": "Delete",
     "app.logout": "Log out",
     "app.title": "Model Proxy",
@@ -5730,13 +5736,13 @@ async function loadMcpOtherPage(){
     +'<div class="row" style="margin-bottom:10px"><button id="mcpOtherAdd">'+t('mcp.otherAdd')+'</button></div>'
     +'<table class="admin-table" style="width:100%"><thead><tr>'
     +'<th>'+t('mcp.otherName')+'</th><th style="width:70px">'+t('mcp.otherMethod')+'</th>'
-    +'<th>'+t('mcp.otherUrl')+'</th><th style="width:60px">'+t('common.status')+'</th>'
-    +'<th style="width:110px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
+    +'<th>'+t('mcp.toolDesc')+'</th><th style="width:60px">'+t('common.status')+'</th>'
+    +'<th style="width:230px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
   tools.forEach(x=>{
     h+='<tr><td style="word-break:break-all">default__'+esc(x.name)+'</td>'
-      +'<td>'+esc(x.method)+'</td><td style="word-break:break-all">'+esc(x.url)+'</td>'
+      +'<td>'+esc(x.method)+'</td><td style="word-break:break-word;line-height:1.4">'+esc(x.description||'')+'</td>'
       +'<td>'+(x.enabled?'<span class="badge">'+t('common.enabled')+'</span>':'<span class="hint">'+t('common.disabled')+'</span>')+'</td>'
-      +'<td class="col-actions" style="text-align:right"><button class="mini" data-other-test="'+x.id+'">'+t('common.test')+'</button> '
+      +'<td class="col-actions" style="text-align:right;white-space:nowrap"><button class="mini" data-other-test="'+x.id+'">'+t('common.test')+'</button> '
       +'<button class="mini" data-other-edit="'+x.id+'">'+t('common.edit')+'</button> '
       +'<button class="mini" data-other-toggle="'+x.id+'" data-on="'+x.enabled+'">'+(x.enabled?t('common.disable'):t('common.enable'))+'</button> '
       +'<button class="mini danger" data-other-del="'+x.id+'">'+t('common.delete')+'</button></td></tr>';
@@ -5750,7 +5756,7 @@ async function loadMcpOtherPage(){
     let ps=[]; try{ ps=JSON.parse(x.params_json||'[]')||[]; }catch(e){}
     let inputs='';
     ps.forEach(p=>{ if(!p||!p.name) return;
-      inputs+='<div class="row" style="margin-top:6px"><label style="width:120px">'+esc(p.name)+(p.required?' *':'')+'</label>'
+      inputs+='<div class="row" style="margin-top:6px"><label style="width:120px">'+esc(p.name)+(p.required?' <span style="color:var(--err)">*</span>':'')+'</label>'
         +'<input class="ot-arg" data-name="'+esc(p.name)+'" style="flex:1" placeholder="'+esc(p.type||'string')+'" /></div>';
     });
     if(!inputs) inputs='<div class="hint" style="margin-top:6px">'+t('mcp.noParams')+'</div>';
@@ -5815,10 +5821,7 @@ function showHttpToolModal(x){
     +'<div class="ht-field"><label>'+t('mcp.otherUrl')+'</label><input id="htUrl" value="'+val('url')+'" placeholder="https://api.example.com/x" /></div>'
     +'<div class="ht-field"><label>'+t('mcp.toolDesc')+'</label><textarea id="htDesc" rows="3">'+val('description')+'</textarea></div>'
     +'<div class="ht-field"><label>'+t('mcp.otherHeaders')+'（JSON 对象）</label><textarea id="htHeaders" rows="2">'+val('headers_json','{}')+'</textarea></div>'
-    +section('query')+section('body')
-    +'<div class="ht-field" style="margin-top:14px"><button type="button" class="sec" id="htTest">'+t('common.test')+'</button>'
-      +'<div id="htTestZone" style="display:none"></div>'
-      +'<pre id="htTestOut" class="m-out" style="margin-top:8px;display:none;max-height:200px;overflow:auto"></pre></div>';
+    +section('query')+section('body');
   const m=showModal(x?t('mcp.otherEditTitle'):t('mcp.otherAdd'), body, async(m)=>{
     const rows=[];
     m.querySelectorAll('.ht-p-row').forEach(tr=>{
@@ -5858,39 +5861,6 @@ function showHttpToolModal(x){
     if(!del) return;
     del.closest('tr').remove();  // 任何行数都可删除（含最后一行）；需要时用「+ 添加参数」再加
   });
-  // 测试按钮：在当前弹框内展开参数输入区，填值后带 args 调用（不弹新 modal，避免覆盖当前配置）
-  const htTest=m.querySelector('#htTest'), htOut=m.querySelector('#htTestOut');
-  if(htTest) htTest.onclick=()=>{
-    const defs=[];
-    m.querySelectorAll('.ht-p-row').forEach(tr=>{
-      const name=tr.querySelector('.ht-p-name').value.trim();
-      if(name) defs.push({name, type:tr.querySelector('.ht-p-type').value, in:tr.dataset.in,
-        required:tr.querySelector('.ht-p-req').checked,
-        description:tr.querySelector('.ht-p-desc').value.trim()});
-    });
-    const cfg={name:m.querySelector('#htName').value.trim(), method:m.querySelector('#htMethod').value,
-      url:m.querySelector('#htUrl').value.trim(), headers_json:m.querySelector('#htHeaders').value.trim()||'{}',
-      params_json:JSON.stringify(defs)};
-    let argHtml='<div class="hint" style="margin-top:8px">'+t('mcp.testArgsHint')+'</div>';
-    defs.forEach(p=>{
-      argHtml+='<div class="ht-field"><label>'+esc(p.name)+(p.required?' *':'')+' <span class="hint">'+esc(p.in.toUpperCase())+'</span></label>'
-        +'<input class="ht-arg" data-name="'+esc(p.name)+'" placeholder="'+esc(p.description||p.type)+'" /></div>';
-    });
-    if(!defs.length) argHtml+='<div class="hint">'+t('mcp.noParams')+'</div>';
-    const zone=m.querySelector('#htTestZone');
-    zone.innerHTML=argHtml+'<div class="row" style="margin-top:10px"><button type="button" class="sec ht-do-test">'+t('common.test')+'</button></div>';
-    zone.style.display='block';
-    zone.querySelector('.ht-do-test').onclick=async ()=>{
-      const args={};
-      zone.querySelectorAll('.ht-arg').forEach(el=>{ if(el.value.trim()) args[el.dataset.name]=el.value.trim(); });
-      htOut.style.display='block'; htOut.textContent=t('common.loadingX');
-      try{
-        const r=await api('/admin/api/mcp/http-tools/test-temp',{method:'POST',headers:{'content-type':'application/json'},
-          body:JSON.stringify({...cfg, args})});
-        htOut.textContent=r.ok?((await r.json()).result||''):(t('common.failPrefix')+r.status);
-      }catch(err){ htOut.textContent=t('common.errorPrefix')+err.message; }
-    };
-  };
 }
 
 // MCP 工具/参数说明编辑（兜底）：事件委托，覆盖工具页与新增工具弹框两处动态渲染的按钮。
