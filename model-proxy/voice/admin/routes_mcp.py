@@ -12,6 +12,23 @@ import admin_panel as ap
 import voice_db
 
 
+# 参数位置推断：MCP 的 inputSchema 本身不标注 header/body/query，按参数名模式推断，
+# 仅用于管理面板展示（真实调用所有参数都作为 JSON body 透传给上游）。
+_HEADER_NAMES = {"authorization", "token", "access_token", "api_key", "apikey",
+                 "x-api-key", "content-type", "accept", "cookie", "session"}
+_QUERY_NAMES = {"page", "page_size", "pagesize", "limit", "offset", "q", "keyword",
+                "sort", "order", "filter", "since", "cursor", "workspaceid", "datasourceid"}
+
+
+def _param_location(name: str) -> str:
+    n = (name or "").strip().lower()
+    if n in _HEADER_NAMES or n.startswith("x-"):
+        return "header"
+    if n in _QUERY_NAMES:
+        return "query"
+    return "body"
+
+
 def build_router() -> APIRouter:
     router = APIRouter()
     require_admin = ap.require_admin
@@ -110,9 +127,20 @@ def build_router() -> APIRouter:
         tools = {}
         for q, meta in (mcp_gateway._upstream_tools or {}).items():
             srv = voice_db.mcp_server_get(meta["server_id"]) or {}
+            schema = meta.get("input_schema") or {}
+            props = schema.get("properties") or {}
+            required = set(schema.get("required") or [])
+            # 给每个参数补上推断的位置（header/body/query）与必填标记，供面板展开展示。
+            params = []
+            for pn, pp in props.items():
+                if not isinstance(pp, dict):
+                    pp = {}
+                params.append({"name": pn, "type": pp.get("type") or "string",
+                               "required": pn in required, "in": _param_location(pn),
+                               "description": pp.get("description") or ""})
             tools[q] = {"server_id": meta["server_id"], "name": meta["name"],
                         "server": srv.get("name") or "", "description": meta.get("description") or "",
-                        "input_schema": meta.get("input_schema") or {}}
+                        "input_schema": schema, "params": params}
         return {"tools": tools}
 
     @router.get("/admin/api/mcp/acl", dependencies=[Depends(require_admin)])

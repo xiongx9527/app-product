@@ -789,6 +789,7 @@ const I18N = {
     "mcp.noParams": "无参数",
     "mcp.paramName": "参数名",
     "mcp.paramType": "类型",
+    "mcp.paramIn": "位置",
     "mcp.paramRequired": "必填",
     "mcp.ownerGateway": "所属网关",
     "mcp.searchTools": "搜索工具名称 / 标识 / 网关",
@@ -1363,6 +1364,7 @@ const I18N = {
     "mcp.noParams": "No parameters",
     "mcp.paramName": "Name",
     "mcp.paramType": "Type",
+    "mcp.paramIn": "Location",
     "mcp.paramRequired": "Required",
     "mcp.ownerGateway": "Gateway",
     "mcp.searchTools": "Search tool name / ID / gateway",
@@ -4876,6 +4878,7 @@ function renderPager(containerId, page, totalPages, total, onNav){
 
 let apiKeyPage = 1;
 let mcpToolPage = 1;
+let mcpToolExpanded = new Set();  // 展开参数行的工具 qualified_name（仿热词管理）
 async function loadApiKeys(page){
   if(page) apiKeyPage=page;
   const box=document.getElementById('akList'); if(!box) return;
@@ -5572,16 +5575,32 @@ async function loadMcpToolsPage(){
     let h='<div class="row" style="margin-bottom:10px"><button id="mcpToolAdd">'+t('mcp.addTool')+'</button>'
       +'<div class="row" style="margin-left:auto"><input id="mcpToolSearch" class="hw-input" placeholder="'+t('mcp.searchTools')+'" style="width:280px" value="'+esc(q)+'" />'
       +'<button id="mcpToolSearchBtn">'+t('common.search')+'</button></div></div>';
-    h+='<table class="admin-table" style="width:100%"><thead><tr><th style="width:140px">'+t('mcp.toolId')+'</th><th style="width:80px">'+t('mcp.ownerGateway')+'</th><th style="width:300px">'+t('mcp.toolDesc')+'</th><th style="width:56px;text-align:center">'+t('mcp.params')+'</th><th style="width:70px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
+    h+='<table class="admin-table" style="width:100%"><thead><tr><th style="width:28px"></th><th style="width:140px">'+t('mcp.toolId')+'</th><th style="width:80px">'+t('mcp.ownerGateway')+'</th><th style="width:300px">'+t('mcp.toolDesc')+'</th><th style="width:70px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
     slice.forEach(q=>{
       const prefix=(q||'').split('__')[0];
       const gw=servers.find(x=> (x.tool_prefix||x.name)===prefix);
       const meta=toolMeta[q]||{};
       const desc=meta.description||'';
-      h+='<tr><td style="width:140px;min-width:0;word-break:break-all">'+esc(q)+'</td><td style="width:80px;min-width:0;word-break:break-all">'+esc(gw?gw.name:prefix)+'</td><td style="width:300px;min-width:0;word-break:break-word;line-height:1.4">'+esc(desc)+'</td>'
-        +'<td style="width:56px;text-align:center"><button class="mini" data-mcptool-params="'+esc(q)+'">'+t('mcp.params')+'</button></td>'
+      const open=mcpToolExpanded.has(q);
+      h+='<tr><td class="row-act"><button class="mini" data-mcptool-expand="'+esc(q)+'">'+(open?'−':'+')+'</button></td>'
+        +'<td style="width:140px;min-width:0;word-break:break-all">'+esc(q)+'</td><td style="width:80px;min-width:0;word-break:break-all">'+esc(gw?gw.name:prefix)+'</td><td style="width:300px;min-width:0;word-break:break-word;line-height:1.4">'+esc(desc)+'</td>'
         +'<td class="col-actions" style="width:70px"><button class="mini" data-mcptool-del="'+esc(q)+'">'+t('common.delete')+'</button></td></tr>';
-      h+='<tr class="mcptool-param-row" data-mcptool-paramrow="'+esc(q)+'" hidden><td colspan="5" style="background:var(--bg2,#1b1f27);padding:10px 12px"></td></tr>';
+      if(open){
+        const params=meta.params||[];
+        h+='<tr><td colspan="5" style="padding:0;background:#0f1115"><table class="cfg-table" style="margin:0"><thead><tr>'
+          +'<th>'+t('mcp.paramName')+'</th><th style="width:80px">'+t('mcp.paramType')+'</th>'
+          +'<th style="width:70px">'+t('mcp.paramIn')+'</th><th style="width:50px">'+t('mcp.paramRequired')+'</th>'
+          +'<th>'+t('mcp.toolDesc')+'</th></tr></thead><tbody>';
+        if(!params.length) h+='<tr><td colspan="5" class="hint" style="text-align:center;padding:10px">'+t('mcp.noParams')+'</td></tr>';
+        params.forEach(p=>{
+          const badge=p.in==='header'?'badge':(p.in==='query'?'hint':'');
+          h+='<tr><td style="word-break:break-all">'+esc(p.name)+'</td><td>'+esc(p.type)+'</td>'
+            +'<td><span class="'+badge+'">'+esc(p.in.toUpperCase())+'</span></td>'
+            +'<td>'+(p.required?'✓':'')+'</td>'
+            +'<td style="word-break:break-word;line-height:1.4">'+esc(p.description||'')+'</td></tr>';
+        });
+        h+='</tbody></table></td></tr>';
+      }
     });
     if(!names.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('mcp.emptyTools')+'</td></tr>';
     h+='</tbody></table><div class="row" id="mcpToolPager" style="margin-top:8px"></div>';
@@ -5604,28 +5623,11 @@ async function loadMcpToolsPage(){
       if(!r.ok){ alert(t('common.failPrefix')+r.status); return; }
       loadMcpToolsPage();
     });
-    // 参数展开：点击「参数」按钮，展开一行显示 inputSchema 的每个字段（名/类型/必填/描述）
-    box.querySelectorAll('[data-mcptool-params]').forEach(b=> b.onclick=()=>{
-      const q=b.dataset.mcptoolParams;
-      const row=box.querySelector('[data-mcptool-paramrow="'+CSS.escape(q)+'"]');
-      if(!row) return;
-      const cell=row.firstElementChild;
-      if(!row.hidden){ row.hidden=true; return; }
-      const schema=(toolMeta[q]&&toolMeta[q].input_schema)||{};
-      const props=schema.properties||{};
-      const required=new Set(schema.required||[]);
-      const keys=Object.keys(props);
-      let html='';
-      if(!keys.length){ html='<span class="muted">'+t('mcp.noParams')+'</span>'; }
-      else{
-        html='<table class="admin-table" style="width:100%"><thead><tr><th style="width:160px">'+t('mcp.paramName')+'</th><th style="width:100px">'+t('mcp.paramType')+'</th><th style="width:60px">'+t('mcp.paramRequired')+'</th><th>'+t('mcp.toolDesc')+'</th></tr></thead><tbody>';
-        keys.forEach(k=>{
-          const p=props[k]||{};
-          html+='<tr><td style="word-break:break-all">'+esc(k)+'</td><td>'+esc(p.type||'—')+'</td><td>'+(required.has(k)?'✓':'')+'</td><td style="word-break:break-word;line-height:1.4">'+esc(p.description||'')+'</td></tr>';
-        });
-        html+='</tbody></table>';
-      }
-      cell.innerHTML=html; row.hidden=false;
+    // 展开参数（仿热词管理）：切换 Set 后重绘，展开行嵌子表显示参数的位置/类型/必填/说明
+    box.querySelectorAll('[data-mcptool-expand]').forEach(b=> b.onclick=()=>{
+      const q=b.dataset.mcptoolExpand;
+      if(mcpToolExpanded.has(q)) mcpToolExpanded.delete(q); else mcpToolExpanded.add(q);
+      loadMcpToolsPage();
     });
   }catch(e){ box.innerHTML='<div class="err">'+t('common.errorPrefix')+e.message+'</div>'; }
 }
