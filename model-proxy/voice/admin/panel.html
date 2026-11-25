@@ -936,7 +936,7 @@ const I18N = {
     "ov.redisStatus": "Redis 层",
     "ov.noCache": "未启用缓存，直接读数据库",
     "sec.rateGlobalHint": "全局限流开关在 voice.conf 的 RATE_LIMIT_ENABLED 配置；单个 Key 的限流开关与策略绑定见「访问控制 → 限流」。",
-    "sec.sizeHint": "请求大小限制（0 = 不限）：单位是 tokens / MB / 字符，超限返回 413。",
+    "sec.sizeHint": "请求大小限制（0 或 -1 = 不限）：单位是 tokens / MB / 字符，超限返回 413。",
     "sec.maxLlm": "LLM tokens",
     "sec.maxEmbed": "向量 tokens",
     "sec.maxRerank": "重排 tokens",
@@ -1534,7 +1534,7 @@ const I18N = {
     "ov.redisStatus": "Redis layer",
     "ov.noCache": "No cache, reads DB directly",
     "sec.rateGlobalHint": "Global rate-limit switch is RATE_LIMIT_ENABLED in voice.conf; per-Key switch and policy binding are under Access control → Rate limit.",
-    "sec.sizeHint": "Request size limits (0 = unlimited): units are tokens / MB / characters; exceeding returns 413.",
+    "sec.sizeHint": "Request size limits (0 or -1 = unlimited): units are tokens / MB / characters; exceeding returns 413.",
     "sec.maxLlm": "LLM tokens",
     "sec.maxEmbed": "Embed tokens",
     "sec.maxRerank": "Rerank tokens",
@@ -3340,17 +3340,17 @@ function renderSecTable(){
     <div class="size-limits">
       <div class="hint" style="margin-top:14px">${t('sec.sizeHint')}</div>
       <div class="row"><label>${t('sec.maxLlm')}</label>
-        <input id="cfg_MAX_LLM_TOKENS" type="number" min="0" value="${Number(cfgOrig.MAX_LLM_TOKENS||0)}" /></div>
+        <input id="cfg_MAX_LLM_TOKENS" type="number" min="-1" value="${Number(cfgOrig.MAX_LLM_TOKENS||0)}" /></div>
       <div class="row"><label>${t('sec.maxEmbed')}</label>
-        <input id="cfg_MAX_EMBED_TOKENS" type="number" min="0" value="${Number(cfgOrig.MAX_EMBED_TOKENS||0)}" /></div>
+        <input id="cfg_MAX_EMBED_TOKENS" type="number" min="-1" value="${Number(cfgOrig.MAX_EMBED_TOKENS||0)}" /></div>
       <div class="row"><label>${t('sec.maxRerank')}</label>
-        <input id="cfg_MAX_RERANK_TOKENS" type="number" min="0" value="${Number(cfgOrig.MAX_RERANK_TOKENS||0)}" /></div>
+        <input id="cfg_MAX_RERANK_TOKENS" type="number" min="-1" value="${Number(cfgOrig.MAX_RERANK_TOKENS||0)}" /></div>
       <div class="row"><label>${t('sec.maxAsr')}</label>
-        <input id="cfg_MAX_ASR_MB" type="number" min="0" value="${Number(cfgOrig.MAX_ASR_MB||0)}" /></div>
+        <input id="cfg_MAX_ASR_MB" type="number" min="-1" value="${Number(cfgOrig.MAX_ASR_MB||0)}" /></div>
       <div class="row"><label>${t('sec.maxOcr')}</label>
-        <input id="cfg_MAX_OCR_MB" type="number" min="0" value="${Number(cfgOrig.MAX_OCR_MB||0)}" /></div>
+        <input id="cfg_MAX_OCR_MB" type="number" min="-1" value="${Number(cfgOrig.MAX_OCR_MB||0)}" /></div>
       <div class="row"><label>${t('sec.maxTts')}</label>
-        <input id="cfg_MAX_TTS_CHARS" type="number" min="0" value="${Number(cfgOrig.MAX_TTS_CHARS||0)}" /></div>
+        <input id="cfg_MAX_TTS_CHARS" type="number" min="-1" value="${Number(cfgOrig.MAX_TTS_CHARS||0)}" /></div>
     </div>`;
 }
 
