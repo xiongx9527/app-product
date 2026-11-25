@@ -22,16 +22,33 @@ export interface McpToolInfo {
   params: McpToolParam[]
 }
 
-/** 把 JSON Schema 的 properties 转成简洁参数列表（只取类型/说明，不回传整个 schema）。 */
-function extractParams(schema: unknown): McpToolParam[] {
-  const s = schema as { properties?: Record<string, { type?: string; description?: string }>; required?: string[] } | null
+/**
+ * 把 JSON Schema 的 properties 转成简洁参数列表（只取类型/说明，不回传整个 schema）。
+ * 兼容三种 schema 形态：
+ *  - 标准：{ type: 'string', description: '...' }
+ *  - nullable：{ anyOf: [{type:'string'},{type:'null'}] } → 取非 null 分支
+ *  - FastMCP 无类型注解回退：{ default: null, title: 'Question' } → 类型回退 any，
+ *    说明取 title（MCP server 从参数名生成，非写死）
+ */
+export function extractParams(schema: unknown): McpToolParam[] {
+  type Def = {
+    type?: string
+    title?: string
+    description?: string
+    anyOf?: Array<{ type?: string }>
+  }
+  const s = schema as { properties?: Record<string, Def>; required?: string[] } | null
   const required = new Set(s?.required ?? [])
-  return Object.entries(s?.properties ?? {}).map(([name, def]) => ({
-    name,
-    type: typeof def?.type === 'string' ? def.type : 'any',
-    description: (def?.description ?? '').trim(),
-    required: required.has(name),
-  }))
+  return Object.entries(s?.properties ?? {}).map(([name, def]) => {
+    let type = typeof def?.type === 'string' ? def.type : ''
+    if (!type && Array.isArray(def?.anyOf)) {
+      const branch = def.anyOf.find((b) => typeof b?.type === 'string' && b.type !== 'null')
+      type = branch?.type ?? ''
+    }
+    // description 优先；缺失时用 MCP server 生成的 title 兜底（非硬编码）
+    const description = (def?.description || def?.title || '').trim()
+    return { name, type: type || 'any', description, required: required.has(name) }
+  })
 }
 
 /** 从 JSON-RPC 响应体（可能是 SSE 的 data: 行）里取 id 对应的 result。 */

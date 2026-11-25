@@ -15,10 +15,19 @@
  * 官方类型定义里；这里是刻意处理该扩展字段，不是掩盖 bug。
  */
 import { OpenAIChatModel } from '@agentscope-ai/agentscope/model'
+import { ReasoningChatFormatter } from './reasoningChatFormatter'
 
 type DeltaBlock = { type: string; [k: string]: unknown }
+type OpenAIChatModelOptions = ConstructorParameters<typeof OpenAIChatModel>[0]
 
 export class ReasoningChatModel extends OpenAIChatModel {
+  constructor(options: OpenAIChatModelOptions) {
+    // 默认挂 ReasoningChatFormatter：思考模式下带 tool_calls 的 assistant 消息必须回传
+    // reasoning_content，否则上游 400、整轮在工具调用后静默中断（见 formatter 注释）。
+    // 调用方显式传 formatter 时以调用方为准。
+    super({ formatter: new ReasoningChatFormatter(), ...options })
+  }
+
   // 覆盖父类同名方法（覆盖是隐式发生的，不加 override 以避开第三方严格签名不匹配）。
   async *_parseOpenAIStreamedResponse(
     stream: AsyncIterable<any>,

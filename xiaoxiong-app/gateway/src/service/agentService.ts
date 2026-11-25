@@ -7,6 +7,8 @@ import { messages } from '../i18n'
 import { bargeDiag } from '../diagLog'
 import { getCredentialByType, getGlobalApiKey } from './credentialStore'
 import { toolPrefix, injectCredential, injectGlobalApiKey } from './toolCredential'
+import { parseToken, setMcpToken, getMcpToken } from './mcpTokenCache'
+import { enhanceToolDescriptions } from './toolDescEnhancer'
 import type { DetailContext, Lang, McpServerConfig } from '../protocol'
 import type { LlmConfig } from '../config'
 import { createToolkit, registerMcpServers, type LocationProvider, type MemoryStore, type McpClientHandle, type RequestLocation } from './tools'
@@ -95,6 +97,10 @@ export async function createAgentService(
   // MCP 连接是异步的，必须在 Agent 构造之前 await 完，否则工具在首轮对话里尚未就绪。
   const toolkit = createToolkit(lang, locationProvider, memoryStore, requestLocation, autoMemory ?? false, autoLearnEngine)
   const mcpClients = await registerMcpServers(toolkit, mcpServers)
+  // 工具自己告诉 LLM 凭据怎么用：对存在 access_token 工具的服务，动态给其工具描述补一句
+  // 「先调 access_token 拿 token 再作为入参传入」。不写死业务名（前缀从工具名提取），不污染系统提示词。
+  const enhanced = enhanceToolDescriptions((toolkit as unknown as { tools: Array<{ name?: string; description?: string; inputSchema?: unknown }> }).tools ?? [])
+  if (enhanced.length) bargeDiag(`TOOL-DESC enhanced n=${enhanced.length}`)
   // 【常驻诊断】记录每次工具调用（含 MCP 工具）：真机只能经 /api/diag/log 观测
   // 「LLM 到底有没有触发 MCP」。
   // 【凭据自动注入】工具名 `xxx__` 前缀 = 账号本 type（用户自定义，如 askdata）。
@@ -128,6 +134,18 @@ export async function createAgentService(
         toolCall.input = result.input
         if (result.injected) bargeDiag(`TOOL-CRED injected prefix=${prefix} fields=${result.fields.join(',')}`)
         else if (!cred) bargeDiag(`TOOL-CRED none prefix=${prefix}`)
+        // 3) mcp_* 兼容工具带 token 参数：注入 access_token 工具换到并缓存的 token。
+        //    token 由账号本账号动态换取（每个账号自己的权限），绕开中转层静态 token 问题。
+        const cachedToken = getMcpToken(prefix)
+        if (cachedToken && allowedKeys?.includes('token')) {
+          let input: Record<string, unknown> = {}
+          try { input = JSON.parse(toolCall.input || '{}') } catch { input = {} }
+          if (!input.token) {
+            input.token = cachedToken
+            toolCall.input = JSON.stringify(input)
+            bargeDiag(`TOOL-TOKEN injected prefix=${prefix}`)
+          }
+        }
       }
     } catch (e) {
       bargeDiag(`TOOL-CRED error name=${name} err=${(e as Error).message}`)
@@ -136,9 +154,18 @@ export async function createAgentService(
     // 「工具触发了但回答出了问题」时靠它区分是工具失败还是 LLM 没接住结果。
     const gen = origCallTool(toolCall)
     let last: any
-    for await (const chunk of gen) {
-      last = chunk
-      yield chunk
+    // 关键：AgentScope 的 Agent._acting 用「生成器返回值」当工具最终结果（done 时读 value.content），
+    // 只在循环里 yield 而不 return 会让它读到 undefined.content 抛 TypeError，
+    // 表现为「工具明明执行成功、模型却再没有任何输出」（真机「查询周边」无回答的真凶）。
+    // 因此这里手动迭代、透传底层 callToolFunction 的返回值（流式工具时它才是合并后的完整结果）。
+    while (true) {
+      const { value, done } = await gen.next()
+      if (done) {
+        last = value ?? last
+        break
+      }
+      last = value
+      yield value
     }
     if (last) {
       const state = String(last.state ?? '?')
@@ -148,7 +175,16 @@ export async function createAgentService(
         if (Array.isArray(content)) text = content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join(' ').slice(0, 200)
       } catch { /* ignore */ }
       bargeDiag(`TOOL-RESULT name=${name} state=${state} text="${text.replace(/\n/g, ' ')}"`)
+      // access_token 工具成功 → 提取 token 按 type 缓存，供后续 mcp_* 工具注入
+      if (name.includes('__access_token') && state === 'success') {
+        const token = parseToken(text)
+        if (token) {
+          setMcpToken(toolPrefix(name), token)
+          bargeDiag(`TOOL-TOKEN cached prefix=${toolPrefix(name)}`)
+        }
+      }
     }
+    return last
   } as unknown as typeof toolkit.callToolFunction
   const agent = new Agent({
     name: 'Xiong',
