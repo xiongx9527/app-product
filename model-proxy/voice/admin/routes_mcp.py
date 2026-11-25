@@ -111,7 +111,8 @@ def build_router() -> APIRouter:
         for q, meta in (mcp_gateway._upstream_tools or {}).items():
             srv = voice_db.mcp_server_get(meta["server_id"]) or {}
             tools[q] = {"server_id": meta["server_id"], "name": meta["name"],
-                        "server": srv.get("name") or "", "description": meta.get("description") or ""}
+                        "server": srv.get("name") or "", "description": meta.get("description") or "",
+                        "input_schema": meta.get("input_schema") or {}}
         return {"tools": tools}
 
     @router.get("/admin/api/mcp/acl", dependencies=[Depends(require_admin)])

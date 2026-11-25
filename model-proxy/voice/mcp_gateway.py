@@ -276,8 +276,10 @@ async def refresh() -> dict[str, Any]:
     http_server = FastMCP("app-product-gateway-http")
     registered = _register_tools(sse_server)      # 以 SSE 实例的注册结果为准（两实例逻辑相同）
     _register_tools(http_server)
-    for q, orig, sid, desc in registered:
-        _upstream_tools[q] = {"server_id": sid, "name": orig, "description": desc}
+    for q, orig, sid, desc, schema in discovered:
+        # 带上 inputSchema，供管理面板「工具」页展开查看参数说明。
+        _upstream_tools[q] = {"server_id": sid, "name": orig, "description": desc,
+                              "input_schema": schema or {}}
     _gateway_server = sse_server
     _stream_server = http_server
     return {"servers": len(servers), "tools": len(registered),
