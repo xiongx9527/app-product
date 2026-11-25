@@ -12,7 +12,8 @@ from typing import Any
 
 SEED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed")
 
-VOICE_FILES = ("voices_builtin.json", "voices_builtin_kokoro.json",
+# kokoro 本地 TTS 已移除（容器内依赖与重排的 numpy 冲突，且无本地模型）。
+VOICE_FILES = ("voices_builtin.json",
                "voices_dashscope.json", "voices_deepseek.json")
 MODEL_FILE = "speech_models.json"
 

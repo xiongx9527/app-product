@@ -1912,19 +1912,15 @@ _CONFIG_TO_ENABLED = (
 def _seed_enabled_from_config() -> None:
     """启用表为空时，从旧 config_kv 勾选清单迁移一次（幂等）。"""
     c = _conn_get()
-    # 注意：是否已迁移的判断必须在补内置项「之前」读取。否则全新库补完 kokoro
+    # 注意：是否已迁移的判断必须在补内置项「之前」读取。否则全新库补完内置项
     # 后会被误判为已迁移，导致下面 dashscope / deepseek 的 config_kv 勾选清单不再迁移。
     already_seeded = bool(
         c.execute("SELECT COUNT(*) FROM enabled_speech_models").fetchone()[0]
     )
-    # kokoro 是后上线的内置本地 TTS：存量库在它上线前已非空，不会走下面的 config_kv
-    # 迁移，必须无条件补一次，否则管理页内置 TTS 模型列表永远缺 kokoro。
-    # PRIMARY KEY(kind,provider,model) + INSERT OR IGNORE 保证重复启动不会插出重复行。
+    # kokoro 本地 TTS 已移除（依赖与重排 numpy 冲突、无本地模型）。
+    # 存量库若还残留 kokoro 启用行，启动时一并清掉，避免管理页又显示出来。
     with _lock:
-        c.execute(
-            "INSERT OR IGNORE INTO enabled_speech_models(kind, provider, model, is_default, sort) "
-            "VALUES(?,?,?,?,?)", ("tts", "builtin", "kokoro", 0, 1)
-        )
+        c.execute("DELETE FROM enabled_speech_models WHERE model='kokoro'")
         c.commit()
     if already_seeded:
         return

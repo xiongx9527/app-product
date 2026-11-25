@@ -16,6 +16,9 @@ _lock = threading.Lock()
 # 默认模型目录候选（与 install-rerank.sh 一致）
 _CANDIDATES = [
     os.environ.get("RERANK_MODEL", ""),
+    # 容器里 VOICE_HOME=/data，模型挂在 /data/models 下；优先于固定 ~ 路径。
+    os.path.join(os.environ.get("VOICE_HOME", ""), "models", "bge-reranker-v2-m3")
+    if os.environ.get("VOICE_HOME") else "",
     os.path.expanduser("~/Workspace/Soft/models/bge-reranker-v2-m3"),
     os.path.expanduser("~/.app-product/voice/models/bge-reranker-v2-m3"),
 ]

@@ -4084,7 +4084,8 @@ async def embeddings(request: Request):
         upstream_pool.mark_failure(cap, entry)
         if req_base_url:
             return error_response(502, f"无法连接 base_url 指定的上游（{entry['base_url']}）：{exc}；请检查地址是否正确、该代理/服务是否已启动。")
-        return error_response(502, f"上游 LLM 请求失败: {exc}")
+        _cap_name = {"LLM": "LLM", "EMBED": "向量模型", "RERANK": "重排模型"}.get(cap, cap or "上游")
+        return error_response(502, f"上游 {_cap_name} 请求失败: {exc}")
     if response.status_code >= 400:
         upstream_pool.mark_failure(cap, entry, response.status_code)
         return error_response(502, f"上游 LLM 失败（{response.status_code}）: {upstream_error(response)}")
