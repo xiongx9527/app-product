@@ -276,6 +276,10 @@ def build_router() -> APIRouter:
         needle = (q or "").strip().lower()
         out = []
         for r in rows:
+            # 操作日志只保留 /admin/*** 相关审计；http.request 是历史 voice 接口
+            # 轮询记录（已停止写入），过滤掉避免刷屏、挤占真正的管理操作。
+            if (r.get("action") or "") == "http.request":
+                continue
             ts = r.get("ts") or 0
             try:
                 time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))

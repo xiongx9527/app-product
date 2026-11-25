@@ -3,14 +3,15 @@
 背景：
     voice.log 的 access 日志原先是 `127.0.0.1:端口`（带端口、无时间）；经反向代理
     / adb reverse 时 uvicorn 只看到 127.0.0.1，看不到真实来源。现要求：
-    access 日志去端口、支持 X-Forwarded-For、客户端 IP 写进审计表。
+    access 日志去端口、支持 X-Forwarded-For；审计表只记录 /admin/*** 接口
+    （操作日志只保留管理面数据），voice 请求不写审计表。
 
 锁住的关键点：
 1. _strip_port：IPv4 / IPv6 / 无端口都正确。
 2. client_ip_for_log：XFF 首项 → X-Real-IP → 直连对端；非法 / 超长值丢弃。
 3. 安全边界：client_ip()（白名单 / 鉴权用）绝不受伪造 XFF 影响。
 4. _IpOnlyAccessFormatter：输出纯 IP + 时间戳，不含端口。
-5. client_ip_audit_middleware：语音请求把客户端 IP 写进 audit 表。
+5. client_ip_audit_middleware：voice 请求不写 audit 表，/admin/*** 请求写 audit 表。
 
 运行：
     cd model-proxy/voice
@@ -114,7 +115,7 @@ def main() -> int:
     check("access 日志带时间戳",
           bool(re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", out)), out)
 
-    # 5) 审计 middleware：语音请求把客户端 IP 写进 audit 表
+    # 5) 审计 middleware：操作日志只记录 /admin/***，voice 请求不再写 audit 表
     # 换临时库前清掉主线程 thread-local 连接，避免指向上一个库。
     if hasattr(voice_db._conn_local, "c"):
         try:
@@ -132,22 +133,23 @@ def main() -> int:
     client = TestClient(srv.app)
     r = client.get("/voice/__audit_probe__",
                    headers={"x-forwarded-for": "203.0.113.9"})
-    check("探针请求可达（404 也会被审计）", r.status_code == 404,
+    check("探针请求可达（404 仍返回）", r.status_code == 404,
           f"status={r.status_code}")
     audits = voice_db.recent_audit(limit=50)
-    hit = [a for a in audits if a["action"] == "http.request"
-           and a["actor"] == "203.0.113.9"]
-    check("语音请求把客户端 IP 写进 audit 表", len(hit) == 1,
+    hit = [a for a in audits if a["action"] == "http.request"]
+    check("voice 请求不写审计表（操作日志只要 /admin/***）", len(hit) == 0,
           f"rows={len(hit)}")
-    check("审计 detail 含方法与路径",
-          bool(hit) and "GET /voice/__audit_probe__" in hit[0]["detail"],
-          hit[0]["detail"] if hit else "")
 
     client.get("/voice/__audit_probe2__")  # 不带 XFF
     audits2 = voice_db.recent_audit(limit=50)
-    check("无 XFF 时审计回退直连对端",
-          any(a["action"] == "http.request" and a["actor"] == "testclient"
-              for a in audits2))
+    check("多个 voice 请求后审计表仍为空",
+          not any(a["action"] == "http.request" for a in audits2))
+
+    # /admin/*** 请求仍正常写审计（action=admin.api）
+    r3 = client.get("/admin/api/__audit_probe__")
+    audits3 = voice_db.recent_audit(limit=50)
+    hit3 = [a for a in audits3 if a["action"] == "admin.api"]
+    check("/admin/*** 请求仍写审计表", len(hit3) >= 1, f"rows={len(hit3)}")
 
     failed = [n for n, ok in _RESULTS if not ok]
     print("\n== SUMMARY:", "ALL PASS" if not failed

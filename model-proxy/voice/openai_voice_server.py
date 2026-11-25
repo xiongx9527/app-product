@@ -1054,9 +1054,8 @@ async def security_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# 需要把客户端 IP 写进审计表的请求：语音数据接口 + 管理面板保存配置。
+# 仅需记录代理来源差异日志的请求前缀（不写审计表）。
 _AUDIT_VOICE_PREFIX = "/voice/"
-_AUDIT_CONFIG_SAVE = "/admin/api/config"
 
 
 @app.middleware("http")
@@ -1091,18 +1090,13 @@ async def client_ip_audit_middleware(request: Request, call_next):
         except Exception:  # noqa: BLE001  详情日志失败绝不影响业务
             pass
     response = await call_next(request)
-    if request.method != "OPTIONS" and (
-        path.startswith(_AUDIT_VOICE_PREFIX)
-        or (path == _AUDIT_CONFIG_SAVE and request.method == "POST")
-    ):
-        detail = f"rid={rid} {request.method} {path} -> {response.status_code}"
-        try:
-            await asyncio.to_thread(voice_db.append_audit, log_ip, "http.request", detail)
-        except Exception:  # noqa: BLE001  审计失败不能影响业务响应
-            pass
+    # /voice/* 请求不写审计表：操作日志只保留 /admin/*** 接口数据，
+    # voice 接口（如音色列表轮询）高频且只读，写审计会刷屏并挤掉真正的管理操作。
+    # 仅在代理带来不同来源 IP 时打一行日志，便于排查真实来源。
+    if request.method != "OPTIONS" and path.startswith(_AUDIT_VOICE_PREFIX):
         peer = client_ip(request)
-        # 只有代理带来不同来源时额外打一行，避免与去端口后的 access 日志重复刷屏。
         if log_ip != peer:
+            detail = f"rid={rid} {request.method} {path} -> {response.status_code}"
             logging.getLogger("uvicorn.error").info(
                 "client=%s (forwarded, peer=%s) rid=%s %s", log_ip, peer, rid, detail
             )
