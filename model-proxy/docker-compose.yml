@@ -17,6 +17,13 @@ services:
     image: app-product/model-proxy:local
     container_name: model-proxy
     restart: unless-stopped
+    # 容器日志轮转：json-file 单文件上限 10MB、最多保留 20 个归档，防止日志撑爆磁盘。
+    # 与概览页 LOG_ROTATE_MAX_MB / LOG_ROTATE_MAX_FILES 展示口径一致。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "20"
     # 容器加固：丢弃全部 Linux capability、禁止提权、根文件系统只读（仅 /data 卷可写）。
     # 注意：业务需写 /tmp（ffmpeg/推理临时文件），用 tmpfs 提供可写内存盘。
     security_opt:

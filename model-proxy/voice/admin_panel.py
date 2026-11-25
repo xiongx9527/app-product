@@ -718,17 +718,67 @@ def _system_overview() -> dict[str, Any]:
               "health": cache_health, "switch": "memory" if cache_disabled else "redis"}
 
     # ── 日志 ──
-    log_path = os.path.join(VOICE_HOME_DIR, "voice.log")
-    log_size = safe(lambda: fmt_bytes(os.path.getsize(log_path))) if os.path.isfile(log_path) else "—"
-    log_mtime = safe(lambda: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(log_path)))) if os.path.isfile(log_path) else "—"
-    # 日志文件数 = 主日志 voice.log（存在则计入）+ 轮转归档 voice.log.*（与 voice.sh do_rotate 命名一致）
-    def _log_file_count():
-        import glob
-        files = [f for f in glob.glob(os.path.join(VOICE_HOME_DIR, "voice.log.*")) if os.path.isfile(f)]
-        if os.path.isfile(log_path):
-            files.append(log_path)
-        return len(set(files))
-    log_count = safe(_log_file_count, 0)
+    # Docker 部署时服务日志走 stdout → docker logs，不写 voice.log（那个文件停留在
+    # 本机启动时代），因此概览从 docker.sock 读取容器真实日志；非 Docker 仍读文件。
+    def docker_log_stats() -> dict[str, Any] | None:
+        if not docker_flag:
+            return None
+        try:
+            import httpx
+            cid = safe(socket.gethostname, "")[:12]
+            with httpx.Client(transport=httpx.HTTPTransport(uds="/var/run/docker.sock"), timeout=3) as c:
+                r = c.get(f"http://docker/containers/{cid}/logs",
+                          params={"stdout": 1, "stderr": 1, "timestamps": 1})
+                if r.status_code != 200:
+                    return None
+                raw = r.content
+                # Docker multiplexed 流每帧有 8 字节头；解析出去掉帧头的纯文本。
+                text_lines: list[str] = []
+                i = 0
+                n = len(raw)
+                while i + 8 <= n:
+                    size = int.from_bytes(raw[i + 4:i + 8], "big")
+                    i += 8
+                    if size <= 0 or i + size > n:
+                        break
+                    chunk = raw[i:i + size].decode("utf-8", "replace")
+                    i += size
+                    text_lines.extend(chunk.splitlines())
+                if not text_lines:
+                    # 非 tty 容器可能无帧头，直接按行切
+                    text_lines = raw.decode("utf-8", "replace").splitlines()
+                # 末行形如 "2026-11-25T00:08:19.645182149Z 2026-11-25 00:08:19 INFO: ..."
+                last_line = text_lines[-1] if text_lines else ""
+                last_write = "—"
+                m = re.match(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", last_line)
+                if m:
+                    last_write = m.group(2)
+                # 字节数用去掉帧头后的纯文本累加，避免把帧头算进日志大小。
+                text_bytes = sum(len(x.encode("utf-8")) + 1 for x in text_lines)
+                return {"size": fmt_bytes(text_bytes), "last_write": last_write,
+                        "lines": len(text_lines), "source": "docker"}
+        except Exception:
+            return None
+
+    docker_log = safe(docker_log_stats, None)
+    if docker_log is not None:
+        # 概览沿用原有字段：files 表示日志文件数（Docker 由引擎管理，显示为 1），
+        # size/last_write 用容器真实日志替换掉陈旧的 voice.log 数据。
+        log_size = docker_log["size"]
+        log_mtime = docker_log["last_write"]
+        log_count = 1
+    else:
+        log_path = os.path.join(VOICE_HOME_DIR, "voice.log")
+        log_size = safe(lambda: fmt_bytes(os.path.getsize(log_path))) if os.path.isfile(log_path) else "—"
+        log_mtime = safe(lambda: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(log_path)))) if os.path.isfile(log_path) else "—"
+        # 日志文件数 = 主日志 voice.log（存在则计入）+ 轮转归档 voice.log.*（与 voice.sh do_rotate 命名一致）
+        def _log_file_count():
+            import glob
+            files = [f for f in glob.glob(os.path.join(VOICE_HOME_DIR, "voice.log.*")) if os.path.isfile(f)]
+            if os.path.isfile(log_path):
+                files.append(log_path)
+            return len(set(files))
+        log_count = safe(_log_file_count, 0)
     # 日志轮转配置（与 voice.sh do_rotate 同源：config_store / voice.conf，缺省对齐 7/10/both）。
     # 仅展示，不在此处修改——轮转由 voice.sh rotate 按这些值执行。
     _lcfg = safe(lambda: config_store.instance().all(), {}) or {}
