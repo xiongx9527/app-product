@@ -244,6 +244,20 @@ def build_router() -> APIRouter:
         voice_db.mcp_http_tool_delete(tid)
         return {"ok": True}
 
+    @router.post("/admin/api/mcp/http-tools/test-temp", dependencies=[Depends(require_admin)])
+    async def mcp_http_tool_test_temp(body: dict[str, Any]):
+        """用弹框里的临时配置（未保存）测试 HTTP 工具，返回调用结果。"""
+        import mcp_gateway
+        tmp = {"name": str(body.get("name") or "test"), "url": str(body.get("url") or ""),
+               "method": str(body.get("method") or "POST"),
+               "headers_json": body.get("headers_json") or "{}",
+               "params_json": body.get("params_json") or "[]",
+               "timeout_sec": int(body.get("timeout_sec") or 30)}
+        if not tmp["url"].lower().startswith(("http://", "https://")):
+            return {"ok": False, "result": "url 必须是 http(s) 地址"}
+        result = await mcp_gateway._call_http_tool(tmp, (body or {}).get("args") or {})
+        return {"ok": True, "result": str(result)[:4000]}
+
     @router.post("/admin/api/mcp/http-tools/{tid}/test", dependencies=[Depends(require_admin)])
     async def mcp_http_tool_test(tid: int, body: dict[str, Any] | None = None):
         """测试一个 HTTP 工具：按参数定义构造示例入参，真实调用一次并返回结果。"""

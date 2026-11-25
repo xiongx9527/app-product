@@ -143,7 +143,10 @@
   .ht-field { margin-top:10px; }
   .ht-field:first-child { margin-top:0; }
   .ht-field > label { display:block; margin:0 0 5px; color:var(--mut); font-size:12px; }
-  .ht-field input, .ht-field select, .ht-field textarea { width:100%; box-sizing:border-box; }
+  .ht-field input, .ht-field select, .ht-field textarea {
+    width:100%; box-sizing:border-box; background:#0f1115; border:1px solid var(--line);
+    color:var(--fg); border-radius:8px; padding:8px 10px; font-size:13px; outline:none; }
+  .ht-field input:focus, .ht-field select:focus, .ht-field textarea:focus { border-color:var(--acc); }
   /* 抑制浏览器自动填充把输入框刷成浅色背景 */
   .modal input:-webkit-autofill, .modal input:-webkit-autofill:hover, .modal input:-webkit-autofill:focus {
     -webkit-text-fill-color:var(--fg); -webkit-box-shadow:0 0 0 1000px #0f1115 inset; transition:background-color 9999s; }
@@ -797,6 +800,7 @@ const I18N = {
     "mcp.otherParams": "参数定义",
     "mcp.in_query": "Query 参数",
     "mcp.in_body": "Body 参数",
+    "mcp.testArgsHint": "填写测试参数值（不会保存）",
     "mcp.otherParamsHint": "格式：[{\"name\":\"q\",\"type\":\"string\",\"in\":\"query\",\"required\":false,\"description\":\"关键词\"}]；in 可为 query/header/body",
     "mcp.otherEditTitle": "编辑其他工具",
     "mcp.toolPrefix": "工具前缀",
@@ -1389,6 +1393,7 @@ const I18N = {
     "mcp.otherParams": "Parameters",
     "mcp.in_query": "Query params",
     "mcp.in_body": "Body params",
+    "mcp.testArgsHint": "Fill test argument values (not saved)",
     "mcp.otherParamsHint": "Format: [{\"name\":\"q\",\"type\":\"string\",\"in\":\"query\",\"required\":false,\"description\":\"keyword\"}]; in = query/header/body",
     "mcp.otherEditTitle": "Edit other tool",
     "mcp.toolPrefix": "Tool prefix",
@@ -5810,7 +5815,10 @@ function showHttpToolModal(x){
     +'<div class="ht-field"><label>'+t('mcp.otherUrl')+'</label><input id="htUrl" value="'+val('url')+'" placeholder="https://api.example.com/x" /></div>'
     +'<div class="ht-field"><label>'+t('mcp.toolDesc')+'</label><textarea id="htDesc" rows="3">'+val('description')+'</textarea></div>'
     +'<div class="ht-field"><label>'+t('mcp.otherHeaders')+'（JSON 对象）</label><textarea id="htHeaders" rows="2">'+val('headers_json','{}')+'</textarea></div>'
-    +section('query')+section('body');
+    +section('query')+section('body')
+    +'<div class="ht-field" style="margin-top:14px"><button type="button" class="sec" id="htTest">'+t('common.test')+'</button>'
+      +'<div id="htTestZone" style="display:none"></div>'
+      +'<pre id="htTestOut" class="m-out" style="margin-top:8px;display:none;max-height:200px;overflow:auto"></pre></div>';
   const m=showModal(x?t('mcp.otherEditTitle'):t('mcp.otherAdd'), body, async(m)=>{
     const rows=[];
     m.querySelectorAll('.ht-p-row').forEach(tr=>{
@@ -5839,18 +5847,50 @@ function showHttpToolModal(x){
     // 用同区已有行的 HTML 结构复制一个空行
     const proto=tbody.querySelector('.ht-p-row');
     if(proto){ const clone=proto.cloneNode(true);
-      clone.querySelectorAll('input[type=text],input:not([type])').forEach(el=>el.value='');
-      clone.querySelector('.ht-p-req').checked=false;
+      clone.querySelectorAll('input').forEach(el=>{ if(el.type==='checkbox') el.checked=false; else el.value=''; });
+      clone.querySelectorAll('select').forEach((sel,i)=>{ if(sel===clone.querySelector('.ht-p-type')) sel.value='string'; });
       tbody.appendChild(clone);
     }
   });
-  m.querySelectorAll('.ht-p-body').forEach(tbody=>{
-    tbody.querySelectorAll('.ht-p-del').forEach(b=> b.onclick=()=>{
-      const rows=tbody.querySelectorAll('.ht-p-row');
-      if(rows.length>1) b.closest('tr').remove();
-      else { rows[0].querySelectorAll('input,select').forEach(el=>{ if(el.type==='checkbox') el.checked=false; else el.value=''; }); }
-    });
+  // 删除按钮用事件委托（绑在 modal 上），动态克隆新增的行也能删
+  m.addEventListener('click', (ev)=>{
+    const del=ev.target.closest && ev.target.closest('.ht-p-del');
+    if(!del) return;
+    del.closest('tr').remove();  // 任何行数都可删除（含最后一行）；需要时用「+ 添加参数」再加
   });
+  // 测试按钮：在当前弹框内展开参数输入区，填值后带 args 调用（不弹新 modal，避免覆盖当前配置）
+  const htTest=m.querySelector('#htTest'), htOut=m.querySelector('#htTestOut');
+  if(htTest) htTest.onclick=()=>{
+    const defs=[];
+    m.querySelectorAll('.ht-p-row').forEach(tr=>{
+      const name=tr.querySelector('.ht-p-name').value.trim();
+      if(name) defs.push({name, type:tr.querySelector('.ht-p-type').value, in:tr.dataset.in,
+        required:tr.querySelector('.ht-p-req').checked,
+        description:tr.querySelector('.ht-p-desc').value.trim()});
+    });
+    const cfg={name:m.querySelector('#htName').value.trim(), method:m.querySelector('#htMethod').value,
+      url:m.querySelector('#htUrl').value.trim(), headers_json:m.querySelector('#htHeaders').value.trim()||'{}',
+      params_json:JSON.stringify(defs)};
+    let argHtml='<div class="hint" style="margin-top:8px">'+t('mcp.testArgsHint')+'</div>';
+    defs.forEach(p=>{
+      argHtml+='<div class="ht-field"><label>'+esc(p.name)+(p.required?' *':'')+' <span class="hint">'+esc(p.in.toUpperCase())+'</span></label>'
+        +'<input class="ht-arg" data-name="'+esc(p.name)+'" placeholder="'+esc(p.description||p.type)+'" /></div>';
+    });
+    if(!defs.length) argHtml+='<div class="hint">'+t('mcp.noParams')+'</div>';
+    const zone=m.querySelector('#htTestZone');
+    zone.innerHTML=argHtml+'<div class="row" style="margin-top:10px"><button type="button" class="sec ht-do-test">'+t('common.test')+'</button></div>';
+    zone.style.display='block';
+    zone.querySelector('.ht-do-test').onclick=async ()=>{
+      const args={};
+      zone.querySelectorAll('.ht-arg').forEach(el=>{ if(el.value.trim()) args[el.dataset.name]=el.value.trim(); });
+      htOut.style.display='block'; htOut.textContent=t('common.loadingX');
+      try{
+        const r=await api('/admin/api/mcp/http-tools/test-temp',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({...cfg, args})});
+        htOut.textContent=r.ok?((await r.json()).result||''):(t('common.failPrefix')+r.status);
+      }catch(err){ htOut.textContent=t('common.errorPrefix')+err.message; }
+    };
+  };
 }
 
 // MCP 工具/参数说明编辑（兜底）：事件委托，覆盖工具页与新增工具弹框两处动态渲染的按钮。
