@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -27,6 +28,76 @@ def _param_location(name: str) -> str:
     if n in _QUERY_NAMES:
         return "query"
     return "body"
+
+
+# 上游 inputSchema 通常不带参数描述；按参数名补一份中文说明（来自问数 MCP 源码语义）。
+_PARAM_DESC: dict[str, str] = {
+    "token": "访问令牌（SQLBot 兼容，兼容工具可传；主通道由网关自动注入）",
+    "authorization": "第三方鉴权头（Bearer token）",
+    "username": "用户名（用于换取访问 token）",
+    "password": "密码（用于换取访问 token）",
+    "oid": "组织/工作空间 ID",
+    "workspaceid": "工作空间 ID（管理员可指定，默认当前工作空间）",
+    "datasourceid": "数据源 ID（选定后只查该数据源）",
+    "datasource_id": "数据源 ID（兼容 SQLBot 命名，可为对象）",
+    "chatid": "会话 ID（续接已有问数会话并落库）",
+    "chat_id": "会话 ID（兼容 SQLBot 命名）",
+    "question": "自然语言问题（问数输入）",
+    "custommodel": "按次指定对话模型 ID",
+    "custom_model": "按次指定对话模型（兼容 SQLBot 命名）",
+    "returnimg": "是否返回图片（true=出图，默认 true）",
+    "return_img": "是否返回图片（兼容 SQLBot 命名）",
+    "lang": "回答语言（如 zh / en）",
+    "stream": "是否流式返回",
+    "message": "附加消息/说明",
+    "url": "第三方数据接口地址",
+}
+
+
+def _param_desc_overrides() -> dict[str, str]:
+    """面板编辑的参数说明覆盖：config_kv 的 MCP_PARAM_DESC_OVERRIDE（JSON）。"""
+    try:
+        import config_store
+        raw = config_store.instance().get("MCP_PARAM_DESC_OVERRIDE", "") or ""
+        data = json.loads(raw) if raw else {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _param_desc(name: str, fallback: str, tool: str = "", overrides: dict[str, str] | None = None) -> str:
+    # 优先级：面板覆盖 > 上游 description > 内置字典
+    if overrides and tool:
+        custom = overrides.get(f"{tool}|{name}") or overrides.get(name)
+        if custom:
+            return custom
+    return (fallback or "").strip() or _PARAM_DESC.get((name or "").strip().lower(), "")
+
+
+def _build_params(schema: dict[str, Any], biz_type: str = "", tool: str = "") -> list[dict[str, Any]]:
+    """从 inputSchema 构造展示用参数列表；askdata 类补一行网关自动注入的鉴权头。"""
+    schema = schema or {}
+    props = schema.get("properties") or {}
+    required = set(schema.get("required") or [])
+    overrides = _param_desc_overrides()
+    params: list[dict[str, Any]] = []
+    for pn, pp in props.items():
+        if not isinstance(pp, dict):
+            pp = {}
+        params.append({"name": pn, "type": pp.get("type") or "string",
+                       "required": pn in required, "in": _param_location(pn),
+                       "description": _param_desc(pn, pp.get("description") or "", tool, overrides),
+                       "auto": False})
+    # askdata 网关用账号密码换 token 并注入 X-SQLBOT-TOKEN，上游 schema 通常不声明，
+    # 面板补一行让用户知道该工具的鉴权来源（非用户填写参数）。
+    if (biz_type or "").strip().lower() == "askdata":
+        has_auth = any(p["name"].lower() in {"token", "authorization", "x-sqlbot-token"}
+                       for p in params)
+        if not has_auth:
+            params.append({"name": "X-SQLBOT-TOKEN", "type": "string", "required": True,
+                           "in": "header", "description": "网关自动注入（账号密码换取，无需填写）",
+                           "auto": True})
+    return params
 
 
 def build_router() -> APIRouter:
@@ -128,16 +199,7 @@ def build_router() -> APIRouter:
         for q, meta in (mcp_gateway._upstream_tools or {}).items():
             srv = voice_db.mcp_server_get(meta["server_id"]) or {}
             schema = meta.get("input_schema") or {}
-            props = schema.get("properties") or {}
-            required = set(schema.get("required") or [])
-            # 给每个参数补上推断的位置（header/body/query）与必填标记，供面板展开展示。
-            params = []
-            for pn, pp in props.items():
-                if not isinstance(pp, dict):
-                    pp = {}
-                params.append({"name": pn, "type": pp.get("type") or "string",
-                               "required": pn in required, "in": _param_location(pn),
-                               "description": pp.get("description") or ""})
+            params = _build_params(schema, srv.get("biz_type") or "", meta.get("name") or "")
             tools[q] = {"server_id": meta["server_id"], "name": meta["name"],
                         "server": srv.get("name") or "", "description": meta.get("description") or "",
                         "input_schema": schema, "params": params}
@@ -205,20 +267,39 @@ def build_router() -> APIRouter:
             out_tools = []
             for t in tools:
                 schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
-                props = schema.get("properties") or {}
-                required = set(schema.get("required") or [])
-                params = []
-                for pn, pp in props.items():
-                    if not isinstance(pp, dict):
-                        pp = {}
-                    params.append({"name": pn, "type": pp.get("type") or "string",
-                                   "required": pn in required, "in": _param_location(pn),
-                                   "description": pp.get("description") or ""})
+                params = _build_params(schema, tmp.get("biz_type") or "", t.name)
                 out_tools.append({"name": t.name, "description": getattr(t, "description", "") or "",
                                   "params": params})
             return {"ok": True, "tools": out_tools}
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:300]}
+
+    @router.put("/admin/api/mcp/param-desc", dependencies=[Depends(require_admin)])
+    async def mcp_param_desc_set(body: dict[str, Any]):
+        """面板编辑工具参数说明（兜底）：写 config_kv.MCP_PARAM_DESC_OVERRIDE。
+
+        body: {tool, param, description}。description 为空则删除该条覆盖。
+        key 用原始工具名（不带网关前缀），工具页与新增工具弹框共用同一份覆盖。
+        操作记入审计。
+        """
+        import config_store
+        tool = str(body.get("tool") or "").strip()
+        param = str(body.get("param") or "").strip()
+        description = str(body.get("description") or "").strip()
+        if not tool or not param:
+            return {"ok": False, "error": "tool 与 param 不能为空"}
+        overrides = _param_desc_overrides()
+        key = f"{tool}|{param}"
+        if description:
+            overrides[key] = description
+        else:
+            overrides.pop(key, None)
+        config_store.instance().bulk({"MCP_PARAM_DESC_OVERRIDE": json.dumps(overrides, ensure_ascii=False)})
+        try:
+            voice_db.append_audit("admin", "mcp_param_desc_set", f"tool={tool} param={param}")
+        except Exception:
+            pass
+        return {"ok": True, "description": description}
 
     @router.post("/admin/api/mcp/refresh", dependencies=[Depends(require_admin)])
     async def mcp_refresh():

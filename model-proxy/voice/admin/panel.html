@@ -791,6 +791,8 @@ const I18N = {
     "mcp.paramType": "类型",
     "mcp.paramIn": "位置",
     "mcp.paramRequired": "必填",
+    "mcp.paramAuto": "自动注入",
+    "mcp.editDescHint": "编辑参数说明（留空则恢复默认）",
     "mcp.ownerGateway": "所属网关",
     "mcp.searchTools": "搜索工具名称 / 标识 / 网关",
     "mcp.tabTools": "MCP 工具",
@@ -1366,6 +1368,8 @@ const I18N = {
     "mcp.paramType": "Type",
     "mcp.paramIn": "Location",
     "mcp.paramRequired": "Required",
+    "mcp.paramAuto": "Auto-injected",
+    "mcp.editDescHint": "Edit parameter description (empty to restore default)",
     "mcp.ownerGateway": "Gateway",
     "mcp.searchTools": "Search tool name / ID / gateway",
     "mcp.tabTools": "MCP Tools",
@@ -5535,14 +5539,15 @@ function showMcpToolAddModal(servers){
           h+='<tr><td colspan="4" style="padding:0;background:#0f1115"><table class="cfg-table" style="margin:0"><thead><tr>'
             +'<th>'+t('mcp.paramName')+'</th><th style="width:80px">'+t('mcp.paramType')+'</th>'
             +'<th style="width:70px">'+t('mcp.paramIn')+'</th><th style="width:50px">'+t('mcp.paramRequired')+'</th>'
-            +'<th>'+t('mcp.toolDesc')+'</th></tr></thead><tbody>';
-          if(!params.length) h+='<tr><td colspan="5" class="hint" style="text-align:center;padding:10px">'+t('mcp.noParams')+'</td></tr>';
+            +'<th>'+t('mcp.toolDesc')+'</th><th style="width:50px">'+t('common.action')+'</th></tr></thead><tbody>';
+          if(!params.length) h+='<tr><td colspan="6" class="hint" style="text-align:center;padding:10px">'+t('mcp.noParams')+'</td></tr>';
           params.forEach(p=>{
             const badge=p.in==='header'?'badge':(p.in==='query'?'hint':'');
             h+='<tr><td style="word-break:break-all">'+esc(p.name)+'</td><td>'+esc(p.type)+'</td>'
               +'<td><span class="'+badge+'">'+esc(p.in.toUpperCase())+'</span></td>'
               +'<td>'+(p.required?'✓':'')+'</td>'
-              +'<td style="word-break:break-word;line-height:1.4">'+esc(p.description||'')+'</td></tr>';
+              +'<td style="word-break:break-word;line-height:1.4">'+(p.auto?'<span class="badge">'+t('mcp.paramAuto')+'</span> ':'')+esc(p.description||'')+'</td>'
+              +'<td><button class="mini" data-mcp-edit-desc="'+esc(x.name)+'" data-param="'+esc(p.name)+'" data-desc="'+esc(p.description||'')+'">'+t('common.edit')+'</button></td></tr>';
           });
           h+='</tbody></table></td></tr>';
         }
@@ -5623,14 +5628,15 @@ async function loadMcpToolsPage(){
         h+='<tr><td colspan="5" style="padding:0;background:#0f1115"><table class="cfg-table" style="margin:0"><thead><tr>'
           +'<th>'+t('mcp.paramName')+'</th><th style="width:80px">'+t('mcp.paramType')+'</th>'
           +'<th style="width:70px">'+t('mcp.paramIn')+'</th><th style="width:50px">'+t('mcp.paramRequired')+'</th>'
-          +'<th>'+t('mcp.toolDesc')+'</th></tr></thead><tbody>';
-        if(!params.length) h+='<tr><td colspan="5" class="hint" style="text-align:center;padding:10px">'+t('mcp.noParams')+'</td></tr>';
+          +'<th>'+t('mcp.toolDesc')+'</th><th style="width:50px">'+t('common.action')+'</th></tr></thead><tbody>';
+        if(!params.length) h+='<tr><td colspan="6" class="hint" style="text-align:center;padding:10px">'+t('mcp.noParams')+'</td></tr>';
         params.forEach(p=>{
           const badge=p.in==='header'?'badge':(p.in==='query'?'hint':'');
           h+='<tr><td style="word-break:break-all">'+esc(p.name)+'</td><td>'+esc(p.type)+'</td>'
             +'<td><span class="'+badge+'">'+esc(p.in.toUpperCase())+'</span></td>'
             +'<td>'+(p.required?'✓':'')+'</td>'
-            +'<td style="word-break:break-word;line-height:1.4">'+esc(p.description||'')+'</td></tr>';
+            +'<td style="word-break:break-word;line-height:1.4">'+(p.auto?'<span class="badge">'+t('mcp.paramAuto')+'</span> ':'')+esc(p.description||'')+'</td>'
+            +'<td><button class="mini" data-mcp-edit-desc="'+esc(meta.name||p.name)+'" data-param="'+esc(p.name)+'" data-desc="'+esc(p.description||'')+'">'+t('common.edit')+'</button></td></tr>';
         });
         h+='</tbody></table></td></tr>';
       }
@@ -5664,6 +5670,26 @@ async function loadMcpToolsPage(){
     });
   }catch(e){ box.innerHTML='<div class="err">'+t('common.errorPrefix')+e.message+'</div>'; }
 }
+
+// MCP 参数说明编辑（兜底）：事件委托，覆盖工具页与新增工具弹框两处动态渲染的按钮。
+document.addEventListener('click', async (e)=>{
+  const b=e.target.closest && e.target.closest('[data-mcp-edit-desc]');
+  if(!b) return;
+  const tool=b.dataset.mcpEditDesc, param=b.dataset.param, cur=b.dataset.desc||'';
+  const val=window.prompt(t('mcp.editDescHint')+'\n'+tool+' · '+param, cur);
+  if(val===null) return;
+  try{
+    const r=await api('/admin/api/mcp/param-desc',{method:'PUT',headers:{'content-type':'application/json'},
+      body:JSON.stringify({tool, param, description:val.trim()})});
+    if(!r.ok){ alert(t('common.failPrefix')+r.status); return; }
+    // 工具页重绘；弹框内则重绘工具表（若弹框开着）
+    if(document.getElementById('mcpToolsBody')) loadMcpToolsPage();
+    const m=document.getElementById('genericModal');
+    if(m && m.classList.contains('show')){
+      const btn=m.querySelector('#mcpTPull'); if(btn) btn.click();
+    }
+  }catch(err){ alert(t('common.errorPrefix')+err.message); }
+});
 
 boot();
 </script>
