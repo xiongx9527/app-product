@@ -1,5 +1,6 @@
 import type { Lang } from '../../protocol'
 import type { McpServerConfig } from '../../protocol'
+import { bargeDiag } from '../../diagLog'
 import type { Toolkit, Tool } from '@agentscope-ai/agentscope/tool'
 import { StdioMCPClient, HTTPMCPClient } from '@agentscope-ai/agentscope/mcp'
 import { Toolkit as ToolkitImpl } from '@agentscope-ai/agentscope/tool'
@@ -119,9 +120,11 @@ export async function registerMcpServers(
   servers: McpServerConfig[]
 ): Promise<McpClientHandle[]> {
   const clients: McpClientHandle[] = []
+  bargeDiag(`MCP-REGISTER start servers=${servers.length}`)
   for (const s of servers) {
     try {
       if (!s.name) throw new Error('MCP 服务器缺少 name')
+      bargeDiag(`MCP-CONNECT name=${s.name} transport=${s.transport} url=${s.url ?? ''}`)
       let client: StdioMCPClient | HTTPMCPClient
       if (s.transport === 'stdio') {
         if (!s.command) throw new Error('stdio 传输缺少 command')
@@ -145,10 +148,15 @@ export async function registerMcpServers(
         disabledTools: s.disabledTools,
       })
       clients.push({ name: s.name, close: () => client.close() })
+      // 【常驻诊断】MCP 是否真连上、注册了几个工具：真机只能经 /api/diag/log 观测。
+      const toolCount = (toolkit as unknown as { tools?: unknown[] }).tools?.length ?? -1
+      bargeDiag(`MCP-READY name=${s.name} tools=${toolCount}`)
     } catch (e) {
       // 单个 MCP 服务器连接失败：记录但不致命，助手其余能力照常工作
+      bargeDiag(`MCP-FAIL name=${s.name ?? '未命名'} err=${(e as Error).message}`)
       console.warn(`[mcp] 连接服务器「${s.name ?? '未命名'}」失败，已跳过：`, (e as Error).message)
     }
   }
+  bargeDiag(`MCP-DONE clients=${clients.length}`)
   return clients
 }

@@ -4,6 +4,9 @@ import { ReasoningChatModel } from './reasoningChatModel'
 import { UserMsg } from '@agentscope-ai/agentscope/message'
 import { EventType } from '@agentscope-ai/agentscope/event'
 import { messages } from '../i18n'
+import { bargeDiag } from '../diagLog'
+import { getCredentialByType } from './credentialStore'
+import { toolPrefix, injectCredential } from './toolCredential'
 import type { DetailContext, Lang, McpServerConfig } from '../protocol'
 import type { LlmConfig } from '../config'
 import { createToolkit, registerMcpServers, type LocationProvider, type MemoryStore, type McpClientHandle, type RequestLocation } from './tools'
@@ -92,6 +95,36 @@ export async function createAgentService(
   // MCP 连接是异步的，必须在 Agent 构造之前 await 完，否则工具在首轮对话里尚未就绪。
   const toolkit = createToolkit(lang, locationProvider, memoryStore, requestLocation, autoMemory ?? false, autoLearnEngine)
   const mcpClients = await registerMcpServers(toolkit, mcpServers)
+  // 【常驻诊断】记录每次工具调用（含 MCP 工具）：真机只能经 /api/diag/log 观测
+  // 「LLM 到底有没有触发 MCP」。
+  // 【凭据自动注入】工具名 `xxx__` 前缀 = 账号本 type（用户自定义，如 askdata）。
+  // 调用时按前缀查账号本，把 username/password 或 apiKey 合并进 input（不覆盖 LLM 已填的值），
+  // 让 Agent 不必知道密码也能取 token。对 LLM 透明：它只写其它参数。
+  // 工具 schema 的字段表：按它过滤注入字段，避免 additionalProperties:false 的工具报错。
+  const toolSchemas = new Map<string, Set<string>>(
+    toolkit.getJSONSchemas().map((s) => [
+      s.function?.name ?? '', new Set(Object.keys(s.function?.parameters?.properties ?? {})),
+    ])
+  )
+  const origCallTool = toolkit.callToolFunction.bind(toolkit)
+  toolkit.callToolFunction = async function* (toolCall: any) {
+    const name = String(toolCall?.name ?? '')
+    bargeDiag(`TOOL-CALL name=${name}`)
+    const prefix = toolPrefix(name)
+    if (prefix) {
+      try {
+        const cred = await getCredentialByType(prefix)
+        const allowed = toolSchemas.get(name)
+        const result = injectCredential(toolCall.input, cred, allowed ? [...allowed] : undefined)
+        toolCall.input = result.input
+        if (result.injected) bargeDiag(`TOOL-CRED injected prefix=${prefix} fields=${result.fields.join(',')}`)
+        else if (!cred) bargeDiag(`TOOL-CRED none prefix=${prefix}`)
+      } catch (e) {
+        bargeDiag(`TOOL-CRED error prefix=${prefix} err=${(e as Error).message}`)
+      }
+    }
+    yield* origCallTool(toolCall)
+  } as unknown as typeof toolkit.callToolFunction
   const agent = new Agent({
     name: 'Xiong',
     sysPrompt: baseSysPrompt,

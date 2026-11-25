@@ -116,6 +116,28 @@ export const asrCorrectionVariants = sqliteTable(
   })
 )
 
+/**
+ * 通用账号本：type 由用户自己输入（自由文本，不内置枚举），Agent 按 type 取凭据。
+ * kind=password 用 username/password；kind=apikey 用 apiKey。
+ * 全局（非设备维度），只存本地 SQLite，不进任何远程同步。
+ */
+export const accounts = sqliteTable(
+  'accounts',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    type: text('type').notNull(),
+    name: text('name').notNull().default(''),
+    kind: text('kind').notNull().default('password'),
+    username: text('username').notNull().default(''),
+    password: text('password').notNull().default(''),
+    apiKey: text('api_key').notNull().default(''),
+    note: text('note').notNull().default(''),
+    createdAt: integer('created_at').default(sql`(strftime('%s', 'now'))`),
+    updatedAt: integer('updated_at').default(sql`(strftime('%s', 'now'))`),
+  },
+  (t) => ({ byType: index('idx_accounts_type').on(t.type) })
+)
+
 export type SessionRow = typeof sessions.$inferSelect
 export type CommandLogRow = typeof commandLogs.$inferSelect
 export type UserMemoryRow = typeof userMemory.$inferSelect

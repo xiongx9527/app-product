@@ -4,6 +4,7 @@ import { commandLogMapper } from '../mapper/commandLogMapper'
 import { memoryMapper, type MemoryEntry } from '../mapper/memoryMapper'
 import { configMapper } from '../mapper/configMapper'
 import { asrCorrectionMapper, type CorrectionInput } from '../mapper/asrCorrectionMapper'
+import { accountMapper, type AccountCredential, type AccountView } from '../mapper/accountMapper'
 
 /**
  * 数据业务层：把各 Mapper 组合成高层能力，供 controller 调用。
@@ -15,6 +16,7 @@ export function createDataService(db: AppDb) {
   const memory = memoryMapper(db)
   const config = configMapper(db)
   const asrCorrection = asrCorrectionMapper(db)
+  const account = accountMapper(db)
   return {
     createSession: session.create,
     endSession: session.end,
@@ -39,9 +41,15 @@ export function createDataService(db: AppDb) {
     // 9529 词表同步：待上传（uploaded=0）+ 标记已上传
     listPendingAsrUpload: asrCorrection.listPendingUpload,
     markAsrUploaded: asrCorrection.markUploaded,
+    // 通用账号本：列表脱敏；getAccountByType 返回明文供工具凭据注入
+    listAccounts: account.list,
+    createAccount: account.create,
+    updateAccount: account.update,
+    removeAccount: account.remove,
+    getAccountByType: account.getByType,
   }
 }
 
 export type DataService = ReturnType<typeof createDataService>
-export type { MemoryEntry, CorrectionInput }
+export type { MemoryEntry, CorrectionInput, AccountCredential, AccountView }
 

@@ -42,6 +42,20 @@
       "style": {
         "navigationBarTitleText": "网页"
       }
+    },
+    {
+      "path": "pages/mcptools/mcptools",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "MCP 工具"
+      }
+    },
+    {
+      "path": "pages/accounts/accounts",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "账号管理"
+      }
     }
   ],
   "globalStyle": {

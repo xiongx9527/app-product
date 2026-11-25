@@ -113,6 +113,60 @@ export function createApiController(data: DataService, config: { voiceBuiltinUrl
       }
     }
 
+    // 通用账号本（/api/admin/accounts）：全局非设备维度，按 type 分类（type 用户自定义）。
+    // GET 列脱敏视图（不回密码/apiKey 明文）；POST 新增；PATCH ?id= 更新；DELETE ?id= 删除。
+    // 凭据明文只在工具调用层按 type 取出注入参数，不经此接口下发。
+    if (pathname === '/api/admin/accounts' && method === 'GET') {
+      try {
+        const accounts = await data.listAccounts(query.get('q') ?? undefined)
+        return { status: 200, body: { accounts } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+    if (pathname === '/api/admin/accounts' && method === 'POST') {
+      const input = body as Record<string, unknown> | null
+      if (!input || typeof input !== 'object' || typeof input.type !== 'string' || !input.type.trim()) {
+        return { status: 400, body: { error: 'type required' } }
+      }
+      try {
+        const id = await data.createAccount(body as {
+          type: string; name?: string; kind?: string; username?: string
+          password?: string; apiKey?: string; note?: string
+        })
+        return { status: 200, body: { ok: true, id } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+    // 用 PUT 而非 PATCH：secureRequest 加密只覆盖 POST/PUT/DELETE 的请求体，PATCH 不加密会出错。
+    if (pathname === '/api/admin/accounts' && method === 'PUT') {
+      const rawId = query.get('id')
+      const id = Number(rawId)
+      if (!rawId || !Number.isFinite(id)) return { status: 400, body: { error: 'id required' } }
+      if (!body || typeof body !== 'object') return { status: 400, body: { error: 'body required' } }
+      try {
+        await data.updateAccount(id, body as {
+          type?: string; name?: string; kind?: string; username?: string
+          password?: string; apiKey?: string; note?: string
+        })
+        return { status: 200, body: { ok: true } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+    if (pathname === '/api/admin/accounts' && method === 'DELETE') {
+      const rawId = query.get('id')
+      const id = Number(rawId)
+      if (!rawId || !Number.isFinite(id)) return { status: 400, body: { error: 'id required' } }
+      try {
+        await data.removeAccount(id)
+        return { status: 200, body: { ok: true } }
+      } catch (err) {
+        return { status: 500, body: { error: (err as Error).message } }
+      }
+    }
+
     // 设置接口（/api/admin/asr-corrections）：ASR 纠错词表（两表，全局非设备维度）。
     // GET 列出主表+各字表；POST 批量加 {items:[{correct, wrong, note?}]}；
     // DELETE ?correct=X&wrong=Y 删某错词 / ?correct=X 停用整条热词。改后立即刷新内存纠正器。

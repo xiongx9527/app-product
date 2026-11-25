@@ -8,6 +8,45 @@
  * 跨平台：App 走 uni.request / uni.requireNativePlugin，H5 无原生插件走 fetch / 返回 false。
  */
 import { resolveGatewayHttpBase } from './webSocketTransport'
+import { appConfig } from '../config'
+
+/** MCP 工具清单条目（与网关 /api/mcp/tools 契约一致）。 */
+export interface GatewayMcpTool {
+  name: string
+  description: string
+}
+
+/** 拉取 MCP 已注册工具清单：后端 token 换发透明处理，App 只带语音服务的 apiKey。 */
+export function fetchGatewayMcpTools(timeoutMs = 10000): Promise<{ ok: boolean; tools: GatewayMcpTool[]; error?: string }> {
+  const url = `${resolveGatewayHttpBase()}/api/mcp/tools`
+  const header: Record<string, string> = { accept: 'application/json' }
+  if (appConfig.voice.builtin.apiKey) header['x-voice-api-key'] = appConfig.voice.builtin.apiKey
+  const req = new Promise<{ ok: boolean; tools: GatewayMcpTool[]; error?: string }>((resolve) => {
+    const done = (d: unknown) => {
+      const obj = (d ?? {}) as { ok?: boolean; tools?: GatewayMcpTool[]; error?: string }
+      resolve({ ok: !!obj.ok, tools: Array.isArray(obj.tools) ? obj.tools : [], error: obj.error })
+    }
+    if (typeof uni !== 'undefined' && typeof uni.request === 'function') {
+      uni.request({
+        url,
+        method: 'GET',
+        header,
+        success: (res) => done(res.data),
+        fail: () => resolve({ ok: false, tools: [], error: '无法连接网关' }),
+      })
+      return
+    }
+    if (typeof fetch !== 'undefined') {
+      fetch(url, { cache: 'no-store', headers: header })
+        .then((r) => r.json())
+        .then(done)
+        .catch(() => resolve({ ok: false, tools: [], error: '无法连接网关' }))
+      return
+    }
+    resolve({ ok: false, tools: [], error: '当前环境不支持网络请求' })
+  })
+  return withTimeout(req, timeoutMs).catch(() => ({ ok: false, tools: [], error: '请求超时' }))
+}
 
 /** 带超时的 Promise 兜底：uni.request 无原生超时参数，靠它防挂死。 */
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {

@@ -226,7 +226,7 @@ function setConsolidateEvery(e: any): void {
 
 /** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
  * 各分区一律默认折叠，样式一致（标题右侧带收起/展开箭头）。 */
-type SettingsGroup = 'general' | 'voice' | 'playback' | 'dialog' | 'timeout' | 'recommend' | 'memory' | 'mcp'
+type SettingsGroup = 'general' | 'voice' | 'playback' | 'dialog' | 'timeout' | 'recommend' | 'memory' | 'account' | 'mcp'
 const expanded = ref<SettingsGroup | null>(null)
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
@@ -425,6 +425,14 @@ function onAecChange(on: boolean): void {
 function onMcpEnabledChange(e: any): void {
   appConfig.mcp.enabled = e.detail.value === true
   persistConfig()
+}
+/** 打开 MCP 已注册工具列表页（网关从固定 server 发现的工具清单）。 */
+function openMcpTools(): void {
+  uni.navigateTo({ url: '/pages/mcptools/mcptools' })
+}
+/** 打开通用账号本：按 type 保存账号密码 / API Key，工具按前缀自动取用。 */
+function openAccounts(): void {
+  uni.navigateTo({ url: '/pages/accounts/accounts' })
 }
 /** 把配置下发到原生（duck 强度 + 中断前 duck + 插话 + AEC）。UI 改动即生效，不必重启。 */
 function applyDuckConfig(): void {
@@ -1106,6 +1114,29 @@ watch(
             color="#6c8cff"
             @change="onMcpEnabledChange"
           />
+        </view>
+        <view class="entry" @tap="openMcpTools">
+          <view class="row-text">
+            <text class="row-label">{{ t('settings.mcp.toolsEntry') }}</text>
+            <text class="hint">{{ t('settings.mcp.toolsEntryHint') }}</text>
+          </view>
+          <text class="entry-arrow">›</text>
+        </view>
+      </template>
+    </view>
+    <!-- 账号管理：系统通用能力（与 MCP 平级，不塞在 MCP 分组里）。按 type 分类的账号本入口。 -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('account')">
+        <text class="group-title">{{ t('settings.account.title') }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('account') }" />
+      </view>
+      <template v-if="isOpen('account')">
+        <view class="entry" @tap="openAccounts">
+          <view class="row-text">
+            <text class="row-label">{{ t('settings.account.manage') }}</text>
+            <text class="hint">{{ t('settings.account.manageHint') }}</text>
+          </view>
+          <text class="entry-arrow">›</text>
         </view>
       </template>
     </view>

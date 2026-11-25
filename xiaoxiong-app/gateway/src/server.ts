@@ -15,6 +15,8 @@ import { handleMediaByKey } from './service/media/mediaCache'
 import { createVoiceConnection } from './controller/voiceController'
 import { loadSkillModules } from './service/skills/loader'
 import { buildHealth, clearProbeCache } from './service/health'
+import { fetchMcpTools } from './service/mcpToolCatalog'
+import { setCredentialGetter } from './service/credentialStore'
 import type { VoiceConfig } from './voiceConfig'
 import { encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
 import type { GatewayConfig } from './config'
@@ -35,6 +37,8 @@ export interface Gateway {
 export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
   const db = createDb(config.db.path)
   const data = createDataService(db)
+  // 通用账号本：注入按 type 取凭据能力，工具调用层据此自动注入（系统级，非 MCP 专属）
+  setCredentialGetter(data.getAccountByType)
   const api = createApiController(data, config)
   const docs = createDocsController()
 
@@ -132,6 +136,18 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
           'cache-control': 'no-store',
         })
         res.end(text)
+        return
+      }
+      // MCP 已注册工具清单：App 设置页「查看已注册工具」用。
+      // 放在 apiBase catch-all 之前，响应不加密（与 /api/diag 同），App 直接读 JSON。
+      // 服务地址用网关配置（与 App 下发的固定 server 同源），API-Key 可由 x-voice-api-key 头带上；
+      // 后端 askdata 的 token 换发由 model-proxy 透明处理，这里/App 都不碰账号密码。
+      if (url.pathname === '/api/mcp/tools') {
+        const keyHeader = req.headers['x-voice-api-key']
+        const apiKey = typeof keyHeader === 'string' ? keyHeader : undefined
+        const result = await fetchMcpTools(config.voiceBuiltinUrl, apiKey)
+        writeJson(res, 200, { ok: !result.error, tools: result.tools, error: result.error },
+          { 'access-control-allow-origin': '*', 'cache-control': 'no-store' })
         return
       }
       if (url.pathname === '/api/health' || url.pathname === '/health') {

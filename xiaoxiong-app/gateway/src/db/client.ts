@@ -74,6 +74,21 @@ const BOOTSTRAP_SQL = `
   );
   CREATE UNIQUE INDEX IF NOT EXISTS uq_asr_correction_variant ON asr_correction_variants(correction_id, wrong);
   CREATE INDEX IF NOT EXISTS idx_asr_variant_pinyin ON asr_correction_variants(pinyin);
+  -- 通用账号本：按 type（用户自定义）分类保存凭据，Agent 按 type 取。
+  -- kind=password 用 username/password；kind=apikey 用 api_key。全局（非设备维度），只存本地 SQLite。
+  CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'password',
+    username TEXT NOT NULL DEFAULT '',
+    password TEXT NOT NULL DEFAULT '',
+    api_key TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    created_at INTEGER DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_accounts_type ON accounts(type);
 `
 
 /** 创建数据库连接（Node 内置 node:sqlite，无原生编译依赖）并引导建表。 */
@@ -132,5 +147,8 @@ export function createDb(path: string): AppDb {
     sqlite.exec("ALTER TABLE asr_correction_variants ADD COLUMN updated_at INTEGER")
     sqlite.exec("UPDATE asr_correction_variants SET updated_at = created_at WHERE updated_at IS NULL")
   } catch { /* 列已存在 */ }
+  // 旧库 accounts 可能缺 kind / api_key 列（早期只有账号密码）
+  try { sqlite.exec("ALTER TABLE accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'password'") } catch { /* 列已存在 */ }
+  try { sqlite.exec("ALTER TABLE accounts ADD COLUMN api_key TEXT NOT NULL DEFAULT ''") } catch { /* 列已存在 */ }
   return drizzle({ client: sqlite })
 }
