@@ -61,8 +61,10 @@ services:
       # PaddleOCR 初始化会经 transformers 写 huggingface 缓存，不设会导致 OCR 500。
       HF_HOME: /data/.cache/huggingface
       HF_HUB_CACHE: /data/.cache/huggingface/hub
-      # 容器内 PaddleOCR 与 CPU 指令集不兼容（子进程 SIGILL），禁用内置 OCR，走 DeepSeek。
-      OCR_BUILTIN_DISABLED: "on"
+      # 容器内 PaddleOCR 需 AVX2（Docker VM 只有 AVX，会 SIGILL），改用 onnxruntime 版内置 OCR。
+      # rapidocr_onnxruntime 及依赖装在可写目录 OCR_LIB_DIR，避免只读根无法写缓存。
+      OCR_ENGINE: rapidocr
+      OCR_LIB_DIR: /data/.pylibs
     volumes:
       # 源码挂载：代码改动后只需 restart 容器即可生效，无需重建镜像重下 torch 等大依赖。
       - ./voice:/app/voice:ro

@@ -15,14 +15,33 @@ import subprocess
 import sys
 from typing import Any
 
-_WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr_worker.py")
+_DIR = os.path.dirname(os.path.abspath(__file__))
 _TIMEOUT = int(os.environ.get("OCR_TIMEOUT", "120"))
+# onnxruntime/rapidocr 独立安装目录：Dockerfile 默认装到 /opt/ocr-libs；
+# 旧容器可用 OCR_LIB_DIR 覆盖（如挂载卷里的可写目录 /data/.pylibs）。
+_LIBS = os.environ.get("OCR_LIB_DIR", "/opt/ocr-libs").strip()
+# 引擎：paddle（默认，需 AVX2）| rapidocr（onnxruntime，CPU 要求低，Docker 用）
+_ENGINE = (os.environ.get("OCR_ENGINE", "paddle") or "paddle").strip().lower()
+
+
+def _worker_path() -> str:
+    name = "ocr_worker_ort.py" if _ENGINE == "rapidocr" else "ocr_worker.py"
+    return os.path.join(_DIR, name)
 
 
 def ready() -> bool:
     """worker 脚本与依赖是否就位（不实际跑模型）。"""
-    if not os.path.isfile(_WORKER):
+    if not os.path.isfile(_worker_path()):
         return False
+    if _ENGINE == "rapidocr":
+        # rapidocr 装在 OCR_LIB_DIR，通过 PYTHONPATH 探测
+        if _LIBS:
+            sys.path.insert(0, _LIBS)
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+            return True
+        except ImportError:
+            return False
     try:
         import paddleocr  # noqa: F401
         return True
@@ -43,17 +62,24 @@ def recognize(image_bytes: bytes, max_pages: int = 20) -> dict[str, Any]:
     """
     if not image_bytes:
         raise ValueError("图片内容为空")
-    if not os.path.isfile(_WORKER):
-        raise RuntimeError(f"OCR worker 不存在：{_WORKER}")
+    worker = _worker_path()
+    if not os.path.isfile(worker):
+        raise RuntimeError(f"OCR worker 不存在：{worker}")
     # stdin 传 base64（纯文本，避免二进制在管道里被截断/编码问题）
     import base64
 
     payload = json.dumps({"image": base64.b64encode(image_bytes).decode("ascii"), "max_pages": max_pages})
+    # 子进程环境变量：可写依赖目录注入 PYTHONPATH；抑制 onnxruntime 遥测日志污染 stdout。
+    env = os.environ.copy()
+    if _LIBS:
+        env["PYTHONPATH"] = _LIBS + os.pathsep + env.get("PYTHONPATH", "")
+    env["ORT_DISABLE_TELEMETRY"] = "1"
     proc = subprocess.run(
-        [sys.executable, _WORKER],
+        [sys.executable, worker],
         input=payload.encode("utf-8"),
         capture_output=True,
         timeout=_TIMEOUT,
+        env=env,
     )
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", "replace").strip()[-300:]

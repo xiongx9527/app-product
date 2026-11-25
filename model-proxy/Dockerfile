@@ -45,6 +45,14 @@ RUN python -m pip install --upgrade pip \
 # 钉住 numpy1.26 保护 torch2.2 内置重排；OCR 用独立子进程跑（voice/ocr_worker.py），
 # 不与主进程 torch 冲突，无需额外端口。
 
+# 容器内 paddle 需 AVX2（Docker VM 只有 AVX，import 即 SIGILL）。另装 onnxruntime 版
+# 内置 OCR 到独立目录：rapidocr 自带模型，CPU 要求低；独立目录避免其 numpy2 污染主环境。
+# 运行时由 builtin_ocr.py 以 PYTHONPATH=/opt/ocr-libs 拉起 ocr_worker_ort.py。
+COPY voice/requirements-ocr-ort.txt ./voice/
+RUN python -m pip install --no-cache-dir --target /opt/ocr-libs \
+        -r voice/requirements-ocr-ort.txt \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple
+
 # 源码（preflight.py / admin_panel.py / openai_voice_server.py 等），不含模型/venv/数据。
 COPY voice/ ./voice/
 

@@ -1,0 +1,4 @@
+# 容器内内置 OCR 的 onnxruntime 引擎（绕开 paddle 的 AVX2 要求）。
+# rapidocr_onnxruntime 自带 PP-OCR 模型，纯 CPU 推理，Docker VM 仅 AVX 也能跑。
+# 装到独立目录 /opt/ocr-libs，避免 numpy 版本影响主环境的 torch2.2（numpy1.26）。
+rapidocr_onnxruntime>=1.4.3,<2
