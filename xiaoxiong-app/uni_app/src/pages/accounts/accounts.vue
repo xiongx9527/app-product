@@ -24,6 +24,8 @@ const accounts = ref<AccountView[]>([])
 // 编辑弹窗状态：editing=null 新增；editing=id 编辑
 const showEditor = ref(false)
 const editingId = ref<number | null>(null)
+// 编辑的这条是否已配置凭据（明文不回传，仅记住状态用于提示）
+const editingHasSecret = ref(false)
 const form = ref({ type: '', name: '', kind: 'password' as AccountKind, username: '', password: '', apiKey: '', note: '' })
 const saving = ref(false)
 const formError = ref('')
@@ -42,6 +44,7 @@ async function load(): Promise<void> {
 
 function openCreate(): void {
   editingId.value = null
+  editingHasSecret.value = false
   form.value = { type: '', name: '', kind: 'password', username: '', password: '', apiKey: '', note: '' }
   formError.value = ''
   showEditor.value = true
@@ -49,6 +52,7 @@ function openCreate(): void {
 
 function openEdit(a: AccountView): void {
   editingId.value = a.id
+  editingHasSecret.value = a.hasSecret
   form.value = {
     type: a.type, name: a.name, kind: a.kind, username: a.username,
     password: '', apiKey: '', note: a.note,
@@ -163,10 +167,13 @@ onMounted(() => { void load() })
           <input class="input" v-model="form.username" :placeholder="t('accounts.usernamePlaceholder')" />
           <text class="label">{{ t('accounts.password') }}</text>
           <input class="input" password v-model="form.password" :placeholder="editingId === null ? t('accounts.passwordPlaceholder') : t('accounts.passwordKeep')" />
+          <!-- 编辑时密码明文不回传（安全），明确说明「已配置、留空保持」，避免看起来像没密码 -->
+          <text v-if="editingId !== null && editingHasSecret" class="hint">{{ t('accounts.secretHint') }}</text>
         </template>
         <template v-else>
           <text class="label">{{ t('accounts.apiKey') }}</text>
           <input class="input" password v-model="form.apiKey" :placeholder="editingId === null ? t('accounts.apiKeyPlaceholder') : t('accounts.apiKeyKeep')" />
+          <text v-if="editingId !== null && editingHasSecret" class="hint">{{ t('accounts.secretHint') }}</text>
         </template>
 
         <text class="label">{{ t('accounts.note') }}</text>

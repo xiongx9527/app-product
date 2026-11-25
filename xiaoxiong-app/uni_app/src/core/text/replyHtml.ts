@@ -46,9 +46,39 @@ export function sanitizeHtml(html: string): string {
     )
 }
 
-/** 行内标记：代码、加粗、斜体、删除线、链接。入参必须是已转义的文本。 */
+/**
+ * 把图片地址规范成可加载的绝对 URL。
+ * - 工具返回的图表是相对路径（如 /api/chart/image/xxx），拼到服务地址上；
+ * - 已经是 http(s) 绝对地址的原样保留；
+ * - javascript:/data:/vbscript: 等协议一律拒绝（安全），返回空串。
+ */
+function resolveImageUrl(url: string, imageBase: string): string {
+  const u = (url ?? '').trim()
+  if (!u || /^(javascript|data|vbscript):/i.test(u)) return ''
+  if (/^https?:\/\//i.test(u)) return u
+  // 相对路径：以服务地址为 base（服务地址本身已是 http(s)）
+  const base = (imageBase ?? '').trim().replace(/\/+$/, '')
+  if (!/^https?:\/\//i.test(base)) return ''
+  return `${base}${u.startsWith('/') ? '' : '/'}${u}`
+}
+
+/** 图片基址：由 toReplyHtml 的 imageBase 参数设置（服务地址），用于把相对图片 URL 拼成绝对地址。 */
+let currentImageBase = ''
+
+/** 行内标记：代码、加粗、斜体、删除线、链接、图片。入参必须是已转义的文本。 */
 function inline(text: string): string {
   let out = text
+  // 图片 ![alt](url) → <img>。必须在链接 [text](url) 之前处理，否则 ! 会被当成普通文本、
+  // 且链接正则会错误吞掉图片语法。url 经 resolveImageUrl 校验，杜绝危险协议。
+  out = out.replace(
+    /!\[([^\]]*)\]\(([^)\s]+)\)/g,
+    (match, alt: string, url: string) => {
+      const src = resolveImageUrl(url, currentImageBase)
+      if (!src) return alt || ''
+      const safeAlt = alt.replace(/"/g, '&quot;')
+      return `<img src="${src}" alt="${safeAlt}" style="max-width:100%;height:auto;border-radius:8px;margin:6px 0;display:block" />`
+    }
+  )
   out = out.replace(
     /`([^`]+)`/g,
     `<code style="font-family:Menlo,Consolas,monospace;font-size:12px;background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:4px;color:${COLOR_TEXT}">$1</code>`
@@ -192,14 +222,23 @@ function cleanArtifacts(html: string): string {
     .replace(/[—–\-]\s*[—–\-]+/g, '—')
 }
 
-export function toReplyHtml(raw: string): string {
+export function toReplyHtml(raw: string, imageBase = ''): string {
+  currentImageBase = imageBase ?? ''
   if (!raw) return ''
   const src = raw.replace(/\r\n?/g, '\n').trim()
   if (!src) return ''
 
   // 已经是 HTML：只做安全清洗；没有块级标签时把换行补成 <br/>
   if (ANY_TAG.test(src)) {
-    const safe = sanitizeHtml(src)
+    let safe = sanitizeHtml(src)
+    // <img src="相对路径"> 拼服务地址（工具返回的图表 URL 是相对的 /api/chart/image/xxx）
+    safe = safe.replace(
+      /\b(src)\s*=\s*(["'])([^"']*)\2/gi,
+      (match, attr: string, quote: string, url: string) => {
+        const resolved = resolveImageUrl(url, currentImageBase)
+        return resolved ? `${attr}=${quote}${resolved}${quote}` : match
+      }
+    )
     return BLOCK_TAG.test(safe) ? safe : safe.replace(/\n/g, '<br/>')
   }
 

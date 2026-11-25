@@ -172,7 +172,8 @@ const pageStyle = computed(() => {
 
 const isActive = computed(() => state.value === 'listening' || state.value === 'confirming')
 // 模型回复可能是 Markdown 或 HTML，统一转成 rich-text 能渲染的安全 HTML
-const replyHtml = computed(() => toReplyHtml(reply.value))
+// 工具返回的图表是相对图片 URL（如 /api/chart/image/xxx），以服务地址为 base 拼成可加载的绝对地址
+const replyHtml = computed(() => toReplyHtml(reply.value, appConfig.voice.builtin.url))
 // 思考过程会很长，界面只留最近一段，避免卡片被撑爆
 const thinkingTail = computed(() => {
   const text = toDisplayText(thinking.value)
