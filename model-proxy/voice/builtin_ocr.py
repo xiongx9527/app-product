@@ -30,18 +30,17 @@ def _worker_path() -> str:
 
 
 def ready() -> bool:
-    """worker 脚本与依赖是否就位（不实际跑模型）。"""
+    """worker 脚本与依赖是否就位（不实际跑模型）。
+
+    注意：绝不能在此 import rapidocr 或改主进程 sys.path——rapidocr 依赖 numpy2，
+    而主进程的重排(sklearn/scipy)是 numpy1.x 编译的，混用会让重排崩溃。
+    只检查文件是否存在，真正的 import 放到子进程里（PYTHONPATH 注入）。
+    """
     if not os.path.isfile(_worker_path()):
         return False
     if _ENGINE == "rapidocr":
-        # rapidocr 装在 OCR_LIB_DIR，通过 PYTHONPATH 探测
-        if _LIBS:
-            sys.path.insert(0, _LIBS)
-        try:
-            import rapidocr_onnxruntime  # noqa: F401
-            return True
-        except ImportError:
-            return False
+        # 只检查依赖目录存在，不 import、不改 sys.path
+        return bool(_LIBS and os.path.isdir(os.path.join(_LIBS, "rapidocr_onnxruntime")))
     try:
         import paddleocr  # noqa: F401
         return True
