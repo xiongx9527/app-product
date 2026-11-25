@@ -177,11 +177,54 @@ async def _make_client(server: dict[str, Any]):
     return Client(TK(url, headers=headers), timeout=timeout)
 
 
+async def _call_http_tool(tool: dict[str, Any], arguments: dict[str, Any]) -> str:
+    """其他工具：按配置直接发 HTTP 请求（参数按 in 分发 query/header/body）。"""
+    import httpx
+    method = (tool.get("method") or "POST").strip().upper()
+    url = (tool.get("url") or "").strip()
+    try:
+        # headers_json 直接保存真实值（如百度地图 api-key），调用时原样发送。
+        headers = json.loads(tool.get("headers_json") or "{}") or {}
+    except (ValueError, TypeError):
+        headers = {}
+    try:
+        params_def = json.loads(tool.get("params_json") or "[]") or []
+    except (ValueError, TypeError):
+        params_def = []
+    locations = {p.get("name"): (p.get("in") or "body") for p in params_def
+                 if isinstance(p, dict) and p.get("name")}
+    query, hdrs, body = {}, dict(headers), {}
+    for k, v in (arguments or {}).items():
+        if v is None:
+            continue
+        loc = locations.get(k, "body")
+        if loc == "query":
+            query[k] = v
+        elif loc == "header":
+            hdrs[k] = str(v)
+        else:
+            body[k] = v
+    timeout = int(tool.get("timeout_sec") or 30)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as cli:
+            r = await cli.request(method, url, params=query or None,
+                                  headers=hdrs, json=body if body else None)
+        return f"HTTP {r.status_code}\n{r.text[:4000]}"
+    except Exception as exc:
+        return f"[mcp-gateway] http tool failed: {exc}"
+
+
 async def _call_upstream(qualified_name: str, arguments: dict[str, Any]) -> Any:
     """按 qualified_name 找上游并转发 tools/call；失败返回错误字符串（MCP tool 结果）。"""
     meta = _upstream_tools.get(qualified_name)
     if not meta:
         return f"[mcp-gateway] unknown tool: {qualified_name}"
+    # server_id=0 → 其他工具（直接 HTTP 调用）
+    if meta["server_id"] == 0:
+        tool = voice_db.mcp_http_tool_get_by_name(meta["name"])
+        if not tool or not tool.get("enabled"):
+            return f"[mcp-gateway] http tool unavailable: {meta['name']}"
+        return await _call_http_tool(tool, arguments)
     server = voice_db.mcp_server_get(meta["server_id"])
     if not server or not server.get("enabled"):
         return f"[mcp-gateway] upstream unavailable: {meta['server_id']}"
@@ -228,6 +271,25 @@ async def refresh() -> dict[str, Any]:
         except Exception as exc:
             failed.add(s["id"])
             voice_db.mcp_server_health(s["id"], False, str(exc)[:500])
+    # 其他工具（直接 HTTP 调用）：走内置 default 网关，server_id=0 标记。
+    for t in voice_db.mcp_http_tools_list():
+        if not t.get("enabled"):
+            continue
+        try:
+            params = json.loads(t.get("params_json") or "[]") or []
+        except (ValueError, TypeError):
+            params = []
+        props, required = {}, []
+        for p in params:
+            if not isinstance(p, dict) or not p.get("name"):
+                continue
+            props[p["name"]] = {"type": p.get("type") or "string",
+                                "description": p.get("description") or ""}
+            if p.get("required"):
+                required.append(p["name"])
+        schema = {"type": "object", "properties": props, "required": required}
+        discovered.append((f"default__{t['name']}", t["name"], 0,
+                           t.get("description") or "", schema))
     # 清理失效工具授权
     voice_db.mcp_acl_prune({d[0] for d in discovered})
     # 构建 FastMCP Server。对外同时提供 SSE 与 Streamable-HTTP 两种 transport，

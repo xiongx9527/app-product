@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -141,6 +141,8 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         "不改变账号自身角色；鉴权时按路径推导功能域，取账号角色与该域授权的较高者。仅内置管理员可管理", []),
     21: ("新增 role_features 表：按角色(viewer/operator/admin)配置各功能域(feature)是否可用，"
         "内置管理员可在面板勾选(全选)，鉴权按角色+功能域查该表(无记录用默认矩阵)。仅内置管理员可管理", []),
+    22: ("新增 mcp_http_tools 表：其他工具（直接 HTTP 调用）走内置 default 网关，"
+        "工具名 default__xxx；其他网关 tool_prefix 禁止设为 default 避免冲突", []),
 }
 
 def ensure_schema() -> None:
@@ -292,6 +294,20 @@ def ensure_schema() -> None:
             qualified_name  TEXT NOT NULL,
             created_at      INTEGER NOT NULL,
             UNIQUE(key_id, qualified_name)
+        );
+        -- 其他工具（v22）：直接 HTTP 调用的工具，走内置 default 网关，工具名 default__xxx。
+        CREATE TABLE IF NOT EXISTS mcp_http_tools (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            name          TEXT NOT NULL UNIQUE,
+            description   TEXT NOT NULL DEFAULT '',
+            url           TEXT NOT NULL,
+            method        TEXT NOT NULL DEFAULT 'POST',
+            headers_json  TEXT NOT NULL DEFAULT '{}',
+            params_json   TEXT NOT NULL DEFAULT '{}',
+            enabled       INTEGER NOT NULL DEFAULT 1,
+            timeout_sec   INTEGER NOT NULL DEFAULT 30,
+            created_at    INTEGER NOT NULL,
+            updated_at    INTEGER NOT NULL
         );
         -- 音色目录：每条带 provider / model 与中英描述，供 /voice/v1/audio/voices 查询。
         -- 用表维护（不再硬编码），首次初始化时播种内置(edge-tts) + 全部 dashscope 音色。
@@ -817,16 +833,17 @@ def admin_user_change_password(username: str, old_password: str, new_password: s
 
 
 # ── 单账号单独授权（v20）─────────────────────────────────────────────
-VALID_GRANT_FEATURES = ("overview", "logs", "test", "config", "accounts", "security", "mcp", "correction", "service")
+# service（服务控制/同步）前端已无入口，从可配置功能域移除。
+VALID_GRANT_FEATURES = ("overview", "logs", "test", "config", "accounts", "security", "mcp", "correction")
 ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}  # 与 admin_panel.ROLE_ORDER 一致
 
 # 角色功能矩阵默认值：{role: {feature: enabled}}
 # 有 role_features 记录时用记录，否则用这里。admin 恒为全功能（不可被剥夺，避免锁死）。
 DEFAULT_ROLE_FEATURES: dict[str, dict[str, bool]] = {
     "viewer":   {"overview": True, "logs": True, "test": False, "config": False,
-                 "accounts": False, "security": False, "mcp": False, "correction": False, "service": False},
+                 "accounts": False, "security": False, "mcp": False, "correction": False},
     "operator": {"overview": True, "logs": True, "test": True, "config": False,
-                 "accounts": False, "security": False, "mcp": False, "correction": False, "service": False},
+                 "accounts": False, "security": False, "mcp": False, "correction": False},
     "admin":    {f: True for f in VALID_GRANT_FEATURES},
 }
 
@@ -847,7 +864,8 @@ def role_features_list() -> list[dict[str, Any]]:
     rows = _conn_get().execute(
         "SELECT role, feature, enabled, updated_at FROM role_features ORDER BY role, feature"
     ).fetchall()
-    return [dict(r) for r in rows]
+    # 过滤已移除的功能域（如 service），避免老库残留记录出现在面板。
+    return [dict(r) for r in rows if r["feature"] in VALID_GRANT_FEATURES]
 
 
 def role_feature_set(role: str, feature: str, enabled: bool) -> None:
@@ -2078,3 +2096,65 @@ def mcp_acl_prune(valid_names: set[str]) -> int:
         c.executemany("DELETE FROM mcp_tool_acl WHERE id=?", [(i,) for i in stale])
         c.commit()
     return len(stale)
+
+
+# ── 其他工具（直接 HTTP 调用，走内置 default 网关）──────────────────
+def mcp_http_tools_list() -> list[dict[str, Any]]:
+    rows = _conn_get().execute(
+        "SELECT * FROM mcp_http_tools ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def mcp_http_tool_get(tid: int) -> dict[str, Any] | None:
+    r = _conn_get().execute("SELECT * FROM mcp_http_tools WHERE id=?", (tid,)).fetchone()
+    return dict(r) if r else None
+
+
+def mcp_http_tool_get_by_name(name: str) -> dict[str, Any] | None:
+    r = _conn_get().execute("SELECT * FROM mcp_http_tools WHERE name=?", (name,)).fetchone()
+    return dict(r) if r else None
+
+
+def mcp_http_tool_add(name: str, url: str, description: str = "", method: str = "POST",
+                      headers_json: str = "{}", params_json: str = "{}",
+                      enabled: int = 1, timeout_sec: int = 30) -> dict[str, Any]:
+    now = int(time.time())
+    with _lock:
+        c = _conn_get()
+        cur = c.execute(
+            "INSERT INTO mcp_http_tools(name, description, url, method, headers_json, params_json, "
+            "enabled, timeout_sec, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ((name or "").strip(), (description or "").strip(), (url or "").strip(),
+             (method or "POST").strip().upper(), headers_json or "{}", params_json or "{}",
+             enabled, timeout_sec, now, now))
+        c.commit()
+        tid = cur.lastrowid
+    return mcp_http_tool_get(tid)  # type: ignore[return-value]
+
+
+def mcp_http_tool_update(tid: int, fields: dict[str, Any]) -> dict[str, Any] | None:
+    allowed = ("name", "description", "url", "method", "headers_json", "params_json",
+               "enabled", "timeout_sec")
+    sets, vals = [], []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k}=?")
+            vals.append(v.strip().upper() if k == "method" and isinstance(v, str) else v)
+    if not sets:
+        return mcp_http_tool_get(tid)
+    sets.append("updated_at=?")
+    vals.append(int(time.time()))
+    vals.append(tid)
+    with _lock:
+        c = _conn_get()
+        c.execute(f"UPDATE mcp_http_tools SET {','.join(sets)} WHERE id=?", vals)
+        c.commit()
+    return mcp_http_tool_get(tid)
+
+
+def mcp_http_tool_delete(tid: int) -> bool:
+    with _lock:
+        c = _conn_get()
+        cur = c.execute("DELETE FROM mcp_http_tools WHERE id=?", (tid,))
+        c.commit()
+    return cur.rowcount > 0

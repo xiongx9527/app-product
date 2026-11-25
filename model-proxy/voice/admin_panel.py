@@ -283,7 +283,7 @@ ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}
 GRANT_FEATURE_PATHS: list[tuple[str, tuple[str, ...]]] = [
     ("mcp", ("/admin/api/mcp/",)),
     ("correction", ("/admin/api/corrections",)),
-    ("service", ("/admin/api/action", "/admin/api/sync")),
+    # service（action/sync）前端已无入口，不再作为可配置功能域；接口仍按 require_admin 保护。
     ("accounts", ("/admin/api/users", "/admin/api/api-keys", "/admin/api/rate/")),
     ("config", ("/admin/api/config", "/admin/api/llm-pool", "/admin/api/embed-pool",
                 "/admin/api/rerank-pool", "/admin/api/speech-secrets")),

@@ -139,6 +139,11 @@
     width:100%; box-sizing:border-box; background:#0f1115; border:1px solid var(--line); color:var(--fg);
     border-radius:8px; padding:8px 10px; font-size:13px; }
   .modal input:focus, .modal select:focus { outline:none; border-color:var(--acc); }
+  /* 其他工具弹框字段：标签在上、输入占满整行，避免 row + width:100% 挤压换行 */
+  .ht-field { margin-top:10px; }
+  .ht-field:first-child { margin-top:0; }
+  .ht-field > label { display:block; margin:0 0 5px; color:var(--mut); font-size:12px; }
+  .ht-field input, .ht-field select, .ht-field textarea { width:100%; box-sizing:border-box; }
   /* 抑制浏览器自动填充把输入框刷成浅色背景 */
   .modal input:-webkit-autofill, .modal input:-webkit-autofill:hover, .modal input:-webkit-autofill:focus {
     -webkit-text-fill-color:var(--fg); -webkit-box-shadow:0 0 0 1000px #0f1115 inset; transition:background-color 9999s; }
@@ -781,10 +786,24 @@ const I18N = {
     "mcp.defaultTools": "默认工具（所有 Key 自动拥有）",
     "mcp.hint": "工具名格式：前缀__工具名；支持 SSE / Streamable HTTP",
     "mcp.tabGateway": "MCP网关",
+    "mcp.tabOther": "其他工具",
+    "mcp.otherHint": "直接 HTTP 调用的工具，走内置 default 网关，工具名为 default__工具名。新增/修改后需刷新才生效。",
+    "mcp.otherAdd": "新增工具",
+    "mcp.otherName": "工具名",
+    "mcp.otherMethod": "方法",
+    "mcp.otherUrl": "请求地址",
+    "mcp.otherHeaders": "请求头 JSON（可直接填 api-key 等值；保存后脱敏显示，不改动则保留原值）",
+    "mcp.otherParam": "参数",
+    "mcp.otherParams": "参数定义",
+    "mcp.in_query": "Query 参数",
+    "mcp.in_body": "Body 参数",
+    "mcp.otherParamsHint": "格式：[{\"name\":\"q\",\"type\":\"string\",\"in\":\"query\",\"required\":false,\"description\":\"关键词\"}]；in 可为 query/header/body",
+    "mcp.otherEditTitle": "编辑其他工具",
     "mcp.toolPrefix": "工具前缀",
     "mcp.toolName": "工具名称",
     "mcp.toolId": "工具标识",
     "mcp.toolDesc": "工具说明",
+    "mcp.paramDesc": "参数说明",
     "mcp.params": "参数",
     "mcp.noParams": "无参数",
     "mcp.paramName": "参数名",
@@ -792,7 +811,8 @@ const I18N = {
     "mcp.paramIn": "位置",
     "mcp.paramRequired": "必填",
     "mcp.paramAuto": "自动注入",
-    "mcp.editDescHint": "编辑参数说明（留空则恢复默认）",
+    "mcp.editDescTitle": "编辑说明",
+    "mcp.editDescHint": "留空则恢复默认说明",
     "mcp.ownerGateway": "所属网关",
     "mcp.searchTools": "搜索工具名称 / 标识 / 网关",
     "mcp.tabTools": "MCP 工具",
@@ -1358,10 +1378,24 @@ const I18N = {
     "mcp.defaultTools": "Default tools (all keys auto-own)",
     "mcp.hint": "Tool name format: prefix__tool; supports SSE / Streamable HTTP",
     "mcp.tabGateway": "MCP Gateway",
+    "mcp.tabOther": "Other tools",
+    "mcp.otherHint": "Tools calling HTTP directly via the built-in default gateway (name: default__toolname). Refresh after add/edit.",
+    "mcp.otherAdd": "Add tool",
+    "mcp.otherName": "Tool name",
+    "mcp.otherMethod": "Method",
+    "mcp.otherUrl": "Request URL",
+    "mcp.otherHeaders": "Headers JSON (fill api-key value directly; saved masked, unchanged keeps original)",
+    "mcp.otherParam": "Parameter",
+    "mcp.otherParams": "Parameters",
+    "mcp.in_query": "Query params",
+    "mcp.in_body": "Body params",
+    "mcp.otherParamsHint": "Format: [{\"name\":\"q\",\"type\":\"string\",\"in\":\"query\",\"required\":false,\"description\":\"keyword\"}]; in = query/header/body",
+    "mcp.otherEditTitle": "Edit other tool",
     "mcp.toolPrefix": "Tool prefix",
     "mcp.toolName": "Tool name",
     "mcp.toolId": "Tool ID",
     "mcp.toolDesc": "Description",
+    "mcp.paramDesc": "Parameter description",
     "mcp.params": "Params",
     "mcp.noParams": "No parameters",
     "mcp.paramName": "Name",
@@ -1369,7 +1403,8 @@ const I18N = {
     "mcp.paramIn": "Location",
     "mcp.paramRequired": "Required",
     "mcp.paramAuto": "Auto-injected",
-    "mcp.editDescHint": "Edit parameter description (empty to restore default)",
+    "mcp.editDescTitle": "Edit description",
+    "mcp.editDescHint": "Empty to restore default description",
     "mcp.ownerGateway": "Gateway",
     "mcp.searchTools": "Search tool name / ID / gateway",
     "mcp.tabTools": "MCP Tools",
@@ -3656,9 +3691,11 @@ async function renderDashboard(){
         <div class="subtabs" id="mcpSubTabs">
           <button class="tab active" data-mcptab="gateway">${t('mcp.tabGateway')}</button>
           <button class="tab" data-mcptab="tools">${t('mcp.tabTools')}</button>
+          <button class="tab" data-mcptab="other">${t('mcp.tabOther')}</button>
         </div>
         <div id="mcp-gateway" class="as-pane"><div class="card"><div id="mcpBody"></div></div></div>
         <div id="mcp-tools" class="as-pane" hidden><div class="card"><div id="mcpToolsBody"></div></div></div>
+        <div id="mcp-other" class="as-pane" hidden><div class="card"><div id="mcpOtherBody"></div></div></div>
       </section>
       <section class="page" data-page="test" hidden></section>
       <section class="page" data-page="logs" hidden></section>
@@ -3722,7 +3759,9 @@ async function renderDashboard(){
       const t=btn.dataset.mcptab;
       document.getElementById('mcp-gateway').hidden=(t!=='gateway');
       document.getElementById('mcp-tools').hidden=(t!=='tools');
+      document.getElementById('mcp-other').hidden=(t!=='other');
       if(t==='tools') loadMcpToolsPage();
+      if(t==='other') loadMcpOtherPage();
     };
   });
   // 配置卡：仅 admin（含密钥/配置/安全 tab）；viewer/operator 看不到
@@ -5120,7 +5159,6 @@ function renderRolesPage(){
     [t('roles.security'), N, N, Y],
     [t('roles.mcp'), N, N, Y],
     [t('roles.correction'), N, N, Y],
-    [t('roles.service'), N, N, Y],
   ];
   box.innerHTML='<div class="hint" style="margin-bottom:12px">'+esc(t('roles.hint'))+'</div>'+
     '<table class="admin-table" style="width:100%"><thead><tr>'+
@@ -5539,7 +5577,7 @@ function showMcpToolAddModal(servers){
           h+='<tr><td colspan="4" style="padding:0;background:#0f1115"><table class="cfg-table" style="margin:0"><thead><tr>'
             +'<th>'+t('mcp.paramName')+'</th><th style="width:80px">'+t('mcp.paramType')+'</th>'
             +'<th style="width:70px">'+t('mcp.paramIn')+'</th><th style="width:50px">'+t('mcp.paramRequired')+'</th>'
-            +'<th>'+t('mcp.toolDesc')+'</th><th style="width:50px">'+t('common.action')+'</th></tr></thead><tbody>';
+            +'<th>'+t('mcp.paramDesc')+'</th><th style="width:50px">'+t('common.action')+'</th></tr></thead><tbody>';
           if(!params.length) h+='<tr><td colspan="6" class="hint" style="text-align:center;padding:10px">'+t('mcp.noParams')+'</td></tr>';
           params.forEach(p=>{
             const badge=p.in==='header'?'badge':(p.in==='query'?'hint':'');
@@ -5621,14 +5659,16 @@ async function loadMcpToolsPage(){
       const desc=meta.description||'';
       const open=mcpToolExpanded.has(q);
       h+='<tr><td class="row-act"><button class="mini" data-mcptool-expand="'+esc(q)+'">'+(open?'−':'+')+'</button></td>'
-        +'<td style="width:140px;min-width:0;word-break:break-all">'+esc(q)+'</td><td style="width:80px;min-width:0;word-break:break-all">'+esc(gw?gw.name:prefix)+'</td><td style="width:300px;min-width:0;word-break:break-word;line-height:1.4">'+esc(desc)+'</td>'
-        +'<td class="col-actions" style="width:70px"><button class="mini" data-mcptool-del="'+esc(q)+'">'+t('common.delete')+'</button></td></tr>';
+        +'<td style="width:140px;min-width:0;word-break:break-all">'+esc(q)+'</td><td style="width:80px;min-width:0;word-break:break-all">'+esc(gw?gw.name:prefix)+'</td>'
+        +'<td style="width:300px;min-width:0;word-break:break-word;line-height:1.4">'+esc(desc)+'</td>'
+        +'<td class="col-actions" style="width:110px"><button class="mini" data-mcp-edit-desc="'+esc(meta.name||'')+'" data-param="" data-desc="'+esc(desc)+'" title="'+t('mcp.editDescHint')+'">'+t('common.edit')+'</button> '
+        +'<button class="mini" data-mcptool-del="'+esc(q)+'">'+t('common.delete')+'</button></td></tr>';
       if(open){
         const params=meta.params||[];
         h+='<tr><td colspan="5" style="padding:0;background:#0f1115"><table class="cfg-table" style="margin:0"><thead><tr>'
           +'<th>'+t('mcp.paramName')+'</th><th style="width:80px">'+t('mcp.paramType')+'</th>'
           +'<th style="width:70px">'+t('mcp.paramIn')+'</th><th style="width:50px">'+t('mcp.paramRequired')+'</th>'
-          +'<th>'+t('mcp.toolDesc')+'</th><th style="width:50px">'+t('common.action')+'</th></tr></thead><tbody>';
+          +'<th>'+t('mcp.paramDesc')+'</th><th style="width:50px">'+t('common.action')+'</th></tr></thead><tbody>';
         if(!params.length) h+='<tr><td colspan="6" class="hint" style="text-align:center;padding:10px">'+t('mcp.noParams')+'</td></tr>';
         params.forEach(p=>{
           const badge=p.in==='header'?'badge':(p.in==='query'?'hint':'');
@@ -5671,24 +5711,173 @@ async function loadMcpToolsPage(){
   }catch(e){ box.innerHTML='<div class="err">'+t('common.errorPrefix')+e.message+'</div>'; }
 }
 
-// MCP 参数说明编辑（兜底）：事件委托，覆盖工具页与新增工具弹框两处动态渲染的按钮。
-document.addEventListener('click', async (e)=>{
+// ── 其他工具（HTTP 调用，走 default 网关）──────────────────────────
+async function loadMcpOtherPage(){
+  const box=document.getElementById('mcpOtherBody'); if(!box) return;
+  box.innerHTML='<div class="hint">'+t('common.loadingX')+'</div>';
+  let tools=[];
+  try{
+    const r=await api('/admin/api/mcp/http-tools');
+    if(!r.ok){ box.innerHTML='<div class="err">'+t('common.loadFailed')+'</div>'; return; }
+    tools=(await r.json()).tools||[];
+  }catch(e){ box.innerHTML='<div class="err">'+t('common.errorPrefix')+e.message+'</div>'; return; }
+  let h='<div class="hint" style="margin-bottom:10px">'+t('mcp.otherHint')+'</div>'
+    +'<div class="row" style="margin-bottom:10px"><button id="mcpOtherAdd">'+t('mcp.otherAdd')+'</button></div>'
+    +'<table class="admin-table" style="width:100%"><thead><tr>'
+    +'<th>'+t('mcp.otherName')+'</th><th style="width:70px">'+t('mcp.otherMethod')+'</th>'
+    +'<th>'+t('mcp.otherUrl')+'</th><th style="width:60px">'+t('common.status')+'</th>'
+    +'<th style="width:110px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
+  tools.forEach(x=>{
+    h+='<tr><td style="word-break:break-all">default__'+esc(x.name)+'</td>'
+      +'<td>'+esc(x.method)+'</td><td style="word-break:break-all">'+esc(x.url)+'</td>'
+      +'<td>'+(x.enabled?'<span class="badge">'+t('common.enabled')+'</span>':'<span class="hint">'+t('common.disabled')+'</span>')+'</td>'
+      +'<td class="col-actions" style="text-align:right"><button class="mini" data-other-test="'+x.id+'">'+t('common.test')+'</button> '
+      +'<button class="mini" data-other-edit="'+x.id+'">'+t('common.edit')+'</button> '
+      +'<button class="mini" data-other-toggle="'+x.id+'" data-on="'+x.enabled+'">'+(x.enabled?t('common.disable'):t('common.enable'))+'</button> '
+      +'<button class="mini danger" data-other-del="'+x.id+'">'+t('common.delete')+'</button></td></tr>';
+  });
+  if(!tools.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('mcp.emptyTools')+'</td></tr>';
+  h+='</tbody></table>';
+  box.innerHTML=h;
+  document.getElementById('mcpOtherAdd').onclick=()=>showHttpToolModal(null);
+  box.querySelectorAll('[data-other-test]').forEach(b=> b.onclick=()=>{
+    const x=tools.find(y=>y.id===+b.dataset.otherTest); if(!x) return;
+    let ps=[]; try{ ps=JSON.parse(x.params_json||'[]')||[]; }catch(e){}
+    let inputs='';
+    ps.forEach(p=>{ if(!p||!p.name) return;
+      inputs+='<div class="row" style="margin-top:6px"><label style="width:120px">'+esc(p.name)+(p.required?' *':'')+'</label>'
+        +'<input class="ot-arg" data-name="'+esc(p.name)+'" style="flex:1" placeholder="'+esc(p.type||'string')+'" /></div>';
+    });
+    if(!inputs) inputs='<div class="hint" style="margin-top:6px">'+t('mcp.noParams')+'</div>';
+    const tb='<div class="hint">'+esc(x.name)+' · '+esc(x.method)+' '+esc(x.url)+'</div>'+inputs
+      +'<pre id="otResult" class="muted" style="margin-top:12px;max-height:220px;overflow:auto"></pre>';
+    showModal(t('common.test'), tb, async(m)=>{
+      const args={};
+      m.querySelectorAll('.ot-arg').forEach(el=>{ if(el.value.trim()) args[el.dataset.name]=el.value.trim(); });
+      const r=await api('/admin/api/mcp/http-tools/'+x.id+'/test',{method:'POST',
+        headers:{'content-type':'application/json'}, body:JSON.stringify({args})});
+      const out=m.querySelector('#otResult');
+      if(r.ok){ const d=await r.json(); out.textContent=d.result||''; }
+      else { out.textContent=t('common.failPrefix')+r.status; }
+      return 'keep';
+    }, t('common.test'));
+  });
+  box.querySelectorAll('[data-other-edit]').forEach(b=> b.onclick=()=>{
+    const x=tools.find(y=>y.id===+b.dataset.otherEdit); if(x) showHttpToolModal(x);
+  });
+  box.querySelectorAll('[data-other-toggle]').forEach(b=> b.onclick=async ()=>{
+    const id=+b.dataset.otherToggle, on=b.dataset.on==='1'?0:1;
+    const r=await api('/admin/api/mcp/http-tools/'+id,{method:'PATCH',headers:{'content-type':'application/json'},
+      body:JSON.stringify({enabled:on})});
+    if(!r.ok){ alert(t('common.failPrefix')+r.status); return; }
+    await api('/admin/api/mcp/refresh',{method:'POST'}); loadMcpOtherPage();
+  });
+  box.querySelectorAll('[data-other-del]').forEach(b=> b.onclick=async ()=>{
+    if(!confirm(t('common.confirmDelete'))) return;
+    const r=await api('/admin/api/mcp/http-tools/'+b.dataset.otherDel,{method:'DELETE'});
+    if(!r.ok){ alert(t('common.failPrefix')+r.status); return; }
+    await api('/admin/api/mcp/refresh',{method:'POST'}); loadMcpOtherPage();
+  });
+}
+function showHttpToolModal(x){
+  const val=(k,d)=>esc(x?(x[k]||''):(d||''));
+  // 已有参数：从 params_json 解析成数组，按 in 分组
+  let existing=[];
+  try{ existing=JSON.parse((x&&x.params_json)||'[]')||[]; }catch(e){ existing=[]; }
+  if(!Array.isArray(existing)) existing=[];
+  const typeOpts=['string','number','integer','boolean','object','array'];
+  const selType=(cur)=>typeOpts.map(o=>'<option'+(o===(cur||'string')?' selected':'')+'>'+o+'</option>').join('');
+  // 一个参数分区：loc = header/query/body
+  const section=(loc)=>{
+    const rows=existing.filter(p=>(p.in||'body')===loc);
+    const rowHtml=(p)=>'<tr class="ht-p-row" data-in="'+loc+'">'
+      +'<td><input class="ht-p-name" style="width:100%" value="'+esc((p&&p.name)||'')+'" placeholder="param_name" /></td>'
+      +'<td><select class="ht-p-type">'+selType(p&&p.type)+'</select></td>'
+      +'<td style="text-align:center"><input type="checkbox" class="ht-p-req" '+((p&&p.required)?'checked':'')+' /></td>'
+      +'<td><input class="ht-p-desc" style="width:100%" value="'+esc((p&&p.description)||'')+'" placeholder="'+t('mcp.paramDesc')+'" /></td>'
+      +'<td><button type="button" class="mini danger ht-p-del">'+t('common.delete')+'</button></td></tr>';
+    return '<div style="margin-top:10px"><label>'+t('mcp.in_'+loc)+'</label>'
+      +'<table class="cfg-table" style="width:100%;margin-top:6px"><thead><tr>'
+      +'<th style="width:130px">'+t('mcp.paramName')+'</th><th style="width:85px">'+t('mcp.paramType')+'</th>'
+      +'<th style="width:45px">'+t('mcp.paramRequired')+'</th><th>'+t('mcp.paramDesc')+'</th>'
+      +'<th style="width:50px">'+t('common.action')+'</th></tr></thead>'
+      +'<tbody class="ht-p-body">'+(rows.length?rows.map(rowHtml).join(''):rowHtml(null))+'</tbody></table>'
+      +'<button type="button" class="mini ht-p-add" style="margin-top:6px">'+t('common.add')+' '+t('mcp.otherParam')+'</button></div>';
+  };
+  const body='<div class="ht-field"><label>'+t('mcp.otherName')+'</label><input id="htName" value="'+val('name')+'" placeholder="my_tool" /></div>'
+    +'<div class="ht-field"><label>'+t('mcp.otherMethod')+'</label>'
+      +'<select id="htMethod">'+['GET','POST','PUT','PATCH','DELETE'].map(m=>'<option'+(x&&x.method===m?' selected':'')+'>'+m+'</option>').join('')+'</select></div>'
+    +'<div class="ht-field"><label>'+t('mcp.otherUrl')+'</label><input id="htUrl" value="'+val('url')+'" placeholder="https://api.example.com/x" /></div>'
+    +'<div class="ht-field"><label>'+t('mcp.toolDesc')+'</label><textarea id="htDesc" rows="3">'+val('description')+'</textarea></div>'
+    +'<div class="ht-field"><label>'+t('mcp.otherHeaders')+'（JSON 对象）</label><textarea id="htHeaders" rows="2">'+val('headers_json','{}')+'</textarea></div>'
+    +section('query')+section('body');
+  const m=showModal(x?t('mcp.otherEditTitle'):t('mcp.otherAdd'), body, async(m)=>{
+    const rows=[];
+    m.querySelectorAll('.ht-p-row').forEach(tr=>{
+      const name=tr.querySelector('.ht-p-name').value.trim();
+      if(!name) return;
+      rows.push({name, type:tr.querySelector('.ht-p-type').value, in:tr.dataset.in,
+        required:tr.querySelector('.ht-p-req').checked,
+        description:tr.querySelector('.ht-p-desc').value.trim()});
+    });
+    const payload={name:m.querySelector('#htName').value.trim(), method:m.querySelector('#htMethod').value,
+      url:m.querySelector('#htUrl').value.trim(), description:m.querySelector('#htDesc').value.trim(),
+      headers_json:m.querySelector('#htHeaders').value.trim()||'{}',
+      params_json:JSON.stringify(rows)};
+    if(!payload.name||!payload.url){ alert(t('mcp.otherName')+' / '+t('mcp.otherUrl')); return false; }
+    let hj; try{ hj=JSON.parse(payload.headers_json); }catch(e){ alert(t('mcp.otherHeaders')+' JSON error'); return false; }
+    if(!hj || typeof hj!=='object' || Array.isArray(hj)){ alert(t('mcp.otherHeaders')+' 必须是对象'); return false; }
+    const url=x?('/admin/api/mcp/http-tools/'+x.id):'/admin/api/mcp/http-tools';
+    const r=await api(url,{method:x?'PATCH':'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
+    if(!r.ok){ const d=await r.json().catch(()=>({})); alert(d.error||(t('common.failPrefix')+r.status)); return false; }
+    await api('/admin/api/mcp/refresh',{method:'POST'});
+    loadMcpOtherPage(); return true;
+  });
+  // 三个分区各自的增行 / 删行
+  m.querySelectorAll('.ht-p-add').forEach(btn=> btn.onclick=()=>{
+    const tbody=btn.parentElement.querySelector('.ht-p-body');
+    // 用同区已有行的 HTML 结构复制一个空行
+    const proto=tbody.querySelector('.ht-p-row');
+    if(proto){ const clone=proto.cloneNode(true);
+      clone.querySelectorAll('input[type=text],input:not([type])').forEach(el=>el.value='');
+      clone.querySelector('.ht-p-req').checked=false;
+      tbody.appendChild(clone);
+    }
+  });
+  m.querySelectorAll('.ht-p-body').forEach(tbody=>{
+    tbody.querySelectorAll('.ht-p-del').forEach(b=> b.onclick=()=>{
+      const rows=tbody.querySelectorAll('.ht-p-row');
+      if(rows.length>1) b.closest('tr').remove();
+      else { rows[0].querySelectorAll('input,select').forEach(el=>{ if(el.type==='checkbox') el.checked=false; else el.value=''; }); }
+    });
+  });
+}
+
+// MCP 工具/参数说明编辑（兜底）：事件委托，覆盖工具页与新增工具弹框两处动态渲染的按钮。
+// 用多行文本 textarea 编辑，编辑框放在弹出的 modal 里。
+document.addEventListener('click', (e)=>{
   const b=e.target.closest && e.target.closest('[data-mcp-edit-desc]');
   if(!b) return;
   const tool=b.dataset.mcpEditDesc, param=b.dataset.param, cur=b.dataset.desc||'';
-  const val=window.prompt(t('mcp.editDescHint')+'\n'+tool+' · '+param, cur);
-  if(val===null) return;
-  try{
-    const r=await api('/admin/api/mcp/param-desc',{method:'PUT',headers:{'content-type':'application/json'},
-      body:JSON.stringify({tool, param, description:val.trim()})});
-    if(!r.ok){ alert(t('common.failPrefix')+r.status); return; }
-    // 工具页重绘；弹框内则重绘工具表（若弹框开着）
-    if(document.getElementById('mcpToolsBody')) loadMcpToolsPage();
-    const m=document.getElementById('genericModal');
-    if(m && m.classList.contains('show')){
-      const btn=m.querySelector('#mcpTPull'); if(btn) btn.click();
-    }
-  }catch(err){ alert(t('common.errorPrefix')+err.message); }
+  const label=param ? (tool+' · '+param) : (tool+' — '+t('mcp.toolDesc'));
+  const body='<div class="hint" style="margin-bottom:8px">'+esc(label)+'</div>'
+    +'<textarea id="mcpDescInput" rows="6" style="width:100%;resize:vertical">'+esc(cur)+'</textarea>'
+    +'<div class="hint" style="margin-top:6px">'+t('mcp.editDescHint')+'</div>';
+  showModal(t('mcp.editDescTitle'), body, async(m)=>{
+    const val=m.querySelector('#mcpDescInput').value.trim();
+    try{
+      const r=await api('/admin/api/mcp/param-desc',{method:'PUT',headers:{'content-type':'application/json'},
+        body:JSON.stringify({tool, param, description:val})});
+      if(!r.ok){ alert(t('common.failPrefix')+r.status); return false; }
+      // 工具页重绘；弹框内则重绘工具表（若弹框开着）
+      if(document.getElementById('mcpToolsBody')) loadMcpToolsPage();
+      const mm=document.getElementById('genericModal');
+      if(mm && mm!==m && mm.classList.contains('show')){
+        const btn=mm.querySelector('#mcpTPull'); if(btn) btn.click();
+      }
+      return true;
+    }catch(err){ alert(t('common.errorPrefix')+err.message); return false; }
+  }, t('common.save'));
 });
 
 boot();

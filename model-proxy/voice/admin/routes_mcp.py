@@ -13,6 +13,9 @@ import admin_panel as ap
 import voice_db
 
 
+# 内置 default 网关前缀（其他工具专用），其他网关禁止占用。
+DEFAULT_TOOL_PREFIX = "default"
+
 # 参数位置推断：MCP 的 inputSchema 本身不标注 header/body/query，按参数名模式推断，
 # 仅用于管理面板展示（真实调用所有参数都作为 JSON body 透传给上游）。
 _HEADER_NAMES = {"authorization", "token", "access_token", "api_key", "apikey",
@@ -146,6 +149,8 @@ def build_router() -> APIRouter:
                 if (s.get("biz_type") or "generic") == biz:
                     raise HTTPException(400, f"业务类型 {biz} 已存在，只能添加一个")
         prefix = str(body.get("tool_prefix") or "").strip()
+        if prefix.lower() == DEFAULT_TOOL_PREFIX:
+            raise HTTPException(400, f"工具前缀 {DEFAULT_TOOL_PREFIX} 为其他工具专用，不能用于网关")
         if prefix:
             for s in voice_db.mcp_servers_list():
                 if (s.get("tool_prefix") or "") == prefix:
@@ -160,10 +165,12 @@ def build_router() -> APIRouter:
 
     @router.patch("/admin/api/mcp/servers/{sid}", dependencies=[Depends(require_admin)])
     def mcp_server_update(sid: int, body: dict[str, Any]):
+        from fastapi import HTTPException
         fields = {k: body[k] for k in ("name", "url", "headers_json", "enabled", "timeout_sec", "biz_type", "tool_prefix") if k in body}
         if not voice_db.mcp_server_get(sid):
-            from fastapi import HTTPException
             raise HTTPException(404, "上游不存在")
+        if str(fields.get("tool_prefix") or "").strip().lower() == DEFAULT_TOOL_PREFIX:
+            raise HTTPException(400, f"工具前缀 {DEFAULT_TOOL_PREFIX} 为其他工具专用，不能用于网关")
         voice_db.mcp_server_update(sid, fields)
         return {"ok": True}
 
@@ -173,6 +180,81 @@ def build_router() -> APIRouter:
             return {"ok": False, "reason": "该网关的工具已加入对外清单，请先移除工具再删除"}
         voice_db.mcp_server_delete(sid)
         return {"ok": True}
+
+    # ── 其他工具（HTTP 调用，走 default 网关）──────────────────────
+    @router.get("/admin/api/mcp/http-tools", dependencies=[Depends(require_admin)])
+    def mcp_http_tools_list():
+        rows = voice_db.mcp_http_tools_list()
+        # headers_json 脱敏：值用 •••• 代替，避免 api-key 明文回传；编辑时原样保留。
+        import json as _json
+        for r in rows:
+            try:
+                d = _json.loads(r.get("headers_json") or "{}") or {}
+            except (ValueError, TypeError):
+                d = {}
+            r["headers_json"] = _json.dumps(
+                {k: ("••••••" if v else "") for k, v in d.items()}, ensure_ascii=False)
+        return {"tools": rows}
+
+    @router.post("/admin/api/mcp/http-tools", dependencies=[Depends(require_admin)])
+    def mcp_http_tool_add(body: dict[str, Any]):
+        from fastapi import HTTPException
+        name = str(body.get("name") or "").strip()
+        url = str(body.get("url") or "").strip()
+        if not name or not url:
+            raise HTTPException(400, "name 和 url 必填")
+        if not url.lower().startswith(("http://", "https://")):
+            raise HTTPException(400, "url 必须是 http(s) 地址")
+        if voice_db.mcp_http_tool_get_by_name(name):
+            raise HTTPException(400, f"工具名 {name} 已存在")
+        try:
+            json.loads(body.get("headers_json") or "{}")
+            json.loads(body.get("params_json") or "[]")
+        except (ValueError, TypeError):
+            raise HTTPException(400, "headers_json / params_json 不是合法 JSON")
+        voice_db.mcp_http_tool_add(
+            name, url, str(body.get("description") or ""),
+            str(body.get("method") or "POST"), body.get("headers_json") or "{}",
+            body.get("params_json") or "[]", int(body.get("enabled", 1)),
+            int(body.get("timeout_sec") or 30))
+        return {"ok": True}
+
+    @router.patch("/admin/api/mcp/http-tools/{tid}", dependencies=[Depends(require_admin)])
+    def mcp_http_tool_update(tid: int, body: dict[str, Any]):
+        from fastapi import HTTPException
+        if not voice_db.mcp_http_tool_get(tid):
+            raise HTTPException(404, "工具不存在")
+        fields = {k: body[k] for k in ("name", "description", "url", "method", "headers_json",
+                                       "params_json", "enabled", "timeout_sec") if k in body}
+        for key in ("headers_json", "params_json"):
+            if key in fields:
+                try:
+                    json.loads(fields[key] or ("{}" if key == "headers_json" else "[]"))
+                except (ValueError, TypeError):
+                    raise HTTPException(400, f"{key} 不是合法 JSON")
+        # headers 脱敏值（••••••）表示未改动：保留数据库里的真实 api-key。
+        if "headers_json" in fields and "••••••" in fields["headers_json"]:
+            old = voice_db.mcp_http_tool_get(tid) or {}
+            fields["headers_json"] = old.get("headers_json") or "{}"
+        voice_db.mcp_http_tool_update(tid, fields)
+        return {"ok": True}
+
+    @router.delete("/admin/api/mcp/http-tools/{tid}", dependencies=[Depends(require_admin)])
+    def mcp_http_tool_delete(tid: int):
+        voice_db.mcp_http_tool_delete(tid)
+        return {"ok": True}
+
+    @router.post("/admin/api/mcp/http-tools/{tid}/test", dependencies=[Depends(require_admin)])
+    async def mcp_http_tool_test(tid: int, body: dict[str, Any] | None = None):
+        """测试一个 HTTP 工具：按参数定义构造示例入参，真实调用一次并返回结果。"""
+        from fastapi import HTTPException
+        tool = voice_db.mcp_http_tool_get(tid)
+        if not tool:
+            raise HTTPException(404, "工具不存在")
+        import mcp_gateway
+        args = (body or {}).get("args") or {}
+        result = await mcp_gateway._call_http_tool(tool, args)
+        return {"ok": True, "result": str(result)[:4000]}
 
     @router.post("/admin/api/mcp/servers/{sid}/enable", dependencies=[Depends(require_admin)])
     async def mcp_server_enable(sid: int):
@@ -196,12 +278,16 @@ def build_router() -> APIRouter:
         """当前发现的工具（qualified_name -> 描述），供面板勾选默认工具/Key 专属工具。"""
         import mcp_gateway
         tools = {}
+        overrides = _param_desc_overrides()
         for q, meta in (mcp_gateway._upstream_tools or {}).items():
             srv = voice_db.mcp_server_get(meta["server_id"]) or {}
             schema = meta.get("input_schema") or {}
-            params = _build_params(schema, srv.get("biz_type") or "", meta.get("name") or "")
-            tools[q] = {"server_id": meta["server_id"], "name": meta["name"],
-                        "server": srv.get("name") or "", "description": meta.get("description") or "",
+            orig = meta.get("name") or ""
+            params = _build_params(schema, srv.get("biz_type") or "", orig)
+            # 工具说明覆盖（面板编辑）：key = 原始工具名|__desc__
+            desc = overrides.get(f"{orig}|__desc__") or (meta.get("description") or "")
+            tools[q] = {"server_id": meta["server_id"], "name": orig,
+                        "server": srv.get("name") or "", "description": desc,
                         "input_schema": schema, "params": params}
         return {"tools": tools}
 
@@ -276,27 +362,29 @@ def build_router() -> APIRouter:
 
     @router.put("/admin/api/mcp/param-desc", dependencies=[Depends(require_admin)])
     async def mcp_param_desc_set(body: dict[str, Any]):
-        """面板编辑工具参数说明（兜底）：写 config_kv.MCP_PARAM_DESC_OVERRIDE。
+        """面板编辑已授权 MCP 工具的说明 / 参数说明：写 config_kv.MCP_PARAM_DESC_OVERRIDE。
 
-        body: {tool, param, description}。description 为空则删除该条覆盖。
-        key 用原始工具名（不带网关前缀），工具页与新增工具弹框共用同一份覆盖。
+        body: {tool, param?, description}。
+          - param 为空 → 编辑工具说明（key = "{tool}|__desc__"）
+          - param 非空 → 编辑该参数说明（key = "{tool}|{param}"）
+        description 为空则删除该条覆盖。tool 用原始工具名（不带网关前缀）。
         操作记入审计。
         """
         import config_store
         tool = str(body.get("tool") or "").strip()
         param = str(body.get("param") or "").strip()
         description = str(body.get("description") or "").strip()
-        if not tool or not param:
-            return {"ok": False, "error": "tool 与 param 不能为空"}
+        if not tool:
+            return {"ok": False, "error": "tool 不能为空"}
         overrides = _param_desc_overrides()
-        key = f"{tool}|{param}"
+        key = f"{tool}|{param}" if param else f"{tool}|__desc__"
         if description:
             overrides[key] = description
         else:
             overrides.pop(key, None)
         config_store.instance().bulk({"MCP_PARAM_DESC_OVERRIDE": json.dumps(overrides, ensure_ascii=False)})
         try:
-            voice_db.append_audit("admin", "mcp_param_desc_set", f"tool={tool} param={param}")
+            voice_db.append_audit("admin", "mcp_param_desc_set", f"tool={tool} param={param or 'TOOL_DESC'}")
         except Exception:
             pass
         return {"ok": True, "description": description}
