@@ -132,3 +132,49 @@ describe('resolveMcpUrl（固定 MCP 地址 = 服务设置地址 + /mcp/sse）',
     expect(resolveMcpUrl()).toBe('')
   })
 })
+
+describe('session.start 的 MCP server 下发随总开关', () => {
+  const originalUrl = appConfig.voice.builtin.url
+  const originalEnabled = appConfig.mcp.enabled
+  afterEach(() => {
+    appConfig.voice.builtin.url = originalUrl
+    appConfig.mcp.enabled = originalEnabled
+  })
+
+  async function captureStartServers(): Promise<unknown[]> {
+    // 在 MockWebSocket 构造时就挂 send 拦截：connect() 建连成功即会发 session.start，
+    // 若等 connect 后再挂就错过那一条，startSession 在已 OPEN 时也不再发第二条。
+    let sent: any
+    let instance: MockWebSocket
+    const OrigWS = MockWebSocket
+    const SpyWS = class extends OrigWS {
+      constructor(...args: any[]) {
+        super(...args)
+        this.readyState = 1 // Mock 建连即 OPEN，sendJson 才会真正发送
+        instance = this
+      }
+      override send(data: string): void { sent = JSON.parse(data) }
+    }
+    vi.stubGlobal('WebSocket', SpyWS)
+    const transport = new WebSocketTransport()
+    const p = transport.connect('wake')
+    await new Promise((r) => setTimeout(r, 0))
+    instance!.onopen!()
+    await p
+    return sent?.mcp?.servers ?? []
+  }
+
+  it('开关开启（默认）：下发指向服务地址 /mcp/sse 的固定 server', async () => {
+    appConfig.voice.builtin.url = 'https://gw.example.com'
+    appConfig.mcp.enabled = true
+    const servers = await captureStartServers()
+    expect(servers).toHaveLength(1)
+    expect((servers[0] as { url: string }).url).toBe('https://gw.example.com/mcp/sse')
+  })
+
+  it('开关关闭：servers 为空，网关不连任何 MCP', async () => {
+    appConfig.voice.builtin.url = 'https://gw.example.com'
+    appConfig.mcp.enabled = false
+    expect(await captureStartServers()).toEqual([])
+  })
+})

@@ -576,8 +576,10 @@ export class WebSocketTransport implements AssistantTransport {
       // MCP 固定对接：app 不提供手动添加 MCP server 的入口，内部固定下发一个指向
       // model-proxy 的 SSE server。地址 = 服务设置里的语音服务地址 + 固定路径 /mcp/sse，
       // 随服务地址配置变化（下次 start / 重武装即生效）。网关据此连上并把工具注册进助手工具箱。
+      // 总开关关闭时下发空 servers（网关不连任何 MCP），下次 start / 重武装生效。
       mcp: {
         servers: (() => {
+          if (appConfig.mcp.enabled !== true) return []
           const url = resolveMcpUrl()
           if (!url) return []
           return [{

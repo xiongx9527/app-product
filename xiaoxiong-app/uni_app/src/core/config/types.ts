@@ -82,9 +82,8 @@ export interface AppConfig {
   /** 记忆设置：长期记忆（自动抽取 / 手动指令）相关开关 */
   memory: MemoryConfig
   /**
-   * MCP 配置（遗留字段）：app 已改为固定对接 model-proxy 的 /mcp，不再暴露手动配置入口，
-   * 下发时由 webSocketTransport 根据「服务设置」地址动态生成固定 server，故此字段不再被读取。
-   * 保留仅为兼容存量本地配置，后续可移除。
+   * MCP 配置：app 固定对接 model-proxy 的 /mcp（由 webSocketTransport 按服务地址动态生成
+   * server，不暴露手动列表）；这里的 enabled 是设置页的总开关，关闭则不下发任何 server。
    */
   mcp: McpConfig
 }
@@ -208,7 +207,7 @@ export interface McpServerConfig {
 
 /** MCP 服务器列表配置 */
 export interface McpConfig {
-  /** 总开关：关闭时不把任何 MCP 服务器下发给网关（快捷整体停用，不必逐个改服务器） */
+  /** 总开关（设置页「MCP设置」）：关闭时不把任何 MCP server 下发给网关，整体停用 MCP。 */
   enabled: boolean
   servers: McpServerConfig[]
 }

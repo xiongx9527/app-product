@@ -226,7 +226,7 @@ function setConsolidateEvery(e: any): void {
 
 /** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
  * 各分区一律默认折叠，样式一致（标题右侧带收起/展开箭头）。 */
-type SettingsGroup = 'general' | 'voice' | 'playback' | 'dialog' | 'timeout' | 'recommend' | 'memory'
+type SettingsGroup = 'general' | 'voice' | 'playback' | 'dialog' | 'timeout' | 'recommend' | 'memory' | 'mcp'
 const expanded = ref<SettingsGroup | null>(null)
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
@@ -420,6 +420,11 @@ function onAecChange(on: boolean): void {
   appConfig.general.aecEnabled = on
   persistConfig()
   applyDuckConfig()
+}
+/** MCP 总开关：关闭后下次 start / 重武装不再下发 MCP server；提示随会话生效。 */
+function onMcpEnabledChange(e: any): void {
+  appConfig.mcp.enabled = e.detail.value === true
+  persistConfig()
 }
 /** 把配置下发到原生（duck 强度 + 中断前 duck + 插话 + AEC）。UI 改动即生效，不必重启。 */
 function applyDuckConfig(): void {
@@ -1080,6 +1085,28 @@ watch(
         </view>
         <text class="entry-arrow">›</text>
       </view>
+      </template>
+    </view>
+    <!-- MCP 总开关：关闭则不向网关下发任何 MCP server（整体停用）。MCP 固定对接服务地址下的
+         /mcp/sse，无手动服务器列表，故这里只有一个开关；保存/下次会话生效。 -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('mcp')">
+        <text class="group-title">{{ t('settings.mcp.title') }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('mcp') }" />
+      </view>
+      <template v-if="isOpen('mcp')">
+        <view class="setting-row">
+          <view class="row-text">
+            <text class="row-label">{{ t('settings.mcp.enabled') }}</text>
+            <text class="hint">{{ t('settings.mcp.enabledHint') }}</text>
+          </view>
+          <switch
+            class="setting-switch"
+            :checked="appConfig.mcp.enabled"
+            color="#6c8cff"
+            @change="onMcpEnabledChange"
+          />
+        </view>
       </template>
     </view>
     <!-- 保存配置 + 重启网关 并列 -->
