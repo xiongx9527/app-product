@@ -286,11 +286,15 @@ def build_router() -> APIRouter:
             except (ValueError, OSError, TypeError):
                 time_str = str(ts)
             account = account_of(r)
+            # config.save 的 actor 存的是账号名（非 IP），不能显示在 IP 列，置空避免误导。
+            actor = r.get("actor") or ""
+            if (r.get("action") or "") == "config.save":
+                actor = ""
             item = {"id": r.get("id"), "time": time_str,
-                    "actor": r.get("actor") or "", "account": account,
+                    "actor": actor, "account": account,
                     "action": r.get("action") or "", "detail": r.get("detail") or ""}
             if needle:
-                blob = (item["actor"] + " " + account + " " + item["action"] + " " + item["detail"]).lower()
+                blob = (actor + " " + account + " " + item["action"] + " " + item["detail"]).lower()
                 if needle not in blob:
                     continue
             out.append(item)
