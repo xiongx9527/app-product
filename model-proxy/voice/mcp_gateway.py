@@ -9,10 +9,8 @@
 from __future__ import annotations
 
 import json
-import time
 from contextlib import asynccontextmanager, AsyncExitStack
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
@@ -89,20 +87,8 @@ _gateway_server: Any = None       # SSE transport 的 FastMCP 实例
 _stream_server: Any = None        # Streamable-HTTP transport 的 FastMCP 实例（独立实例，避免共享 lifespan 重复进入）
 _upstream_tools: dict[str, dict[str, Any]] = {}   # qualified_name -> {server_id, name, description}
 
-# ── 业务类型规则 ────────────────────────────────────────────────────
-# 每个业务类型可定义自己的鉴权准备逻辑：在连上游前把账号密码换成 token 注入 headers。
-# generic: 静态 headers（headers_json 里有什么就用什么）
-# askdata: 用账号密码调上游 /api/v1/mcp/access_token 换 X-SQLBOT-TOKEN，带缓存
-BIZ_RULES: dict[str, dict[str, Any]] = {
-    "generic": {"auth": "static"},
-    "askdata": {
-        "auth": "token_exchange",
-        "token_path": "/api/v1/mcp/access_token",
-        "token_header": "X-SQLBOT-TOKEN",
-        "ttl_sec": 7 * 24 * 3600,   # sa-token 有效期约 8 天，提前 1 天过期重换
-    },
-}
-_token_cache: dict[tuple, tuple[str, float]] = {}   # (server_id, key_id, user) -> (token, expire_ts)
+# 鉴权由调用方负责：业务 token / API-Key 放进请求 header，中转层原样透传给上游，
+# 不在中转层换 token、不按业务类型做特殊处理。
 
 
 
@@ -149,71 +135,34 @@ def _parse_headers(server: dict[str, Any]) -> dict[str, str]:
     return {str(k): str(v) for k, v in (d or {}).items() if str(v)}
 
 
-def _current_key_id() -> int | None:
-    """当前 MCP 会话的 API-Key id（用于按 Key 取账号密码）。"""
+# 不透传给上游的头：hop-by-hop（RFC 7230）+ 19529 自身鉴权头。
+# 其余头由调用方原样传入、原样转发，中转层不做任何业务加工（换 token / 拼前缀等）。
+_NON_FORWARD_HEADERS = {
+    "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailer", "transfer-encoding", "upgrade",
+    "content-length", "accept-encoding",
+    "authorization",  # 19529 自己的 API-Key 鉴权头，不是上游业务头
+}
+
+
+def _request_headers() -> dict[str, str]:
+    """当前 MCP 请求的 header，原样透传给上游。取不到上下文时返回空 dict。"""
     if get_http_request is None:
-        return None
+        return {}
     try:
-        req = get_http_request()
-        kid = getattr(req.state, "api_key_id", None)
-        return int(kid) if kid is not None else None
+        raw = getattr(get_http_request(), "headers", {}) or {}
+        return {str(k): str(v) for k, v in raw.items()
+                if str(k).lower() not in _NON_FORWARD_HEADERS and str(v)}
     except Exception:
-        return None
-
-
-def _askdata_credentials(key_id: int | None) -> tuple[str, str]:
-    """取 askdata 账号密码：优先 API-Key 自带字段，否则网关默认值。"""
-    user = pwd = ""
-    if key_id:
-        row = voice_db._conn_get().execute(
-            "SELECT askdata_user, askdata_pass FROM admin_api_keys WHERE id=?", (key_id,)
-        ).fetchone()
-        if row:
-            user, pwd = row["askdata_user"] or "", row["askdata_pass"] or ""
-    if not user or not pwd:
-        try:
-            import openai_voice_server as ovs
-            user = user or (ovs.config_value("MCP_ASKDATA_USER", "") or "")
-            pwd = pwd or (ovs.config_value("MCP_ASKDATA_PASS", "") or "")
-        except Exception:
-            pass
-    return user, pwd
-
-
-async def _prepare_auth(server: dict[str, Any], headers: dict[str, str], key_id: int | None) -> dict[str, str]:
-    """按业务类型准备鉴权 headers。askdata 用账号密码动态换 token（带缓存）。"""
-    biz = (server.get("biz_type") or "generic").strip().lower()
-    rule = BIZ_RULES.get(biz, BIZ_RULES["generic"])
-    if rule["auth"] != "token_exchange":
-        return headers
-    user, pwd = _askdata_credentials(key_id)
-    if not user or not pwd:
-        raise ValueError(f"业务 {biz} 需要账号密码：请在 API-Key 或网关默认配置 MCP_ASKDATA_USER/PASS")
-    cache_key = (server.get("id"), key_id, user)
-    now = time.time()
-    cached = _token_cache.get(cache_key)
-    if cached and cached[1] > now + 60:
-        headers[rule["token_header"]] = cached[0]
-        return headers
-    url = server["url"]
-    parsed = urlparse(url)
-    token_url = f"{parsed.scheme}://{parsed.netloc}{rule['token_path']}"
-    try:
-        async with httpx.AsyncClient(timeout=10) as cli:
-            r = await cli.post(token_url, json={"username": user, "password": pwd})
-        data = r.json() if r.status_code == 200 else {}
-        token = data.get("token") or data.get("access_token") or ""
-        if not token:
-            raise ValueError(f"换取 token 失败: HTTP {r.status_code} {r.text[:120]}")
-        _token_cache[cache_key] = (token, now + rule["ttl_sec"])
-        headers[rule["token_header"]] = token
-        return headers
-    except httpx.HTTPError as exc:
-        raise ValueError(f"换取 token 请求失败: {exc}")
+        return {}
 
 
 async def _make_client(server: dict[str, Any]):
-    """按上游配置构造 FastMCP Client：业务类型鉴权 + 全远程传输（SSE / Streamable HTTP）。"""
+    """按上游配置构造 FastMCP Client：透传调用方 header + 全远程传输（SSE / Streamable HTTP）。
+
+    中转层不做业务鉴权加工（不换 token、不拼前缀）：调用方把业务鉴权头（如
+    X-SQLBOT-TOKEN: Bearer <token>）放进请求，这里原样转发给上游。
+    """
     headers = _parse_headers(server)
     timeout = int(server.get("timeout_sec") or 30)
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
@@ -221,7 +170,8 @@ async def _make_client(server: dict[str, Any]):
     url = server["url"]
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("MCP 上游仅支持远程 http(s) 地址（SSE / Streamable HTTP），不支持本地 stdio")
-    headers = await _prepare_auth(server, headers, _current_key_id())
+    # 透传调用方请求带来的 header（业务鉴权头在此），覆盖配置里同名的静态头。
+    headers.update(_request_headers())
     if transport == "sse" or url.rstrip("/").endswith("/sse"):
         TK = SSETransport
     elif transport == "streamable-http":
