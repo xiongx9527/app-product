@@ -5827,7 +5827,7 @@ function showHttpToolModal(x){
   const body='<div class="ht-field"><label>'+t('mcp.otherName')+'</label><input id="htName" value="'+val('name')+'" placeholder="my_tool" /></div>'
     +'<div class="ht-field"><label>'+t('mcp.otherMethod')+'</label>'
       +'<select id="htMethod">'+['GET','POST','PUT','PATCH','DELETE'].map(m=>'<option'+(x&&x.method===m?' selected':'')+'>'+m+'</option>').join('')+'</select></div>'
-    +'<div class="ht-field"><label>'+t('mcp.otherUrl')+'</label><input id="htUrl" value="'+val('url')+'" placeholder="https://api.example.com/x" /></div>'
+    +'<div class="ht-field"><label>'+t('mcp.otherUrl')+'</label><textarea id="htUrl" rows="2" style="word-break:break-all">'+val('url')+'</textarea></div>'
     +'<div class="ht-field"><label>'+t('mcp.toolDesc')+'</label><textarea id="htDesc" rows="3">'+val('description')+'</textarea></div>'
     +'<div class="ht-field"><label>'+t('mcp.otherHeaders')+'（JSON 对象）</label><textarea id="htHeaders" rows="2">'+val('headers_json','{}')+'</textarea></div>'
     +section('query')+section('body');
