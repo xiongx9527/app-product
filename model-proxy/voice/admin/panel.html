@@ -147,6 +147,11 @@
     width:100%; box-sizing:border-box; background:#0f1115; border:1px solid var(--line);
     color:var(--fg); border-radius:8px; padding:8px 10px; font-size:13px; outline:none; }
   .ht-field input:focus, .ht-field select:focus, .ht-field textarea:focus { border-color:var(--acc); }
+  /* 测试弹框参数输入框：统一深色样式（无 type 属性时 type 选择器不生效） */
+  .ot-arg { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:8px;
+            padding:8px 10px; font-size:13px; outline:none; box-sizing:border-box; min-width:0; }
+  .ot-arg:focus { border-color:var(--acc); }
+  .ot-arg::placeholder { color:var(--mut); }
   /* 抑制浏览器自动填充把输入框刷成浅色背景 */
   .modal input:-webkit-autofill, .modal input:-webkit-autofill:hover, .modal input:-webkit-autofill:focus {
     -webkit-text-fill-color:var(--fg); -webkit-box-shadow:0 0 0 1000px #0f1115 inset; transition:background-color 9999s; }
