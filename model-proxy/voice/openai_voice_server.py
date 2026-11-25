@@ -1103,7 +1103,8 @@ async def client_ip_audit_middleware(request: Request, call_next):
     # 所有 /admin/*** 请求统一审计：谁、何时、什么操作、结果状态码（写库，不刷日志文件）。
     # 覆盖 /admin 页面、/admin/login、/admin/logout 及全部 /admin/api/*；
     # 本中间件在 security 之外层，被 401/403 拒绝的请求同样留痕。
-    if path == "/admin" or path.startswith("/admin/"):
+    # /admin/api/audit 自身排除：查日志不该产生日志，避免循环刷屏。
+    if (path == "/admin" or path.startswith("/admin/")) and path != "/admin/api/audit":
         try:
             tok = request.cookies.get(admin_panel.SESSION_COOKIE)
             user = voice_db.session_username(tok) if tok else None
