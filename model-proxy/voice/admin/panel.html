@@ -388,7 +388,7 @@ const I18N = {
     "apikey.hint": "哈希存储，明文仅创建时显示一次；生效/失效留空表示不限",
     "apikey.name": "备注名",
     "apikey.ip": "绑定 IP",
-    "apikey.window": "生效 ~ 失效",
+    "apikey.window": "有效期",
     "apikey.notBefore": "生效开始（留空=立即）",
     "apikey.expires": "失效时间（留空=永不过期）",
     "apikey.ips": "绑定 IP / 网段（逗号分隔，留空=不限）",
@@ -989,7 +989,7 @@ const I18N = {
     "apikey.hint": "Hash stored, plaintext shown once; empty window = unlimited",
     "apikey.name": "Name",
     "apikey.ip": "Bound IP",
-    "apikey.window": "Not before ~ Expires",
+    "apikey.window": "Validity",
     "apikey.notBefore": "Not before (empty = now)",
     "apikey.expires": "Expires (empty = never)",
     "apikey.ips": "Bound IPs / CIDRs (comma separated, empty = any)",
@@ -4952,9 +4952,9 @@ async function loadApiKeys(page){
   const pages=Math.max(1, Math.ceil(all.length/PAGE_SIZE));
   if(apiKeyPage>pages) apiKeyPage=pages;
   const keys=all.slice((apiKeyPage-1)*PAGE_SIZE, apiKeyPage*PAGE_SIZE);
-  if(!all.length){ box.innerHTML='<table class="admin-table"><thead><tr><th>'+t('apikey.name')+'</th><th>Key</th><th>'+t('apikey.window')+'</th><th>'+t('apikey.ip')+'</th><th>'+t('common.status')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody><tr><td colspan="6" class="muted" style="text-align:center">'+t('apikey.empty')+'</td></tr></tbody></table>'; renderPager('akPager',1,1,0,()=>{}); return; }
-  box.innerHTML='<table class="admin-table"><thead><tr><th>'+t('apikey.name')+'</th><th>Key</th><th>'+t('apikey.window')+'</th><th>'+t('apikey.ip')+'</th><th>'+t('common.status')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody>'+
-    keys.map(k=>'<tr><td class="col-name">'+esc(k.name||'—')+'</td><td><code>'+esc(k.key_prefix)+'…</code></td><td>'+
+  if(!all.length){ box.innerHTML='<table class="admin-table"><thead><tr><th style="width:110px">'+t('apikey.name')+'</th><th>Key</th><th>'+t('apikey.window')+'</th><th>'+t('apikey.ip')+'</th><th>'+t('common.status')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody><tr><td colspan="6" class="muted" style="text-align:center">'+t('apikey.empty')+'</td></tr></tbody></table>'; renderPager('akPager',1,1,0,()=>{}); return; }
+  box.innerHTML='<table class="admin-table"><thead><tr><th style="width:110px">'+t('apikey.name')+'</th><th>Key</th><th>'+t('apikey.window')+'</th><th>'+t('apikey.ip')+'</th><th>'+t('common.status')+'</th><th style="text-align:right">'+t('common.action')+'</th></tr></thead><tbody>'+
+    keys.map(k=>'<tr><td style="width:110px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(k.name||'')+'">'+esc(k.name||'—')+'</td><td><code>'+esc(k.key_prefix)+'…</code></td><td>'+
       (k.not_before?isoLocal(k.not_before):'—')+' ~ '+(k.expires_at?isoLocal(k.expires_at):'—')+'</td><td>'+esc((JSON.parse(k.allowed_ips||'[]')||[]).join(', ')||'—')+'</td><td>'+(k.enabled?t('users.enabled'):t('users.disabled'))+'</td><td class="col-actions">'+
       '<button class="sec" data-k="'+k.id+'" data-op="edit">'+t('common.edit')+'</button> '+
       '<button class="sec" data-k="'+k.id+'" data-op="rate">'+t('rate.title')+'</button> '+
