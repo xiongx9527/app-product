@@ -150,10 +150,12 @@
     color:var(--fg); border-radius:8px; padding:8px 10px; font-size:13px; outline:none; }
   .ht-field input:focus, .ht-field select:focus, .ht-field textarea:focus { border-color:var(--acc); }
   /* 测试弹框参数输入框：统一深色样式（无 type 属性时 type 选择器不生效） */
-  .ot-arg { background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:8px;
+  .ot-arg { display:block; width:100%; background:#0f1115; border:1px solid var(--line); color:var(--fg); border-radius:8px;
             padding:8px 10px; font-size:13px; outline:none; box-sizing:border-box; min-width:0; }
   .ot-arg:focus { border-color:var(--acc); }
   .ot-arg::placeholder { color:var(--mut); }
+  .ot-param { margin-top:10px; }
+  .ot-plabel { font-size:13px; color:var(--fg); }
   /* 抑制浏览器自动填充把输入框刷成浅色背景 */
   .modal input:-webkit-autofill, .modal input:-webkit-autofill:hover, .modal input:-webkit-autofill:focus {
     -webkit-text-fill-color:var(--fg); -webkit-box-shadow:0 0 0 1000px #0f1115 inset; transition:background-color 9999s; }
@@ -5765,8 +5767,12 @@ async function loadMcpOtherPage(){
     let ps=[]; try{ ps=JSON.parse(x.params_json||'[]')||[]; }catch(e){}
     let inputs='';
     ps.forEach(p=>{ if(!p||!p.name) return;
-      inputs+='<div class="row" style="margin-top:6px"><label style="width:120px">'+esc(p.name)+(p.required?' <span style="color:var(--err)">*</span>':'')+'</label>'
-        +'<input class="ot-arg" data-name="'+esc(p.name)+'" style="flex:1" placeholder="'+esc(p.type||'string')+'" /></div>';
+      const desc=(p.description||'').trim();
+      inputs+='<div class="ot-param">'
+        +'<div class="ot-plabel"><b>'+esc(p.name)+'</b>'+(p.required?' <span style="color:var(--err)">*</span>':'')
+          +' <span class="hint">['+esc(p.in||'body')+' · '+esc(p.type||'string')+']</span></div>'
+        +(desc?'<div class="hint" style="margin:3px 0 5px">'+esc(desc)+'</div>':'')
+        +'<input class="ot-arg" data-name="'+esc(p.name)+'" placeholder="'+(desc?esc(desc):esc(p.type||'string'))+'" /></div>';
     });
     if(!inputs) inputs='<div class="hint" style="margin-top:6px">'+t('mcp.noParams')+'</div>';
     const tb='<div class="hint">'+esc(x.name)+' · '+esc(x.method)+' '+esc(x.url)+'</div>'+inputs
