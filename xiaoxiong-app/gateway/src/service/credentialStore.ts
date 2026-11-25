@@ -17,3 +17,17 @@ export function setCredentialGetter(fn: GetCredential): void {
 export async function getCredentialByType(type: string): Promise<AccountCredential | null> {
   return getter(type)
 }
+
+// ── 通用 API Key（系统级，与 MCP 无关）：来自 session.start.voice.apiKey ──
+// 所有工具调用都带上它（工具 schema 有对应字段时），不只 MCP 工具。
+let globalApiKey = ''
+
+/** 会话建连/重武装时由 session.start 注入当前语音服务的 API Key。 */
+export function setGlobalApiKey(key: string): void {
+  globalApiKey = (key ?? '').trim()
+}
+
+/** 工具调用层读取通用 API Key（可能为空）。 */
+export function getGlobalApiKey(): string {
+  return globalApiKey
+}

@@ -33,6 +33,7 @@ import { appendFile } from 'node:fs'
 // 【2026-11-22】bargeDiag 迁到 diagLog.ts：同步 appendFileSync 改内存缓冲 + 异步落盘，
 // 消除播报期高频同步 I/O 阻塞 iOS NodeMobile 事件循环。re-export 保持 controller 调用不变。
 import { bargeDiag, setDiagStage } from '../diagLog'
+import { setGlobalApiKey } from './credentialStore'
 export { bargeDiag }
 let bargeDiagAt = 0
 /** 累计收到的音频帧数（每 50 帧落一条），与 pb 状态/节流无关，确认网关是否真的在收帧 */
@@ -2043,6 +2044,8 @@ export class VoiceSessionService {
     this.mode = mode
     this.active = true
     this.lastVoice = voice
+    // 通用 API Key（系统级）：所有工具调用都带上它（不只 MCP），对 LLM 透明。
+    setGlobalApiKey(voice?.apiKey ?? '')
     // 构造 skill 实例与提示词片段（首次 start；重武装复用，状态由 cancel/end 清）。
     this.ensureSkills()
     // 按客户端设置展开三套能力配置并构建实例：地址 / 密钥 / 参数一律来自设置，

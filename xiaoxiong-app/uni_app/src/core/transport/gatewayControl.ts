@@ -10,10 +10,19 @@
 import { resolveGatewayHttpBase } from './webSocketTransport'
 import { appConfig } from '../config'
 
+/** 工具入参字段说明（与网关 /api/mcp/tools 的 params 契约一致）。 */
+export interface GatewayMcpParam {
+  name: string
+  type: string
+  description: string
+  required: boolean
+}
+
 /** MCP 工具清单条目（与网关 /api/mcp/tools 契约一致）。 */
 export interface GatewayMcpTool {
   name: string
   description: string
+  params: GatewayMcpParam[]
 }
 
 /** 拉取 MCP 已注册工具清单：后端 token 换发透明处理，App 只带语音服务的 apiKey。 */

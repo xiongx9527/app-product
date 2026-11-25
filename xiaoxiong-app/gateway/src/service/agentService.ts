@@ -5,8 +5,8 @@ import { UserMsg } from '@agentscope-ai/agentscope/message'
 import { EventType } from '@agentscope-ai/agentscope/event'
 import { messages } from '../i18n'
 import { bargeDiag } from '../diagLog'
-import { getCredentialByType } from './credentialStore'
-import { toolPrefix, injectCredential } from './toolCredential'
+import { getCredentialByType, getGlobalApiKey } from './credentialStore'
+import { toolPrefix, injectCredential, injectGlobalApiKey } from './toolCredential'
 import type { DetailContext, Lang, McpServerConfig } from '../protocol'
 import type { LlmConfig } from '../config'
 import { createToolkit, registerMcpServers, type LocationProvider, type MemoryStore, type McpClientHandle, type RequestLocation } from './tools'
@@ -110,20 +110,45 @@ export async function createAgentService(
   toolkit.callToolFunction = async function* (toolCall: any) {
     const name = String(toolCall?.name ?? '')
     bargeDiag(`TOOL-CALL name=${name}`)
-    const prefix = toolPrefix(name)
-    if (prefix) {
-      try {
+    const allowed = toolSchemas.get(name)
+    const allowedKeys = allowed ? [...allowed] : undefined
+    try {
+      // 1) 系统级通用 API Key：所有工具都带（只塞 schema 里存在的字段）
+      const globalKey = getGlobalApiKey()
+      if (globalKey) {
+        const r = injectGlobalApiKey(toolCall.input, globalKey, allowedKeys)
+        toolCall.input = r.input
+        if (r.injected) bargeDiag(`TOOL-APIKEY injected global fields=${r.fields.join(',')}`)
+      }
+      // 2) MCP 工具（xxx__ 前缀）：额外按 type 取账号本凭据注入
+      const prefix = toolPrefix(name)
+      if (prefix) {
         const cred = await getCredentialByType(prefix)
-        const allowed = toolSchemas.get(name)
-        const result = injectCredential(toolCall.input, cred, allowed ? [...allowed] : undefined)
+        const result = injectCredential(toolCall.input, cred, allowedKeys)
         toolCall.input = result.input
         if (result.injected) bargeDiag(`TOOL-CRED injected prefix=${prefix} fields=${result.fields.join(',')}`)
         else if (!cred) bargeDiag(`TOOL-CRED none prefix=${prefix}`)
-      } catch (e) {
-        bargeDiag(`TOOL-CRED error prefix=${prefix} err=${(e as Error).message}`)
       }
+    } catch (e) {
+      bargeDiag(`TOOL-CRED error name=${name} err=${(e as Error).message}`)
     }
-    yield* origCallTool(toolCall)
+    // 【常驻诊断】记录工具返回结果（state + 文本前 200 字）：真机只能经 /api/diag/log 观测，
+    // 「工具触发了但回答出了问题」时靠它区分是工具失败还是 LLM 没接住结果。
+    const gen = origCallTool(toolCall)
+    let last: any
+    for await (const chunk of gen) {
+      last = chunk
+      yield chunk
+    }
+    if (last) {
+      const state = String(last.state ?? '?')
+      let text = ''
+      try {
+        const content = last.content
+        if (Array.isArray(content)) text = content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join(' ').slice(0, 200)
+      } catch { /* ignore */ }
+      bargeDiag(`TOOL-RESULT name=${name} state=${state} text="${text.replace(/\n/g, ' ')}"`)
+    }
   } as unknown as typeof toolkit.callToolFunction
   const agent = new Agent({
     name: 'Xiong',

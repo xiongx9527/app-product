@@ -46,6 +46,17 @@ onMounted(() => { void load() })
       <view v-for="tool in tools" :key="tool.name" class="tool">
         <text class="tool-name">{{ tool.name }}</text>
         <text v-if="tool.description" class="tool-desc">{{ tool.description }}</text>
+        <!-- 入参字段：从 MCP tools/list 的 inputSchema 动态提取，不写死 -->
+        <view v-if="tool.params && tool.params.length" class="params">
+          <text class="params-title">{{ t('settings.mcp.toolsParams') }}</text>
+          <view v-for="p in tool.params" :key="p.name" class="param">
+            <text class="param-name">{{ p.name }}</text>
+            <text class="param-type">{{ p.type }}</text>
+            <text v-if="p.required" class="param-req">{{ t('settings.mcp.toolsParamRequired') }}</text>
+            <text v-if="p.description" class="param-desc">{{ p.description }}</text>
+          </view>
+        </view>
+        <text v-else class="no-params">{{ t('settings.mcp.toolsNoParams') }}</text>
       </view>
       <text class="count">{{ t('settings.mcp.toolsCount', { n: tools.length }) }}</text>
     </view>
@@ -112,6 +123,45 @@ onMounted(() => { void load() })
   font-size: 12px;
   line-height: 1.5;
   color: #9aa0bd;
+}
+.params {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.params-title {
+  font-size: 11px;
+  color: #6f7691;
+}
+.param {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+}
+.param-name {
+  color: #9be8cd;
+}
+.param-type {
+  color: #6f7691;
+}
+.param-req {
+  color: #ff8a8a;
+  font-size: 10px;
+}
+.param-desc {
+  color: #9aa0bd;
+  flex-basis: 100%;
+  line-height: 1.4;
+}
+.no-params {
+  font-size: 11px;
+  color: #6f7691;
+  margin-top: 4px;
 }
 .count {
   font-size: 12px;

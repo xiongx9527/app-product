@@ -45,3 +45,28 @@ export function injectCredential(
   }
   return { input: JSON.stringify(input), injected: fields.length > 0, fields }
 }
+
+/**
+ * 系统级通用 API Key 注入：所有工具调用都带上（不只 MCP）。
+ * 只塞进工具 schema 里实际存在的字段（apiKey/api_key/token/authorization），
+ * 避免 additionalProperties:false 的工具报错；不覆盖 LLM 已填的值。
+ */
+export function injectGlobalApiKey(
+  inputRaw: string | Record<string, unknown> | undefined,
+  apiKey: string,
+  allowedKeys?: readonly string[],
+): { input: string; injected: boolean; fields: string[] } {
+  let input: Record<string, unknown> = {}
+  if (typeof inputRaw === 'string') {
+    try { input = JSON.parse(inputRaw || '{}') } catch { input = {} }
+  } else if (inputRaw && typeof inputRaw === 'object') {
+    input = { ...inputRaw }
+  }
+  if (!apiKey) return { input: JSON.stringify(input), injected: false, fields: [] }
+  const fields: string[] = []
+  for (const k of ['apiKey', 'api_key', 'token', 'authorization']) {
+    if (allowedKeys && !allowedKeys.includes(k)) continue
+    if (input[k] === undefined || input[k] === '') { input[k] = apiKey; fields.push(k) }
+  }
+  return { input: JSON.stringify(input), injected: fields.length > 0, fields }
+}

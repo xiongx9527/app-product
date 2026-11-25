@@ -11,6 +11,7 @@ import type { DataService } from './dataService'
 import { bargeDiag as diagBargeDiag } from '../diagLog'
 import { loadAsrCorrections } from './voiceSessionService'
 import { toPinyin } from './asr/asrCorrector'
+import { getGlobalApiKey } from './credentialStore'
 import { createAutoLearnEngine, longestSharedSubstring, normalizePronunciation, isProperNounTarget, type AutoLearnContext, type AutoLearnEngine, type AutoLearnRule } from './autoLearn'
 
 /** 与 voiceSessionService 的 bargeDiag 同款落盘：记录自动学习命中及来源。
@@ -121,10 +122,16 @@ export function createCorrectionSyncer(
     loadAsrCorrections(await data.listFlatAsrCorrections())
   }
 
-  /** 从 9529 增量拉取并合并进本地。返回是否成功。 */
+  /** 从 19529 增量拉取并合并进本地。返回是否成功。
+   *  原则：调用 19529 的接口都带 API Key——配置（session.start.voice.apiKey）就传 Bearer，
+   *  没配置就不带（本地/开发服务通常不鉴权）。 */
   async function pull(): Promise<boolean> {
     try {
+      const apiKey = getGlobalApiKey()
+      const headers: Record<string, string> = {}
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`
       const res = await fetch(`${correctionsUrl}?since=${lastPullAt}`, {
+        headers,
         signal: AbortSignal.timeout(8000),
       })
       if (!res.ok) return false

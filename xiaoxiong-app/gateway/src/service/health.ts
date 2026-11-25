@@ -211,6 +211,8 @@ async function probeAsr(
       try {
         const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/audio/transcriptions`, {
           method: 'POST',
+          // 配置就传、没配置就不带（与真实 asr/http.ts 的 authHeaders 口径一致）
+          headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
           body: form,
           signal: controller.signal,
         })
@@ -281,7 +283,11 @@ async function probeTts(
       try {
         const res = await fetch(`${baseUrl.replace(/\/$/, '')}/v1/audio/speech`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          // 配置就传、没配置就不带（与真实 tts/http.ts 的 authHeaders 口径一致）
+          headers: {
+            'content-type': 'application/json',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          },
           body: JSON.stringify({
             input: '你好',
             response_format: 'wav',

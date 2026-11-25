@@ -8,9 +8,30 @@
  * 响应可能是 SSE（text/event-stream），需从 `data:` 行解析 JSON-RPC。
  */
 
+/** 工具参数说明（从 inputSchema 的 properties 提取）。 */
+export interface McpToolParam {
+  name: string
+  type: string
+  description: string
+  required: boolean
+}
+
 export interface McpToolInfo {
   name: string
   description: string
+  params: McpToolParam[]
+}
+
+/** 把 JSON Schema 的 properties 转成简洁参数列表（只取类型/说明，不回传整个 schema）。 */
+function extractParams(schema: unknown): McpToolParam[] {
+  const s = schema as { properties?: Record<string, { type?: string; description?: string }>; required?: string[] } | null
+  const required = new Set(s?.required ?? [])
+  return Object.entries(s?.properties ?? {}).map(([name, def]) => ({
+    name,
+    type: typeof def?.type === 'string' ? def.type : 'any',
+    description: (def?.description ?? '').trim(),
+    required: required.has(name),
+  }))
 }
 
 /** 从 JSON-RPC 响应体（可能是 SSE 的 data: 行）里取 id 对应的 result。 */
@@ -65,10 +86,16 @@ export async function fetchMcpTools(baseUrl: string, apiKey?: string): Promise<{
       signal: AbortSignal.timeout(6000),
     })
     if (!listRes.ok) return { tools: [], error: `tools/list 失败 HTTP ${listRes.status}` }
-    const result = parseRpcResult(await listRes.text(), 2) as { tools?: Array<{ name?: string; description?: string }> } | null
+    const result = parseRpcResult(await listRes.text(), 2) as {
+      tools?: Array<{ name?: string; description?: string; inputSchema?: unknown }>
+    } | null
     const tools = (result?.tools ?? [])
-      .filter((t): t is { name: string; description?: string } => typeof t.name === 'string' && !!t.name)
-      .map((t) => ({ name: t.name, description: (t.description ?? '').trim() }))
+      .filter((t): t is { name: string; description?: string; inputSchema?: unknown } => typeof t.name === 'string' && !!t.name)
+      .map((t) => ({
+        name: t.name,
+        description: (t.description ?? '').trim(),
+        params: extractParams(t.inputSchema),
+      }))
     return { tools }
   } catch (e) {
     return { tools: [], error: `MCP 不可用：${(e as Error).message}` }
