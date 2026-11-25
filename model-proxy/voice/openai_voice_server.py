@@ -4368,6 +4368,10 @@ async def ocr_recognize(request: Request):
                      for ln in full.splitlines() if ln.strip()]
             return JSONResponse({"ok": True, "kind": "image", "provider": "deepseek", "texts": texts, "full_text": full})
         # 内置：OCR 在独立子进程里跑（builtin_ocr 用 subprocess，paddle 不进主进程）
+        # 容器里 paddle 与 CPU 指令集不兼容（SIGILL），由 OCR_BUILTIN_DISABLED 显式禁用，
+        # 给出可读提示而不是让子进程崩溃返回 500。
+        if config_value("OCR_BUILTIN_DISABLED", "off").strip().lower() in ENABLED_VALUES:
+            return error_response(503, "当前环境不支持内置 OCR（PaddleOCR 与容器 CPU 指令集不兼容），请改用 DeepSeek OCR")
         import builtin_ocr
         result = await asyncio.to_thread(builtin_ocr.recognize, image_bytes, max_pages)
         result["provider"] = "builtin"
@@ -4382,8 +4386,10 @@ async def ocr_models():
     models = []
     try:
         import builtin_ocr
+        # 容器里 paddle 与 CPU 指令集不兼容（SIGILL），显式禁用后标记不可用。
+        builtin_disabled = config_value("OCR_BUILTIN_DISABLED", "off").strip().lower() in ENABLED_VALUES
         models.append({"name": (config_value("OCR_BUILTIN_MODEL") or builtin_ocr.model_name()),
-                       "provider": "builtin", "ready": builtin_ocr.ready()})
+                       "provider": "builtin", "ready": (not builtin_disabled) and builtin_ocr.ready()})
     except Exception:  # noqa: BLE001
         pass
     models.append({"name": (config_value("OCR_DEEPSEEK_MODEL", "deepseek-v4-flash-vision-exp") or "").strip(),

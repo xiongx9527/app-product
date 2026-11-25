@@ -57,6 +57,12 @@ services:
       # VOICE_REMOTE_DSN: postgresql://voice:${PG_PASSWORD:-voice_pass}@pgsql:5432/voice
       # 鉴权开关：需要 API-Key 时设 on（api-key 文件随 /data 挂载）：
       # VOICE_API_KEY_AUTH: "on"
+      # 模型/框架缓存写到可写的 /data（根文件系统只读，默认 /root/.cache 写不了）。
+      # PaddleOCR 初始化会经 transformers 写 huggingface 缓存，不设会导致 OCR 500。
+      HF_HOME: /data/.cache/huggingface
+      HF_HUB_CACHE: /data/.cache/huggingface/hub
+      # 容器内 PaddleOCR 与 CPU 指令集不兼容（子进程 SIGILL），禁用内置 OCR，走 DeepSeek。
+      OCR_BUILTIN_DISABLED: "on"
     volumes:
       # 源码挂载：代码改动后只需 restart 容器即可生效，无需重建镜像重下 torch 等大依赖。
       - ./voice:/app/voice:ro
@@ -65,6 +71,9 @@ services:
       # 内置重排模型（BAAI/bge-reranker-v2-m3，约 2.1G）：只读挂进容器，
       # builtin_rerank.py 的默认候选路径含 /data/models/bge-reranker-v2-m3。
       - ${RERANK_MODEL:-$HOME/Workspace/Soft/models/bge-reranker-v2-m3}:/data/models/bge-reranker-v2-m3:ro
+      # 内置 OCR 模型（PP-OCRv5）+ 可写缓存：PaddleOCR 默认读 ~/.paddlex/official_models，
+      # 并往该目录写缓存/锁文件，故挂载为可写（根文件系统只读，不挂会 OSError）。
+      - ${PADDLEX_HOME:-$HOME/.paddlex}:/root/.paddlex
       # 只读挂载 docker.sock：让概览页能自动读到宿主机 Docker 引擎版本（无写权限）。
       # 若出于安全不想挂载，可删掉此行，改用环境变量 DOCKER_VERSION 手动注入版本号。
       - /var/run/docker.sock:/var/run/docker.sock:ro
