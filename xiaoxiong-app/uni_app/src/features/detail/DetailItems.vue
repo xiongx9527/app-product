@@ -10,8 +10,8 @@ import type { DetailField, DetailItem, MediaDetail } from '@/core/transport/type
  * 固定槽位只有 index/title/image/imageLarge/link，其余属性一律走 fields[]：换数据源、加字段、
  * 新源字段多少不一都不改本组件——缺字段不显示、无图不占位、无链接不阻断，不崩不白屏。
  */
-const props = defineProps<{ detail: MediaDetail; showWeb?: boolean }>()
-const emit = defineEmits<{ select: [index: number]; closeWeb: [] }>()
+const props = defineProps<{ detail: MediaDetail }>()
+const emit = defineEmits<{ select: [index: number] }>()
 
 /** selectedIndex 对应 DetailItem.index（1 起）；无 / null 表示列表形态。 */
 const selected = computed<DetailItem | null>(() => {
@@ -61,29 +61,22 @@ function listFields(item: DetailItem): DetailField[] {
     <text v-if="!detail.items.length" class="deal-empty">{{ t('detail.empty') }}</text>
   </view>
 
-  <!-- 选中详情：网页态 / 字段态 在同一块区域切换，不弹新页面、不丢详情状态 -->
+  <!-- 选中详情：只展示字段。打开原网页跳独立网页页（见 DetailRenderer.openWeb），
+       不在这里内嵌 web-view——App 端原生层级最高会盖住返回条导致回不来。 -->
   <view v-else class="deal-detail">
-    <!-- 网页态：web-view 原生组件层级最高，占满这块区域；返回条用 cover-view 盖其上 -->
-    <view v-if="showWeb && selected?.link" class="web-wrap">
-      <web-view :src="selected.link" class="web-view" />
-      <cover-view class="web-back" @tap="emit('closeWeb')">‹ {{ t('detail.backToDetail') }}</cover-view>
+    <image
+      v-if="selected.imageLarge || selected.image"
+      class="deal-cover"
+      :src="selected.imageLarge || selected.image"
+      mode="aspectFit"
+    />
+    <text class="deal-detail-title">{{ selected.title }}</text>
+    <view v-for="(f, i) in (selected.fields ?? [])" :key="i" class="deal-field">
+      <text class="deal-field-label">{{ f.label }}</text>
+      <text class="deal-field-value">{{ f.value }}</text>
     </view>
-    <!-- 字段态（默认）：有图才显示封面（优先大图、缺省回退缩略图），无图不占一块空白 -->
-    <template v-else>
-      <image
-        v-if="selected.imageLarge || selected.image"
-        class="deal-cover"
-        :src="selected.imageLarge || selected.image"
-        mode="aspectFit"
-      />
-      <text class="deal-detail-title">{{ selected.title }}</text>
-      <view v-for="(f, i) in (selected.fields ?? [])" :key="i" class="deal-field">
-        <text class="deal-field-label">{{ f.label }}</text>
-        <text class="deal-field-value">{{ f.value }}</text>
-      </view>
-      <text v-if="!selected.fields?.length" class="deal-empty">{{ t('detail.empty') }}</text>
-      <text v-if="!selected.link" class="deal-no-link">{{ t('detail.noLink') }}</text>
-    </template>
+    <text v-if="!selected.fields?.length" class="deal-empty">{{ t('detail.empty') }}</text>
+    <text v-if="!selected.link" class="deal-no-link">{{ t('detail.noLink') }}</text>
   </view>
 </template>
 
@@ -174,29 +167,6 @@ function listFields(item: DetailItem): DetailField[] {
   height: 220px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.06);
-}
-/* 详情内网页视图：web-view 原生组件占满这块区域，返回条用 cover-view 盖在上面 */
-.web-wrap {
-  position: relative;
-  width: 100%;
-  height: 380px;
-  border-radius: 10px;
-  overflow: hidden;
-}
-.web-view {
-  width: 100%;
-  height: 380px;
-}
-.web-back {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 20;
-  padding: 6px 12px;
-  background: rgba(15, 18, 32, 0.88);
-  color: #9be8cd;
-  font-size: 13px;
-  border-radius: 0 0 10px 0;
 }
 .deal-detail-title {
   font-size: 14px;

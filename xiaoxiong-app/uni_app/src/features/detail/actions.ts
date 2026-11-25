@@ -13,7 +13,6 @@ const ICONS = {
   copyLink: '/static/icons/copy.svg',
   favorite: '/static/icons/favorite.svg',
   share: '/static/icons/share.svg',
-  email: '/static/icons/email.svg',
 } as const
 
 /**
@@ -32,7 +31,7 @@ export function detailActions(
   const copy = item?.link
     ? createCopyLinkAction(t('detail.copyLink'), item.link, () => notify(t('detail.copied')))
     : createPlaceholderAction('copyLink', t('detail.copyLink'), () => notify(t('detail.noLink')), ICONS.copyLink)
-  // 打开原网页：图标按钮与其它同款，run 触发容器在详情框内切到网页视图（无 link 时如实提示）。
+  // 打开原网页：图标按钮与其它同款，run 触发容器跳独立网页页（系统返回键可回，无 link 时如实提示）。
   const open = createOpenLinkAction(t('detail.open'), item?.link, () => onOpenWeb?.())
   return [
     copy,
@@ -43,9 +42,6 @@ export function detailActions(
     ),
     createPlaceholderAction('share', t('detail.share'), () =>
       notify(t('detail.notAvailable')), ICONS.share,
-    ),
-    createPlaceholderAction('email', t('detail.email'), () =>
-      notify(t('detail.notAvailable')), ICONS.email,
     ),
   ]
 }

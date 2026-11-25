@@ -362,7 +362,6 @@ const zhCN: Messages = {
   'detail.empty': '暂无内容',
   'detail.noImage': '暂无图片',
   'detail.share': '分享',
-  'detail.email': '发邮箱',
 }
 
 const enUS: Messages = {
@@ -715,7 +714,6 @@ const enUS: Messages = {
   'detail.empty': 'Nothing here',
   'detail.noImage': 'No image',
   'detail.share': 'Share',
-  'detail.email': 'Email',
 
   'settings.recommend.title': 'Deal settings',
   'settings.recommend.dealsCount': 'Number of recommendations',

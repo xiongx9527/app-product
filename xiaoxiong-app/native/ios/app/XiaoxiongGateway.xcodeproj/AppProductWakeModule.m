@@ -617,6 +617,7 @@ UNI_EXPORT_METHOD(@selector(stopCue))
         //  - _playRunning / _cuePlayer.isPlaying / _soundTailMuteUntil = 原生瞬时物理状态兜底
         //    （TTS 首帧同步延迟、提示音、播报尾音——前端 phase 无法精确表达的几毫秒~2秒窗口）
         BOOL muteUplink = _playRunning || (_cuePlayer && _cuePlayer.isPlaying) || _standbyMuted
+                          || _mediaPlaying // 关插话时媒体播放期静音（setMediaPlaying 只在开插话时传 false）
                           || (CFAbsoluteTimeGetCurrent() < _soundTailMuteUntil);
         if (!muteUplink) {
             [_pcmUploader upload:frame]; // 只有空闲对话期上传真实帧

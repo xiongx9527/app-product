@@ -716,7 +716,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 都要重算，故 watch 同时监听 playing 与 bargeIn。
   watch(
     [musicState.playing, () => appConfig.general.bargeIn],
-    ([playing]) => setMediaPlaying(playing && appConfig.general.bargeIn !== true),
+    ([playing]) => {
+      setMediaPlaying(playing && appConfig.general.bargeIn !== true)
+      // 门控也要跟着重算：iOS 走原生 PcmUploader 直连，不走 JS onPcm 每帧门控，
+      // _standbyMuted 必须在这里同步。否则关着插话播媒体时原生仍上传真实帧，
+      // 外放声被 ASR 识别成用户话（表现就是「没开插话还能插话」）。
+      syncAsrGate()
+    },
     { immediate: true },
   )
 
