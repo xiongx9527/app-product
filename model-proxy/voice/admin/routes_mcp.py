@@ -202,8 +202,21 @@ def build_router() -> APIRouter:
         try:
             async with await mcp_gateway._make_client(tmp) as client:
                 tools = await client.list_tools()
-            return {"ok": True, "tools": [
-                {"name": t.name, "description": getattr(t, "description", "") or ""} for t in tools]}
+            out_tools = []
+            for t in tools:
+                schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
+                props = schema.get("properties") or {}
+                required = set(schema.get("required") or [])
+                params = []
+                for pn, pp in props.items():
+                    if not isinstance(pp, dict):
+                        pp = {}
+                    params.append({"name": pn, "type": pp.get("type") or "string",
+                                   "required": pn in required, "in": _param_location(pn),
+                                   "description": pp.get("description") or ""})
+                out_tools.append({"name": t.name, "description": getattr(t, "description", "") or "",
+                                  "params": params})
+            return {"ok": True, "tools": out_tools}
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:300]}
 
