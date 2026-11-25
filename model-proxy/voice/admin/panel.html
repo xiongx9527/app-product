@@ -402,6 +402,7 @@ const I18N = {
     "common.enable": "启用",
     "common.disable": "停用",
     "common.confirmDelete": "确认删除？",
+    "common.required": "不能为空",
     "common.delete": "删除",
     "app.logout": "退出登录",
     "app.title": "模型代理",
@@ -1002,6 +1003,7 @@ const I18N = {
     "common.enable": "Enable",
     "common.disable": "Disable",
     "common.confirmDelete": "Delete?",
+    "common.required": "is required",
     "common.delete": "Delete",
     "app.logout": "Log out",
     "app.title": "Model Proxy",
@@ -5824,13 +5826,14 @@ function showHttpToolModal(x){
     +section('query')+section('body');
   const m=showModal(x?t('mcp.otherEditTitle'):t('mcp.otherAdd'), body, async(m)=>{
     const rows=[];
-    m.querySelectorAll('.ht-p-row').forEach(tr=>{
+    for(const tr of m.querySelectorAll('.ht-p-row')){
       const name=tr.querySelector('.ht-p-name').value.trim();
-      if(!name) return;
+      const desc=tr.querySelector('.ht-p-desc').value.trim();
+      if(!name) continue;
+      if(!desc){ alert(t('mcp.otherName')+': '+name+' — '+t('mcp.paramDesc')+' '+t('common.required')); return false; }
       rows.push({name, type:tr.querySelector('.ht-p-type').value, in:tr.dataset.in,
-        required:tr.querySelector('.ht-p-req').checked,
-        description:tr.querySelector('.ht-p-desc').value.trim()});
-    });
+        required:tr.querySelector('.ht-p-req').checked, description:desc});
+    }
     const payload={name:m.querySelector('#htName').value.trim(), method:m.querySelector('#htMethod').value,
       url:m.querySelector('#htUrl').value.trim(), description:m.querySelector('#htDesc').value.trim(),
       headers_json:m.querySelector('#htHeaders').value.trim()||'{}',

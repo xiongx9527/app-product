@@ -16,6 +16,60 @@ from urllib.parse import urlparse
 
 import httpx
 
+# 参数说明兜底字典：上游 schema 通常不带 description，按参数名补中文说明，
+# 让对外 MCP tools/list 的参数说明不为空（App 客户端会展示）。
+_PARAM_DESC_FALLBACK: dict[str, str] = {
+    "token": "访问令牌（SQLBot 兼容；主通道由网关自动注入，一般无需传）",
+    "authorization": "第三方鉴权头（Bearer token）",
+    "username": "用户名，用于换取访问 token",
+    "password": "密码，用于换取访问 token",
+    "oid": "组织/工作空间 ID",
+    "workspaceid": "工作空间 ID（管理员可指定，默认当前工作空间）",
+    "datasourceid": "数据源 ID，指定查询的数据源",
+    "datasource_id": "数据源 ID（SQLBot 兼容命名，可为对象）",
+    "chatid": "会话 ID，续接已有问数会话",
+    "chat_id": "会话 ID（SQLBot 兼容命名）",
+    "question": "自然语言问题（问数输入）",
+    "custommodel": "按次指定对话模型 ID",
+    "custom_model": "对话模型（SQLBot 兼容命名）",
+    "returnimg": "是否返回图片结果（true 出图，默认 true）",
+    "return_img": "是否返回图片结果（SQLBot 兼容命名）",
+    "lang": "回答语言，如 zh / en",
+    "stream": "是否流式返回结果",
+    "message": "附加消息或说明",
+    "url": "第三方数据接口地址",
+}
+
+
+def _fill_schema_desc(schema: dict[str, Any], tool_name: str) -> dict[str, Any]:
+    """给 schema 的 properties 补 description（面板覆盖 > 内置字典 > 原值），
+    让对外 MCP tools/list 的参数说明不为空。"""
+    if not isinstance(schema, dict):
+        return schema
+    props = schema.get("properties") or {}
+    if not props:
+        return schema
+    # 面板编辑的参数说明覆盖（config_kv.MCP_PARAM_DESC_OVERRIDE）
+    overrides: dict[str, str] = {}
+    try:
+        import config_store
+        raw = config_store.instance().get("MCP_PARAM_DESC_OVERRIDE", "") or ""
+        overrides = json.loads(raw) if raw else {}
+        if not isinstance(overrides, dict):
+            overrides = {}
+    except Exception:
+        pass
+    for pn, pdef in props.items():
+        if not isinstance(pdef, dict):
+            continue
+        if (pdef.get("description") or "").strip():
+            continue  # 上游已有说明，不覆盖
+        custom = overrides.get(f"{tool_name}|{pn}") or overrides.get(pn) \
+            or _PARAM_DESC_FALLBACK.get((pn or "").strip().lower(), "")
+        if custom:
+            pdef["description"] = custom
+    return schema
+
 import admin_panel  # 复用已加载的配置读取；延迟使用避免循环
 
 try:
@@ -268,6 +322,7 @@ async def refresh() -> dict[str, Any]:
                 q = f"{prefix}__{t.name}"
                 # MCP SDK v2 将 inputSchema 重命名为 input_schema；优先读新字段，兼容旧版回退。
                 schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
+                schema = _fill_schema_desc(schema, t.name)
                 discovered.append((q, t.name, s["id"], getattr(t, "description", "") or "", schema))
             voice_db.mcp_server_health(s["id"], True)
         except Exception as exc:
@@ -317,13 +372,27 @@ async def refresh() -> dict[str, Any]:
             # Python 签名不允许「有默认值参数」出现在「必填参数」之前，
             # 上游 properties 顺序不保证 required 在前，这里强制 required 优先。
             params.sort(key=lambda x: x[2])
-            # 生成源码：async def _fn(param1, param2=None, ...): return await _call_upstream(q, {...})
-            sig = ", ".join(f"{sp}=None" if opt else sp for _, sp, opt in params)
+            # 生成带类型注解 + Field 描述的签名，让 FastMCP 推断出正确的
+            # 参数类型与说明（否则客户端看到的类型都是 any、说明为空）。
+            type_map = {"string": "str", "integer": "int", "number": "float",
+                        "boolean": "bool", "array": "list", "object": "dict"}
+            sig_parts = []
+            for pn, sp, opt in params:
+                pdef = props.get(pn) or {}
+                ptype = type_map.get((pdef.get("type") or "string").lower(), "str")
+                pdesc = (pdef.get("description") or "").replace('"', '\\"')
+                ann = f'Annotated[{ptype}, Field(description="{pdesc}")]'
+                sig_parts.append(f"{sp}: {ann}" + (" = None" if opt else ""))
+            sig = ", ".join(sig_parts)
             argmap = "{" + ", ".join(f'"{orig_p}": {sp}' for orig_p, sp, _ in params) + "}"
             fn_name = q.replace("__", "_").replace("-", "_")
             src = (f"async def {fn_name}({sig}):\n"
                    f"    return await __call_upstream({q!r}, {argmap})\n")
-            ns = {"__call_upstream": _call_upstream}
+            from typing import Annotated, Any
+            from pydantic import Field
+            ns = {"__call_upstream": _call_upstream, "Annotated": Annotated,
+                  "Field": Field, "str": str, "int": int, "float": float,
+                  "bool": bool, "list": list, "dict": dict, "Any": Any}
             try:
                 exec(src, ns)
                 fn = ns[fn_name]
