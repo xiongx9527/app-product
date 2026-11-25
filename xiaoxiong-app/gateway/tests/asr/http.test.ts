@@ -62,6 +62,27 @@ describe('HttpVoiceAsr：buffer 上限防爆（防长音频重复39遍）', () =
   })
 })
 
+describe('HttpVoiceAsr：定稿超时预算比中间识别宽', () => {
+  it('partial 用 6s 快速失败，finalize 用 12s（慢上游不再定稿超时导致一个字都不出）', async () => {
+    stubFetch({})
+    // 拦截 AbortSignal.timeout 只记录预算、返回一个不会 abort 的信号，避免测试真的等超时
+    const budgets: number[] = []
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation(((ms: number) => {
+      budgets.push(ms)
+      return new AbortController().signal
+    }) as typeof AbortSignal.timeout)
+    try {
+      const asr = new HttpVoiceAsr('http://127.0.0.1:9529/voice')
+      // 20000 字节 ≥ PARTIAL_MIN_BYTES(12800)，push 会真的发一次中间识别
+      await asr.push(new Uint8Array(20000))
+      await asr.finalize()
+      expect(budgets).toEqual([6000, 12000])
+    } finally {
+      spy.mockRestore()
+    }
+  })
+})
+
 describe('HttpVoiceAsr：上游失败不能把占位文本当用户原话', () => {
   it('定稿时上游抛错 → finalize reject（由会话层走 asr-error 提示，而不是喂给大模型）', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})

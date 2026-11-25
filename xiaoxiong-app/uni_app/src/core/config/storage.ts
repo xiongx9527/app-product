@@ -12,7 +12,7 @@ import {
   DEFAULT_DUCK_LEVEL,
 } from './constants'
 import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
-import type { AppConfig, GeneralConfig, MemoryConfig, McpConfig, McpServerConfig, McpTransport, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
+import type { AppConfig, GeneralConfig, MemoryConfig, McpConfig, McpServerConfig, McpTransport, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, TimeoutsConfig, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
 
 export const CONFIG_STORAGE_KEY = 'app-product.config.v1'
 
@@ -55,6 +55,9 @@ const DEFAULT_PLAYBACK: PlaybackConfig = {
   subtitleColor: DEFAULT_SUBTITLE_COLOR,
   finalizeMaxChars: 30,
   finalizeTimeoutMs: 10000,
+  ttsChunkChars: 15,
+  commaSentenceCount: 2,
+  commaMinChars: 4,
   autoExitMs: 30000,
   autoExitGraceMs: 15000,
 }
@@ -74,6 +77,9 @@ export function createDefaultPlayback(): PlaybackConfig {
     subtitleColor: DEFAULT_PLAYBACK.subtitleColor,
     finalizeMaxChars: DEFAULT_PLAYBACK.finalizeMaxChars,
     finalizeTimeoutMs: DEFAULT_PLAYBACK.finalizeTimeoutMs,
+    ttsChunkChars: DEFAULT_PLAYBACK.ttsChunkChars,
+    commaSentenceCount: DEFAULT_PLAYBACK.commaSentenceCount,
+    commaMinChars: DEFAULT_PLAYBACK.commaMinChars,
     autoExitMs: DEFAULT_PLAYBACK.autoExitMs,
     autoExitGraceMs: DEFAULT_PLAYBACK.autoExitGraceMs,
   }
@@ -88,6 +94,28 @@ export function createDefaultRecommend(): RecommendConfig {
   return { dealsCount: DEFAULT_RECOMMEND.dealsCount }
 }
 
+/** 时间预算默认值：与网关 gateway/src/timeouts.ts 的 TIMEOUT_DEFAULTS 保持一致。 */
+const DEFAULT_TIMEOUTS: TimeoutsConfig = {
+  asrFinalizeMs: 12000,
+  asrPartialIntervalMs: 600,
+  llmMs: 15000,
+  ttsMs: 25000,
+  ttsFrameGapMs: 30000,
+}
+
+/** 各时间项的取值范围：与网关 TIMEOUT_RANGES 一致。 */
+const TIMEOUT_RANGE_MAP: Record<keyof TimeoutsConfig, readonly [number, number]> = {
+  asrFinalizeMs: [3000, 60000],
+  asrPartialIntervalMs: [300, 5000],
+  llmMs: [3000, 120000],
+  ttsMs: [5000, 120000],
+  ttsFrameGapMs: [5000, 180000],
+}
+
+export function createDefaultTimeouts(): TimeoutsConfig {
+  return { ...DEFAULT_TIMEOUTS }
+}
+
 export function createDefaultConfig(): AppConfig {
   return {
     version: 1,
@@ -97,6 +125,7 @@ export function createDefaultConfig(): AppConfig {
     voice: createDefaultVoice(),
     playback: createDefaultPlayback(),
     recommend: createDefaultRecommend(),
+    timeouts: createDefaultTimeouts(),
     general: createDefaultGeneral(),
     memory: createDefaultMemory(),
     mcp: createDefaultMcp(),
@@ -310,6 +339,17 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
   const rawTimeout = Number(source.finalizeTimeoutMs)
   const finalizeTimeoutMs = Number.isFinite(rawTimeout) && rawTimeout >= 2000
     ? Math.min(60000, Math.floor(rawTimeout)) : 10000
+  // 播报单批字数上限：缺省15(5-200)，非法回退默认。
+  const rawChunk = Number(source.ttsChunkChars)
+  const ttsChunkChars = Number.isFinite(rawChunk) && rawChunk >= 5
+    ? Math.min(200, Math.floor(rawChunk)) : 15
+  // 逗号成句数缺省2(1-10)、逗号前最少字数缺省4(1-20)，非法回退默认。
+  const rawCommaCnt = Number(source.commaSentenceCount)
+  const commaSentenceCount = Number.isFinite(rawCommaCnt) && rawCommaCnt >= 1
+    ? Math.min(10, Math.floor(rawCommaCnt)) : 2
+  const rawCommaMin = Number(source.commaMinChars)
+  const commaMinChars = Number.isFinite(rawCommaMin) && rawCommaMin >= 1
+    ? Math.min(20, Math.floor(rawCommaMin)) : 4
   // 自动退下时间：T1 静默缺省30000(5000-300000)、T2 宽限缺省15000(3000-120000)。
   const rawExit = Number(source.autoExitMs)
   const autoExitMs = Number.isFinite(rawExit) && rawExit >= 5000
@@ -330,6 +370,9 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
     subtitleColor,
     finalizeMaxChars,
     finalizeTimeoutMs,
+    ttsChunkChars,
+    commaSentenceCount,
+    commaMinChars,
     autoExitMs,
     autoExitGraceMs,
   }
@@ -351,6 +394,24 @@ function normalizeRecommend(raw: unknown): RecommendConfig {
   }
 }
 
+/** 归一化时间预算：缺省/非法项回退默认，越界夹到边界（与网关同一份范围）。 */
+export function normalizeTimeouts(raw: unknown): TimeoutsConfig {
+  const source = isRecord(raw) ? raw : {}
+  const pick = (key: keyof TimeoutsConfig): number => {
+    const [min, max] = TIMEOUT_RANGE_MAP[key]
+    const n = Number(source[key])
+    if (!Number.isFinite(n) || n <= 0) return DEFAULT_TIMEOUTS[key]
+    return Math.min(max, Math.max(min, Math.round(n)))
+  }
+  return {
+    asrFinalizeMs: pick('asrFinalizeMs'),
+    asrPartialIntervalMs: pick('asrPartialIntervalMs'),
+    llmMs: pick('llmMs'),
+    ttsMs: pick('ttsMs'),
+    ttsFrameGapMs: pick('ttsFrameGapMs'),
+  }
+}
+
 /** 读取任意输入并补齐缺失项；存档损坏时也能得到一份可用配置 */
 export function normalizeConfig(
   input: unknown,
@@ -368,11 +429,12 @@ export function normalizeConfig(
   const voice = normalizeVoice(source.voice ?? base.voice)
   const playback = normalizePlayback(source.playback ?? base.playback)
   const recommend = normalizeRecommend(source.recommend ?? base.recommend)
+  const timeouts = normalizeTimeouts(source.timeouts ?? base.timeouts)
   const general = normalizeGeneral(source.general ?? base.general)
   const memory = normalizeMemory(source.memory ?? base.memory)
   const mcp = normalizeMcp(source.mcp ?? base.mcp)
 
-  return { version: 1, mode, language, timezone, voice, playback, recommend, general, memory, mcp }
+  return { version: 1, mode, language, timezone, voice, playback, recommend, timeouts, general, memory, mcp }
 }
 
 function hasStorage(): boolean {

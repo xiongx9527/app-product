@@ -136,7 +136,7 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
   const makeService = (): VoiceSessionService =>
     new VoiceSessionService({
       // 语音配置（地址/密钥/模型/参数）一律来自客户端 session.start.voice，经 resolveCapabilityConfig 展开
-      resolveVoice: (voice) => resolveCapabilityConfig(voice, config),
+      resolveVoice: (voice, timeouts) => resolveCapabilityConfig(voice, config, timeouts),
       createAsr,
       createTts,
       agentFactory: (llm, lang, timezone, locationProvider, memoryStore, memoryContext, requestLocation, getNowPlaying, autoMemory, mcpServers, autoLearnEngine, promptAddon, getDetailContext) =>

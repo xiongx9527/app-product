@@ -6,6 +6,7 @@
  */
 
 import type { VoiceConfig } from './voiceConfig'
+import type { SessionTimeouts } from './timeouts'
 
 /** 字幕行：time 为该行起始时间（秒，相对音轨开头），用于客户端跟随播放进度高亮。 */
 export interface SubtitleLine {
@@ -115,7 +116,12 @@ export type ClientMessage =
        * 播放设置（音乐播放源等），来自客户端设置页。网关据此决定点歌走哪个来源；
        * 缺省按百度（B 站音轨 + 百度搜索兜底）。新增播放源时在此扩展 source 取值。
        */
-      playback?: { source?: string; autoSubtitle?: boolean; defaultLoop?: number; defaultVolume?: number; autoLoop?: boolean; finalizeMaxChars?: number; finalizeTimeoutMs?: number }
+      playback?: { source?: string; autoSubtitle?: boolean; defaultLoop?: number; defaultVolume?: number; autoLoop?: boolean; finalizeMaxChars?: number; finalizeTimeoutMs?: number; ttsChunkChars?: number; commaSentenceCount?: number; commaMinChars?: number }
+      /**
+       * 时间预算（来自客户端设置页「超时设置」）。全部可选，缺省用网关 timeouts.ts 的默认值；
+       * 越界/非法值由网关按同一份范围收敛，不会因设置页填错把链路搞死。
+       */
+      timeouts?: SessionTimeouts
       /**
        * 推荐设置：好价商品每次推荐的条数，来自客户端设置页，缺省 3。
        * 网关据此作为好价工具未显式指定条数时的默认（工具上限 1–10）。

@@ -1,22 +1,17 @@
 /**
- * 关键链路诊断日志（长期保留，不因定位完成而删除）。
- *
- * 【为什么异步】旧实现用 appendFileSync 同步写文件，iOS NodeMobile 上播报期高频
- * bargeDiag（FRAME 每 400ms + 每 50 帧 TOTAL + 回执事件）的同步 I/O 会阻塞网关事件循环，
- * 让 WS 回执/tts.idle/health 全部延迟（真机铁证：sendText completion 25s/36s、DATA_STALL）。
- * 改为「内存环形缓冲 + 异步 appendFile 定时落盘」，写入路径零同步 I/O。
- *
- * 【不丢日志】pending 落盘失败会把整块放回队列下次重写；/api/diag/log 从内存 ring 读，
- * 即时可见且零文件 I/O；文件仍异步落盘供长期留存（Android run-as / iOS 沙盒备份）。
+ * 关键链路诊断日志（长期保留）。
+ * 异步落盘：同步写会阻塞 iOS 上的网关事件循环（真机曾把 WS 回执拖到 25s+）。
+ * 不丢日志：pending 落盘失败放回队列重写；/api/diag/log 直接读内存 ring。
  */
 import { appendFile, statSync, openSync, readSync, closeSync } from 'node:fs'
+import { TIMEOUT_DEFAULTS } from './timeouts'
 
 const LOG_PATH = (): string => `${process.env.GATEWAY_HOME ?? '.'}/barge-diag.log`
 
 /** 内存保留最近 N 行，供 /api/diag/log 即时读；接口上限 2000 行，留足余量 */
 const RING_CAP = 5000
 /** 异步落盘周期 */
-const FLUSH_MS = 200
+const FLUSH_MS = TIMEOUT_DEFAULTS.diagFlushMs
 /** pending 超过该行数立即触发异步 flush（不等定时） */
 const FLUSH_THRESHOLD = 64
 
@@ -28,7 +23,7 @@ let timer: ReturnType<typeof setInterval> | null = null
 // 【关键日志·长期保留】事件循环心跳：每 500ms 一条 HB。若 Node 事件循环被同步代码阻塞，
 // 心跳 timer 不执行，恢复后第一条用单调时钟算出 gapMs——这是"事件循环卡了多久"的直接证据。
 // 卡死期间心跳也不会执行，所以最后一条 HB 的墙钟时刻=卡死起点，配合 gapMs=卡死时长。
-const HB_MS = 500
+const HB_MS = TIMEOUT_DEFAULTS.diagHeartbeatMs
 let hbTimer: ReturnType<typeof setInterval> | null = null
 let hbSeq = 0
 let lastHbMono = 0

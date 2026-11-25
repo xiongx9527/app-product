@@ -42,11 +42,12 @@ describe('detail registry', () => {
     const meta = resolveDetailMeta('deals')
     const actions = meta.actions(makeDetail({ selectedIndex: 1 }), vi.fn())
 
-    expect(actions.map((a) => a.key)).toEqual(['copyLink', 'favorite', 'share', 'email'])
+    expect(actions.map((a) => a.key)).toEqual(['copyLink', 'openLink', 'favorite', 'share', 'email'])
     expect(actions.every((a) => a.label.length > 0)).toBe(true)
-    // 四项都配了图标：容器按 icon 渲染，label 只作 aria-label
+    // 五项都配了图标：容器按 icon 渲染，label 只作 aria-label
     expect(actions.map((a) => a.icon)).toEqual([
       '/static/icons/copy.svg',
+      '/static/icons/open.svg',
       '/static/icons/favorite.svg',
       '/static/icons/share.svg',
       '/static/icons/email.svg',
@@ -79,10 +80,10 @@ describe('detail registry', () => {
     })
     const meta = resolveDetailMeta('project')
     expect(meta.title(project)).toBeTruthy()
-    // 列表形态无操作栏；选中后与商品一致：复制链接 + 收藏/分享/邮箱
+    // 列表形态无操作栏；选中后与商品一致：复制链接/打开网页 + 收藏/分享/邮箱
     expect(meta.actions(project, vi.fn())).toEqual([])
     const actions = meta.actions({ ...project, selectedIndex: 1 }, vi.fn())
-    expect(actions.map((a) => a.key)).toEqual(['copyLink', 'favorite', 'share', 'email'])
+    expect(actions.map((a) => a.key)).toEqual(['copyLink', 'openLink', 'favorite', 'share', 'email'])
   })
 
   it('未知 kind 走中性兜底：有标题、无操作、不抛错', () => {

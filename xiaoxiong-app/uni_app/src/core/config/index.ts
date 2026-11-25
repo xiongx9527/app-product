@@ -10,6 +10,7 @@ import {
 import {
   createDefaultConfig,
   createDefaultPlayback,
+  createDefaultTimeouts,
   createDefaultVoice,
   loadConfig,
   saveConfig,
@@ -28,9 +29,11 @@ export {
   CONFIG_STORAGE_KEY,
   createDefaultConfig,
   createDefaultPlayback,
+  createDefaultTimeouts,
   createDefaultVoice,
   loadConfig,
   normalizeConfig,
+  normalizeTimeouts,
   saveConfig,
 } from './storage'
 export type * from './types'
@@ -107,4 +110,9 @@ export function resetVoice(): void {
 /** 播放设置恢复默认（百度源 / 关闭自动收藏 / 开启自动字幕 / 关闭自动循环 / 默认循环 3 次 / 默认音量 50%） */
 export function resetPlayback(): void {
   appConfig.playback = createDefaultPlayback()
+}
+
+/** 超时设置恢复默认（定稿 12s / 中间识别间隔 600ms / 回复 15s / 合成 25s / 卡顿断开 30s） */
+export function resetTimeouts(): void {
+  appConfig.timeouts = createDefaultTimeouts()
 }

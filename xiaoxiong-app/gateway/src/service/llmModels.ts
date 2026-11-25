@@ -1,3 +1,5 @@
+import { TIMEOUT_DEFAULTS } from '../timeouts'
+
 /**
  * 列出某个语音服务来源下「可选择的 LLM 模型」。
  *
@@ -11,7 +13,7 @@
  * 网关转给来源，来源按模型名路由到对应上游——全程不写死某个具体模型名。
  */
 
-const FETCH_TIMEOUT_MS = 5000
+const FETCH_TIMEOUT_MS = TIMEOUT_DEFAULTS.catalogFetchMs
 
 async function fetchJson(url: string, headers: Record<string, string>): Promise<unknown> {
   const controller = new AbortController()

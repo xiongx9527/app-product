@@ -548,6 +548,19 @@ export class WebSocketTransport implements AssistantTransport {
         // 防 VAD 静音端点失效时卡"正在听"、嘈杂环境无限接收。缺省 30 字 / 10000ms。
         finalizeMaxChars: appConfig.playback.finalizeMaxChars,
         finalizeTimeoutMs: appConfig.playback.finalizeTimeoutMs,
+        // 播报断句：单批字数上限（缺省 15）、攒几个逗号成句（缺省 2）、逗号前最少字数（缺省 4）。
+        // 句末标点 。！？；!? 立即切整句送 TTS；到字数上限但无标点不硬切。
+        ttsChunkChars: appConfig.playback.ttsChunkChars,
+        commaSentenceCount: appConfig.playback.commaSentenceCount,
+        commaMinChars: appConfig.playback.commaMinChars,
+      },
+      // 时间预算（设置页「超时设置」）：网关按同一份范围再收敛一次，填错只会夹到边界。
+      timeouts: {
+        asrFinalizeMs: appConfig.timeouts.asrFinalizeMs,
+        asrPartialIntervalMs: appConfig.timeouts.asrPartialIntervalMs,
+        llmMs: appConfig.timeouts.llmMs,
+        ttsMs: appConfig.timeouts.ttsMs,
+        ttsFrameGapMs: appConfig.timeouts.ttsFrameGapMs,
       },
       // 推荐条数（好价商品）：来自客户端设置页，网关据此作为工具默认条数（缺省 3、范围 1–10）。
       recommend: {

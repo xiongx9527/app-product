@@ -1,15 +1,19 @@
 import type { AsrProvider } from './provider'
 import type { VendorParams } from '../config'
+import { TIMEOUT_DEFAULTS } from '../timeouts'
+import type { ResolvedTimeouts } from '../timeouts'
 
 /** 两次中间识别的最小间隔：太密会打满本地服务，太疏界面又会卡顿。 */
-const PARTIAL_INTERVAL_MS = 600
+const PARTIAL_INTERVAL_MS = TIMEOUT_DEFAULTS.asrPartialIntervalMs
 /** 音频短于约 0.4 秒时先不识别，避免半截字在界面上抖。 */
 const PARTIAL_MIN_BYTES = 12800
 /**
- * 单次识别的硬超时：上游 ASR 卡住时主动 abort 断开连接、舍弃这次识别，
- * 不让一轮会话被慢服务拖死（用户感知就是「喊了没反应 / 好慢」）。
+ * 中间识别（partial）与定稿识别（finalize）用不同的超时预算，原因见 timeouts.ts：
+ * partial 只负责实时字幕、失败就跳过，必须快速失败；finalize 失败等于整轮白说，必须给足。
+ * 两者都可被客户端设置页覆盖（session.start.timeouts），这里只是缺省值。
  */
-const ASR_TIMEOUT_MS = 6000
+const PARTIAL_TIMEOUT_MS = TIMEOUT_DEFAULTS.asrPartialMs
+const FINALIZE_TIMEOUT_MS = TIMEOUT_DEFAULTS.asrFinalizeMs
 /** buffer 累积上限（约16秒 @16k/16bit=512000 bytes）：正常句子不会触发，仅异常长音频
  *  滑动窗口防爆——曾出现"今天天气怎么样"重复39遍、vd=55s。超出丢最旧帧，配合
  *  stripTrailingEcho 去尾部重复。 */
@@ -63,7 +67,21 @@ export class HttpVoiceAsr implements AsrProvider {
     private readonly baseUrl: string,
     private readonly params: VendorParams = {},
     private readonly apiKey = '',
+    /** 会话级时间预算（设置页可配）：缺省用 timeouts.ts 的默认值。 */
+    private readonly timeouts?: ResolvedTimeouts,
   ) {}
+
+  private get partialIntervalMs(): number {
+    return this.timeouts?.asrPartialIntervalMs ?? PARTIAL_INTERVAL_MS
+  }
+
+  private get partialTimeoutMs(): number {
+    return this.timeouts?.asrPartialMs ?? PARTIAL_TIMEOUT_MS
+  }
+
+  private get finalizeTimeoutMs(): number {
+    return this.timeouts?.asrFinalizeMs ?? FINALIZE_TIMEOUT_MS
+  }
 
   async push(chunk: Uint8Array): Promise<string | null> {
     this.buffer.push(Buffer.from(chunk))
@@ -75,7 +93,7 @@ export class HttpVoiceAsr implements AsrProvider {
     }
 
     const now = Date.now()
-    if (now - this.lastPartialAt < PARTIAL_INTERVAL_MS) return null
+    if (now - this.lastPartialAt < this.partialIntervalMs) return null
     if (this.bufferedBytes < PARTIAL_MIN_BYTES) return null
     // 上一次 partial 没回来就跳过本次（不排队），避免慢上游请求堆积导致滞后/错位。
     if (this.partialBusy) return null
@@ -83,7 +101,7 @@ export class HttpVoiceAsr implements AsrProvider {
     this.lastPartialAt = now
     this.partialBusy = true
     const pcm = Buffer.concat(this.buffer)
-    const run = this.inflight.then(() => this.transcribe(pcm))
+    const run = this.inflight.then(() => this.transcribe(pcm, this.partialTimeoutMs))
     this.inflight = run.then(
       () => undefined,
       () => undefined,
@@ -112,7 +130,7 @@ export class HttpVoiceAsr implements AsrProvider {
     }
     this.lastRms = n > 0 ? Math.sqrt(sum / n) : 0
     this.reset()
-    const { text, speechDuration, failed } = await this.transcribe(pcm)
+    const { text, speechDuration, failed } = await this.transcribe(pcm, this.finalizeTimeoutMs)
     this.speechDuration = speechDuration
     // 识别失败绝不能当「用户说的话」往下走：真机 2026-11-18 实锤，ASR 上游 500 时
     // 曾把错误正文当成用户输入交给大模型，答了一轮完全不相干的内容。
@@ -131,8 +149,9 @@ export class HttpVoiceAsr implements AsrProvider {
   }
 
   /** 提交一段 PCM 做识别；失败返回 failed=true + 空 text（partial 层静默跳过，定稿层抛错）。
-   *  speechDuration 是 9529 用 Silero VAD 判出的真语音秒数（-1=无数据），供幻觉二级判断。 */
-  private async transcribe(pcm: Buffer): Promise<TranscribeResult> {
+   *  speechDuration 是 9529 用 Silero VAD 判出的真语音秒数（-1=无数据），供幻觉二级判断。
+   *  timeoutMs：partial 与 finalize 用不同预算，见文件头两个常量的说明。 */
+  private async transcribe(pcm: Buffer, timeoutMs: number): Promise<TranscribeResult> {
     try {
       const sampleRate = Number(this.params.sampleRate ?? 16000)
       const wav = pcmToWav(pcm, Number.isFinite(sampleRate) ? sampleRate : 16000)
@@ -151,7 +170,7 @@ export class HttpVoiceAsr implements AsrProvider {
         method: 'POST',
         headers: this.authHeaders({}),
         body: form,
-        signal: AbortSignal.timeout(ASR_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       })
       // 非 2xx（网关/上游 500）不是识别结果：直接当失败处理，绝不能把错误页正文
       // 当成用户说的话往下走（否则会送进大模型答非所问）。
@@ -166,8 +185,9 @@ export class HttpVoiceAsr implements AsrProvider {
         return { text: text.trim(), speechDuration: -1, failed: false }
       }
     } catch (err) {
-      // 超时/断连：舍弃这次识别，partial 静默跳过，定稿抛错走 asr-error 提示，绝不把会话挂死
-      console.error('[asr] 调用本地语音服务失败（已 abort 断开）：', err)
+      // 超时/断连：舍弃这次识别，partial 静默跳过，定稿抛错走 asr-error 提示，绝不把会话挂死。
+      // 带上 timeoutMs 以便区分是 partial(6s) 还是定稿(12s) 超时——排障时不用猜。
+      console.error(`[asr] 调用本地语音服务失败（已 abort 断开，timeoutMs=${timeoutMs}）：`, err)
       return { text: '', speechDuration: -1, failed: true }
     }
   }

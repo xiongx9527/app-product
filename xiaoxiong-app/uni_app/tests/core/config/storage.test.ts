@@ -161,6 +161,28 @@ describe('app config', () => {
     expect(config.playback.subtitleColor).toBe('#5cd6b2')
   })
 
+  it('断句配置默认：逗号成句数 2、逗号前最少字数 4', () => {
+    const p = createDefaultConfig().playback
+    expect(p.commaSentenceCount).toBe(2)
+    expect(p.commaMinChars).toBe(4)
+  })
+
+  it('断句配置收敛：逗号成句 1–10（默认2）、逗号前最少字数 1–20（默认4），非法回退默认', () => {
+    const config = normalizeConfig({
+      playback: { commaSentenceCount: 99, commaMinChars: -3 },
+    })
+    expect(config.playback.commaSentenceCount).toBe(10)
+    expect(config.playback.commaMinChars).toBe(4)
+  })
+
+  it('合法断句配置被原样保留', () => {
+    const config = normalizeConfig({
+      playback: { commaSentenceCount: 3, commaMinChars: 6 },
+    })
+    expect(config.playback.commaSentenceCount).toBe(3)
+    expect(config.playback.commaMinChars).toBe(6)
+  })
+
   it('默认 mcp 为空列表', () => {
     const config = createDefaultConfig()
     expect(config.mcp).toEqual({ enabled: true, servers: [] })

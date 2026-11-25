@@ -1,5 +1,7 @@
 /** 网关运行配置，全部可由环境变量覆盖。 */
 
+import type { ResolvedTimeouts } from './timeouts'
+
 /**
  * 能力提供方：只有「内置」与「DashScope」两种来源，由客户端设置页选择（session.start.voice）。
  * 网关据此决定走哪套传输：内置走本地 AI 服务的 OpenAI 兼容层（/llm/v1、/voice），
@@ -45,6 +47,8 @@ export interface AsrConfig {
   endpointMs: number
   /** 厂商级额外参数（如 language / sampleRate），透传为请求参数 */
   params: VendorParams
+  /** 会话级时间预算（设置页可配）；缺省用 timeouts.ts 默认值 */
+  timeouts?: ResolvedTimeouts
 }
 
 /** TTS 能力配置 */
@@ -56,6 +60,8 @@ export interface TtsConfig {
   apiKey: string
   /** 厂商级额外参数（如 voice / speed / format），合并进请求体 */
   params: VendorParams
+  /** 会话级时间预算（设置页可配）；缺省用 timeouts.ts 默认值 */
+  timeouts?: ResolvedTimeouts
 }
 
 /** 数据库配置 */

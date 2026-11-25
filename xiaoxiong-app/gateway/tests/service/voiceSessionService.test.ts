@@ -111,6 +111,10 @@ function createHarness(
     ttsFrameGapMs?: number
     /** TTS 合成挂起：吐一帧后永不结束（验证帧间看门狗） */
     ttsStall?: boolean
+    /** TTS 合成延迟（ms）：模拟慢上游，验证超时/打断时未开始的批次被丢弃 */
+    ttsDelayMs?: number
+    /** 记录每次 synthesize 收到的文本（验证 skill 直连按批合成、不整段） */
+    ttsSynthSpy?: (text: string) => void
     /** 预置记忆：全新会话 start 时由 getMemories 返回，用于验证系统提示注入 */
     memories?: Array<{ key: string; value: string; updatedAt: number }>
     /** 设备标识；传 null 可验证「无 deviceId 不注入记忆」。默认 test-device */
@@ -226,7 +230,9 @@ function createHarness(
     reset() {},
   }
   const tts: TtsProvider = {
-    async *synthesize() {
+    async *synthesize(text) {
+      opts.ttsSynthSpy?.(text)
+      if (opts.ttsDelayMs) await new Promise((r) => setTimeout(r, opts.ttsDelayMs))
       for (const frame of ttsFrames) yield frame
       // 模拟 TTS 上游挂起：吐完注入帧后永不结束，验证帧间看门狗断开本句、对话链不死
       if (opts.ttsStall) await new Promise<void>(() => undefined)
@@ -441,6 +447,7 @@ describe('语音会话：句末判定、排队与去噪', () => {
 
     // 当前句收尾并回执播完：队首被消费成新一轮，queueRemaining 为剩余 2 句（权威值）
     h.finishReply()
+    await sleep(30) // 等 runAgent 收尾：llm.done + 队列 drain 完、分批保护窗关闭
     h.playbackDone()
     await sleep(40)
     expect(h.agentCalls()).toBe(2)
@@ -2361,6 +2368,45 @@ describe('LLM 超时兜底与队列续跑（回归：排队卡死）', () => {
     await sleep(150)
     expect(h.agentCalls()).toBe(2)
   })
+
+  it('LLM 超时后：delta 阶段已入队但未开始合成的句子不再补合成（不残留到兜底之后）', async () => {
+    const synthTexts: string[] = []
+    const h = createHarness({
+      replyText: '第一句话终于说完了。第二句话也说完啦。第三句话还在后面呢。',
+      llmTimeoutMs: 40,
+      ttsDelayMs: 30, // 慢合成：40ms 超时时第 1 句仍在合成，第 2/3 句尚未开始
+      ttsSynthSpy: (t) => synthTexts.push(t),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(120) // 等超时兜底走完
+    // 超时后丢弃尚未开始合成的批次；最多只有超时前已开始的那批。
+    expect(synthTexts.length).toBeLessThan(3)
+  })
+
+  it('LLM 流式边合成边读：llm.done 之前的批次间隙 playback_done 不当整轮播完（不提前 tts.idle）', async () => {
+    const h = createHarness({
+      replyText: '第一句话终于说完了。第二句话也说完啦。第三句话还在后面呢。',
+      ttsSynthSpy: () => {},
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    // delta 已同步推完：首批入队、tts.start 已发、合成在微任务里启动；
+    // replyPromise 仍 pending（未 finishReply），llm.done 尚未下发。
+    await sleep(30)
+    expect(h.events.some((e) => e.type === 'tts.start')).toBe(true)
+    expect(h.events.some((e) => e.type === 'llm.done')).toBe(false)
+
+    // 原生在批次间隙误发的 playback_done：此刻必须仍在「下发中」保护窗内，被忽略。
+    h.playbackDone()
+    expect(h.events.filter((e) => e.type === 'tts.idle')).toHaveLength(0)
+
+    // 放行 full：llm.done 到达、队列排空后回执，才正常发 tts.idle。
+    h.finishReply()
+    await sleep(300)
+    h.playbackDone()
+    expect(h.events.filter((e) => e.type === 'tts.idle').length).toBeGreaterThanOrEqual(1)
+  })
 })
 
 describe('插话草稿下发（与思考/播报并存展示）', () => {
@@ -3289,6 +3335,148 @@ describe('百科查询直连（绕开 LLM，助手框显示 + 播报）', () => 
     expect(h.agentCalls()).toBe(0)
   })
 
+  it('skill 直连长文本：按批合成，不整段一次 synthesize（首声不等整段）', async () => {
+    const synthTexts: string[] = []
+    // ~50 字带标点，远超单批上限 15：必须切成多批边合成边读
+    const longText = '李存勖是后唐开国皇帝，一生征战四方。他少年从军，骁勇善战，后来建立后唐。在位期间宠信伶人，最终死于兵变。'
+    const h = createHarness({
+      finalizeText: '讲讲李存勖的事迹',
+      baikeQuery: async () => ({ entry: null, text: longText }),
+      ttsSynthSpy: (t) => synthTexts.push(t),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(80)
+
+    expect(h.agentCalls()).toBe(0) // 确认走的是百科 skill 直连，不是 LLM
+    expect(synthTexts.length).toBeGreaterThan(1) // 切成多批，而非一次整段
+    expect(synthTexts[0].length).toBeLessThan(longText.length) // 首批远短于整段
+    expect(synthTexts.join('')).toContain('征战四方')
+  })
+
+  it('断句：句末标点 。！？； 立即成句，每批以标点收尾（不硬切字数）', async () => {
+    const synthTexts: string[] = []
+    // 4 个整句标点，句间无逗号：每个标点都该立即切，成 4 批
+    const text = '今天天气不错适合出门走走。明天可能下雨记得带伞。后天转晴气温回升。周末有空可以爬山；记得防晒。'
+    const h = createHarness({
+      finalizeText: '讲讲李存勖的事迹',
+      baikeQuery: async () => ({ entry: null, text }),
+      ttsSynthSpy: (t) => synthTexts.push(t),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(300)
+
+    expect(synthTexts.length).toBeGreaterThanOrEqual(4) // 3 个句号 + 1 个分号立即切成多批
+    // 每批都以句末标点结尾（分号也算整句），绝不拦腰截断
+    for (const t of synthTexts) {
+      expect(/[。！？；]$/u.test(t)).toBe(true)
+    }
+  })
+
+  it('断句：攒够 2 个有效逗号成句（默认），逗号前不足字数不算', async () => {
+    const synthTexts: string[] = []
+    // 无句末标点，靠逗号断句：第 1 个字前太短不算，之后每 2 个有效逗号切一句
+    const text = '你好，这个方案我觉得，整体上还不错，细节再打磨一下，明天给你最终版本，咱们就这么定'
+    const h = createHarness({
+      finalizeText: '讲讲李存勖的事迹',
+      baikeQuery: async () => ({ entry: null, text }),
+      ttsSynthSpy: (t) => synthTexts.push(t),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(80)
+
+    expect(synthTexts.length).toBeGreaterThan(1) // 靠逗号切成多批
+    // 除最后一批（尾巴）外，每批以逗号收尾
+    for (const t of synthTexts.slice(0, -1)) {
+      expect(/[，、,]$/u.test(t)).toBe(true)
+    }
+    // 开头「你好，」不应单独成句（逗号前 < commaMinChars=4），应并进第一批
+    expect(synthTexts[0].length).toBeGreaterThan(4)
+  })
+
+  it('断句：到字数上限仍无标点时不硬切，继续攒到标点才切', async () => {
+    const synthTexts: string[] = []
+    // 第一段 20+ 字无任何标点，超过默认上限 15；后跟句号。整段应作为一个标点收尾的批次，
+    // 而不是在 15 字处拦腰截断。
+    const noPunct = '这是一个很长的没有标点的片段用来验证字数到了也不硬切必须等标点'
+    const text = `${noPunct}。后面还有一句。`
+    const h = createHarness({
+      finalizeText: '讲讲李存勖的事迹',
+      baikeQuery: async () => ({ entry: null, text }),
+      ttsSynthSpy: (t) => synthTexts.push(t),
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    await sleep(80)
+
+    // 无标点长片段完整进入某一批（以句号收尾），没有被切成 15 字碎片
+    expect(synthTexts.some((t) => t.includes(noPunct) && /。$/u.test(t))).toBe(true)
+    expect(synthTexts.every((t) => /[。！？；，、,]$/u.test(t))).toBe(true)
+  })
+
+  describe('英文句号断句边界', () => {
+    /** 用百科直连把整段文本送进断句，返回实际合成批次（英文句号在 sanitize 后保留，可直接观测）。 */
+    async function synthChunksOf(text: string): Promise<string[]> {
+      const chunks: string[] = []
+      const h = createHarness({
+        finalizeText: '讲讲李存勖的事迹',
+        baikeQuery: async () => ({ entry: null, text }),
+        ttsSynthSpy: (t) => chunks.push(t),
+      })
+      await startDialog(h.service)
+      await speakUtterance(h)
+      await sleep(300)
+      return chunks
+    }
+
+    it('英文句号作句末立即成句，每批以英文标点收尾', async () => {
+      const chunks = await synthChunksOf('Hello world. How are you today. Fine.')
+      expect(chunks.length).toBeGreaterThanOrEqual(3)
+      expect(chunks.every((t) => /[.!?]$/.test(t))).toBe(true)
+      expect(chunks[0]).toBe('Hello world.')
+    })
+
+    it('小数 3.14 中的点不切，整句到 dollars. 才成句', async () => {
+      const chunks = await synthChunksOf('The price is 3.14 dollars today. Thanks.')
+      expect(chunks.some((t) => t.includes('3.14') && t.endsWith('today.'))).toBe(true)
+      expect(chunks.some((t) => t.includes('3.14') && t.endsWith('3.'))).toBe(false)
+    })
+
+    it('域名 example.com / 文件名 file.txt 中的点不切', async () => {
+      const chunks = await synthChunksOf('Visit example.com today. Open file.txt now. Thanks.')
+      expect(chunks.some((t) => t.includes('example.com') && t.endsWith('today.'))).toBe(true)
+      expect(chunks.some((t) => t.includes('file.txt') && t.endsWith('now.'))).toBe(true)
+      expect(chunks.some((t) => t.endsWith('.com') || t.endsWith('.txt'))).toBe(false)
+    })
+
+    it('省略号 ... 不在中间的点上切碎', async () => {
+      const chunks = await synthChunksOf('Wait... what happened. Really?')
+      expect(chunks[0]).toContain('Wait...')
+      expect(chunks[0].endsWith('happened.')).toBe(true)
+    })
+
+    it('英文缩写 Mr. / Dr. 后的点不是句末', async () => {
+      const chunks = await synthChunksOf('Mr. Smith arrived. Dr. Lee left. OK.')
+      expect(chunks.some((t) => t.includes('Mr. Smith') && t.endsWith('arrived.'))).toBe(true)
+      expect(chunks.some((t) => t.includes('Dr. Lee') && t.endsWith('left.'))).toBe(true)
+      expect(chunks.some((t) => /^(Mr|Dr)\.$/.test(t))).toBe(false)
+    })
+
+    it('中英混排：英文句号后紧跟中文也算句末', async () => {
+      const chunks = await synthChunksOf('他说 hello world.然后走了。')
+      expect(chunks[0].endsWith('world.')).toBe(true)
+      expect(chunks.some((t) => t.includes('然后走了'))).toBe(true)
+    })
+
+    it('英文问号 / 叹号仍立即成句（回归）', async () => {
+      const chunks = await synthChunksOf('Really! Yes? OK.')
+      expect(chunks.length).toBeGreaterThanOrEqual(3)
+      expect(chunks[0]).toBe('Really!')
+    })
+  })
+
   it('「讲讲XX的事迹」：也能命中百科直连', async () => {
     let queried = ''
     const h = createHarness({
@@ -3443,6 +3631,7 @@ describe('skill 接入：生命周期钩子经 voiceSessionService 调用', () =
     // 等整个 turn（含 agent 回复 + 同链追问 + 播完钩子）跑完
     await sleep(300)
     h.finishReply()
+    await sleep(30) // 等 runAgent 收尾完成（drain 完才关分批保护窗），再回执播完
     h.playbackDone()
     await sleep(100)
 

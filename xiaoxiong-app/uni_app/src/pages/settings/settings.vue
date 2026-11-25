@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { FloatPositionKey } from '@/core/adaptation/floatLayer'
-import { SUBTITLE_FONT_SIZE_OPTIONS, SUBTITLE_COLOR_OPTIONS, AUTO_CHECK_INTERVAL_OPTIONS, DUCK_LEVEL_OPTIONS, DUCK_LEVEL_PERCENT, type DuckLevel } from '@/core/config/constants'
+import { SUBTITLE_FONT_SIZE_OPTIONS, SUBTITLE_COLOR_OPTIONS, AUTO_CHECK_INTERVAL_OPTIONS, DEFAULT_DUCK_LEVEL, DUCK_LEVEL_OPTIONS, DUCK_LEVEL_PERCENT, type DuckLevel } from '@/core/config/constants'
 import {
   LANGUAGE_OPTIONS,
   TIMEZONE_OPTIONS,
   appConfig,
+  createDefaultPlayback,
+  normalizeTimeouts,
   persistConfig,
   resetPlayback,
+  resetTimeouts,
   resetVoice,
 } from '@/core/config'
 import { t } from '@/core/i18n'
@@ -140,6 +143,35 @@ function onResetPlayback(): void {
   resetPlayback()
 }
 
+/** 超时设置恢复默认：改乱了就一键回默认值。 */
+function onResetTimeouts(): void {
+  resetTimeouts()
+}
+
+/** 对话设置恢复默认：只重置本组项（duck/插话/AEC/定稿/退下），不动播放源与音量；改完立即下发原生。 */
+function onResetDialog(): void {
+  const playback = createDefaultPlayback()
+  appConfig.general.interruptDuck = true
+  appConfig.general.duckLevel = DEFAULT_DUCK_LEVEL
+  appConfig.general.bargeIn = false
+  appConfig.general.aecEnabled = true
+  appConfig.playback.finalizeMaxChars = playback.finalizeMaxChars
+  appConfig.playback.finalizeTimeoutMs = playback.finalizeTimeoutMs
+  appConfig.playback.ttsChunkChars = playback.ttsChunkChars
+  appConfig.playback.commaSentenceCount = playback.commaSentenceCount
+  appConfig.playback.commaMinChars = playback.commaMinChars
+  appConfig.playback.autoExitMs = playback.autoExitMs
+  appConfig.playback.autoExitGraceMs = playback.autoExitGraceMs
+  persistConfig()
+  applyDuckConfig()
+  refreshDuckVolume()
+}
+
+/** 时间项失焦即按范围夹取：填 0 或超大值只在输入框里显示，不真的下发（网关侧还有一层同范围收敛）。 */
+function onTimeoutBlur(): void {
+  appConfig.timeouts = normalizeTimeouts(appConfig.timeouts)
+}
+
 /** 手动重启网关：网关卡死（喊话/点球没反应）时点此恢复，复用与点球重启同一原生通道。
  *  点按钮先展开行内红色确认条（说明+确认/取消），确认才真的重启，避免误触。
  *  重启后 WS 会断、由 transport 自动重连；结果放页面固定区行内文字，不用 toast 浮层。 */
@@ -194,7 +226,7 @@ function setConsolidateEvery(e: any): void {
 
 /** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
  * 各分区一律默认折叠，样式一致（标题右侧带收起/展开箭头）。 */
-type SettingsGroup = 'general' | 'voice' | 'playback' | 'dialog' | 'recommend' | 'memory'
+type SettingsGroup = 'general' | 'voice' | 'playback' | 'dialog' | 'timeout' | 'recommend' | 'memory'
 const expanded = ref<SettingsGroup | null>(null)
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
@@ -870,6 +902,22 @@ watch(
           <input class="input" type="number" v-model.number="appConfig.playback.finalizeTimeoutMs" />
           <text class="hint">{{ t('settings.playback.finalizeTimeoutMsHint') }}</text>
         </view>
+        <!-- 播报断句：字数上限 + 逗号成句数 + 逗号前最少字数 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.ttsChunkChars') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.ttsChunkChars" />
+          <text class="hint">{{ t('settings.playback.ttsChunkCharsHint') }}</text>
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.commaSentenceCount') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.commaSentenceCount" />
+          <text class="hint">{{ t('settings.playback.commaSentenceCountHint') }}</text>
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.commaMinChars') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.commaMinChars" />
+          <text class="hint">{{ t('settings.playback.commaMinCharsHint') }}</text>
+        </view>
         <view class="setting-row column">
           <text class="row-label">{{ t('settings.playback.autoExitMs') }}</text>
           <input class="input" type="number" v-model.number="appConfig.playback.autoExitMs" />
@@ -880,6 +928,75 @@ watch(
           <input class="input" type="number" v-model.number="appConfig.playback.autoExitGraceMs" />
           <text class="hint">{{ t('settings.playback.autoExitGraceMsHint') }}</text>
         </view>
+
+        <button class="reset" @tap="onResetDialog">{{ t('settings.reset') }}</button>
+      </template>
+    </view>
+    <!-- 超时设置：识别/回复/合成/卡顿四项时间预算，默认折叠，位于对话设置之后 -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('timeout')">
+        <text class="group-title">{{ t('settings.timeout.title') }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('timeout') }" />
+      </view>
+      <template v-if="isOpen('timeout')">
+        <text class="hint">{{ t('settings.timeout.sub') }}</text>
+        <!-- 定稿识别超时：一句话说完等这么久还没出结果就按现有文字定稿，超时短了会识别不出字 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.asrFinalizeMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.asrFinalizeMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.asrFinalizeMsHint') }}</text>
+        </view>
+        <!-- 中间识别间隔：界面实时字幕多久刷新一次，越短越跟手、越费算力 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.asrPartialIntervalMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.asrPartialIntervalMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.asrPartialIntervalMsHint') }}</text>
+        </view>
+        <!-- 单轮回复超时：问完到拿到回答的上限，思考模式下另有更长预算 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.llmMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.llmMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.llmMsHint') }}</text>
+        </view>
+        <!-- 单次播报合成超时：整句合成语音的总预算，含失败重试 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.ttsMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.ttsMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.ttsMsHint') }}</text>
+        </view>
+        <!-- 播报卡顿断开：这么久没收到新的音频帧就判定卡死并收尾 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.ttsFrameGapMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.ttsFrameGapMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.ttsFrameGapMsHint') }}</text>
+        </view>
+
+        <button class="reset" @tap="onResetTimeouts">{{ t('settings.reset') }}</button>
       </template>
     </view>
     <!-- 好价设置（好价商品推荐条数），默认折叠，位于播放设置之后 -->

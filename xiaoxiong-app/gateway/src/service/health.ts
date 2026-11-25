@@ -1,4 +1,5 @@
 import type { GatewayConfig, VendorParams } from '../config'
+import { TIMEOUT_DEFAULTS } from '../timeouts'
 import { resolveCapabilityConfig } from '../voiceConfig'
 import type { VoiceConfig } from '../voiceConfig'
 import { DashScopeWsTts } from '../tts/dashscopeWs'
@@ -101,7 +102,7 @@ async function probeOne(url: string, timeoutMs: number, headers: Record<string, 
  * 主机连通性：能收到任何 HTTP 响应（含 4xx/5xx）即视为主机可达；仅网络错误/超时算不可达。
  * 用于 WebSocket 类能力（DashScope ASR/TTS）的轻量可达性判断——无法在此做功能性 HTTP 探测。
  */
-async function probeHost(baseUrl: string, timeoutMs = 3000): Promise<boolean> {
+async function probeHost(baseUrl: string, timeoutMs: number = TIMEOUT_DEFAULTS.healthProbeMs): Promise<boolean> {
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -116,7 +117,7 @@ async function probeHost(baseUrl: string, timeoutMs = 3000): Promise<boolean> {
   }
 }
 
-async function probe(baseUrl: string, apiKey?: string, timeoutMs = 3000): Promise<boolean> {
+async function probe(baseUrl: string, apiKey?: string, timeoutMs: number = TIMEOUT_DEFAULTS.healthProbeMs): Promise<boolean> {
   const headers: Record<string, string> = {}
   if (apiKey) headers['authorization'] = `Bearer ${apiKey}`
   if (await probeOne(baseUrl, timeoutMs, headers)) return true
@@ -136,7 +137,7 @@ async function probe(baseUrl: string, apiKey?: string, timeoutMs = 3000): Promis
 // 功能探测结果缓存：避免 /api/health 轮询每次都真打一遍 ASR/TTS 给真实服务加压。
 // 同地址 15s 内复用，仍能及时反映服务上下线。
 const probeCache = new Map<string, { ok: boolean; at: number }>()
-const PROBE_TTL_MS = 15000
+const PROBE_TTL_MS = TIMEOUT_DEFAULTS.healthProbeTtlMs
 async function cachedProbe(key: string, fn: () => Promise<boolean>): Promise<boolean> {
   const cached = probeCache.get(key)
   if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.ok

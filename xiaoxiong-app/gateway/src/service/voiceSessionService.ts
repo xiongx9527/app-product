@@ -16,6 +16,7 @@ import { MediaPlaybackCapability, createMediaPlaybackDeps, type MediaResolver } 
 import { MediaControl, detectVolumeCommand, detectSubtitleCommand, detectPlayModeCommand } from './media/mediaDetect'
 import { cacheExternalAudio, getCachedAudioDuration, type MediaFetcher } from './media/mediaCache'
 import { messages } from '../i18n'
+import { TIMEOUT_DEFAULTS, resolveSessionTimeouts, type ResolvedTimeouts } from '../timeouts'
 import { isNoise, isForeignNoise, resemblesSpoken, stripTrailingEcho, pcmRms } from '../asr/noiseFilter'
 import { ABS_FLOOR_RMS } from '../vad/energyVad'
 import { AsrCorrector, type CorrectionEntry } from './asr/asrCorrector'
@@ -45,14 +46,9 @@ let silentAecSkipped = 0
 /** 播报期间最多排几句用户插话，超出直接拒收。 */
 const MAX_QUEUE = 3
 
-/**
- * 单轮 LLM 的硬超时（毫秒）：上游慢/挂起时主动舍弃本轮、断开下行播放，
- * 立即播友好兜底，不让用户干等。测试可经 deps.llmTimeoutMs 注入更短的值。
- */
-const DEFAULT_LLM_TIMEOUT_MS = 15000
-/** 深度思考（params.think=true）时的 LLM 硬超时：推理模型思考链可达 60~90s（实测 88s），
- *  必须比它长，否则 15s 误砍导致卡"正在思考"。120s 仍能在真挂起时兜底，不至于无限等。 */
-const THINK_LLM_TIMEOUT_MS = 120000
+/** 深度思考（params.think=true）时的 LLM 硬超时：推理链实测可达 88s，15s 会误砍卡「正在思考」。
+ *  普通轮的超时走 timeouts.ts（设置页可配）。 */
+const THINK_LLM_TIMEOUT_MS = TIMEOUT_DEFAULTS.llmThinkMs
 
 /** 自动记忆抽取时，喂给抽取引擎的「最近用户原话」最多保留几句（足够判断稳定性即可）。 */
 const MAX_HISTORY_TURNS = 8
@@ -109,7 +105,7 @@ export interface VoiceSessionDeps {
   createAsr: (cfg: AsrConfig) => AsrProvider
   createTts: (cfg: TtsConfig) => TtsProvider
   /** 把客户端设置的语音服务配置展开成三套能力配置 */
-  resolveVoice: (voice?: VoiceConfig) => ResolvedCapabilities
+  resolveVoice: (voice?: VoiceConfig, timeouts?: ResolvedTimeouts) => ResolvedCapabilities
   data: DataService
   /** ASR 纠错同步器：有则 learn_correction 工具可用（本地学习+择机上传 9529） */
   correctionSyncer?: CorrectionSyncer
@@ -179,8 +175,16 @@ export class VoiceSessionService {
   private finalizeMaxChars = 30
   /** partial 兜底定稿的有字超时（ms）：出了字但多久仍无 final 就强制定稿，缺省 10000。 */
   private finalizeTimeoutMs = 10000
+  /** 播报单批字数上限：一句超过它就切段合成，来自设置页「对话设置」，缺省 15。 */
+  private ttsChunkChars = 15
+  /** 攒够几个逗号就成一句送 TTS（未到字数上限时），来自设置页，缺省 2。 */
+  private commaSentenceCount = 2
+  /** 逗号前至少几个字才算有效断句点（避免「你好，」碎片），来自设置页，缺省 4。 */
+  private commaMinChars = 4
   /** 本轮首个有效 partial 的时间戳（有字超时兜底用），0=本轮还没有字。 */
   private firstPartialAt = 0
+  /** 会话级时间预算（设置页「超时设置」下发，已按范围收敛）；缺省用 timeouts.ts 默认值。 */
+  private timeouts: ResolvedTimeouts = resolveSessionTimeouts()
   private lang: Lang = 'zh-CN'
   /** 用户时区（IANA），时间类工具按它返回；缺省东 8 区 */
   private timezone = 'Asia/Shanghai'
@@ -205,7 +209,7 @@ export class VoiceSessionService {
    *  探测就绪状态（而非永远探测网关默认的内置），与 /api/health 的 provider-aware 探测保持一致。 */
   private lastVoice: VoiceConfig | undefined = undefined
   /**
-   * 分批 TTS 正在下发中（ttsChain 未全部完成）。逐批流水线播放时，批与批之间原生会检测到
+   * 分批 TTS 正在下发中（SpeechQueue 未 drain 完）。逐批流水线播放时，批与批之间原生会检测到
    * 短暂静默而误发 playback_done；此时不能当成"整轮播完"去 resolvePlayback / 发 tts.idle，
    * 否则前端提前收尾（状态变"本轮完成/正在听"）、runTurn 提前推进、退下后 cancelled 掐掉剩余批次。
    * 只有全部批次下发完（ttsDispatching=false）后到来的 playback_done 才是真播完。
@@ -404,6 +408,15 @@ export class VoiceSessionService {
         // 有字超时兜底：缺省 10000ms，合法范围 2000–60000。
         this.finalizeTimeoutMs = typeof pb?.finalizeTimeoutMs === 'number'
           ? Math.min(60000, Math.max(2000, Math.floor(pb.finalizeTimeoutMs))) : 10000
+        // 播报单批字数上限：来自设置页「对话设置」，缺省 15；合法范围 5–200，防误配
+        // （太小碎片化、太大会让单次合成变慢甚至超时）。
+        this.ttsChunkChars = typeof pb?.ttsChunkChars === 'number'
+          ? Math.min(200, Math.max(5, Math.floor(pb.ttsChunkChars))) : 15
+        // 逗号成句数 / 逗号前最少字数：来自设置页「对话设置」，缺省 2 / 4，范围防误配。
+        this.commaSentenceCount = typeof pb?.commaSentenceCount === 'number'
+          ? Math.min(10, Math.max(1, Math.floor(pb.commaSentenceCount))) : 2
+        this.commaMinChars = typeof pb?.commaMinChars === 'number'
+          ? Math.min(20, Math.max(1, Math.floor(pb.commaMinChars))) : 4
         this.media.syncVolumeFromClient(this.defaultVolume)
         // 自动记忆开关：来自客户端设置页（session.start.memory.auto），缺省关。
         // 仅控制助手是否主动沉淀长期记忆；手动指令（记录下 / 帮我记 等）始终生效。
@@ -419,6 +432,9 @@ export class VoiceSessionService {
         // MCP 服务器列表：来自客户端设置页（session.start.mcp.servers），缺省空（不连接任何服务器）。
         // 建连会话据此连上并把工具注册进助手工具箱；单个失败不影响会话（在 agentFactory 内跳过）。
         this.mcpServers = msg.mcp?.servers ?? []
+        // 时间预算：来自设置页「超时设置」；越界/非法值由 resolveSessionTimeouts 收敛。
+        // 必须在 start() 之前，rearm 时要把这份预算带进 ASR/TTS 实例。
+        this.timeouts = resolveSessionTimeouts(msg.timeouts)
         void this.start(msg.sessionId, msg.lang, msg.timezone, msg.mode, msg.voice)
         // ASR/TTS/LLM 未就绪时，网关没法用语音播报，改为下发预录提示音，让用户「听得见地」知道；
         // 探测有 15s 缓存，连重连/重唤醒都便宜，不每次真打服务。不下发具体文案（提示音已含人声）。
@@ -866,7 +882,7 @@ export class VoiceSessionService {
       this.emitTtsStart()
       this.deps.send({ type: 'llm.delta', text })
       this.deps.send({ type: 'llm.done' })
-      await this.speakSentence(text, turn)
+      await this.speakTextChunks(text, turn)
       if (this.turn === turn && !this.cancelled) {
         this.speaking = false
         this.deps.send({ type: 'tts.end', durationMs: this.estimatedSpeechMs() })
@@ -881,10 +897,53 @@ export class VoiceSessionService {
     this.emitTtsStart()
     this.deps.send({ type: 'llm.delta', text })
     this.deps.send({ type: 'llm.done' })
-    await this.speakSentence(text, this.turn)
+    await this.speakTextChunks(text, this.turn)
     if (!this.skipRequested && !this.cancelled) {
       this.speaking = false
       this.deps.send({ type: 'tts.end', durationMs: this.estimatedSpeechMs() })
+    }
+  }
+
+  /**
+   * skill 直连的一整段文本切成多批、串行流水线合成（与 runTurn 的流式分批同源）。
+   * 绝不整段 synthesize：整段（天气实测 1MB/20s）要等全部 WAV 返回才有第一声，
+   * 用户体感「文字早出来了、声音等很久」。改成首批 ~ttsChunkChars 字合成完立刻出声，
+   * 后续批接在链尾——上一批在播时下一批在合成，首声延迟从整段时长降到一批时长。
+   */
+  private async speakTextChunks(text: string, turn: number): Promise<void> {
+    const stale = () => this.turn !== turn || this.cancelled || this.skipRequested
+    let sentChars = 0
+    // 消费者：TTS 从队列串行取句合成，一句合成+下发完才取下一句（流水线）。
+    const queue = new SpeechQueue((chunk) => {
+      if (stale()) return Promise.resolve()
+      return this.speakSentence(chunk, turn)
+    })
+    // 生产者：断出一句就入队——边断边播，不等整段切完。
+    const pushChunk = (chunk: string): void => {
+      sentChars += chunk.length
+      // 兜底等待延长到覆盖整轮，避免早期批次的 30s 兜底先到期提前收尾。
+      this.deferPlaybackWaitForChunks(sentChars)
+      bargeDiag(`TTS-SYNTH len=${chunk.length} text="${chunk.slice(0, 20)}"`)
+      queue.push(chunk)
+    }
+    let buf = text
+    let cut = sentenceCut(buf, this.ttsChunkChars, this.commaSentenceCount, this.commaMinChars)
+    while (cut > 0) {
+      const clean = sanitizeForSpeech(buf.slice(0, cut))
+      if (clean) pushChunk(clean)
+      buf = buf.slice(cut)
+      cut = sentenceCut(buf, this.ttsChunkChars, this.commaSentenceCount, this.commaMinChars)
+    }
+    const tail = sanitizeForSpeech(buf)
+    if (tail) pushChunk(tail)
+
+    // 整链下发完前保持 true：批次间隙原生误发的 playback_done 一律忽略，
+    // 否则前端提前收尾、把后续批当成新一轮而掐掉。与 runTurn 流水线同一保护。
+    this.ttsDispatching = true
+    try {
+      await queue.drain()
+    } finally {
+      this.ttsDispatching = false
     }
   }
 
@@ -1136,8 +1195,8 @@ export class VoiceSessionService {
     // P1 接入端侧 KWS 后 wake 态不再调 ASR，这条路径自然消失；当前先挡住误播。
     if (this.mode === 'wake') return
     const now = Date.now()
-    bargeDiag(`ASR-FAIL-CUE throttled=${now - this.lastAsrFailNoticeAt < 30_000} pb=${this.playbackPending} proc=${this.processing} queue=${this.queue.length}`)
-    if (now - this.lastAsrFailNoticeAt < 30_000) return
+    bargeDiag(`ASR-FAIL-CUE throttled=${now - this.lastAsrFailNoticeAt < TIMEOUT_DEFAULTS.asrFailNoticeThrottleMs} pb=${this.playbackPending} proc=${this.processing} queue=${this.queue.length}`)
+    if (now - this.lastAsrFailNoticeAt < TIMEOUT_DEFAULTS.asrFailNoticeThrottleMs) return
     this.lastAsrFailNoticeAt = now
     this.deps.send({ type: 'client.cue', cue: 'asr-error' })
   }
@@ -1285,9 +1344,14 @@ export class VoiceSessionService {
       if (resemblesSpoken(text, this.spoken)) return
       // 【2026-11-24 拦播报期尾音重复定稿】用户刚说过的话的尾部被 ASR 缓存、播报期才定稿
       // （"今天的天气怎么样？"→尾音"今天的天气。"），不是回声也不是新插话，是同一句的尾巴。
-      // 与 userSaid（用户最近定稿）相似就丢弃，不入队、不产生"1 条排队"。
-      if (resemblesSpoken(text, this.userSaid)) {
-        bargeDiag(`TAIL-ECHO-DROP text="${text}" (与刚说过的话重复)`)
+      // 只丢低能量尾音（真人没重新开口、rms≈0.001）；高能量说明用户真的又开口说了同一句，
+      // 应入队——边合成边读提前 tts.start 后，真人插话会走进本分支，不能一律当尾音吞掉。
+      // 能量口径与下方 echoByEnergy 一致：vd<0 且 0<=rms<0.004。
+      const tailVd = this.asr.speechDuration ?? -1
+      const tailRms = this.asr.lastRms ?? -1
+      const tailByEnergy = tailVd < 0 && tailRms >= 0 && tailRms < 0.004
+      if (resemblesSpoken(text, this.userSaid) && tailByEnergy) {
+        bargeDiag(`TAIL-ECHO-DROP text="${text}" (与刚说过的话重复, vd=${tailVd} rms=${tailRms.toFixed(4)})`)
         return
       }
       this.enqueueDuringBusy(text)
@@ -1501,7 +1565,7 @@ export class VoiceSessionService {
       this.playbackResolve = done
       // 用固定上限兜底，客户端没回执也不会把队列卡死；
       // 下发完音频后会按实际时长收紧。
-      this.playbackTimer = setTimeout(() => done(true), 30_000)
+      this.playbackTimer = setTimeout(() => done(true), TIMEOUT_DEFAULTS.playbackAckMs)
     })
   }
 
@@ -1510,7 +1574,7 @@ export class VoiceSessionService {
   private deferPlaybackWaitForChunks(totalChars: number): void {
     if (!this.playbackTimer || !this.playbackResolve) return
     clearTimeout(this.playbackTimer)
-    const ms = Math.max(30_000, totalChars * 320 + 10_000)
+    const ms = Math.max(TIMEOUT_DEFAULTS.playbackAckMs, totalChars * 320 + 10_000)
     const done = this.playbackResolve
     this.playbackTimer = setTimeout(() => {
       this.playbackPending = false
@@ -1620,6 +1684,7 @@ export class VoiceSessionService {
   /**
    * 边生成边合成：LLM 流式出字，遇到句末标点就把这句立刻交给 TTS，
    * 让首声在 LLM 还没生成完时就响，显著降低语音延迟。
+   * 节奏：首批有一整句就发（首声最快），之后攒够 ~75 字一批，批间流水线衔接。
    * turn 用于识别「这一轮已被打断」：旧轮的所有下发都要停。
    */
   /** @returns 是否发出过 tts.start（决定要不要等播放完成回执） */
@@ -1630,65 +1695,49 @@ export class VoiceSessionService {
     const stale = () => this.turn !== turn || this.cancelled || this.skipRequested
     let buffer = ''
     let ttsStarted = false
-    let ttsChain: Promise<void> = Promise.resolve()
     let timedOut = false
+    /** 本句已入队的字数：兜底计时按累计值延长，流式批次再多也不会把兜底缩短。 */
+    let sentChars = 0
     // LLM 自由回答不设字数上限：界面显示与播报都完整输出。
     // 曾有个 100 字闸门（emittedChars/lengthCapped），超限就停发 llm.delta + enqueue——
     // 导致"总结十大瞬间"只列前几个、界面和播报都被砍。按用户要求移除，字数交给系统提示词
     // 的"言简意赅但要列全"约束，不再在代码里硬截断。
     // 【2026-11-22 原则：边合成边读，绝不一次合成整段】
     // 9529 TTS 接口非流式（整段合成完才返回 WAV），"流式"只能在网关侧做：
-    // 把断句攒成适中大小的批（TTS_CHUNK_CHARS≈75字），每批一次 synthesize，批间流水线。
-    // 为什么不能逐句：sentenceCut 在逗号就切，430字回答切成 36 个 8-20 字碎片，每片播 3-5s、
-    //   合成下一片却要 3-8s → 合成追不上播放 → 空档 → 原生播空误判 → "没播完状态就变了"。
-    // 为什么不能整段：300+ 字一次 synthesize 实测 42s 超时 → "这段没能播报"。
-    // 折中：~75字/批，合成~12s < 播放~15s，流水线跟得上、无空档；批数从 36 降到 ~6。
-    const TTS_CHUNK_CHARS = 75
-    const pendingSentences: string[] = []
-    const enqueue = (sentence: string) => {
+    // 断句后一句一批立刻合成，批间流水线（上一批在播、下一批在合成）。
+    // 断句以标点收尾、绝不在字数上限处硬切（用户明确要求"15 字必须完整、要标点"）：
+    // 上限只作兜底触发条件——攒够 N 个逗号、或到上限后遇第 1 个逗号才切，
+    // 正常一句话就是一批。整段一次 synthesize 仍会超时（300+ 字实测 42s），
+    // 但靠标点自然断批已经把单次合成压到一句的长度。上限来自设置页，缺省 15。
+    const TTS_MAX_CHUNK_CHARS = this.ttsChunkChars
+    // TTS 消费者：整条流式路径与 skill 直连共用 SpeechQueue——串行从队首取句合成，
+    // 一句 synthesize+下发完才取下一句（流水线）。stale 时丢弃旧轮的句子。
+    const queue = new SpeechQueue((chunk) => {
+      // timedOut 也要挡：LLM 超时走 catch 后本轮已放弃、改播 mp3 兜底，
+      // delta 阶段已入队但还没轮到的句子不能再合成下发，否则与兜底 cue 撞车。
+      if (stale() || timedOut) return Promise.resolve()
+      return this.speakSentence(chunk, turn)
+    })
+    // 生产者：断出一句完整句子就入队（标点收尾）。首批顺带发 tts.start。
+    const enqueue = (sentence: string): void => {
       const clean = sanitizeForSpeech(sentence)
       if (!clean) return
-      pendingSentences.push(clean)
+      if (!ttsStarted) {
+        ttsStarted = true
+        this.speaking = true
+        this.playbackPending = true
+        this.emitTtsStart()
+        // 首批入队即开保护窗：SpeechQueue 会在 push 后立即启动消费者开始合成/下发，
+        // 此刻 llm.done 还没到（LLM 仍在流式输出）。批次间隙原生误发的 playback_done 必须
+        // 从这一刻起就被忽略，不能等 llm.done 才开保护——否则早期批次的误回执会被当整轮
+        // 播完，提前 resolvePlayback/发 tts.idle，前端收尾、掐掉后续批次（真机踩过的坑）。
+        this.ttsDispatching = true
+      }
+      sentChars += clean.length
+      // 覆盖整轮分批（否则 armPlaybackWait 的兜底在早期批次就到期，提前 resolve 掐掉剩余批次）
+      this.deferPlaybackWaitForChunks(sentChars)
       bargeDiag(`TTS-ENQ len=${clean.length} text="${clean.slice(0, 24)}"`)
-    }
-    /** 把短句攒成 ~75 字的批，每批一次合成，批间串成流水线。 */
-    const buildChunks = (): string[] => {
-      const chunks: string[] = []
-      let cur = ''
-      for (const s of pendingSentences) {
-        if (cur && cur.length + s.length > TTS_CHUNK_CHARS) {
-          chunks.push(cur)
-          cur = ''
-        }
-        cur += s
-      }
-      if (cur) chunks.push(cur)
-      return chunks
-    }
-    /** LLM 输出结束后，分批合成并串成流水线：合成下一批时上一批正在播放。 */
-    const flushTts = (): void => {
-      const chunks = buildChunks()
-      if (!chunks.length) return
-      ttsStarted = true
-      this.speaking = true
-      this.playbackPending = true
-      this.emitTtsStart()
-      // 延长 playback 兜底等待覆盖整轮分批（否则 armPlaybackWait 的 30s 兜底在早期批次就到期，
-      // 提前 resolve await playback → 退下掐掉剩余批次）。整轮下发完后 tighten 会再按实际时长收紧。
-      const totalChars = chunks.reduce((n, c) => n + c.length, 0)
-      this.deferPlaybackWaitForChunks(totalChars)
-      bargeDiag(`TTS-SENTENCES sentences=${pendingSentences.length} chunks=${chunks.length} chars=${totalChars}`)
-      // 批次串行：speakSentence 合成一批并下发全部帧后返回；下一批紧接着合成。
-      // App 端 role=pcm 边收边播，合成快于播放时音频连续、句间无停顿。
-      let chain: Promise<void> = Promise.resolve()
-      for (const chunk of chunks) {
-        chain = chain.then(() => {
-          if (stale()) return
-          bargeDiag(`TTS-SYNTH len=${chunk.length} text="${chunk.slice(0, 20)}"`)
-          return this.speakSentence(chunk, turn)
-        })
-      }
-      ttsChain = chain
+      queue.push(clean)
     }
     // 超时看门狗：上游 LLM 卡住/冷启动慢时，主动舍弃本轮流式增量、断开下行播放，
     // 立即播友好兜底，不让用户干等、也不暴露技术故障（用户：「不要让用户觉得好慢」）。
@@ -1698,8 +1747,8 @@ export class VoiceSessionService {
     // 首包另给宽限：think 开启时推理模型首 token 可能要 60~90s（实测复杂问题 88s），
     // 故首个增量前用 THINK_LLM_TIMEOUT_MS(120s)；未开启思考仍用短超时快速兜底。
     const thinkEnabled = this.lastVoice?.params?.think === true
-    const idleMs = this.deps.llmTimeoutMs ?? DEFAULT_LLM_TIMEOUT_MS
-    const firstMs = this.deps.llmTimeoutMs ?? (thinkEnabled ? THINK_LLM_TIMEOUT_MS : DEFAULT_LLM_TIMEOUT_MS)
+    const idleMs = this.deps.llmTimeoutMs ?? this.timeouts.llmMs
+    const firstMs = this.deps.llmTimeoutMs ?? (thinkEnabled ? THINK_LLM_TIMEOUT_MS : this.timeouts.llmMs)
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null
     let rejectTimeout: ((err: Error) => void) | null = null
     /** 重新计时：首包前用 firstMs，开始吐字后每次增量都按 idleMs 续期 */
@@ -1717,12 +1766,14 @@ export class VoiceSessionService {
         // 无字数闸门：llm.delta 全量下发，界面与播报都完整。
         this.deps.send({ type: 'llm.delta', text: delta })
         buffer += delta
-        let cut = sentenceCut(buffer)
+        let cut = sentenceCut(buffer, TTS_MAX_CHUNK_CHARS, this.commaSentenceCount, this.commaMinChars)
         while (cut > 0) {
           enqueue(buffer.slice(0, cut))
           buffer = buffer.slice(cut)
-          cut = sentenceCut(buffer)
+          cut = sentenceCut(buffer, TTS_MAX_CHUNK_CHARS, this.commaSentenceCount, this.commaMinChars)
         }
+        // 边生成边播：断出的一句已在 enqueue 里入队，SpeechQueue 自动启动消费者立即合成，
+        // 不再等整段回复生成完，也不必等队尾全部断完。
       },
       (delta) => {
         // 思考过程只给界面看，不进 buffer、不进 TTS。
@@ -1768,17 +1819,18 @@ export class VoiceSessionService {
         enqueue(appendTts)
       }
       this.deps.data.insertCommandLog(this.deviceId, text, full.slice(0, 200))
-      // 分批流水线合成下发。ttsDispatching 在整链下发完前保持 true，期间原生批次间隙的
-      // playback_done 一律忽略（不当整轮播完），避免前端提前收尾/退下掐掉剩余批次。
-      // 【关键顺序】必须先 flushTts（内部发 tts.start）再发 llm.done：前端 llm.done 处理里
-      // `if(!answerHasTts) markAnswerDone()` 会启动 T1(30s) 静默计时；tts.start 到达才置
-      // answerHasTts=true。若 llm.done 先到，T1 就开始跑，长播报超 30s → T1→T2→standby→
-      // cancelled → 掐断剩余批次（真机铁证：847字/13批播报在第5批、距 tts.start 47s≈30+15 断）。
-      // 换成 tts.start 先到后，llm.done 时 answerHasTts 已 true，不再 markAnswerDone/T1。
-      flushTts()
+      // 分批流水线合成下发。ttsDispatching 已在首批 enqueue 时置 true（见上），
+      // 一直保持到整链 drain 完；期间原生批次间隙的 playback_done 一律忽略（不当整轮播完），
+      // 避免前端提前收尾/退下掐掉剩余批次。
+      // 【关键顺序】必须先把剩余句子入队（首批在流式增量里已入队并发过 tts.start）再发 llm.done：
+      // 前端 llm.done 处理里 `if(!answerHasTts) markAnswerDone()` 会启动 T1(30s) 静默计时；
+      // tts.start 到达才置 answerHasTts=true。若 llm.done 先到，T1 就开始跑，长播报超 30s →
+      // T1→T2→standby→cancelled → 掐断剩余批次（真机铁证：847字/13批播报在第5批、
+      // 距 tts.start 47s≈30+15 断）。换成 tts.start 先到后，llm.done 时 answerHasTts 已 true。
+      // 尾巴（含未成句部分）已由 enqueue(buffer) 入队；首批可能早已在流式增量里发过 tts.start。
+      bargeDiag(`TTS-SENTENCES chars=${sentChars} left=${queue.size}`)
       this.deps.send({ type: 'llm.done' })
-      if (ttsStarted) this.ttsDispatching = true
-      await ttsChain
+      await queue.drain()
       this.ttsDispatching = false
       if (ttsStarted && !stale()) {
         this.speaking = false
@@ -1820,7 +1872,7 @@ export class VoiceSessionService {
 
   /**
    * 下发一句 TTS：流式合成逐帧转发。带帧间看门狗——上游（builtin / dashscope ws）挂起
-   * 不产帧也不报错时，`await ttsChain` 会永久挂起且在 LLM 超时看门狗覆盖之外，整链死锁、
+   * 不产帧也不报错时，`queue.drain()` 会永久挂起且在 LLM 超时看门狗覆盖之外，整链死锁、
    * 队列再没人消费（用户要求「TTS 也要超时兜底，不能卡死对话」）。流式合成帧间隔为毫秒级，
    * 帧间超时即判上游挂死：断开本句、已收到的帧照播，tts.end 照常收尾，对话链继续。
    */
@@ -1833,7 +1885,7 @@ export class VoiceSessionService {
     // gapMs 必须 > TTS 单次合成超时（tts/http.ts 的 TTS_TIMEOUT_MS=20s），否则长文本合成
     // 还没返回，gap 就先判超时、误报「这段没能播报」。真机 100+ 字文本合成 7.35s，
     // 设 30s 给足余量（含偶发抖动重试）。
-    const gapMs = this.deps.ttsFrameGapMs ?? 30_000
+    const gapMs = this.deps.ttsFrameGapMs ?? this.timeouts.ttsFrameGapMs
     let iterator: AsyncIterator<Uint8Array>
     try {
       iterator = this.tts.synthesize(sentence)[Symbol.asyncIterator]()
@@ -1995,7 +2047,7 @@ export class VoiceSessionService {
     this.ensureSkills()
     // 按客户端设置展开三套能力配置并构建实例：地址 / 密钥 / 参数一律来自设置，
     // 不再读网关硬编码。每次 start 重建（重武装也重建，状态由 reset 清空，跨轮记忆不丢）。
-    const resolved = this.deps.resolveVoice(voice)
+    const resolved = this.deps.resolveVoice(voice, this.timeouts)
     this.asr = this.deps.createAsr(resolved.asr)
     this.tts = this.deps.createTts(resolved.tts)
     // 新会话（或重武装）作废旧会话的在途回调与排队
@@ -2204,18 +2256,104 @@ export class VoiceSessionService {
 }
 
 /**
- * 返回一句的切分位置（含句末标点），用于边生成边合成。
- * 无标点时若缓冲过长，退而按逗号或固定长度切，避免迟迟不出声。
+ * 语音合成队列（生产者-消费者）：断句只负责把完整句子 push 进来，
+ * TTS 消费者串行从队首取句合成——一句 synthesize+下发完才取下一句，
+ * 保证「边断边播、绝不整段合成」，且上一句在播时下一句已在合成（流水线）。
+ *
+ * LLM 流式与 skill 直连两条路径共用同一个队列：生产者只 push，消费者只有这一处，
+ * 不再各写一套 Promise 链。`drain()` 等队列里所有句子（含在途合成）都取完。
  */
-function sentenceCut(text: string): number {
-  // 句末标点：立即切句送 TTS
-  const match = text.match(/[。！？；!?;\n]/)
-  if (match && match.index !== undefined) return match.index + 1
-  // 逗号/顿号：LLM 回复开头常有一长串没句号的文字，等句末标点才启动 TTS 会让
-  // "文字刷出来了、声音迟迟不来"。遇到逗号就切，让用户更早听到声音。
-  const comma = text.match(/[，、,]/)
-  if (comma && comma.index !== undefined && comma.index >= 4) return comma.index + 1
-  // 无标点时长文本兜底：降到 20 字（原 60 字），避免 LLM 一路不写标点时干等。
-  if (text.length >= 20) return 20
+class SpeechQueue {
+  private items: string[] = []
+  private tail: Promise<void> = Promise.resolve()
+  private running = false
+
+  constructor(private readonly consume: (sentence: string) => Promise<void>) {}
+
+  /** 生产者入队：断出一句就 push，队列空闲时立即启动消费者，不等整段断完。 */
+  push(sentence: string): void {
+    if (!sentence) return
+    this.items.push(sentence)
+    this.schedule()
+  }
+
+  private schedule(): void {
+    if (this.running || this.items.length === 0) return
+    this.running = true
+    this.tail = this.tail.then(async () => {
+      while (this.items.length) {
+        const sentence = this.items.shift()!
+        await this.consume(sentence)
+      }
+      this.running = false
+    })
+  }
+
+  /** 等队列排空（含正在合成的那句）。 */
+  drain(): Promise<void> {
+    this.schedule()
+    return this.tail
+  }
+
+  get size(): number {
+    return this.items.length
+  }
+}
+
+/** 英文缩写（Mr./Dr./etc. 等）：其后的点不是句末，不能在这里切断。 */
+const EN_ABBREV_BEFORE_PERIOD = /(?:^|[^A-Za-z])(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|No|Fig|Inc|Ltd|Co|Gen|Rev|Hon|Capt|Lt|Sgt)\.$/i
+
+/**
+ * 英文句号 `.` 是否为句末：排除小数、域名/邮箱/文件名、英文缩写、省略号这几种「点不是句末」的边界。
+ * 判定：点被字母/数字夹住（3.14 / example.com / file.txt）→ 不是句末；
+ * 点紧挨另一个点（... 省略号）→ 不在中间切；常见缩写（Mr./etc.）→ 不是句末；
+ * 其余（点后是结尾、空白或中文/标点）才算句子边界。
+ */
+function isEnglishSentencePeriod(text: string, i: number): boolean {
+  const prev = i > 0 ? text[i - 1] : ''
+  const next = i + 1 < text.length ? text[i + 1] : ''
+  if (prev === '.' || next === '.') return false // 省略号 ... 不在中间切
+  if (/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next)) return false // 小数 / 域名 / 文件名
+  if (EN_ABBREV_BEFORE_PERIOD.test(text.slice(0, i + 1))) return false // Mr. Smith / etc. And
+  return next === '' || !/[A-Za-z0-9]/.test(next)
+}
+
+/**
+ * 返回一句的切分位置（含标点），用于边生成边合成。切点【永远是完整标点】，绝不拦腰截断字数。
+ * 断句优先级（取最先触发的）：
+ *  1. 句末标点 `[。！？；!?;\n]` 及【边界合法的英文句号 `.`】：立即切（一个完整句子就是一句，
+ *     分号也算；英文句号按 isEnglishSentencePeriod 排除小数/域名/缩写/省略号）。
+ *  2. 攒够 commaSentenceCount 个有效逗号：切成一句（用户：「2 个逗号算整句」），
+ *     此时即便已超过字数上限也照切——超字数没关系，只要落在标点上。
+ *  3. 字数已达 fallbackLen（单批上限）且遇到第 1 个有效逗号：兜底提前切，别再等够 N 个。
+ * 有效逗号要求其前面至少 commaMinChars 字，避免「你好，」这种碎片也算一个。
+ * 字数到了但还没有有效标点时不硬切——继续攒，靠 LLM 后续输出或本轮结束的尾巴兜底，
+ * 保证每批都以标点收尾（用户：「15 字必须是要完整的、完整的标点符号」）。
+ */
+function sentenceCut(
+  text: string,
+  fallbackLen = 20,
+  commaSentenceCount = 2,
+  commaMinChars = 4,
+): number {
+  // 1) 句末标点（含分号、英文问号/叹号）；英文句号单独做边界判定，避免误切小数/域名
+  const stopRe = /[。！？；!?;\n]/
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '.') {
+      if (isEnglishSentencePeriod(text, i)) return i + 1
+      continue
+    }
+    if (stopRe.test(text[i])) return i + 1
+  }
+
+  // 2/3) 逗号：攒够 N 个，或字数已到上限后第 1 个 → 在该逗号后切（标点收尾、不截断）
+  const lenReached = text.length >= fallbackLen
+  let seen = 0
+  for (let i = 0; i < text.length; i += 1) {
+    if (!/[，、,]/.test(text[i])) continue
+    if (i < commaMinChars) continue // 逗号前字数不足，不算有效断句点
+    seen += 1
+    if (seen >= commaSentenceCount || lenReached) return i + 1
+  }
   return -1
 }

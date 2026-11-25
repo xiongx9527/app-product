@@ -75,6 +75,8 @@ export interface AppConfig {
   playback: PlaybackConfig
   /** 好价设置：好价商品每次推荐的条数，独立于语音服务 */
   recommend: RecommendConfig
+  /** 时间预算：随 session.start.timeouts 下发网关，控制识别/回复/播报的超时 */
+  timeouts: TimeoutsConfig
   /** 通用设置：与具体能力无关、偏行为开关的项统一放这里 */
   general: GeneralConfig
   /** 记忆设置：长期记忆（自动抽取 / 手动指令）相关开关 */
@@ -94,6 +96,23 @@ export interface RecommendConfig {
    * 经 session.start.recommend 下发网关，作为好价工具未显式指定条数时的默认。
    */
   dealsCount: number
+}
+
+/**
+ * 时间预算（设置页「超时设置」）：随 session.start.timeouts 下发网关。
+ * 网关按同一份范围再收敛一次，所以这里填错也只会被夹到边界，不会搞死链路。
+ */
+export interface TimeoutsConfig {
+  /** 定稿识别超时（ms）：说完话等识别结果的最长时间，超时播「没听清」 */
+  asrFinalizeMs: number
+  /** 中间识别间隔（ms）：界面实时字幕的刷新频率 */
+  asrPartialIntervalMs: number
+  /** 单轮回复超时（ms）：大模型多久没给完就播兜底话术 */
+  llmMs: number
+  /** 单次播报合成超时（ms）：单句语音合成的上限 */
+  ttsMs: number
+  /** 播报卡顿断开（ms）：上游多久不产帧就断开本句 */
+  ttsFrameGapMs: number
 }
 
 /** 通用设置 */
@@ -242,6 +261,19 @@ export interface PlaybackConfig {
    * 解决 iOS/嘈杂环境 VAD 静音端点不触发导致卡"正在听"。缺省 10000，合法 2000–60000。
    */
   finalizeTimeoutMs?: number
+  /**
+   * 播报单批字数上限：超过这个字数后，遇到第一个标点（逗号/整句标点）就切段合成，
+   * 到上限但没有标点不硬切（标点必须完整）。随 playback 下发网关，缺省 15，合法 5–200。
+   */
+  ttsChunkChars?: number
+  /**
+   * 攒几个逗号就算一句送 TTS（未到字数上限时也可提前成句），缺省 2，合法 1–10。
+   */
+  commaSentenceCount?: number
+  /**
+   * 逗号前至少几个字才算有效断句点（避免「你好，」这种碎片），缺省 4，合法 1–20。
+   */
+  commaMinChars?: number
   /**
    * 自动退下：用户静默多久后播「还在吗？」（T1）。缺省 30000ms（30秒），合法 5000–300000。
    */

@@ -1,17 +1,19 @@
 import type { TtsProvider } from './provider'
 import type { VendorParams } from '../config'
+import { TIMEOUT_DEFAULTS } from '../timeouts'
+import type { ResolvedTimeouts } from '../timeouts'
 
-/** 单次合成的硬超时：上游慢/挂起时主动 abort 断开、抛错走 tts-error 提示。
- *  设备经 adb reverse 访问本机 9529，偶发网络抖动会让短句也超时（实测"比如放首歌、"
- *  6字也 aborted）；8s 偏紧，放宽到 12s 减少误报，但仍小于 speakSentence 的帧间隔
- *  15s，避免两处超时竞态导致重复提示。 */
-// 单次 TTS 合成超时：真机铁证 100+ 字天气文本 edge-tts 合成要 7.35s，6s 会误判失败。
-// 设 20s 覆盖长文本；须 < speakSentence 的 gapMs（已调到 30s），否则 gap 先触发误判挂死。
-// 单句合成超时。原则：绝不一次合成整段长文本，而是按断句逐句合成（见 voiceSessionService
-// 的 flushTts）。单句一般 <100 字、edge-tts 合成 ~7-16s，25s 足够且能在真挂起时较快兜底。
-// 曾错误地把超时放宽到 90s 想让整段 300 字（实测 42s）一次合成成功——那是掩盖问题，
-// 违反"边合成边读"原则，已回退。
-const TTS_TIMEOUT_MS = 25000
+/**
+ * 单句合成超时（默认 25s，可被设置页覆盖）。
+ *
+ * 原则：绝不一次合成整段长文本，而是按断句逐句合成（见 voiceSessionService 的 flushTts）。
+ * 单句一般 <100 字、edge-tts 合成约 7–16s，25s 足够且真挂起时能较快兜底。
+ * 必须小于「帧间看门狗 × 重试次数」——否则看门狗会先把还在正常合成的句子判成卡死。
+ *
+ * 历史：曾放宽到 90s 想让 300 字整段一次合成成功（实测 42s），那是掩盖问题、
+ * 违反「边合成边读」原则，已回退。
+ */
+const TTS_TIMEOUT_MS = TIMEOUT_DEFAULTS.ttsMs
 /** TTS 单帧大小：9600B = 200ms @24k/16bit。整段 TTS（builtin/deepseek 一次返回完整
  *  WAV）切成此尺寸逐帧下发——单帧 1.2MB（base64 1.6MB）经 weex 桥传输会超限/截断
  *  导致播不出来（真机"今天天气怎么样"文字出了没声音的根因）。 */
@@ -34,16 +36,23 @@ export class HttpVoiceTts implements TtsProvider {
     private readonly baseUrl: string,
     private readonly params: VendorParams = {},
     private readonly apiKey = '',
+    /** 会话级时间预算（设置页可配）：缺省用 timeouts.ts 的默认值。 */
+    private readonly timeouts?: ResolvedTimeouts,
   ) {}
 
   async *synthesize(text: string): AsyncIterable<Uint8Array> {
-    // 公网链路偶发抖动（TLS 断连/超时）会让单次 fetch 抛错 → 误报「这段没能播报」。
-    // 重试 1 次：单次超时降到 6s，两次合计 ≤12s < speakSentence 的 15s gap 超时，
-    // 网络抖动在 gap 内重试成功即可正常播报，不再误报。真失败（上游挂）才抛错走 tts-error。
+    // 公网链路偶发抖动（TLS 断连/超时）会让单次 fetch 抛错 → 误报「这段没能播报」，所以重试 1 次。
+    // 关键：两次共享**同一份总预算**（ttsMs），而不是各给一份——否则 25s×2=50s 会超过
+    // 帧间看门狗 30s，重试还没跑完这句就被判成卡死，重试等于白写。
+    // 预算内失败才重试；预算见底就直接抛错走 tts-error。
+    const budgetMs = this.timeouts?.ttsMs ?? TTS_TIMEOUT_MS
+    const deadline = Date.now() + budgetMs
     let lastErr: unknown
     for (let attempt = 0; attempt < 2; attempt++) {
+      const remaining = deadline - Date.now()
+      if (remaining < 1000) break
       try {
-        const pcm = await this.fetchPcm(text, TTS_TIMEOUT_MS)
+        const pcm = await this.fetchPcm(text, remaining)
         // 整段 TTS（builtin/deepseek 一次返回完整 WAV）必须切成小帧下发：
         // 原生 playPcm(String b64) 每帧 Base64.decode 后写 AudioTrack，单帧 1.2MB（base64 1.6MB）
         // 经 weex 桥传输会超限/截断 → 播不出来。切成 9600B(200ms@24k) 匹配流式播放。
@@ -53,12 +62,12 @@ export class HttpVoiceTts implements TtsProvider {
         return
       } catch (err) {
         lastErr = err
-        if (attempt === 0) console.warn('[tts] 合成失败，重试一次：', err)
+        if (attempt === 0) console.warn('[tts] 合成失败，预算内重试一次：', err)
       }
     }
-    // 两次都失败：显式抛错——speakSentence catch 会发 tts-error 本地 mp3 提示。
+    // 预算耗尽/两次都失败：显式抛错——speakSentence catch 会发 tts-error 本地 mp3 提示。
     console.error('[tts] 调用语音服务失败（已重试）：', lastErr)
-    throw lastErr
+    throw lastErr ?? new Error('[tts] 合成超时')
   }
 
   /** 单次 TTS 合成请求：fetch + 校验 WAV + 提取 PCM。 */

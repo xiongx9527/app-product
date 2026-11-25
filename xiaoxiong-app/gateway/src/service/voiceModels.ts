@@ -1,3 +1,5 @@
+import { TIMEOUT_DEFAULTS } from '../timeouts'
+
 /**
  * 列出某语音服务来源下「可选择的 ASR / TTS 模型」。
  *
@@ -15,7 +17,7 @@
  *   这份清单由我们维护、随官方更新，不写死地址，也不发网络请求。这同样满足「两个源永远有得选」。
  */
 
-const FETCH_TIMEOUT_MS = 5000
+const FETCH_TIMEOUT_MS = TIMEOUT_DEFAULTS.catalogFetchMs
 
 async function fetchJson(url: string, headers: Record<string, string>): Promise<unknown> {
   const controller = new AbortController()
