@@ -88,6 +88,9 @@ import voice_db
 _gateway_server: Any = None       # SSE transport 的 FastMCP 实例
 _stream_server: Any = None        # Streamable-HTTP transport 的 FastMCP 实例（独立实例，避免共享 lifespan 重复进入）
 _upstream_tools: dict[str, dict[str, Any]] = {}   # qualified_name -> {server_id, name, description}
+# 发现脚本拿到的 token 缓存：server_id -> (headers, url)。tools/call 新建连接时复用，
+# 因上游 java 在连接层就校验 token；token 失效(8天)由 _call_upstream 401 重拿兜底。
+_discovery_cache: dict[int, tuple[dict[str, str], str]] = {}
 
 # 鉴权由管理员配置的发现脚本负责（mcp_servers.script），中转层不按业务类型换 token。
 
@@ -191,8 +194,9 @@ async def _run_discovery_script(server: dict[str, Any], headers: dict[str, str],
 async def _make_client(server: dict[str, Any], for_discovery: bool = False):
     """按上游配置构造 FastMCP Client：透传 header + 全远程传输（SSE / Streamable HTTP）。
 
-    for_discovery=True（仅 refresh 发现工具时）：执行管理员脚本动态获取 token；
-    其余（tools/call）：不执行脚本，token 由调用方（App 账号本）注入工具参数。
+    for_discovery=True（仅 refresh 发现工具时）：执行脚本动态获取 token 并缓存；
+    其余（tools/call）：用发现阶段缓存的 headers/url（含 token）——上游 java 的 /mcp/sse
+    在连接层就要求 token，调用期没有 token 会 401。缓存 token 失效由 _call_upstream 401 重拿兜底。
     """
     headers = _parse_headers(server)
     timeout = int(server.get("timeout_sec") or 30)
@@ -201,9 +205,16 @@ async def _make_client(server: dict[str, Any], for_discovery: bool = False):
     url = server["url"]
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("MCP 上游仅支持远程 http(s) 地址（SSE / Streamable HTTP），不支持本地 stdio")
-    # 仅发现阶段执行管理员脚本动态获取 token；调用阶段 token 由 App 账号本注入工具参数。
     if for_discovery and (server.get("script") or "").strip():
+        # 发现阶段：执行脚本拿 token，结果缓存供 tools/call 复用
         headers, url = await _run_discovery_script(server, headers, url)
+        _discovery_cache[server["id"]] = (dict(headers), url)
+    elif not for_discovery and server["id"] in _discovery_cache:
+        # 调用阶段：复用发现时缓存的 token（每个 tools/call 都会新建连接，必须带 token）
+        cached_headers, cached_url = _discovery_cache[server["id"]]
+        headers = dict(cached_headers)
+        headers.pop("transport", None)
+        url = cached_url
     if transport == "sse" or url.rstrip("/").endswith("/sse"):
         TK = SSETransport
     elif transport == "streamable-http":
@@ -333,9 +344,24 @@ async def _call_upstream(qualified_name: str, arguments: dict[str, Any]) -> Any:
     server = voice_db.mcp_server_get(meta["server_id"])
     if not server or not server.get("enabled"):
         return f"[mcp-gateway] upstream unavailable: {meta['server_id']}"
-    try:
+    async def do_call() -> Any:
         async with await _make_client(server) as client:
-            result = await client.call_tool(meta["name"], arguments or {}, raise_on_error=False)
+            return await client.call_tool(meta["name"], arguments or {}, raise_on_error=False)
+
+    try:
+        try:
+            result = await do_call()
+        except Exception as exc:
+            # 上游 token 失效（8天过期）会在连接层报 401：清缓存、重跑脚本拿新 token 再试一次。
+            if "401" not in str(exc) or not (server.get("script") or "").strip():
+                raise
+            _discovery_cache.pop(server["id"], None)
+            # 强制重新执行脚本获取新 token，并刷新缓存
+            base_headers = _parse_headers(server)
+            base_headers.pop("transport", None)
+            fresh_headers, fresh_url = await _run_discovery_script(server, base_headers, server["url"])
+            _discovery_cache[server["id"]] = (dict(fresh_headers), fresh_url)
+            result = await do_call()
         # CallToolResult -> 便于阅读的字符串（保留结构化 content）
         texts = []
         for block in getattr(result, "content", []) or []:
