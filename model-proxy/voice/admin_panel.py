@@ -812,18 +812,13 @@ def _system_overview() -> dict[str, Any]:
         # 故两个模块都要读，避免 MCP 已挂载却显示未就绪。
         mcp_ready = bool(getattr(sys.modules.get("__main__"), "_MCP_MOUNTED", False)) or \
                     bool(getattr(ovs, "_MCP_MOUNTED", False))
-        # 用户手动添加的外部 MCP server 工具数：排除 askdata 内置聚合工具（不算用户添加的）。
-        # 没添加外部 server 时显示 0。
+        # 外部 MCP server 工具数：所有配置的网关都算（鉴权由发现脚本负责，无内置业务类型区分）。
         mcp_tools = 0
         try:
             import mcp_gateway
-            generic_ids = {
-                s["id"] for s in voice_db.mcp_servers_list()
-                if str(s.get("biz_type") or "generic").strip().lower() != "askdata"
-            }
             mcp_tools = sum(
                 1 for meta in (getattr(mcp_gateway, "_upstream_tools", {}) or {}).values()
-                if isinstance(meta, dict) and meta.get("server_id") in generic_ids
+                if isinstance(meta, dict) and meta.get("server_id")
             )
         except Exception:
             pass

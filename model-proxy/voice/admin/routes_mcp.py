@@ -77,8 +77,13 @@ def _param_desc(name: str, fallback: str, tool: str = "", overrides: dict[str, s
     return (fallback or "").strip() or _PARAM_DESC.get((name or "").strip().lower(), "")
 
 
-def _build_params(schema: dict[str, Any], biz_type: str = "", tool: str = "") -> list[dict[str, Any]]:
-    """从 inputSchema 构造展示用参数列表；askdata 类补一行网关自动注入的鉴权头。"""
+def _build_params(schema: dict[str, Any], tool: str = "") -> list[dict[str, Any]]:
+    """从 inputSchema 构造展示用参数列表。
+
+    上游 schema 通常不声明传输层鉴权头（如 X-SQLBOT-TOKEN），但它由网关发现脚本
+    动态获取并注入请求头、随每次调用透传；面板补一行说明，避免用户/LLM 误以为
+    工具无需鉴权。schema 里已声明 token/authorization 参数的不再重复补。
+    """
     schema = schema or {}
     props = schema.get("properties") or {}
     required = set(schema.get("required") or [])
@@ -91,15 +96,6 @@ def _build_params(schema: dict[str, Any], biz_type: str = "", tool: str = "") ->
                        "required": pn in required, "in": _param_location(pn),
                        "description": _param_desc(pn, pp.get("description") or "", tool, overrides),
                        "auto": False})
-    # askdata 网关用账号密码换 token 并注入 X-SQLBOT-TOKEN，上游 schema 通常不声明，
-    # 面板补一行让用户知道该工具的鉴权来源（非用户填写参数）。
-    if (biz_type or "").strip().lower() == "askdata":
-        has_auth = any(p["name"].lower() in {"token", "authorization", "x-sqlbot-token"}
-                       for p in params)
-        if not has_auth:
-            params.append({"name": "X-SQLBOT-TOKEN", "type": "string", "required": True,
-                           "in": "header", "description": "网关自动注入（账号密码换取，无需填写）",
-                           "auto": True})
     return params
 
 
@@ -140,14 +136,8 @@ def build_router() -> APIRouter:
         from fastapi import HTTPException
         name = str(body.get("name") or "").strip()
         url = str(body.get("url") or "").strip()
-        biz = str(body.get("biz_type") or "generic").strip() or "generic"
         if not name or not url:
             raise HTTPException(400, "name 和 url 必填")
-        # 非 generic 业务类型（如 askdata）只允许一个——避免重复换 token / 重复聚合
-        if biz != "generic":
-            for s in voice_db.mcp_servers_list():
-                if (s.get("biz_type") or "generic") == biz:
-                    raise HTTPException(400, f"业务类型 {biz} 已存在，只能添加一个")
         prefix = str(body.get("tool_prefix") or "").strip()
         if prefix.lower() == DEFAULT_TOOL_PREFIX:
             raise HTTPException(400, f"工具前缀 {DEFAULT_TOOL_PREFIX} 为其他工具专用，不能用于网关")
@@ -158,7 +148,7 @@ def build_router() -> APIRouter:
         try:
             voice_db.mcp_server_add(name, url, body.get("headers_json") or "{}",
                                     int(body.get("enabled", 1)), int(body.get("timeout_sec") or 30),
-                                    biz_type=biz, tool_prefix=prefix)
+                                    tool_prefix=prefix, script=str(body.get("script") or ""))
         except Exception as exc:
             raise HTTPException(400, f"新增失败（name 重复？）: {exc}")
         return {"ok": True}
@@ -166,7 +156,7 @@ def build_router() -> APIRouter:
     @router.patch("/admin/api/mcp/servers/{sid}", dependencies=[Depends(require_admin)])
     def mcp_server_update(sid: int, body: dict[str, Any]):
         from fastapi import HTTPException
-        fields = {k: body[k] for k in ("name", "url", "headers_json", "enabled", "timeout_sec", "biz_type", "tool_prefix") if k in body}
+        fields = {k: body[k] for k in ("name", "url", "headers_json", "script", "enabled", "timeout_sec", "tool_prefix") if k in body}
         if not voice_db.mcp_server_get(sid):
             raise HTTPException(404, "上游不存在")
         if str(fields.get("tool_prefix") or "").strip().lower() == DEFAULT_TOOL_PREFIX:
@@ -297,7 +287,7 @@ def build_router() -> APIRouter:
             srv = voice_db.mcp_server_get(meta["server_id"]) or {}
             schema = meta.get("input_schema") or {}
             orig = meta.get("name") or ""
-            params = _build_params(schema, srv.get("biz_type") or "", orig)
+            params = _build_params(schema, orig)
             # 工具说明覆盖（面板编辑）：key = 原始工具名|__desc__
             desc = overrides.get(f"{orig}|__desc__") or (meta.get("description") or "")
             tools[q] = {"server_id": meta["server_id"], "name": orig,
@@ -314,23 +304,6 @@ def build_router() -> APIRouter:
         voice_db.mcp_acl_set(key_id, body.get("tools") or [])
         return {"ok": True}
 
-    @router.get("/admin/api/mcp/defaults", dependencies=[Depends(require_admin)])
-    def mcp_defaults():
-        """网关级 askdata 默认账号密码（脱敏：只回 user，不回 pass）。"""
-        return {"user": voice_db.get_config("MCP_ASKDATA_USER", "") or "",
-                "pass_set": bool(voice_db.get_config("MCP_ASKDATA_PASS", ""))}
-
-    @router.put("/admin/api/mcp/defaults", dependencies=[Depends(require_admin)])
-    def mcp_defaults_set(body: dict[str, Any]):
-        """保存网关级 askdata 默认账号密码。pass 留空=不修改。"""
-        import config_store
-        cs = config_store.instance()
-        if "user" in body:
-            cs.set("MCP_ASKDATA_USER", str(body["user"] or ""))
-        if body.get("pass"):
-            cs.set("MCP_ASKDATA_PASS", str(body["pass"]))
-        return {"ok": True}
-
     @router.post("/admin/api/mcp/test", dependencies=[Depends(require_admin)])
     async def mcp_test():
         """测试网关：逐个连接 enabled 上游并 list_tools，返回每个上游的工具数/错误（不注册、不改状态）。"""
@@ -342,10 +315,10 @@ def build_router() -> APIRouter:
             try:
                 async with await mcp_gateway._make_client(s) as client:
                     tools = await client.list_tools()
-                results.append({"id": s["id"], "name": s["name"], "biz_type": s.get("biz_type") or "generic",
+                results.append({"id": s["id"], "name": s["name"],
                                 "url": s["url"], "ok": True, "tools": [t.name for t in tools]})
             except Exception as exc:
-                results.append({"id": s["id"], "name": s["name"], "biz_type": s.get("biz_type") or "generic",
+                results.append({"id": s["id"], "name": s["name"],
                                 "url": s["url"], "ok": False, "error": str(exc)[:300]})
         return {"results": results}
 
@@ -353,21 +326,22 @@ def build_router() -> APIRouter:
     async def mcp_test_one(body: dict[str, Any]):
         """用临时配置（未保存的表单值）测试一个网关：连接 + list_tools，返回工具列表。
 
-        不落库、不改健康状态。askdata 类型若没带 token 但配了账号密码，会动态换取。
+        不落库、不改健康状态。配了发现脚本时执行脚本动态获取 token。
         """
         import mcp_gateway
         tmp = {"id": 0, "name": str(body.get("name") or "test"), "url": str(body.get("url") or ""),
                "headers_json": body.get("headers_json") or "{}",
-               "biz_type": body.get("biz_type") or "generic", "timeout_sec": int(body.get("timeout_sec") or 30)}
+               "script": str(body.get("script") or ""),
+               "timeout_sec": int(body.get("timeout_sec") or 30)}
         if not tmp["url"].lower().startswith(("http://", "https://")):
             return {"ok": False, "error": "URL 必须是 http(s) 地址"}
         try:
-            async with await mcp_gateway._make_client(tmp) as client:
+            async with await mcp_gateway._make_client(tmp, for_discovery=True) as client:
                 tools = await client.list_tools()
             out_tools = []
             for t in tools:
                 schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
-                params = _build_params(schema, tmp.get("biz_type") or "", t.name)
+                params = _build_params(schema, t.name)
                 out_tools.append({"name": t.name, "description": getattr(t, "description", "") or "",
                                   "params": params})
             return {"ok": True, "tools": out_tools}

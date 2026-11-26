@@ -796,6 +796,9 @@ const I18N = {
     "mcp.name": "名称",
     "mcp.url": "地址",
     "mcp.headers": "请求头 JSON（脱敏）",
+    "mcp.script": "发现脚本（动态获取 token）",
+    "mcp.scriptKeep": "已配置脚本，内容不回显；留空表示不修改。",
+    "mcp.scriptHint": "仅发现工具时执行：async def auth(url, headers, context) -> {'headers': {...}, 'query': {...}}；网关地址锁定，脚本只能改 headers 和追加 query。",
     "mcp.refresh": "重连并发现工具",
     "mcp.tools": "已发现工具",
     "mcp.acl": "工具授权",
@@ -839,7 +842,6 @@ const I18N = {
     "mcp.grantTo": "授权对象",
     "mcp.defaultGrant": "默认工具（所有 Key）",
     "mcp.saveGrant": "保存授权",
-    "mcp.bizType": "业务类型",
     "mcp.transport": "传输协议",
     "mcp.bizHint": "askdata 类型用账号密码动态换 token（账号密码在 API-Key 或网关默认配置里填）；generic 用静态 headers",
     "nav.collapse": "折叠/展开侧栏",
@@ -1393,6 +1395,9 @@ const I18N = {
     "mcp.name": "Name",
     "mcp.url": "URL",
     "mcp.headers": "Headers JSON (masked)",
+    "mcp.script": "Discovery script (dynamic token)",
+    "mcp.scriptKeep": "Script configured; content hidden. Leave blank to keep unchanged.",
+    "mcp.scriptHint": "Runs only when discovering tools: async def auth(url, headers, context) -> {'headers': {...}, 'query': {...}}. Gateway URL is locked; script may only change headers and append query params.",
     "mcp.refresh": "Reconnect & discover tools",
     "mcp.tools": "Discovered tools",
     "mcp.acl": "Tool authorization",
@@ -1436,7 +1441,6 @@ const I18N = {
     "mcp.grantTo": "Grant to",
     "mcp.defaultGrant": "Default tools (all keys)",
     "mcp.saveGrant": "Save grant",
-    "mcp.bizType": "Business type",
     "mcp.transport": "Transport",
     "mcp.bizHint": "askdata: exchange credentials for token (set in API-Key or gateway defaults); generic: static headers",
     "nav.collapse": "Collapse / expand sidebar",
@@ -5442,20 +5446,18 @@ function showMcpModal(server){
   const body=
     '<label>'+t('mcp.name')+'</label><input id="mcpFName" type="text" value="'+esc(server?server.name:'')+'" placeholder="问数" />'+
     '<label>'+t('mcp.toolPrefix')+'</label><input id="mcpFPrefix" type="text" value="'+esc(server?(server.tool_prefix||''):'')+'" placeholder="askdata" />'+
-    '<label>'+t('mcp.bizType')+'</label><select id="mcpFBiz">'
-      +'<option value="generic"'+(server&&server.biz_type==='generic'?' selected':'')+'>generic（静态鉴权）</option>'
-      +'<option value="askdata"'+(server&&server.biz_type==='askdata'?' selected':'')+'>askdata（账号密码换 token）</option></select>'+
     '<label>'+t('mcp.url')+'</label><input id="mcpFUrl" type="text" value="'+esc(server?server.url:'')+'" placeholder="http://host:8000/mcp/sse" />'+
     '<label>'+t('mcp.transport')+'</label><select id="mcpFTransport">'
       +'<option value="auto">auto（按 URL 推断）</option>'
       +'<option value="sse">SSE</option><option value="streamable-http">Streamable HTTP</option></select>'+
     '<label>'+t('mcp.headers')+'</label><textarea id="mcpFHeaders" rows="3">'+esc(server?server.headers_json:'{}')+'</textarea>'+
+    '<label>'+t('mcp.script')+'</label><textarea id="mcpFScript" rows="6" placeholder="async def auth(url, headers, context):\n    # 动态获取 token，返回 {\'headers\': {...}, \'query\': {...}}\n    return {\'headers\': headers, \'query\': {}}">'+esc(server?(server.script||''):'')+'</textarea>'+
+    '<span class="hint">'+t('mcp.scriptHint')+'</span>'+
     '<div class="row" style="margin-top:10px"><button type="button" class="sec" id="mcpFormTest">'+t('mcp.test')+'</button>'
       +'<span class="hint" id="mcpFormTestOut"></span></div>';
   showModal(server?t('common.edit'):t('mcp.add'), body, async(m)=>{
     const name=m.querySelector('#mcpFName').value.trim();
     const url=m.querySelector('#mcpFUrl').value.trim();
-    const biz=m.querySelector('#mcpFBiz').value;
     const transport=m.querySelector('#mcpFTransport').value;
     let headers=m.querySelector('#mcpFHeaders').value.trim()||'{}';
     if(!name||!url){ alert(t('mcp.name')+' / '+t('mcp.url')); return false; }
@@ -5463,13 +5465,14 @@ function showMcpModal(server){
       try{ const o=JSON.parse(headers); o.transport=transport; headers=JSON.stringify(o); }
       catch(e){ headers=JSON.stringify({transport}); }
     }
-    const payload={name,url,headers_json:headers,biz_type:biz,tool_prefix:m.querySelector('#mcpFPrefix').value.trim()};
+    const payload={name,url,headers_json:headers,tool_prefix:m.querySelector('#mcpFPrefix').value.trim(),
+      script:m.querySelector('#mcpFScript').value.trim()};
     const path=server?('/admin/api/mcp/servers/'+server.id):'/admin/api/mcp/servers';
     const r=await api(path,{method:server?'PATCH':'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify(payload)});
     if(!r.ok){ alert(t('common.failPrefix')+(await r.text())); return false; }
     loadMcpPage(); return true;
-  }, server?t('common.edit'):t('mcp.add'));
+  }, t('common.save'));
   // 表单内测试：临时保存当前表单值为一个临时网关再测（不落库）——直接测 URL + headers + biz
   const m=document.getElementById('genericModal');
   const testBtn=m.querySelector('#mcpFormTest');
@@ -5477,12 +5480,12 @@ function showMcpModal(server){
     const out=m.querySelector('#mcpFormTestOut'); out.textContent=t('common.loadingX');
     const name=m.querySelector('#mcpFName').value.trim()||'test';
     const url=m.querySelector('#mcpFUrl').value.trim();
-    const biz=m.querySelector('#mcpFBiz').value;
     let headers=m.querySelector('#mcpFHeaders').value.trim()||'{}';
     if(!url){ out.textContent=t('mcp.url'); return; }
     // 用测试 API 测指定 url（后端接口已支持测所有 enabled 上游；这里临时构造一个测试请求）
+    const testScript=m.querySelector('#mcpFScript').value.trim();
     const r=await api('/admin/api/mcp/test-one',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({name,url,headers_json:headers,biz_type:biz})});
+      body:JSON.stringify({name,url,headers_json:headers,script:testScript})});
     if(!r.ok){ out.textContent=t('common.failPrefix')+r.status; return; }
     const d=await r.json();
     if(!d.ok){ out.innerHTML='<span class="badge b-err">'+esc(d.error||'fail')+'</span>'; return; }
@@ -5503,7 +5506,6 @@ async function loadMcpPage(){
     h+='<table class="admin-table" style="width:100%"><thead><tr>'
       +'<th style="width:80px">'+t('mcp.name')+'</th>'
       +'<th style="width:80px">'+t('mcp.toolPrefix')+'</th>'
-      +'<th style="width:70px">'+t('mcp.bizType')+'</th>'
       +'<th style="width:70px">'+t('mcp.transport')+'</th>'
       +'<th style="width:160px">'+t('mcp.url')+'</th>'
       +'<th style="width:70px">'+t('common.status')+'</th>'
@@ -5514,14 +5516,13 @@ async function loadMcpPage(){
       h+='<tr>'
         +'<td style="width:80px;min-width:0;word-break:break-all">'+esc(s.name)+'</td>'
         +'<td style="width:80px;min-width:0;word-break:break-all">'+esc(s.tool_prefix||'-')+'</td>'
-        +'<td style="width:70px;min-width:0;word-break:break-all">'+esc(s.biz_type||'generic')+'</td>'
         +'<td style="width:70px;min-width:0;word-break:break-all">'+esc(s.transport||'-')+'</td>'
         +'<td style="width:160px;min-width:0;word-break:break-all">'+esc(s.url)+'</td>'
         +'<td style="width:70px;min-width:0">'+sw
         +'</td><td class="col-actions" style="width:90px"><button class="mini" data-mcpedit="'+s.id+'">'+t('common.edit')+'</button> '
         +'<button class="mini" data-mcpdel="'+s.id+'">'+t('common.delete')+'</button></td></tr>';
     });
-    if(!servers.length) h+='<tr><td colspan="7" class="muted" style="text-align:center">'+t('mcp.emptyGateway')+'</td></tr>';
+    if(!servers.length) h+='<tr><td colspan="6" class="muted" style="text-align:center">'+t('mcp.emptyGateway')+'</td></tr>';
     h+='</tbody></table>';
     box.innerHTML=h;
     document.getElementById('mcpAdd').onclick=()=>showMcpModal();
@@ -5578,7 +5579,7 @@ function showMcpToolAddModal(servers){
     if(!srv){ list.innerHTML='<div class="err">'+t('mcp.emptyGateway')+'</div>'; return; }
     list.innerHTML='<div class="hint">'+t('common.loadingX')+'</div>';
     const r=await api('/admin/api/mcp/test-one',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({name:srv.name,url:srv.url,headers_json:srv.headers_json,biz_type:srv.biz_type||'generic',timeout_sec:srv.timeout_sec})});
+      body:JSON.stringify({name:srv.name,url:srv.url,headers_json:srv.headers_json,script:srv.script||'',timeout_sec:srv.timeout_sec})});
     if(!r.ok){ list.innerHTML='<div class="err">'+t('common.failPrefix')+r.status+'</div>'; return; }
     const d=await r.json();
     if(!d.ok){ list.innerHTML='<div class="err">'+esc(d.error||'fail')+'</div>'; return; }

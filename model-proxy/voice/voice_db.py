@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 24
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -130,10 +130,9 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         ["col:rate_policies:rerank_tokens_per_min:INTEGER NOT NULL DEFAULT 0"]),
     17: ("新增 mcp_servers（MCP 中转上游配置：name 作工具前缀 + url + 脱敏 headers + 健康）与 "
         "mcp_tool_acl（按 key_id 隔离工具可见性，key_id=0 为所有 Key 的默认工具哨兵）两表", []),
-    18: ("MCP 网关业务类型：mcp_servers 加 biz_type（generic/askdata，askdata 走账号密码换 token）；"
+    18: ("MCP 网关业务类型（v24 已废弃删除 biz_type，改由发现脚本注入鉴权）："
         "admin_api_keys 加 askdata_user/askdata_pass（该 Key 的 askdata 账号密码，空则用网关默认值）",
-        ["col:mcp_servers:biz_type:TEXT NOT NULL DEFAULT 'generic'",
-         "col:admin_api_keys:askdata_user:TEXT NOT NULL DEFAULT ''",
+        ["col:admin_api_keys:askdata_user:TEXT NOT NULL DEFAULT ''",
          "col:admin_api_keys:askdata_pass:TEXT NOT NULL DEFAULT ''"]),
     19: ("mcp_servers 加 tool_prefix 列：工具前缀独立字段（默认空=沿用 name），避免网关名用中文导致工具名非法",
         ["col:mcp_servers:tool_prefix:TEXT NOT NULL DEFAULT ''"]),
@@ -143,6 +142,12 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         "内置管理员可在面板勾选(全选)，鉴权按角色+功能域查该表(无记录用默认矩阵)。仅内置管理员可管理", []),
     22: ("新增 mcp_http_tools 表：其他工具（直接 HTTP 调用）走内置 default 网关，"
         "工具名 default__xxx；其他网关 tool_prefix 禁止设为 default 避免冲突", []),
+    23: ("mcp_servers 加 script 列：发现工具时执行的动态脚本（async def auth(url, headers, context) -> "
+        "{'headers': {...}, 'query': {...}}），用于动态获取 token 注入请求头/query；仅 refresh 发现阶段执行，"
+        "tools/call 不执行；网关地址锁定（脚本只能改 headers 和 query，不能改 host/path）",
+        ["col:mcp_servers:script:TEXT NOT NULL DEFAULT ''"]),
+    24: ("删除 mcp_servers.biz_type 列：业务类型鉴权（askdata 换 token）已由发现脚本取代，"
+        "代码层不再按业务类型分流", ["dropcol:mcp_servers:biz_type"]),
 }
 
 def ensure_schema() -> None:
@@ -389,13 +394,16 @@ def _has_column(table: str, col: str) -> bool:
 
 
 def _apply_change_ddl(c: sqlite3.Connection, instruction: str) -> None:
-    """执行一条幂等的迁移指令；目前只支持给已有表补列。"""
+    """执行一条幂等的迁移指令：col:表:列:类型（补列）/ dropcol:表:列（删列）。"""
     parts = instruction.split(":")
-    if len(parts) != 4 or parts[0] != "col":
-        return
-    _, table, column, decl = parts
-    if not _has_column(table, column):
-        c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    if len(parts) == 4 and parts[0] == "col":
+        _, table, column, decl = parts
+        if not _has_column(table, column):
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    elif len(parts) == 3 and parts[0] == "dropcol":
+        _, table, column = parts
+        if _has_column(table, column):
+            c.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
 
 
 def schema_history() -> list[dict[str, Any]]:
@@ -1991,8 +1999,8 @@ def _seed_enabled_from_config() -> None:
 
 def mcp_servers_list() -> list[dict[str, Any]]:
     rows = _conn_get().execute(
-        "SELECT id, name, url, headers_json, enabled, timeout_sec, biz_type, tool_prefix, last_ok, last_error, last_seen, "
-        "created_at, updated_at FROM mcp_servers ORDER BY id"
+        "SELECT id, name, url, headers_json, script, enabled, timeout_sec, tool_prefix, "
+        "last_ok, last_error, last_seen, created_at, updated_at FROM mcp_servers ORDER BY id"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -2003,19 +2011,19 @@ def mcp_server_get(sid: int) -> dict[str, Any] | None:
 
 
 def mcp_server_add(name: str, url: str, headers_json: str = "{}", enabled: int = 1,
-                   timeout_sec: int = 30, biz_type: str = "generic", tool_prefix: str = "") -> dict[str, Any]:
+                   timeout_sec: int = 30, tool_prefix: str = "", script: str = "") -> dict[str, Any]:
     now = int(time.time())
     with _lock:
         cur = _conn_get().execute(
-            "INSERT INTO mcp_servers(name, url, headers_json, enabled, timeout_sec, biz_type, tool_prefix, created_at, updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?)", (name.strip(), url.strip(), headers_json or "{}", enabled, timeout_sec,
-                                       biz_type or "generic", (tool_prefix or "").strip(), now, now))
+            "INSERT INTO mcp_servers(name, url, headers_json, script, enabled, timeout_sec, tool_prefix, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)", (name.strip(), url.strip(), headers_json or "{}", script or "", enabled,
+                                         timeout_sec, (tool_prefix or "").strip(), now, now))
         _conn_get().commit()
     return mcp_server_get(cur.lastrowid)
 
 
 def mcp_server_update(sid: int, fields: dict[str, Any]) -> dict[str, Any] | None:
-    allowed = ("name", "url", "headers_json", "enabled", "timeout_sec", "biz_type", "tool_prefix")
+    allowed = ("name", "url", "headers_json", "script", "enabled", "timeout_sec", "tool_prefix")
     patch = {k: v for k, v in fields.items() if k in allowed}
     if not patch:
         return mcp_server_get(sid)

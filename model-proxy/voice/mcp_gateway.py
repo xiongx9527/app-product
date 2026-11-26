@@ -8,9 +8,11 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager, AsyncExitStack
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -87,10 +89,7 @@ _gateway_server: Any = None       # SSE transport 的 FastMCP 实例
 _stream_server: Any = None        # Streamable-HTTP transport 的 FastMCP 实例（独立实例，避免共享 lifespan 重复进入）
 _upstream_tools: dict[str, dict[str, Any]] = {}   # qualified_name -> {server_id, name, description}
 
-# 鉴权由调用方负责：业务 token / API-Key 放进请求 header，中转层原样透传给上游，
-# 不在中转层换 token、不按业务类型做特殊处理。
-
-
+# 鉴权由管理员配置的发现脚本负责（mcp_servers.script），中转层不按业务类型换 token。
 
 class _ToolACL(Middleware):
     """按 API-Key 过滤工具：tools/list 只列可见工具；tools/call 未授权则拒绝。"""
@@ -135,33 +134,65 @@ def _parse_headers(server: dict[str, Any]) -> dict[str, str]:
     return {str(k): str(v) for k, v in (d or {}).items() if str(v)}
 
 
-# 不透传给上游的头：hop-by-hop（RFC 7230）+ 19529 自身鉴权头。
-# 其余头由调用方原样传入、原样转发，中转层不做任何业务加工（换 token / 拼前缀等）。
-_NON_FORWARD_HEADERS = {
-    "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailer", "transfer-encoding", "upgrade",
-    "content-length", "accept-encoding",
-    "authorization",  # 19529 自己的 API-Key 鉴权头，不是上游业务头
-}
+async def _run_discovery_script(server: dict[str, Any], headers: dict[str, str], url: str) -> tuple[dict[str, str], str]:
+    """发现工具阶段执行管理员配置的动态脚本，动态获取 token 注入 header/query。
 
+    脚本签名：async def auth(url, headers, context) -> {'headers': dict, 'query': dict}
+      - url: 网关配置的上游地址（只读，脚本基于它推导 token 接口地址）
+      - headers: 当前请求头（可改）
+      - context: {'server_id', 'name'}
+      - 返回 query: 要追加到 URL 的查询参数（如 ?token=xxx）
 
-def _request_headers() -> dict[str, str]:
-    """当前 MCP 请求的 header，原样透传给上游。取不到上下文时返回空 dict。"""
-    if get_http_request is None:
-        return {}
+    安全边界：
+      - 脚本【不能改 host/path】——本函数只把返回的 query 合并到原 url，不接脚本返回的 url；
+        网关地址锁死为 server 配置的 url（"必须是网关的地址"）。
+      - 任何异常/超时/非法返回都兜底为原 headers + 原 url，记 last_error，不中断其它 server 发现。
+    """
+    script = (server.get("script") or "").strip()
+    if not script:
+        return headers, url
     try:
-        raw = getattr(get_http_request(), "headers", {}) or {}
-        return {str(k): str(v) for k, v in raw.items()
-                if str(k).lower() not in _NON_FORWARD_HEADERS and str(v)}
-    except Exception:
-        return {}
+        ns: dict[str, Any] = {}
+        exec(script, ns)  # 管理员在面板配置的脚本，信任级别等同工具注册时的 exec
+        fn = ns.get("auth")
+        if not callable(fn):
+            raise ValueError("脚本未定义 auth(url, headers, context) 函数")
+        context = {
+            "server_id": server.get("id"),
+            "name": server.get("name") or "",
+        }
+        result = await asyncio.wait_for(fn(url, dict(headers), context), timeout=15)
+        if not isinstance(result, dict):
+            raise ValueError("auth() 返回值不是 dict")
+
+        out_headers = dict(headers)
+        new_headers = result.get("headers")
+        if isinstance(new_headers, dict):
+            out_headers.update({str(k): str(v) for k, v in new_headers.items() if v is not None})
+
+        # 只合并 query，URL 的 host/path 锁死为网关配置地址
+        out_url = url
+        query = result.get("query")
+        if isinstance(query, dict) and query:
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            parsed = urlparse(url)
+            qs = parse_qs(parsed.query)
+            for k, v in query.items():
+                qs[str(k)] = [str(v)] if not isinstance(v, (list, tuple)) else [str(x) for x in v]
+            out_url = urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
+
+        voice_db.mcp_server_health(server["id"], True)  # 脚本成功不覆盖健康状态
+        return out_headers, out_url
+    except Exception as exc:
+        voice_db.mcp_server_health(server["id"], False, f"发现脚本执行失败: {exc}"[:500])
+        return headers, url  # 兜底：原 headers + 原 url
 
 
-async def _make_client(server: dict[str, Any]):
-    """按上游配置构造 FastMCP Client：透传调用方 header + 全远程传输（SSE / Streamable HTTP）。
+async def _make_client(server: dict[str, Any], for_discovery: bool = False):
+    """按上游配置构造 FastMCP Client：透传 header + 全远程传输（SSE / Streamable HTTP）。
 
-    中转层不做业务鉴权加工（不换 token、不拼前缀）：调用方把业务鉴权头（如
-    X-SQLBOT-TOKEN: Bearer <token>）放进请求，这里原样转发给上游。
+    for_discovery=True（仅 refresh 发现工具时）：执行管理员脚本动态获取 token；
+    其余（tools/call）：不执行脚本，token 由调用方（App 账号本）注入工具参数。
     """
     headers = _parse_headers(server)
     timeout = int(server.get("timeout_sec") or 30)
@@ -170,8 +201,9 @@ async def _make_client(server: dict[str, Any]):
     url = server["url"]
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("MCP 上游仅支持远程 http(s) 地址（SSE / Streamable HTTP），不支持本地 stdio")
-    # 透传调用方请求带来的 header（业务鉴权头在此），覆盖配置里同名的静态头。
-    headers.update(_request_headers())
+    # 仅发现阶段执行管理员脚本动态获取 token；调用阶段 token 由 App 账号本注入工具参数。
+    if for_discovery and (server.get("script") or "").strip():
+        headers, url = await _run_discovery_script(server, headers, url)
     if transport == "sse" or url.rstrip("/").endswith("/sse"):
         TK = SSETransport
     elif transport == "streamable-http":
@@ -262,7 +294,8 @@ async def refresh() -> dict[str, Any]:
     failed: set[int] = set()
     for s in servers:
         try:
-            async with await _make_client(s) as client:
+            # 发现工具时才执行管理员脚本动态获取 token；tools/call 不执行
+            async with await _make_client(s, for_discovery=True) as client:
                 tools = await client.list_tools()
             for t in tools:
                 prefix = (s.get('tool_prefix') or '').strip() or s['name']
