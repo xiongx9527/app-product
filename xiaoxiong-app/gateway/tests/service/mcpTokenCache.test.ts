@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { parseToken, setMcpToken, getMcpToken, clearMcpTokens } from '../../src/service/mcpTokenCache'
+import { parseToken, setMcpToken, getMcpToken, clearMcpTokenState } from '../../src/service/mcpTokenCache'
 
 describe('MCP token 缓存：按 type（工具前缀）隔离，不写死业务', () => {
-  beforeEach(() => clearMcpTokens())
+  beforeEach(() => clearMcpTokenState())
 
   it('parseToken 兼容 {"token"} / {"access_token"} / 裸 token', () => {
     expect(parseToken('{"token":"abc-12345678901234"}')).toBe('abc-12345678901234')

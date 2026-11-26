@@ -7,7 +7,10 @@ import { messages } from '../i18n'
 import { bargeDiag } from '../diagLog'
 import { getCredentialByType, getGlobalApiKey } from './credentialStore'
 import { toolPrefix, injectCredential, injectGlobalApiKey } from './toolCredential'
-import { parseToken, setMcpToken, getMcpToken } from './mcpTokenCache'
+import {
+  parseToken, setMcpToken, getMcpTokenStyled, markTokenSuccess,
+  isTokenExpired, isTokenFormatError, bumpFailStreak,
+} from './mcpTokenCache'
 import { enhanceToolDescriptions } from './toolDescEnhancer'
 import type { DetailContext, Lang, McpServerConfig } from '../protocol'
 import type { LlmConfig } from '../config'
@@ -136,7 +139,7 @@ export async function createAgentService(
         else if (!cred) bargeDiag(`TOOL-CRED none prefix=${prefix}`)
         // 3) mcp_* 兼容工具带 token 参数：注入 access_token 工具换到并缓存的 token。
         //    token 由账号本账号动态换取（每个账号自己的权限），绕开中转层静态 token 问题。
-        const cachedToken = getMcpToken(prefix)
+        const cachedToken = getMcpTokenStyled(prefix)
         if (cachedToken && allowedKeys?.includes('token')) {
           let input: Record<string, unknown> = {}
           try { input = JSON.parse(toolCall.input || '{}') } catch { input = {} }
@@ -152,34 +155,93 @@ export async function createAgentService(
     }
     // 【常驻诊断】记录工具返回结果（state + 文本前 200 字）：真机只能经 /api/diag/log 观测，
     // 「工具触发了但回答出了问题」时靠它区分是工具失败还是 LLM 没接住结果。
-    const gen = origCallTool(toolCall)
-    let last: any
     // 关键：AgentScope 的 Agent._acting 用「生成器返回值」当工具最终结果（done 时读 value.content），
     // 只在循环里 yield 而不 return 会让它读到 undefined.content 抛 TypeError，
     // 表现为「工具明明执行成功、模型却再没有任何输出」（真机「查询周边」无回答的真凶）。
-    // 因此这里手动迭代、透传底层 callToolFunction 的返回值（流式工具时它才是合并后的完整结果）。
-    while (true) {
-      const { value, done } = await gen.next()
-      if (done) {
-        last = value ?? last
-        break
+    // 因此手动迭代、透传底层返回值；并把中间 yield 全部收齐后再判断是否需要 token 重试——
+    // 避免把鉴权失败的错误结果先 yield 给 LLM，再重试造成两次输出。
+    const runTool = async (tc: any): Promise<{ last: any; chunks: any[] }> => {
+      const chunks: any[] = []
+      const g = origCallTool(tc)
+      let final: any
+      while (true) {
+        const { value, done } = await g.next()
+        if (done) { final = value ?? final; break }
+        chunks.push(value)
       }
-      last = value
-      yield value
+      return { last: final, chunks }
     }
+    const resultText = (last: any): string => {
+      try {
+        const content = last?.content
+        if (Array.isArray(content)) return content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join(' ').slice(0, 200)
+      } catch { /* ignore */ }
+      return ''
+    }
+    let { last, chunks } = await runTool(toolCall)
+    let text = resultText(last)
+
+    // 【token 重试策略】仅 mcp_* 工具（prefix 存在、有 token 参数）且带账号本凭据：
+    // - 401/token 失效 → 重新调 access_token 工具换 token（账号本账号密码），更新缓存后重试
+    // - prefix/格式错误 → Bearer/裸 格式轮换；成功即标记写回缓存
+    // - 兜底：bumpFailStreak 超过上限就跳过重试（避免死循环）
+    const prefixForRetry = toolPrefix(name)
+    const hasTokenArg = allowedKeys?.includes('token')
+    const cred = prefixForRetry ? await getCredentialByType(prefixForRetry) : null
+    if (last && prefixForRetry && hasTokenArg && cred
+        && (isTokenExpired(text) || isTokenFormatError(text))
+        && bumpFailStreak(prefixForRetry)) {
+      const accessToolName = `${prefixForRetry}__access_token`
+      let refreshed = false
+      // 1) 先尝试重新调 access_token 工具换 token（用账号本凭据）
+      try {
+        const freshInput = injectCredential('{}', cred, undefined).input
+        const fresh = await runTool({ name: accessToolName, input: freshInput })
+        const freshToken = parseToken(resultText(fresh.last))
+        if (freshToken) {
+          setMcpToken(prefixForRetry, freshToken)
+          refreshed = true
+          bargeDiag(`TOOL-TOKEN refreshed prefix=${prefixForRetry}`)
+        }
+      } catch (e) {
+        bargeDiag(`TOOL-TOKEN refresh error prefix=${prefixForRetry} err=${(e as Error).message}`)
+      }
+      // 2) 用新 token 重试原工具：先 Bearer，再裸（默认裸；格式错误才轮换）
+      if (refreshed) {
+        const fmtErrors = isTokenFormatError(text)
+        const styles: Array<'bearer' | 'raw'> = fmtErrors ? ['bearer', 'raw'] : ['raw', 'bearer']
+        for (const style of styles) {
+          const tokenValue = getMcpTokenStyled(prefixForRetry)
+          const styled = style === 'bearer'
+            ? (tokenValue.toLowerCase().startsWith('bearer ') ? tokenValue : `Bearer ${tokenValue}`)
+            : tokenValue.replace(/^Bearer\s+/i, '')
+          let input: Record<string, unknown> = {}
+          try { input = JSON.parse(toolCall.input || '{}') } catch { input = {} }
+          input.token = styled
+          const retried = await runTool({ ...toolCall, input: JSON.stringify(input) })
+          const retryText = resultText(retried.last)
+          if (!isTokenExpired(retryText) && !isTokenFormatError(retryText)) {
+            markTokenSuccess(prefixForRetry, styled)
+            last = retried.last
+            chunks = retried.chunks
+            text = retryText
+            bargeDiag(`TOOL-TOKEN retry ok prefix=${prefixForRetry} style=${style}`)
+            break
+          }
+        }
+      }
+    }
+
+    // 中间 yield 全部在重试完成后一次性发出（成功用重试结果，失败用原始结果）
+    for (const c of chunks) yield c
     if (last) {
       const state = String(last.state ?? '?')
-      let text = ''
-      try {
-        const content = last.content
-        if (Array.isArray(content)) text = content.map((c: any) => (typeof c?.text === 'string' ? c.text : '')).join(' ').slice(0, 200)
-      } catch { /* ignore */ }
       bargeDiag(`TOOL-RESULT name=${name} state=${state} text="${text.replace(/\n/g, ' ')}"`)
-      // access_token 工具成功 → 提取 token 按 type 缓存，供后续 mcp_* 工具注入
+      // access_token 工具成功 → 提取 token 按 type 缓存（裸 token），清零失败计数
       if (name.includes('__access_token') && state === 'success') {
         const token = parseToken(text)
         if (token) {
-          setMcpToken(toolPrefix(name), token)
+          markTokenSuccess(toolPrefix(name), token)
           bargeDiag(`TOOL-TOKEN cached prefix=${toolPrefix(name)}`)
         }
       }
