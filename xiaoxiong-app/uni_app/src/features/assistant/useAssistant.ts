@@ -626,6 +626,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   // 网关能力健康度（LLM / ASR / TTS / 外网）：连上后定时轮询，负责「运行中 ok→down」的瞬时变化；
   // 「建连那一刻就已不可用」的兜底下发由网关 client.cue 事件负责（见 handleServerEvent）。
   const { health, refreshHealth, startPolling: startHealthPolling, stopTimer: stopHealthPolling } = useHealth(wsConnected)
+  // 「定时检查」开关：运行中从设置页改了开关，即时启停助手页轮询，不必等下次进对话态。
+  // 仅对话态需要轮询（wake 态 KWS 常驻、不调 ASR，不轮询）；关掉时顺带取消还没播的提示音。
+  watch(
+    () => appConfig.general.autoCheck,
+    (on) => {
+      if (on === true && mode === 'dialog') startHealthPolling()
+      else if (on !== true) {
+        stopHealthPolling()
+        clearInitialCueTimers()
+      }
+    },
+  )
   // 设备权限只读检测（不弹授权框）：麦克风未授权要出声提示，定位只显示状态。
   const { permissions, refreshPermissions } = usePermissions(wsConnected)
   // 能力不可用播报以客户端健康报告为唯一来源：连上后 useHealth 主动拉 /api/health，时序确定、每次连接都会跑。
@@ -661,12 +673,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         items.some((i) => i.key === k && i.status === 'down'),
       )
       clearInitialCueTimers()
-      keys.forEach((k, idx) => {
-        initialCueTimers.set(k, setTimeout(() => {
-          initialCueTimers.delete(k)
-          void playPromptCue(HEALTH_CUE[k])
-        }, idx * 4600))
-      })
+      // 「定时检查」开关关（缺省）→ 不播能力不可用提示；界面状态照常更新。
+      if (appConfig.general.autoCheck === true) {
+        keys.forEach((k, idx) => {
+          initialCueTimers.set(k, setTimeout(() => {
+            initialCueTimers.delete(k)
+            void playPromptCue(HEALTH_CUE[k])
+          }, idx * 4600))
+        })
+      }
       for (const item of items) prevHealthStatus[item.key] = item.status
       return
     }
@@ -680,6 +695,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     for (const item of items) prevHealthStatus[item.key] = item.status
     const downKeys = HEALTH_PRIORITY.filter((k) => changed.includes(k))
     if (!downKeys.length) return
+    // 定时检查开关关 → 只更新界面状态、不播提示音（用户「关了就不提示」）
+    if (appConfig.general.autoCheck !== true) return
     playPromptCueSequence(downKeys.map((k) => HEALTH_CUE[k]))
   })
 
@@ -1171,11 +1188,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 能力不可用提示音统一由本地 health 报告驱动（watch health 里的 playPromptCueSequence）。
         // 网关这条 client.cue 在真机上时有时无，不能作为唯一触发源；此处刻意不播，避免与 health 双份叠音。
         // 例外：asr-error 是「运行中识别失败/超时」的瞬时提示（health 不覆盖），按网关节流触发播放。
+        // 【定时检查开关】这些中途失败提示音受 appConfig.general.autoCheck 控制：
+        // 关（缺省）→ 不播；开 → 播。注意设置页「一键检测」是手动触发、走独立路径，不受此开关影响。
+        const cuePromptAllowed = appConfig.general.autoCheck === true
         if (event.cue === 'asr-error') {
-          void playPromptCue('asrError')
+          if (cuePromptAllowed) void playPromptCue('asrError')
         } else if (event.cue === 'llm-error') {
           // LLM 运行中失败：播本地 mp3（不靠 TTS，TTS 可能也坏了）
-          void playPromptCue('llmError')
+          if (cuePromptAllowed) void playPromptCue('llmError')
         } else if (event.cue === 'tts-error') {
           // TTS 播报失败：播本地 mp3；并显式复位播报态，避免 tts.start 没配对 tts.end
           // 导致 isSpeaking 卡 true、把队列下一句的 tts.start 当重复吞掉（队列卡死）。
@@ -1190,7 +1210,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
             setPhaseDone('tts-error')
             markAnswerDone()
           }
-          void playPromptCue('ttsError')
+          // 上面的播报态复位与开关无关、必须保留（否则队列卡死）；只有提示音受开关控制
+          if (cuePromptAllowed) void playPromptCue('ttsError')
         }
         break
     }
@@ -1390,8 +1411,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     setAppScreenOn(true)
     // 进入对话态走统一门控：刚唤醒 phase 还是 listening/idle → 不静音，用户说的话送 ASR。
     syncAsrGate()
-    // 进入对话态才启动 30s 健康轮询：对话中要用 ASR/LLM/TTS，需持续掌握可用性。
-    startHealthPolling()
+    // 进入对话态才启动 30s 健康轮询：受「定时检查」开关控制——
+    // 关（缺省）→ 不轮询、不提示（用户要求「关了就不提示、不检查」）；开 → 轮询并提示中途 ok→down。
+    // 注意：首次 refreshOnce() 不受此开关影响——canWake() 依赖初始 health 判断能否唤醒，必须拉一次。
+    if (appConfig.general.autoCheck === true) startHealthPolling()
     if (transport.isConnected()) {
       transport.startSession('dialog')
       return
