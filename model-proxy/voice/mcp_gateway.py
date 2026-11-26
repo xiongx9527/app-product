@@ -91,6 +91,13 @@ _upstream_tools: dict[str, dict[str, Any]] = {}   # qualified_name -> {server_id
 # 发现脚本拿到的 token 缓存：server_id -> (headers, url)。tools/call 新建连接时复用，
 # 因上游 java 在连接层就校验 token；token 失效(8天)由 _call_upstream 401 重拿兜底。
 _discovery_cache: dict[int, tuple[dict[str, str], str]] = {}
+# 该 server 上次验证成功的 token 格式是否带 Bearer 前缀：refresh 重拿 token 后沿用，
+# 避免每次都从裸 token 重新开始轮换。True=缓存里存 Bearer，False=裸 token。
+_discovery_bearer: dict[int, bool] = {}
+# 鉴权失败连续计数（兜底）：同一 server 连续失败超过阈值就跳过 refresh/格式轮换，
+# 避免「格式都试遍仍失败」时每次调用都重复 3 次请求 + 重新换 token（浪费且可能触发上游限流）。
+_auth_fail_streak: dict[int, int] = {}
+_AUTH_FAIL_STREAK_MAX = 2
 
 # 鉴权由管理员配置的发现脚本负责（mcp_servers.script），中转层不按业务类型换 token。
 
@@ -330,8 +337,46 @@ async def _call_http_tool(tool: dict[str, Any], arguments: dict[str, Any]) -> st
         return f"[mcp-gateway] http tool failed: {exc}"
 
 
+# 两类鉴权失败分开处理（用户原则）：
+#  ① token 失效（401/unauthorized）：从缓存取出的 token 报 401 一定是失效 → 重拿 token，不轮换格式
+#  ② token 格式问题（prefix/无效 token）：尝试 Bearer 前缀与裸 token 两种格式，成功即缓存
+_TOKEN_EXPIRED_MARKERS = ("401", "unauthorized")
+_TOKEN_FORMAT_MARKERS = ("未按照指定前缀", "未能读取到有效 token", "无效或过期的 token",
+                         "无效或过期", "token invalid", "token expired")
+
+
+def _is_token_expired(text: str) -> bool:
+    low = text.lower()
+    return any(m.lower() in low for m in _TOKEN_EXPIRED_MARKERS)
+
+
+def _is_token_format_error(text: str) -> bool:
+    low = text.lower()
+    return any(m.lower() in low for m in _TOKEN_FORMAT_MARKERS)
+
+
+def _is_auth_failure(text: str) -> bool:
+    return _is_token_expired(text) or _is_token_format_error(text)
+
+
+def _result_text(result: Any) -> str:
+    """CallToolResult -> 便于阅读的字符串（保留结构化 content）。"""
+    texts = []
+    for block in getattr(result, "content", []) or []:
+        t = getattr(block, "text", None)
+        texts.append(t if t is not None else str(block))
+    return "\n".join(texts) if texts else str(result)
+
+
 async def _call_upstream(qualified_name: str, arguments: dict[str, Any]) -> Any:
-    """按 qualified_name 找上游并转发 tools/call；失败返回错误字符串（MCP tool 结果）。"""
+    """按 qualified_name 找上游并转发 tools/call；失败返回错误字符串（MCP tool 结果）。
+
+    token 鉴权重试策略（工具结果层，不改 java）：
+      1) 用发现阶段缓存的 token（裸 token）调用；
+      2) 结果含鉴权失败字样 → 重跑发现脚本拿新 token，再试；
+      3) 仍失败且工具有 token 参数 → 依次试 Bearer 前缀、裸 token；
+      4) 全失败则返回最后一次结果文本。
+    """
     meta = _upstream_tools.get(qualified_name)
     if not meta:
         return f"[mcp-gateway] unknown tool: {qualified_name}"
@@ -344,33 +389,111 @@ async def _call_upstream(qualified_name: str, arguments: dict[str, Any]) -> Any:
     server = voice_db.mcp_server_get(meta["server_id"])
     if not server or not server.get("enabled"):
         return f"[mcp-gateway] upstream unavailable: {meta['server_id']}"
-    async def do_call() -> Any:
-        async with await _make_client(server) as client:
-            return await client.call_tool(meta["name"], arguments or {}, raise_on_error=False)
+    has_script = bool((server.get("script") or "").strip())
+
+    # 工具 schema 是否声明 token 参数（mcp_* 兼容工具有，对齐版没有）
+    schema = meta.get("input_schema") or {}
+    props = schema.get("properties") or {}
+    has_token_arg = "token" in props
+
+    async def do_call(args: dict[str, Any]) -> Any:
+        try:
+            async with await _make_client(server) as client:
+                return await client.call_tool(meta["name"], args or {}, raise_on_error=False)
+        except Exception as exc:
+            # 连接层 401（token 失效）转成文本，交主逻辑按「401=失效重拿」处理；
+            # 其它异常照常抛出（由外层 except 记健康并返回错误）
+            if "401" in str(exc):
+                return "401 unauthorized"
+            raise
+
+    async def refresh_token() -> None:
+        """清缓存、重跑发现脚本拿新 token；沿用上次验证成功的格式（裸/Bearer）。"""
+        _discovery_cache.pop(server["id"], None)
+        base_headers = _parse_headers(server)
+        base_headers.pop("transport", None)
+        fresh_headers, fresh_url = await _run_discovery_script(server, base_headers, server["url"])
+        # 上次成功用的是 Bearer → 给新 token 也加 Bearer 再存缓存，直接复用、不再轮换
+        if _discovery_bearer.get(server["id"]):
+            for k in list(fresh_headers):
+                if k.lower() in ("x-sqlbot-token", "authorization"):
+                    v = fresh_headers[k]
+                    fresh_headers[k] = v if v.lower().startswith("bearer ") else "Bearer " + v
+        _discovery_cache[server["id"]] = (dict(fresh_headers), fresh_url)
+
+    def cached_raw_token() -> str:
+        """取缓存里的裸 token（去掉可能的 Bearer 前缀），用于重新获取后的格式轮换。"""
+        cached = _discovery_cache.get(server["id"])
+        if not cached:
+            return ""
+        for k, v in cached[0].items():
+            if k.lower() in ("x-sqlbot-token", "authorization"):
+                return v.split()[-1] if " " in v else v
+        return ""
+
+    async def call_with_token(token_value: str) -> str:
+        """用指定格式的 token 覆盖连接 header（及工具 token 参数）调用一次。
+        只有成功的格式才写回缓存——失败不污染缓存，避免轮换末尾的失败格式被留下。"""
+        cached = _discovery_cache.get(server["id"])
+        cached_headers = dict(cached[0]) if cached else {}
+        trial_headers = dict(cached_headers)
+        for k in list(trial_headers):
+            if k.lower() in ("x-sqlbot-token", "authorization"):
+                trial_headers[k] = token_value
+        args = dict(arguments or {})
+        if has_token_arg:
+            args["token"] = token_value
+        try:
+            # 临时用 trial_headers 调用：直接构造 client，不改全局缓存
+            from fastmcp import Client
+            from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+            url = cached[1] if cached else server["url"]
+            transport = trial_headers.pop("transport", None)
+            TK = SSETransport if (transport == "sse" or url.rstrip("/").endswith("/sse")) else StreamableHttpTransport
+            async with Client(TK(url, headers=trial_headers), timeout=int(server.get("timeout_sec") or 30)) as client:
+                result = await client.call_tool(meta["name"], args or {}, raise_on_error=False)
+            text = _result_text(result)
+            if not _is_auth_failure(text):
+                # 成功：写回缓存（含 Bearer 格式）与格式标记，后续直接复用
+                if cached:
+                    final_headers = dict(cached_headers)
+                    for k in list(final_headers):
+                        if k.lower() in ("x-sqlbot-token", "authorization"):
+                            final_headers[k] = token_value
+                    _discovery_cache[server["id"]] = (final_headers, cached[1])
+                _discovery_bearer[server["id"]] = token_value.lower().startswith("bearer ")
+            return text
+        except Exception:
+            # 连接层 401（如 Bearer 前缀不被接受）视为鉴权失败，不改缓存
+            return "401 unauthorized"
 
     try:
-        try:
-            result = await do_call()
-        except Exception as exc:
-            # 上游 token 失效（8天过期）会在连接层报 401：清缓存、重跑脚本拿新 token 再试一次。
-            if "401" not in str(exc) or not (server.get("script") or "").strip():
-                raise
-            _discovery_cache.pop(server["id"], None)
-            # 强制重新执行脚本获取新 token，并刷新缓存
-            base_headers = _parse_headers(server)
-            base_headers.pop("transport", None)
-            fresh_headers, fresh_url = await _run_discovery_script(server, base_headers, server["url"])
-            _discovery_cache[server["id"]] = (dict(fresh_headers), fresh_url)
-            result = await do_call()
-        # CallToolResult -> 便于阅读的字符串（保留结构化 content）
-        texts = []
-        for block in getattr(result, "content", []) or []:
-            t = getattr(block, "text", None)
-            if t is not None:
-                texts.append(t)
-            else:
-                texts.append(str(block))
-        return "\n".join(texts) if texts else str(result)
+        # ① 缓存里取出的 token 是验证过的格式：直接用，不轮换
+        result = await do_call(arguments)
+        text = _result_text(result)
+
+        streak = _auth_fail_streak.get(server["id"], 0)
+        # ② 【401 = token 失效】缓存取出的 token 报 401 一定是失效 → 重拿 token 后重试 1 次，
+        #    不轮换格式（格式此前已验证过）；兜底：连续失效不超过上限，避免无限重拿。
+        if _is_token_expired(text) and has_script and streak < _AUTH_FAIL_STREAK_MAX:
+            await refresh_token()
+            result = await do_call(arguments)
+            text = _result_text(result)
+            _auth_fail_streak[server["id"]] = streak + 1
+        # ③ 【格式错误】先 Bearer 后裸轮换，成功即写回缓存；兜底：只轮换 2 种格式、且有 streak 上限
+        elif _is_token_format_error(text) and has_script and streak < _AUTH_FAIL_STREAK_MAX:
+            raw = cached_raw_token()
+            if raw:
+                for token_value in ("Bearer " + raw, raw):
+                    text = await call_with_token(token_value)
+                    if not _is_token_format_error(text):
+                        break  # 成功的格式已在 call_with_token 写回缓存
+            _auth_fail_streak[server["id"]] = streak + 1
+
+        if not _is_auth_failure(text):
+            _auth_fail_streak[server["id"]] = 0  # 成功即清零
+
+        return text
     except Exception as exc:
         voice_db.mcp_server_health(meta["server_id"], False, str(exc)[:500])
         return f"[mcp-gateway] upstream call failed: {exc}"
