@@ -281,6 +281,7 @@ ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}
 
 # 功能域 → 路径前缀（按请求路径推导，用于角色功能矩阵 + 单账号授权）。顺序：具体优先。
 GRANT_FEATURE_PATHS: list[tuple[str, tuple[str, ...]]] = [
+    ("skill", ("/admin/api/skills",)),
     ("mcp", ("/admin/api/mcp/",)),
     ("correction", ("/admin/api/corrections",)),
     # service（action/sync）前端已无入口，不再作为可配置功能域；接口仍按 require_admin 保护。
@@ -973,7 +974,7 @@ def register_admin_routes(
     _STT_UPSTREAM_TEST = stt_upstream_test
     _TTS_UPSTREAM_TEST = tts_upstream_test
 
-    from admin import routes_config, routes_mcp, routes_ops, routes_users
+    from admin import routes_config, routes_mcp, routes_ops, routes_skill, routes_users
 
     @app.middleware("http")
     async def admin_security_headers(request: Request, call_next):
@@ -1097,3 +1098,4 @@ def register_admin_routes(
         tts_upstream_test=tts_upstream_test,
     ))
     app.include_router(routes_mcp.build_router())
+    app.include_router(routes_skill.build_router())

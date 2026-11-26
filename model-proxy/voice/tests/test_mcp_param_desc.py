@@ -77,7 +77,7 @@ def main() -> int:
 
     # 8) _build_params 应用覆盖
     schema = {"properties": {"question": {"type": "string"}}, "required": ["question"]}
-    params = rm._build_params(schema, "generic", "chat_start")
+    params = rm._build_params(schema, "chat_start")
     check("_build_params 应用覆盖",
           params[0]["description"] == "持久化说明", params[0]["description"])
     check("_build_params 必填标记", params[0]["required"] is True)

@@ -78,12 +78,7 @@ def _param_desc(name: str, fallback: str, tool: str = "", overrides: dict[str, s
 
 
 def _build_params(schema: dict[str, Any], tool: str = "") -> list[dict[str, Any]]:
-    """从 inputSchema 构造展示用参数列表。
-
-    上游 schema 通常不声明传输层鉴权头（如 X-SQLBOT-TOKEN），但它由网关发现脚本
-    动态获取并注入请求头、随每次调用透传；面板补一行说明，避免用户/LLM 误以为
-    工具无需鉴权。schema 里已声明 token/authorization 参数的不再重复补。
-    """
+    """从 inputSchema 构造展示用参数列表（鉴权由发现脚本注入，schema 里有什么就展示什么）。"""
     schema = schema or {}
     props = schema.get("properties") or {}
     required = set(schema.get("required") or [])

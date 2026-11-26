@@ -213,8 +213,57 @@ async def _make_client(server: dict[str, Any], for_discovery: bool = False):
     return Client(TK(url, headers=headers), timeout=timeout)
 
 
+def _extract_sse_text(payload: str) -> str:
+    """从单条 SSE data 载荷里提取可读文本。
+
+    优先取常见正文/回答字段（OpenAI delta.content、Dify answer、通用 text/content），
+    都不是 JSON 时原样返回，避免丢信息。
+    """
+    p = payload.strip()
+    if not p or p == "[DONE]":
+        return ""
+    try:
+        obj = json.loads(p)
+    except (ValueError, TypeError):
+        return p
+    if not isinstance(obj, dict):
+        return str(obj)
+    # OpenAI chat.completion.chunk: choices[0].delta.content（也兼容顶层 delta）
+    delta = obj.get("delta")
+    if isinstance(delta, dict) and delta.get("content"):
+        return str(delta["content"])
+    choices = obj.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        d = choices[0].get("delta")
+        if isinstance(d, dict) and d.get("content"):
+            return str(d["content"])
+        msg = choices[0].get("message")
+        if isinstance(msg, dict) and msg.get("content"):
+            return str(msg["content"])
+    for key in ("answer", "text", "content", "message", "output"):
+        v = obj.get(key)
+        if isinstance(v, str) and v:
+            return v
+    # Dify workflow: data.outputs.answer
+    data = obj.get("data")
+    if isinstance(data, dict):
+        for key in ("answer", "text", "content", "output"):
+            v = data.get(key)
+            if isinstance(v, str) and v:
+                return v
+        outputs = data.get("outputs")
+        if isinstance(outputs, dict) and outputs.get("answer"):
+            return str(outputs["answer"])
+    # 没有已知字段：不丢信息，回退到紧凑 JSON（去掉 [DONE] 等噪声已处理）
+    return json.dumps(obj, ensure_ascii=False)
+
+
 async def _call_http_tool(tool: dict[str, Any], arguments: dict[str, Any]) -> str:
-    """其他工具：按配置直接发 HTTP 请求（参数按 in 分发 query/header/body）。"""
+    """其他工具：按配置直接发 HTTP 请求（参数按 in 分发 query/header/body）。
+
+    上游返回 text/event-stream（SSE）时，自动解析 data: 事件并提取正文，
+    汇总成完整文本返回（MCP tools/call 一次性结果，不做流式透传）。
+    """
     import httpx
     method = (tool.get("method") or "POST").strip().upper()
     url = (tool.get("url") or "").strip()
@@ -245,9 +294,27 @@ async def _call_http_tool(tool: dict[str, Any], arguments: dict[str, Any]) -> st
         # 保留 URL 自带的 query（如高德 key），再合并工具参数；httpx 的 params= 会覆盖原有 query。
         final_url = httpx.URL(url).copy_merge_params(query) if query else httpx.URL(url)
         async with httpx.AsyncClient(timeout=timeout) as cli:
-            r = await cli.request(method, final_url,
-                                  headers=hdrs, json=body if body else None)
-        return f"HTTP {r.status_code}\n{r.text[:4000]}"
+            async with cli.stream(method, final_url, headers=hdrs,
+                                  json=body if body else None) as r:
+                ctype = (r.headers.get("content-type") or "").lower()
+                if "text/event-stream" in ctype or "application/x-ndjson" in ctype:
+                    # SSE / NDJSON：逐行解析 data: 事件，提取正文汇总。
+                    parts: list[str] = []
+                    async for line in r.aiter_lines():
+                        line = line.strip()
+                        if line.startswith("data:"):
+                            text = _extract_sse_text(line[5:])
+                        elif "application/x-ndjson" in ctype and line:
+                            text = _extract_sse_text(line)
+                        else:
+                            continue
+                        if text:
+                            parts.append(text)
+                    result = "".join(parts) if parts else "(SSE 响应无正文)"
+                    return f"HTTP {r.status_code} (SSE)\n{result[:4000]}"
+                # 普通响应：保持原行为。
+                raw = await r.aread()
+                return f"HTTP {r.status_code}\n{raw.decode('utf-8', 'replace')[:4000]}"
     except Exception as exc:
         return f"[mcp-gateway] http tool failed: {exc}"
 

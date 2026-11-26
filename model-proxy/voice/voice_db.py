@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -148,6 +148,8 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         ["col:mcp_servers:script:TEXT NOT NULL DEFAULT ''"]),
     24: ("删除 mcp_servers.biz_type 列：业务类型鉴权（askdata 换 token）已由发现脚本取代，"
         "代码层不再按业务类型分流", ["dropcol:mcp_servers:biz_type"]),
+    25: ("新增 skills 表：提示词知识型 Skill（name 唯一标识 + description 摘要 + markdown 正文 content + "
+        "enabled 启停），对外 GET /skills 清单 / GET /skills/{name} 正文渐进披露，所有 Key 共享", []),
 }
 
 def ensure_schema() -> None:
@@ -313,6 +315,17 @@ def ensure_schema() -> None:
             timeout_sec   INTEGER NOT NULL DEFAULT 30,
             created_at    INTEGER NOT NULL,
             updated_at    INTEGER NOT NULL
+        );
+        -- Skills（v25）：提示词知识型技能。name 唯一标识（英文短横线），description 一句话摘要
+        -- 供 agent 判断是否加载，content 为 markdown 正文。全部落库，重启即可用。
+        CREATE TABLE IF NOT EXISTS skills (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            name         TEXT NOT NULL UNIQUE,
+            description  TEXT NOT NULL DEFAULT '',
+            content      TEXT NOT NULL DEFAULT '',
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            created_at   INTEGER NOT NULL,
+            updated_at   INTEGER NOT NULL
         );
         -- 音色目录：每条带 provider / model 与中英描述，供 /voice/v1/audio/voices 查询。
         -- 用表维护（不再硬编码），首次初始化时播种内置(edge-tts) + 全部 dashscope 音色。
@@ -842,16 +855,18 @@ def admin_user_change_password(username: str, old_password: str, new_password: s
 
 # ── 单账号单独授权（v20）─────────────────────────────────────────────
 # service（服务控制/同步）前端已无入口，从可配置功能域移除。
-VALID_GRANT_FEATURES = ("overview", "logs", "test", "config", "accounts", "security", "mcp", "correction")
+VALID_GRANT_FEATURES = ("overview", "logs", "test", "config", "accounts", "security", "mcp", "correction", "skill")
 ROLE_ORDER = {"viewer": 0, "operator": 1, "admin": 2}  # 与 admin_panel.ROLE_ORDER 一致
 
 # 角色功能矩阵默认值：{role: {feature: enabled}}
 # 有 role_features 记录时用记录，否则用这里。admin 恒为全功能（不可被剥夺，避免锁死）。
 DEFAULT_ROLE_FEATURES: dict[str, dict[str, bool]] = {
     "viewer":   {"overview": True, "logs": True, "test": False, "config": False,
-                 "accounts": False, "security": False, "mcp": False, "correction": False},
+                 "accounts": False, "security": False, "mcp": False, "correction": False,
+                 "skill": False},
     "operator": {"overview": True, "logs": True, "test": True, "config": False,
-                 "accounts": False, "security": False, "mcp": False, "correction": False},
+                 "accounts": False, "security": False, "mcp": False, "correction": False,
+                 "skill": False},
     "admin":    {f: True for f in VALID_GRANT_FEATURES},
 }
 
@@ -2166,3 +2181,77 @@ def mcp_http_tool_delete(tid: int) -> bool:
         cur = c.execute("DELETE FROM mcp_http_tools WHERE id=?", (tid,))
         c.commit()
     return cur.rowcount > 0
+
+
+# ── Skills（v25）：提示词知识型技能 ──────────────────────────────────
+# 对外渐进披露：GET /skills 只回 name/description，GET /skills/{name} 回 markdown 正文。
+# 全部落库，重启即可用；所有 API Key 共享（不做按 Key 授权）。
+
+def skills_list(include_disabled: bool = True) -> list[dict[str, Any]]:
+    sql = "SELECT id, name, description, content, enabled, created_at, updated_at FROM skills"
+    if not include_disabled:
+        sql += " WHERE enabled=1"
+    sql += " ORDER BY id"
+    return [dict(r) for r in _conn_get().execute(sql).fetchall()]
+
+
+def skill_get(sid: int) -> dict[str, Any] | None:
+    r = _conn_get().execute("SELECT * FROM skills WHERE id=?", (sid,)).fetchone()
+    return dict(r) if r else None
+
+
+def skill_get_by_name(name: str) -> dict[str, Any] | None:
+    r = _conn_get().execute("SELECT * FROM skills WHERE name=?", (name,)).fetchone()
+    return dict(r) if r else None
+
+
+def skill_add(name: str, description: str = "", content: str = "",
+              enabled: int = 1) -> dict[str, Any]:
+    now = int(time.time())
+    with _lock:
+        cur = _conn_get().execute(
+            "INSERT INTO skills(name, description, content, enabled, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?)",
+            ((name or "").strip(), (description or "").strip(), content or "", enabled, now, now))
+        _conn_get().commit()
+    return skill_get(cur.lastrowid)  # type: ignore[return-value]
+
+
+def skill_update(sid: int, fields: dict[str, Any]) -> dict[str, Any] | None:
+    allowed = ("name", "description", "content", "enabled")
+    patch = {k: v for k, v in fields.items() if k in allowed}
+    if not patch:
+        return skill_get(sid)
+    if "name" in patch:
+        patch["name"] = str(patch["name"]).strip()
+    patch["updated_at"] = int(time.time())
+    sets = ", ".join(f"{k}=?" for k in patch)
+    with _lock:
+        _conn_get().execute(f"UPDATE skills SET {sets} WHERE id=?", (*patch.values(), sid))
+        _conn_get().commit()
+    return skill_get(sid)
+
+
+def skill_delete(sid: int) -> bool:
+    with _lock:
+        c = _conn_get()
+        cur = c.execute("DELETE FROM skills WHERE id=?", (sid,))
+        c.commit()
+    return cur.rowcount > 0
+
+
+def skill_public_list() -> list[dict[str, str]]:
+    """对外清单：仅 enabled 的 name/description，不含正文（渐进披露第一步）。"""
+    rows = _conn_get().execute(
+        "SELECT name, description FROM skills WHERE enabled=1 ORDER BY id").fetchall()
+    return [{"name": r["name"], "description": r["description"] or ""} for r in rows]
+
+
+def skill_public_get(name: str) -> dict[str, str] | None:
+    """对外正文：仅 enabled 的 skill，返回 name/description/content。"""
+    r = _conn_get().execute(
+        "SELECT name, description, content FROM skills WHERE name=? AND enabled=1", (name,)
+    ).fetchone()
+    if not r:
+        return None
+    return {"name": r["name"], "description": r["description"] or "", "content": r["content"] or ""}

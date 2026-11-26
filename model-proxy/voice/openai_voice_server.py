@@ -118,7 +118,7 @@ import upstream_pool  # 上游地址池：多地址 + 账号池，健康探测 +
 import rate_store  # 限流门面：按 api-key 计数，内存/Redis 由配置决定
 import request_log  # 请求详情日志：header/query/body 脱敏+截断打印
 import model_catalog  # 统一模型目录（LLM / TTS / STT 三端口，对齐 fw-plus-ai-native）
-from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -1784,6 +1784,24 @@ def health():
     report = voice_health()
     report["llm"] = llm_health()
     return report
+
+
+# ── Skills 对外 API（提示词知识型技能，渐进披露）────────────────────
+# 所有 Skill 落库，重启即可用；这里只暴露 enabled 的。鉴权沿用 VOICE_API_KEY_AUTH：
+# /skills 不在 _API_KEY_OPEN_PATHS 白名单，故开启鉴权时需带 Bearer API-Key。
+@app.get("/skills")
+def skills_public_list():
+    """Skill 清单：仅 name/description，供 agent 判断是否加载正文（渐进披露第一步）。"""
+    return {"skills": voice_db.skill_public_list()}
+
+
+@app.get("/skills/{name}")
+def skill_public_detail(name: str):
+    """Skill 正文：返回 markdown content。仅 enabled；不存在/未启用返回 404。"""
+    row = voice_db.skill_public_get(name)
+    if not row:
+        raise HTTPException(status_code=404, detail="Skill 不存在或未启用")
+    return row
 
 
 @app.get("/voice")

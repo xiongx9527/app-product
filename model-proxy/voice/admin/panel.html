@@ -369,6 +369,7 @@ const I18N = {
     "rf.accounts": "账号 / 访问控制",
     "rf.security": "安全设置",
     "rf.mcp": "MCP 管理",
+    "rf.skill": "SKILL 管理",
     "rf.correction": "ASR 纠错词表",
     "rf.service": "服务控制 / 同步",
     "users.name": "账号",
@@ -785,6 +786,7 @@ const I18N = {
     "roles.rate": "限流策略（增删/启停/绑定）",
     "roles.security": "安全设置（鉴权/IP白名单/验证码/大小限制）",
     "roles.mcp": "MCP 管理（server/工具 ACL/刷新）",
+    "roles.skill": "SKILL 管理（提示词技能增删改查/启停）",
     "roles.correction": "ASR 纠错词表（管理/审核）",
     "roles.service": "服务控制（启停/重启/数据库同步）",
     "nav.mcp": "MCP管理",
@@ -843,7 +845,19 @@ const I18N = {
     "mcp.defaultGrant": "默认工具（所有 Key）",
     "mcp.saveGrant": "保存授权",
     "mcp.transport": "传输协议",
-    "mcp.bizHint": "askdata 类型用账号密码动态换 token（账号密码在 API-Key 或网关默认配置里填）；generic 用静态 headers",
+    "nav.skill": "SKILL管理",
+    "skill.hint": "提示词知识型技能，正文落库、重启即可用。对外 GET /skills 返回清单（名称+说明），GET /skills/{名称} 返回正文；停用的技能不对外暴露。所有 API Key 共享。",
+    "skill.add": "新增 SKILL",
+    "skill.edit": "编辑 SKILL",
+    "skill.empty": "暂无 SKILL",
+    "skill.name": "标识名",
+    "skill.nameHint": "小写字母/数字/短横线/下划线，且以字母或数字开头；作为对外路径 /skills/{标识名}",
+    "skill.description": "说明",
+    "skill.descriptionHint": "一句话说明，供 agent 判断是否加载正文",
+    "skill.content": "提示词正文（Markdown）",
+    "skill.preview": "预览正文",
+    "skill.previewTitle": "SKILL 正文预览",
+    "skill.updatedAt": "更新时间",
     "nav.collapse": "折叠/展开侧栏",
     "ov.process": "进程与资源",
     "ov.uptime": "运行时长",
@@ -972,6 +986,7 @@ const I18N = {
     "rf.accounts": "Accounts / access control",
     "rf.security": "Security settings",
     "rf.mcp": "MCP management",
+    "rf.skill": "SKILL management",
     "rf.correction": "ASR correction wordlist",
     "rf.service": "Service control / sync",
     "users.name": "Username",
@@ -1384,6 +1399,7 @@ const I18N = {
     "roles.rate": "Rate-limit policies (CRUD/enable/binding)",
     "roles.security": "Security settings (auth/IP allowlist/captcha/size limits)",
     "roles.mcp": "MCP management (servers/tool ACL/refresh)",
+    "roles.skill": "SKILL management (prompt skill CRUD/enable)",
     "roles.correction": "ASR correction wordlist (manage/review)",
     "roles.service": "Service control (start/stop/restart/db sync)",
     "nav.mcp": "MCP Management",
@@ -1442,7 +1458,19 @@ const I18N = {
     "mcp.defaultGrant": "Default tools (all keys)",
     "mcp.saveGrant": "Save grant",
     "mcp.transport": "Transport",
-    "mcp.bizHint": "askdata: exchange credentials for token (set in API-Key or gateway defaults); generic: static headers",
+    "nav.skill": "SKILL Management",
+    "skill.hint": "Prompt-knowledge skills, stored in DB and ready after restart. GET /skills returns the list (name + description), GET /skills/{name} returns the content; disabled skills are not exposed. Shared by all API Keys.",
+    "skill.add": "Add SKILL",
+    "skill.edit": "Edit SKILL",
+    "skill.empty": "No SKILLs yet",
+    "skill.name": "Name",
+    "skill.nameHint": "lowercase letters/digits/hyphens/underscores, starting with a letter or digit; used as /skills/{name}",
+    "skill.description": "Description",
+    "skill.descriptionHint": "One-line summary for the agent to decide whether to load the content",
+    "skill.content": "Prompt content (Markdown)",
+    "skill.preview": "Preview content",
+    "skill.previewTitle": "SKILL content preview",
+    "skill.updatedAt": "Updated",
     "nav.collapse": "Collapse / expand sidebar",
     "ov.process": "Process & resources",
     "ov.uptime": "Uptime",
@@ -3689,6 +3717,7 @@ async function renderDashboard(){
     {id:'access',   label:t('nav.access'),   icon:'⊞', roles:'admin'},
     {id:'security', label:t('nav.security'), icon:'⛨', roles:'admin'},
     {id:'mcp',      label:t('nav.mcp'),      icon:'⌘', roles:'admin'},
+    {id:'skill',    label:t('nav.skill'),    icon:'✦', roles:'admin'},
     {id:'test',     label:t('nav.test'),     icon:'◎', roles:'operator,admin'},
     {id:'roles',    label:t('nav.roles'),    icon:'◈', roles:''},
     {id:'audit',    label:t('nav.audit'),    icon:'◷', roles:'admin'},
@@ -3723,6 +3752,7 @@ async function renderDashboard(){
         <div id="mcp-tools" class="as-pane" hidden><div class="card"><div id="mcpToolsBody"></div></div></div>
         <div id="mcp-other" class="as-pane" hidden><div class="card"><div id="mcpOtherBody"></div></div></div>
       </section>
+      <section class="page" data-page="skill" hidden><div class="card"><h2>${t('nav.skill')}</h2><div id="skillBody"></div></div></section>
       <section class="page" data-page="test" hidden></section>
       <section class="page" data-page="logs" hidden></section>
       <section class="page" data-page="audit" hidden><div class="card"><h2>${t('nav.audit')}</h2><div id="auditBody"></div></div></section>
@@ -3756,6 +3786,7 @@ async function renderDashboard(){
     try{ localStorage.setItem('admin_page', id); }catch(e){}
     layout.querySelector('#sidebar').classList.remove('open');
     if(id==='mcp') loadMcpPage();
+    if(id==='skill') loadSkillPage();
     if(id==='roles') renderRolesPage();
     if(id==='audit') renderAuditPage();
   }
@@ -5439,6 +5470,92 @@ function scanEyes(){ if(_eyePending) return; _eyePending=true;
 }
 new MutationObserver(scanEyes).observe(document.documentElement,{childList:true,subtree:true});
 scanEyes();
+
+// ── SKILL 管理页（提示词知识型技能）────────────────────────────────
+function showSkillModal(skill){
+  skill=skill||null;
+  const body=
+    '<label>'+t('skill.name')+'</label><input id="skFName" type="text" value="'+esc(skill?skill.name:'')+'" placeholder="pdf-processing" />'
+    +'<div class="hint" style="margin-top:2px">'+t('skill.nameHint')+'</div>'
+    +'<label>'+t('skill.description')+'</label><input id="skFDesc" type="text" value="'+esc(skill?(skill.description||''):'')+'" />'
+    +'<div class="hint" style="margin-top:2px">'+t('skill.descriptionHint')+'</div>'
+    +'<label>'+t('skill.content')+'</label>'
+    +'<textarea id="skFContent" rows="14" style="width:100%;font-family:monospace;resize:vertical">'+esc(skill?(skill.content||''):'')+'</textarea>'
+    +'<label class="chk" style="margin-top:8px"><input type="checkbox" id="skFEnabled" '+(skill?(skill.enabled?'checked':''):'checked')+' /> '+t('common.enabled')+'</label>';
+  showModal(skill?t('skill.edit'):t('skill.add'), body, async(m)=>{
+    const name=m.querySelector('#skFName').value.trim();
+    const description=m.querySelector('#skFDesc').value.trim();
+    const content=m.querySelector('#skFContent').value;
+    const enabled=m.querySelector('#skFEnabled').checked?1:0;
+    if(!name){ alert(t('skill.name')); return false; }
+    const path=skill?('/admin/api/skills/'+skill.id):'/admin/api/skills';
+    const r=await api(path,{method:skill?'PATCH':'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({name,description,content,enabled})});
+    if(!r.ok){ alert(t('common.failPrefix')+(await r.text())); return false; }
+    loadSkillPage(); return true;
+  }, t('common.save'));
+}
+
+function showSkillPreview(skill){
+  const body='<div class="hint" style="margin-bottom:8px">'+esc(skill.name)+(skill.description?' · '+esc(skill.description):'')+'</div>'
+    +'<pre class="m-out" style="white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto">'+esc(skill.content||'')+'</pre>';
+  showModal(t('skill.previewTitle'), body, async()=>{ return true; }, t('common.close'));
+}
+
+async function loadSkillPage(){
+  const box=document.getElementById('skillBody'); if(!box) return;
+  box.innerHTML='<div class="hint">'+t('common.loadingX')+'</div>';
+  try{
+    const r=await api('/admin/api/skills');
+    if(!r.ok){ box.innerHTML='<div class="err">'+t('common.errorPrefix')+r.status+'</div>'; return; }
+    const skills=(await r.json()).skills||[];
+    let h='<div class="hint" style="margin-bottom:10px">'+t('skill.hint')+'</div>';
+    h+='<div class="row" style="margin-bottom:10px"><button id="skillAdd">'+t('skill.add')+'</button></div>';
+    h+='<table class="admin-table" style="width:100%"><thead><tr>'
+      +'<th style="width:140px">'+t('skill.name')+'</th>'
+      +'<th>'+t('skill.description')+'</th>'
+      +'<th style="width:70px">'+t('common.status')+'</th>'
+      +'<th style="width:150px">'+t('skill.updatedAt')+'</th>'
+      +'<th style="width:150px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
+    skills.forEach(s=>{
+      const sw='<label class="chk"><input type="checkbox" class="skill-enable-cb" data-id="'+s.id+'" '+(s.enabled?'checked':'')+' /> '+(s.enabled?t('common.enabled'):t('common.disabled'))+'</label>';
+      const ts=s.updated_at?new Date(s.updated_at*1000).toLocaleString():'-';
+      h+='<tr>'
+        +'<td style="min-width:0;word-break:break-all">'+esc(s.name)+'</td>'
+        +'<td style="min-width:0;word-break:break-all">'+esc(s.description||'')+'</td>'
+        +'<td style="width:70px;min-width:0">'+sw+'</td>'
+        +'<td style="width:150px;min-width:0">'+esc(ts)+'</td>'
+        +'<td class="col-actions" style="width:150px">'
+        +'<button class="mini" data-skilledit="'+s.id+'">'+t('common.edit')+'</button> '
+        +'<button class="mini" data-skillpreview="'+s.id+'">'+t('skill.preview')+'</button> '
+        +'<button class="mini" data-skilldel="'+s.id+'">'+t('common.delete')+'</button></td></tr>';
+    });
+    if(!skills.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('skill.empty')+'</td></tr>';
+    h+='</tbody></table>';
+    box.innerHTML=h;
+    document.getElementById('skillAdd').onclick=()=>showSkillModal();
+    box.querySelectorAll('[data-skilledit]').forEach(b=> b.onclick=()=>{
+      const s=skills.find(x=>x.id===+b.dataset.skilledit); if(s) showSkillModal(s);
+    });
+    box.querySelectorAll('[data-skillpreview]').forEach(b=> b.onclick=()=>{
+      const s=skills.find(x=>x.id===+b.dataset.skillpreview); if(s) showSkillPreview(s);
+    });
+    box.querySelectorAll('[data-skilldel]').forEach(b=> b.onclick=async ()=>{
+      if(!confirm(t('common.confirmDelete')||'Delete?')) return;
+      const rr=await api('/admin/api/skills/'+b.dataset.skilldel,{method:'DELETE'});
+      if(!rr.ok){ alert(t('common.failPrefix')+rr.status); return; }
+      loadSkillPage();
+    });
+    box.querySelectorAll('.skill-enable-cb').forEach(cb=> cb.onchange=async ()=>{
+      cb.disabled=true;
+      const rr=await api('/admin/api/skills/'+cb.dataset.id+'/enable',{method:'POST',
+        headers:{'content-type':'application/json'},body:JSON.stringify({enabled:cb.checked})});
+      cb.disabled=false;
+      if(!rr.ok){ cb.checked=!cb.checked; alert(t('common.failPrefix')+rr.status); return; }
+      loadSkillPage();
+    });
+  }catch(e){ box.innerHTML='<div class="err">'+t('common.errorPrefix')+e.message+'</div>'; }
+}
 
 // ── MCP 网关配置页 ──────────────────────────────────────────────────
 function showMcpModal(server){
