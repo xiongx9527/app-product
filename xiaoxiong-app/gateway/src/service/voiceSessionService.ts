@@ -182,6 +182,10 @@ export class VoiceSessionService {
   private readonly activeSpeechQueues = new Set<SpeechQueue>()
   /** 本轮首个有效 partial 的时间戳（有字超时兜底用），0=本轮还没有字。 */
   private firstPartialAt = 0
+  /** 本轮最近一次真实人声（vad.voiced）的时间戳：完整句兜底据此判断用户是否真的停说了。 */
+  private lastVoicedAtMs = 0
+  /** 上次下发过的 partial 文本：仅新文本才续期端点，重复文本不算"还在出字"。 */
+  private lastAsrPartialText = ''
   /** 会话级时间预算（设置页「超时设置」下发，已按范围收敛）；缺省用 timeouts.ts 默认值。 */
   private timeouts: ResolvedTimeouts = resolveSessionTimeouts()
   private lang: Lang = 'zh-CN'
@@ -1083,9 +1087,12 @@ export class VoiceSessionService {
     // 【2026-11-24 砍插话+duck】删 forceFeed（播报期强喂人声帧给 ASR）：插话已砍、
     // 播报期 ASR 上行静音，没有真人帧需要强喂。只喂 AEC 消除回声后的 vad.frames。
     for (const frame of vad.frames) {
-      // vad.frames（含 started 时的整段 preroll）逐帧过绝对下限，
-      // 挡掉混进前缓冲的远场背景声/杂音——按用户原则"宁愿不出来也不要错"。
-      if (pcmRms(frame) < ABS_FLOOR_RMS) continue
+      // 【首字保护】started 时 vad.frames 是刚确认开口时补喂的整段 preroll（前置 ~600ms）。
+      // 首字起音渐强、辅音段能量低，常低于绝对下限 0.008；若 preroll 逐帧再过一遍
+      // ABS_FLOOR_RMS，首几个字就被滤掉（用户「首几个字容易丢」）。此时 VAD 已用后续
+      // 连续 voiced 帧确认过这是真人说话，整段 preroll 应无条件喂给 ASR。
+      // 常规帧（非 started）仍过下限，挡掉句间混进的远场背景声/杂音。
+      if (!vad.started && pcmRms(frame) < ABS_FLOOR_RMS) continue
       void this.asr.push(frame)
         .then((partial) => {
           // 临时诊断：记录每一条 ASR 返回的草稿原文与过滤决策
@@ -1107,6 +1114,15 @@ export class VoiceSessionService {
             // 与定稿一致地去掉尾部重复词（「…怎么样？天气。」→「…怎么样？」），
             // 否则滚动草稿阶段就先闪一下多余的重复词，定稿又跳一下。
             this.deps.send({ type: 'asr.partial', text: stripTrailingEcho(partial) })
+            // 【ASR 出字就续期】只要还在出【新】字，说明用户还在说话，端点计时必须重置、
+            // 不能累计到点误截断（轻声/远场时 VAD 可能没确认 voiced，全靠 ASR 出字判断）。
+            // 相同文本（滚动识别的稳定结果）不续期，否则说完话文本稳定后 timer 永远不触发。
+            // resetVoicedAt=false：partial 是识别结果不是"刚有人声"，不动人声时间基准。
+            const newPartial = stripTrailingEcho(partial)
+            if (newPartial !== this.lastAsrPartialText) {
+              this.lastAsrPartialText = newPartial
+              this.armEndpoint(false)
+            }
           }
           // 【partial 兜底定稿】VAD 静音端点在 iOS 上行/嘈杂环境下可能不触发（真机：
           // "昨天发生了什么？" partial 吐到完整句却无 final，前端卡"正在听"到超时）。
@@ -1137,7 +1153,11 @@ export class VoiceSessionService {
   // 检测真人开口压 TTS 音量的逻辑已成死代码。播报音量恒定，打断只靠端侧 KWS。
   // 注意：前端 duckMusic（播报压低媒体播放音量，播报优先于播放）是独立逻辑，保留不动。
 
-  private armEndpoint(): void {
+  /** resetVoicedAt=true（VAD 确认真实人声）时同步更新人声时间基准；
+   *  false（仅 ASR 出了新 partial）时只重置端点计时、不动基准——partial 是识别结果，
+   *  不等于"刚有人声"，不能污染 quietEnough 的"距最近人声"语义。 */
+  private armEndpoint(resetVoicedAt = true): void {
+    if (resetVoicedAt) this.lastVoicedAtMs = Date.now()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
     // 句末静音等待统一用 asrEndpointMs（默认 2500ms）。
     // 曾经播报期压到 1000ms 是为对抗「播完才进队列」的妥协，但那个真因其实是
@@ -1149,6 +1169,7 @@ export class VoiceSessionService {
     // （播报期只认 AEC 后真实人声，见 handleBinary）。
     const wait = this.deps.asrEndpointMs
     this.endpointTimer = setTimeout(() => {
+      this.endpointTimer = null // 触发后置空，避免与 partial 兜底重复 finalize
       // 串行而非丢弃：上一句还没交给大模型时，下一句也必须在链里排队等
       this.finalizeChain = this.finalizeChain
         .then(() => this.finalizeUtterance())
@@ -1172,8 +1193,26 @@ export class VoiceSessionService {
     const text = stripTrailingEcho(partial).trim()
     const len = Array.from(text).length
     if (len === 0) return
-    if (this.firstPartialAt === 0) this.firstPartialAt = Date.now()
-    const complete = /[。？！?!]$/.test(text) && len >= 4
+    if (this.firstPartialAt === 0) {
+      this.firstPartialAt = Date.now()
+      // 有 partial 就说明识别到了人声，但 VAD 可能因轻声/远场(absFloorRms)没确认 voiced、
+      // 导致 armEndpoint 从未被调用、端点 timer 不存在 → 说完永远不定稿。
+      // 这里补设一个端点 timer 兜底：距首个 partial 一个 endpointMs 后定稿。
+      // 用户继续说话时 vad.voiced 会按 armEndpoint 重设定时器，自然顺延，不会误截断。
+      this.armEndpoint()
+    }
+    // 完整句兜底必须加「用户确实停说了足够久」前提：SenseVoice 对滚动 partial 会自己补 ？
+    // （"今天天气怎么样？"），用户话没说完、甚至句中停顿时 partial 就带标点；若只看标点立即
+    // 定稿，就会把一句话切成两段（partial 出字变快后高频触发，真机一句话被切两段）。
+    // 要求距最近一次真实人声（vad.voiced）已过 endpointMs（默认2500ms）——与 VAD 句末端点
+    // 同一节奏：用户还在说/句中停顿 → 绝不由 partial 抢先定稿；说完后 VAD 端点会正常定稿，
+    // 兜底仅在「停说够久却迟迟没 final」（VAD 端点失效）时补位，不回归卡"正在听"。
+    // 时间基准：优先用最近真实人声；若 VAD 全程没确认 voiced（轻声/远场被 absFloorRms 挡住），
+    // lastVoicedAtMs=0，此时用首个 partial 时间——有 partial 就说明确实识别到了用户说的话，
+    // 停说够 endpointMs 仍无 final，一样允许兜底。否则两条定稿路径都断 → 卡"正在听"不定稿。
+    const quietAnchor = this.lastVoicedAtMs > 0 ? this.lastVoicedAtMs : this.firstPartialAt
+    const quietEnough = quietAnchor > 0 && Date.now() - quietAnchor >= this.deps.asrEndpointMs
+    const complete = /[。？！?!]$/.test(text) && len >= 4 && quietEnough
     const tooLong = len >= this.finalizeMaxChars
     const timedOut = Date.now() - this.firstPartialAt >= this.finalizeTimeoutMs
     if (!complete && !tooLong && !timedOut) return
@@ -1247,12 +1286,16 @@ export class VoiceSessionService {
       // 节流下发 asr-error 提示音（客户端本地 mp3「没听清，再说一遍」），30s 内不重复。
       this.notifyAsrFailed()
       this.firstPartialAt = 0
+      this.lastVoicedAtMs = 0
+      this.lastAsrPartialText = ''
       this.forcedFinalizeThisTurn = false
       return
     }
     // 本轮音频已被 asr.finalize() 消费（它内部 reset 了 buffer），复位 partial 兜底标志，
     // 让下一轮能重新按「完整句/字数上限/有字超时」兜底定稿。
     this.firstPartialAt = 0
+    this.lastVoicedAtMs = 0
+    this.lastAsrPartialText = ''
     this.forcedFinalizeThisTurn = false
     // 【2026-11-24 砍插话】删 bargeInDuringPlayback 标志的读取/清除（插话已砍）。
     if (!this.active || this.cancelled) return

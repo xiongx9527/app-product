@@ -76,8 +76,9 @@ it('REST health', async () => {
   const res = await fetch(`http://127.0.0.1:${base.port}/api/health`)
   expect(res.status).toBe(200)
   expect((await res.json() as { ok: boolean }).ok).toBe(true)
-  // /api/health 会真探外网多个源，网络波动时耗时不定（与 cors.test.ts 同因），放宽超时。
-}, 15000)
+  // /api/health 会真探外网多个源，实测 13s+ 接近 15s（与 cors.test.ts 同因）；
+  // 本用例只验 REST 路由形状（200 + ok），不是测外网速度，放宽到 30s 避免 CI 假红。
+}, 30000)
 
 it('REST create + list session', async () => {
   const created = await fetch(`http://127.0.0.1:${base.port}/api/sessions`, {

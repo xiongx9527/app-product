@@ -99,6 +99,8 @@ function createHarness(
     finalizeTexts?: string[]
     /** asr.push 返回的实时草稿：驱动 handleBinary 的 asr.partial 下发条件验证 */
     partialText?: string
+    /** 始终返回 partial（不受播报窗口限制）：验证 partial 兜底定稿不抢跑 */
+    partialAlways?: string
     musicSourceFactory?: () => MusicSource
     candidateFetcher?: (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
     /** 句末静音定稿阈值（毫秒）；默认 10ms，贴近真实长停顿测试时调大 */
@@ -214,6 +216,7 @@ function createHarness(
       // partialText 注入：验证 handleBinary 的 asr.partial 下发条件（插话放行 / 回声抑制）。
       // 只在「播报窗口」（tts.end 已下发、playback_done 未回）生效，避免空闲监听期的
       // speakUtterance 自身上行把草稿提前刷出来干扰断言。
+      if (opts.partialAlways) return opts.partialAlways
       if (!opts.partialText) return null
       const playbackWindow = events.some((e) => e.type === 'tts.end')
       if (!playbackWindow) return null
@@ -3689,5 +3692,59 @@ describe('TTS 合成失败提示音聚合：多段失败只报一次', () => {
     // 部分失败不提示：整段仍有成功合成并下发的句子
     expect(cues).toHaveLength(0)
     expect(h.events.some((e) => e.type === 'tts.start')).toBe(true)
+  })
+})
+
+describe('partial 兜底定稿：不能把一句话切成两段', () => {
+  it('说话中 partial 带 ？ 也不抢先定稿（SenseVoice 会给滚动识别补标点）', async () => {
+    // 复现："统计下学校的年级和班级" 被切成两段——partial 出"统计下学校的年级和？"
+    // 就命中旧兜底的 /[。？！]$/ 立即定稿，用户还没说完。
+    const h = createHarness({
+      partialAlways: '统计下学校的年级和？',
+      asrEndpointMs: 400,
+      finalizeText: '统计下学校的年级和班级',
+    })
+    await startDialog(h.service)
+    // 持续喂人声（模拟用户还在说话，每 100ms 一帧，vad.voiced 不断续期）
+    for (let i = 0; i < 6; i += 1) {
+      h.service.handleBinary(loudFrame())
+      await sleep(100)
+    }
+    // 用户还在说：partial 带 ？ 也绝不能提前定稿
+    expect(h.events.filter((e) => e.type === 'asr.final')).toHaveLength(0)
+    expect(h.agentCalls()).toBe(0)
+  })
+
+
+  it('首个 partial 补设端点 timer：VAD 端点未触发时停说仍能定稿（不卡正在听）', async () => {
+    // 复现：partial 出了字但 VAD 端点 timer 因故没设（轻声/嘈杂），用户停说后"正在听"卡住。
+    // 修复：首个 partial 回调补设 timer，停说一个 endpointMs 后定稿。
+    const h = createHarness({
+      partialAlways: '统计下学校的年级和班级',
+      asrEndpointMs: 200,
+      finalizeText: '统计下学校的年级和班级',
+    })
+    await startDialog(h.service)
+    // 喂正常帧触发 VAD + partial（但测试里模拟端点 timer 被清掉的情形）
+    for (let i = 0; i < 4; i += 1) h.service.handleBinary(loudFrame())
+    await sleep(50)
+    // 等首个 partial 补设的 timer 到期
+    await sleep(400)
+    const finals = h.events.filter((e) => e.type === 'asr.final')
+    expect(finals.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('停说超过 endpointMs 后 partial 仍是完整句才兜底定稿（VAD 端点失效补位）', async () => {
+    const h = createHarness({
+      partialAlways: '统计下学校的年级和班级？',
+      asrEndpointMs: 200,
+      finalizeText: '统计下学校的年级和班级',
+    })
+    await startDialog(h.service)
+    for (let i = 0; i < 4; i += 1) h.service.handleBinary(loudFrame())
+    // 停说（无新 voiced）超过 endpointMs，但故意不触发正常端点（harness 无 silent 续期）
+    await sleep(500)
+    const finals = h.events.filter((e) => e.type === 'asr.final')
+    expect(finals.length).toBeGreaterThanOrEqual(1)
   })
 })
