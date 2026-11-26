@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { MediaControl } from '../../../src/service/media/mediaDetect'
-import { MediaPlaybackCapability, type MediaPlaybackDeps } from '../../../src/service/media/mediaPlaybackCapability'
+import { MediaPlaybackCapability, type MediaPlaybackDeps } from '../../../src/service/media/MediaPlaybackCapability'
 import type { ServerEvent } from '../../../src/protocol'
 
 function makeCtrl(opts: { hasMedia?: boolean } = {}): {
