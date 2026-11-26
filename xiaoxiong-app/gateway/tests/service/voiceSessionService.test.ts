@@ -115,6 +115,8 @@ function createHarness(
     ttsDelayMs?: number
     /** 记录每次 synthesize 收到的文本（验证 skill 直连按批合成、不整段） */
     ttsSynthSpy?: (text: string) => void
+    /** 指定第几次合成失败（模拟部分句子失败、整段未全失败） */
+    ttsFailOn?: (callIndex: number) => boolean
     /** 预置记忆：全新会话 start 时由 getMemories 返回，用于验证系统提示注入 */
     memories?: Array<{ key: string; value: string; updatedAt: number }>
     /** 设备标识；传 null 可验证「无 deviceId 不注入记忆」。默认 test-device */
@@ -229,13 +231,16 @@ function createHarness(
     },
     reset() {},
   }
+  let ttsCallIdx = 0
   const tts: TtsProvider = {
     async *synthesize(text) {
+      const callIdx = ttsCallIdx++
       opts.ttsSynthSpy?.(text)
       if (opts.ttsDelayMs) await new Promise((r) => setTimeout(r, opts.ttsDelayMs))
-      for (const frame of ttsFrames) yield frame
-      // 模拟 TTS 上游挂起：吐完注入帧后永不结束，验证帧间看门狗断开本句、对话链不死
-      if (opts.ttsStall) await new Promise<void>(() => undefined)
+      const fail = opts.ttsFailOn?.(callIdx) ?? false
+      if (!fail) for (const frame of ttsFrames) yield frame
+      // 失败句一帧不吐且永久挂起 → 走 gap 看门狗的「无帧超时」失败分支
+      if (opts.ttsStall || fail) await new Promise<void>(() => undefined)
     },
   }
 
@@ -3663,5 +3668,24 @@ describe('TTS 合成失败提示音聚合：多段失败只报一次', () => {
     )
     // 三句并行合成都失败，但 cue 整轮聚合只发一次
     expect(cues).toHaveLength(1)
+  })
+
+  it('部分句子合成失败：整段有成功句，不发 tts-error', async () => {
+    const h = createHarness({
+      replyText: '第一句说完了。第二句话也说完啦。第三句话还在后面呢。',
+      ttsFrames: [loudFrame()],
+      ttsFrameGapMs: 60,
+      ttsFailOn: (idx) => idx === 1, // 仅第 2 句失败，第 1/3 句正常出声
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(350)
+    const cues = h.events.filter(
+      (e) => e.type === 'client.cue' && (e as Extract<ServerEvent, { type: 'client.cue' }>).cue === 'tts-error',
+    )
+    // 部分失败不提示：整段仍有成功合成并下发的句子
+    expect(cues).toHaveLength(0)
+    expect(h.events.some((e) => e.type === 'tts.start')).toBe(true)
   })
 })

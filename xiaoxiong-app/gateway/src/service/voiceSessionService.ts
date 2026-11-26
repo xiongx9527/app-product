@@ -935,8 +935,9 @@ export class VoiceSessionService {
 
     try {
       await queue.drain()
-      // 错误聚合：整轮只发一次提示、只解一次播放等待。并行多句各自 resolve 会误解除整轮。
-      if (queue.hadError && !stale()) {
+      // 错误聚合：只有「整段一句都没合成成功」才提示；部分句子失败照常播其余句，不提示。
+      // 整轮只发一次提示、只解一次播放等待。并行多句各自 resolve 会误解除整轮。
+      if (queue.hadError && !queue.anySucceeded && !stale()) {
         this.deps.send({ type: 'client.cue', cue: 'tts-error' })
         this.playbackPending = false
         this.resolvePlayback('tts-aggregate')
@@ -1832,8 +1833,9 @@ export class VoiceSessionService {
       this.deps.send({ type: 'llm.done' })
       await queue.drain()
       this.activeSpeechQueues.delete(queue)
-      // 错误聚合：整轮只发一次提示、只解一次播放等待。并行多句各自 resolve 会误解除整轮。
-      if (queue.hadError && !stale() && !timedOut) {
+      // 错误聚合：只有「整段一句都没合成成功」才提示；部分句子失败照常播其余句，不提示。
+      // 整轮只发一次提示、只解一次播放等待。并行多句各自 resolve 会误解除整轮。
+      if (queue.hadError && !queue.anySucceeded && !stale() && !timedOut) {
         this.deps.send({ type: 'client.cue', cue: 'tts-error' })
         this.playbackPending = false
         this.resolvePlayback('tts-aggregate')
@@ -2292,6 +2294,8 @@ export class SpeechQueue {
   private tail: Promise<void> = Promise.resolve()
   private scheduled = false
   hadError = false
+  /** 整轮是否至少有一句合成成功并下发过：只有「一句都没成功」才算整段失败才提示。 */
+  anySucceeded = false
 
   constructor(
     private readonly synth: (text: string, idx: number, signal: AbortSignal) => Promise<SynthResult>,
@@ -2344,6 +2348,8 @@ export class SpeechQueue {
         }
         try {
           await this.play(item.result, item.idx, item.ctrl.signal)
+          // 有实际音频帧下发成功：整轮不算全失败，部分句子失败不提示。
+          if (item.result.frames.length) this.anySucceeded = true
         } catch {
           this.hadError = true
         }

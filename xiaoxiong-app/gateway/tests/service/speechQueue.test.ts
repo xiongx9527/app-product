@@ -89,5 +89,18 @@ describe('SpeechQueue：并行合成 + 按序下发', () => {
     q.push('1'); q.push('2')
     await q.drain()
     expect(q.hadError).toBe(true)
+    expect(q.anySucceeded).toBe(false)
+  })
+
+  it('部分句子失败：hadError 置位但 anySucceeded 也为真', async () => {
+    const q = new SpeechQueue(
+      async (_text, idx) => idx === 1
+        ? { frames: [], error: new Error('fail') }
+        : { frames: [new Uint8Array(10)] },
+      () => {},
+    )
+    q.push('1'); q.push('2'); q.push('3')
+    await q.drain()
+    expect(q.anySucceeded).toBe(true)
   })
 })
