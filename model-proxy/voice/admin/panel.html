@@ -232,9 +232,9 @@
   .muted { color:var(--mut); }
   .m-prompt { background:#161b22; border:1px dashed var(--line); color:var(--mut); font-style:italic; }
   a { color:var(--acc); }
-  /* 全局接口调用 loading：全屏遮罩（不阻塞模态框，z-index 低于模态框 50），
+  /* 全局接口调用 loading：全屏遮罩（z-index 高于模态框 50，写操作时盖住弹框给出明确反馈），
      居中转圈 + 文案；快速请求（<250ms）不闪遮罩。 */
-  #panelLoading { position:fixed; inset:0; z-index:40; display:none; align-items:center; justify-content:center;
+  #panelLoading { position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;
     background:rgba(8,10,14,.55); backdrop-filter:blur(1px); pointer-events:auto; }
   #panelLoading.show { display:flex; }
   #panelLoading .loading-box { display:flex; flex-direction:column; align-items:center; gap:12px;
