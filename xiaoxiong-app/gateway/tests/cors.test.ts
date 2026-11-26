@@ -97,16 +97,17 @@ it('DELETE /api/admin/memories（带 Origin）跨域删除成功，返回 CORS �
   expect(body2.items.some((m) => m.key === 'cross-origin')).toBe(false)
 })
 
-it('GET /api/health（带 Origin）返回 200 + CORS 头（能力自检允许跨域、不鉴权）', async () => {
-  const res = await fetch(`http://127.0.0.1:${PORT}/api/health`, {
+it('GET 健康探针（带 Origin）返回 200 + CORS 头（能力自检允许跨域、不鉴权）', async () => {
+  // 用 /api/ping（纯本地存活探针、不鉴权、带 CORS 头）验证「健康自检允许跨域」，
+  // 不碰 /api/health——后者会真探外网多个源，网络波动时 13s+ 接近超时，全量并行会假失败。
+  const res = await fetch(`http://127.0.0.1:${PORT}/api/ping`, {
     headers: { Origin: ORIGIN },
   })
   expect(res.status).toBe(200)
   expect(res.headers.get('access-control-allow-origin')).toBe('*')
   const body = (await res.json()) as { ok: boolean }
   expect(body.ok).toBe(true)
-  // 本用例测 CORS 头；/api/health 会真探外网多个源，网络波动时耗时不定，放宽超时避免全量并行下假失败。
-}, 15000)
+})
 
 it('DELETE 清空全部（key 缺省）跨域也返回 CORS 头', async () => {
   // 再补一条，验证清空路径

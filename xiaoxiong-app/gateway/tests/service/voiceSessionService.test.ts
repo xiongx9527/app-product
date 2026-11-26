@@ -2628,22 +2628,24 @@ describe('说话被切断（句末端点过激）', () => {
     expect(segments).toHaveLength(1)
   })
 
-  it('endpointMs=700（旧误设值）：句中停顿把长句切成多段（失忆根因）', async () => {
-    // 复现用户反馈的“只识别前一段”：停顿一超过 700ms 就定稿，长句被切碎成多轮。
+  it('endpointMs=700（旧误设值）：VAD hangover 保护下短停顿不再切碎长句（回归失忆根因）', async () => {
+    // 历史：endpointMs 曾被误设为 700ms，句中一停顿就定稿，长句被切碎成多轮（用户反馈"只识别前一段"）。
+    // 修复后 VAD hangover(800ms) 会吃掉 <800ms 的停顿，即使 endpointMs=700 也不会中途切断。
+    // 这条守护"旧配置也不会复发切句"，与上面 endpointMs=2500 的正常用例同口径。
     const h = createHarness({
       asrEndpointMs: 700,
       finalizeText: '帮我记一下，明天上午十点健身，下午三点开会',
     })
     await startDialog(h.service)
     for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
-    await sleep(900) // > 700：第一段在此被定稿（切断）
+    await sleep(600) // 停顿 600ms（< hangover 800）：不该切断
+    expect(h.events.filter((e) => e.type === 'asr.final' || e.type === 'asr.queued')).toHaveLength(0)
     for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
-    await sleep(900) // > 700：又定稿一段
+    await sleep(600)
     for (let i = 0; i < 5; i += 1) h.service.handleBinary(loudFrame())
-    await sleep(1500) // 句末定稿
-    // 长句被切成多段（final + queued 合计 >= 2）
+    await sleep(2500) // 句末长停顿：整句定稿一次
     const segments = h.events.filter((e) => e.type === 'asr.final' || e.type === 'asr.queued')
-    expect(segments.length).toBeGreaterThanOrEqual(2)
+    expect(segments).toHaveLength(1)
   })
 })
 

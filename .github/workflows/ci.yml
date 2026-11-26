@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gateway:
+    name: gateway (type-check + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: xiaoxiong-app/gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: xiaoxiong-app/gateway/package-lock.json
+      - run: npm ci
+      - run: npm run type-check
+      - run: npm test
+
+  uni-app:
+    name: uni_app (type-check + test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: xiaoxiong-app/uni_app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: xiaoxiong-app/uni_app/package-lock.json
+      - run: npm ci
+      - run: npm run type-check
+      - run: npm test
