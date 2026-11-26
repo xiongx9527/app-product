@@ -88,9 +88,6 @@ import voice_db
 _gateway_server: Any = None       # SSE transport 的 FastMCP 实例
 _stream_server: Any = None        # Streamable-HTTP transport 的 FastMCP 实例（独立实例，避免共享 lifespan 重复进入）
 _upstream_tools: dict[str, dict[str, Any]] = {}   # qualified_name -> {server_id, name, description}
-# 发现脚本拿到的 token 缓存：server_id -> (headers, url)。tools/call 新建连接时复用，
-# 因上游 java 在连接层就校验 token；token 失效由 App 端重新调 access_token 换 token 处理。
-_discovery_cache: dict[int, tuple[dict[str, str], str]] = {}
 
 # 鉴权由管理员配置的发现脚本负责（mcp_servers.script），中转层不按业务类型换 token。
 
@@ -191,12 +188,8 @@ async def _run_discovery_script(server: dict[str, Any], headers: dict[str, str],
         return headers, url  # 兜底：原 headers + 原 url
 
 
-async def _make_client(server: dict[str, Any], for_discovery: bool = False):
-    """按上游配置构造 FastMCP Client：透传 header + 全远程传输（SSE / Streamable HTTP）。
-
-    for_discovery=True（仅 refresh 发现工具时）：执行管理员脚本动态获取 token；
-    其余（tools/call）：不执行脚本，token 由调用方（App 账号本）注入工具参数。
-    """
+async def _make_client(server: dict[str, Any]):
+    """按上游配置构造 FastMCP Client：执行脚本动态获取 token + 全远程传输（SSE / Streamable HTTP）。"""
     headers = _parse_headers(server)
     timeout = int(server.get("timeout_sec") or 30)
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
@@ -204,16 +197,11 @@ async def _make_client(server: dict[str, Any], for_discovery: bool = False):
     url = server["url"]
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("MCP 上游仅支持远程 http(s) 地址（SSE / Streamable HTTP），不支持本地 stdio")
-    if for_discovery and (server.get("script") or "").strip():
-        # 发现阶段：执行脚本拿 token 并缓存
+    # 发现与调用阶段都执行管理员脚本动态获取 token（上游在连接层就校验 token）。
+    # 不在中转层缓存 token——py 端没有账号密码，token 由脚本自己调上游 access_token 换取；
+    # 每轮工具调用都重取，天然规避 token 过期问题。
+    if (server.get("script") or "").strip():
         headers, url = await _run_discovery_script(server, headers, url)
-        _discovery_cache[server["id"]] = (dict(headers), url)
-    elif not for_discovery and server["id"] in _discovery_cache:
-        # 调用阶段：复用发现时缓存的 token（上游在连接层就校验），token 失效由 App 端重换
-        cached_headers, cached_url = _discovery_cache[server["id"]]
-        headers = dict(cached_headers)
-        headers.pop("transport", None)
-        url = cached_url
     if transport == "sse" or url.rstrip("/").endswith("/sse"):
         TK = SSETransport
     elif transport == "streamable-http":
@@ -372,7 +360,7 @@ async def refresh() -> dict[str, Any]:
     for s in servers:
         try:
             # 发现工具时才执行管理员脚本动态获取 token；tools/call 不执行
-            async with await _make_client(s, for_discovery=True) as client:
+            async with await _make_client(s) as client:
                 tools = await client.list_tools()
             for t in tools:
                 prefix = (s.get('tool_prefix') or '').strip() or s['name']
