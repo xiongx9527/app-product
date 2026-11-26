@@ -2,7 +2,6 @@ import type { GatewayConfig, VendorParams } from '../config'
 import { TIMEOUT_DEFAULTS } from '../timeouts'
 import { resolveCapabilityConfig } from '../voiceConfig'
 import type { VoiceConfig } from '../voiceConfig'
-import { DashScopeWsTts } from '../tts/dashscopeWs'
 import { listLlmModels } from './llmModels'
 
 /** 单个能力（ASR / LLM / TTS）的就绪状态，供界面直接展示 */
@@ -229,52 +228,14 @@ async function probeAsr(
 }
 
 /** 功能性探测 TTS：真发一句文本到 /v1/audio/speech，能回非空音频才算通。
- *  DashScope TTS 是 WebSocket：
- *  - deep（一键检测）时真跑一次合成（DashScopeWsTts.probe），收到真实音频帧才算可用，
- *    云端错误（如 418 音色/模型不匹配）原样带回界面——不再「主机通就报绿」；
- *  - 普通轮询（deep=false）避免每 30s 都打一次 WS 合成烧额度，退化为「已配密钥 + 主机可达」判断。 */
+ *  真发一句并校验回包，带缓存（15s 内复用），避免轮询反复真合成。 */
 async function probeTts(
   baseUrl: string,
   provider: string,
   apiKey: string | undefined,
   endpoint: string,
-  deep: boolean,
   params?: VendorParams,
 ): Promise<ProviderStatus> {
-  if (provider === 'dashscope') {
-    if (!apiKey) {
-      return {
-        provider,
-        configured: true,
-        reachable: false,
-        endpoint,
-        message: '已配置但缺少 api-key，无法合成',
-      }
-    }
-    if (!deep) {
-      // 轻量轮询：只确认主机可达，不真合成（省额度）。
-      const up = await probeHost(baseUrl)
-      return {
-        provider,
-        configured: true,
-        reachable: up,
-        endpoint,
-        message: up
-          ? `已配置（${endpoint}）；点「一键检测」可验证真实合成`
-          : `已配置但地址不可达（${endpoint}）`,
-      }
-    }
-    // 真实合成探测：用默认模型（cosyvoice-v3-flash）跑一句，结果反映真实可用性。
-    const tts = new DashScopeWsTts(baseUrl, {}, apiKey)
-    const result = await tts.probe()
-    return {
-      provider,
-      configured: true,
-      reachable: result.ok,
-      endpoint,
-      message: result.ok ? `已接入（真实合成成功，${endpoint}）` : result.message,
-    }
-  }
   const ok = await cachedProbe(`tts:${baseUrl}`, async () => {
     try {
       const controller = new AbortController()
@@ -317,15 +278,14 @@ async function buildStatus(
   baseUrl: string,
   kind: 'asr' | 'tts' | 'llm',
   apiKey: string | undefined,
-  deep: boolean,
   model?: string,
   params?: VendorParams,
 ): Promise<ProviderStatus> {
   if (provider === 'stub') return summarizeProvider('stub', false)
   const endpoint = hostOf(baseUrl)
-  // TTS 直接返回 ProviderStatus（deep 时走真实合成探测，需带上具体失败原因）；
+  // TTS 直接返回 ProviderStatus（真实合成探测，需带上具体失败原因）；
   // ASR / LLM 仍是布尔可达性，由 summarizeProvider 收敛成状态。
-  if (kind === 'tts') return probeTts(baseUrl, provider, apiKey, endpoint, deep, params)
+  if (kind === 'tts') return probeTts(baseUrl, provider, apiKey, endpoint, params)
   const reachable =
     kind === 'asr' ? await probeAsr(baseUrl, provider, apiKey, model, params) : await probe(baseUrl, apiKey)
   return summarizeProvider(provider, reachable, endpoint)
@@ -448,9 +408,9 @@ export async function buildHealth(
   // 18s，超过前端 waitForEmbeddedGateway 的 15s 超时 → 隧道数据面明明全通、health 仍判失败。
   // 并行后总耗时≈最慢单项，稳在 15s 窗口内。
   // ASR 探测同样透传用户配的参数（language 等），设置什么传什么。
-  const asrPromise = buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, deep, asrModel, resolved.asr.params)
+  const asrPromise = buildStatus(resolved.asr.provider, resolved.asr.baseUrl, 'asr', resolved.asr.apiKey, asrModel, resolved.asr.params)
   // TTS 探测透传用户配的 voice/model（设置什么传什么），与真实 synthesize 调用一致。
-  const ttsPromise = buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey, deep, undefined, resolved.tts.params)
+  const ttsPromise = buildStatus(resolved.tts.provider, resolved.tts.baseUrl, 'tts', resolved.tts.apiKey, undefined, resolved.tts.params)
   const networkPromise = probeExternal()
   // LLM：deep（一键检测）走真正调用模型，能暴露欠费 / 模型名 / 密钥这类「连通但不可用」故障；
   // 其余（30s 轮询）只做连通探测，避免每次轮询都真打模型烧额度。
@@ -470,7 +430,7 @@ export async function buildHealth(
     }
     return deep
       ? probeLlmDeep(resolved.llm.baseUrl, resolved.llm.apiKey, llmDeepModel)
-      : buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey, deep)
+      : buildStatus(resolved.llm.provider, resolved.llm.baseUrl, 'llm', resolved.llm.apiKey)
   })()
   const [asr, tts, network, llm] = await Promise.all([asrPromise, ttsPromise, networkPromise, llmPromise])
   return { asr, llm, tts, network }

@@ -40,7 +40,7 @@ export class HttpVoiceTts implements TtsProvider {
     private readonly timeouts?: ResolvedTimeouts,
   ) {}
 
-  async *synthesize(text: string): AsyncIterable<Uint8Array> {
+  async *synthesize(text: string, signal?: AbortSignal): AsyncIterable<Uint8Array> {
     // 公网链路偶发抖动（TLS 断连/超时）会让单次 fetch 抛错 → 误报「这段没能播报」，所以重试 1 次。
     // 关键：两次共享**同一份总预算**（ttsMs），而不是各给一份——否则 25s×2=50s 会超过
     // 帧间看门狗 30s，重试还没跑完这句就被判成卡死，重试等于白写。
@@ -49,10 +49,11 @@ export class HttpVoiceTts implements TtsProvider {
     const deadline = Date.now() + budgetMs
     let lastErr: unknown
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (signal?.aborted) throw signal.reason ?? new Error('[tts] 合成已取消')
       const remaining = deadline - Date.now()
       if (remaining < 1000) break
       try {
-        const pcm = await this.fetchPcm(text, remaining)
+        const pcm = await this.fetchPcm(text, remaining, signal)
         // 整段 TTS（builtin/deepseek 一次返回完整 WAV）必须切成小帧下发：
         // 原生 playPcm(String b64) 每帧 Base64.decode 后写 AudioTrack，单帧 1.2MB（base64 1.6MB）
         // 经 weex 桥传输会超限/截断 → 播不出来。切成 9600B(200ms@24k) 匹配流式播放。
@@ -61,6 +62,8 @@ export class HttpVoiceTts implements TtsProvider {
         }
         return
       } catch (err) {
+        // 已取消不再重试——插话/打断后立即释放，别让在途 fetch 继续占后端
+        if (signal?.aborted) throw err
         lastErr = err
         if (attempt === 0) console.warn('[tts] 合成失败，预算内重试一次：', err)
       }
@@ -70,31 +73,43 @@ export class HttpVoiceTts implements TtsProvider {
     throw lastErr ?? new Error('[tts] 合成超时')
   }
 
-  /** 单次 TTS 合成请求：fetch + 校验 WAV + 提取 PCM。 */
-  private async fetchPcm(text: string, timeoutMs: number): Promise<Uint8Array> {
-    const res = await fetch(`${this.baseUrl}/v1/audio/speech`, {
-      method: 'POST',
-      headers: this.authHeaders({ 'content-type': 'application/json' }),
-      body: JSON.stringify({
-        input: text,
-        // 不写死 edge 音色：9529 按当前 TTS_PROVIDER 选默认音色（builtin→XiaoxiaoNeural、
-        // deepseek→stella）。写死 edge 音色会让 deepseek 分支拒绝（502）导致播不出来。
-        // 客户端显式配了 voice（params.voice）才覆盖。
-        response_format: 'wav',
-        speed: 1.0,
-        ...this.params,
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    })
-    if (!res.ok || !res.body) throw new Error(`[tts] 合成失败 HTTP ${res.status}`)
-    const contentType = res.headers.get('content-type') ?? ''
-    const ab = new Uint8Array(await res.arrayBuffer())
-    if (contentType.includes('application/json') || !isRiff(ab)) {
-      throw new Error('[tts] 合成失败：响应非 WAV')
+  /** 单次 TTS 合成请求：fetch + 校验 WAV + 提取 PCM。external 用于把取消信号桥接到内部超时。 */
+  private async fetchPcm(text: string, timeoutMs: number, external?: AbortSignal): Promise<Uint8Array> {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+    const onAbort = () => ctrl.abort()
+    if (external) {
+      if (external.aborted) ctrl.abort()
+      else external.addEventListener('abort', onAbort, { once: true })
     }
-    const pcm = extractWavData(ab)
-    if (pcm.length === 0) throw new Error('[tts] 合成失败：WAV 无 data 段')
-    return pcm
+    try {
+      const res = await fetch(`${this.baseUrl}/v1/audio/speech`, {
+        method: 'POST',
+        headers: this.authHeaders({ 'content-type': 'application/json' }),
+        body: JSON.stringify({
+          input: text,
+          // 不写死 edge 音色：9529 按当前 TTS_PROVIDER 选默认音色（builtin→XiaoxiaoNeural、
+          // deepseek→stella）。写死 edge 音色会让 deepseek 分支拒绝（502）导致播不出来。
+          // 客户端显式配了 voice（params.voice）才覆盖。
+          response_format: 'wav',
+          speed: 1.0,
+          ...this.params,
+        }),
+        signal: ctrl.signal,
+      })
+      if (!res.ok || !res.body) throw new Error(`[tts] 合成失败 HTTP ${res.status}`)
+      const contentType = res.headers.get('content-type') ?? ''
+      const ab = new Uint8Array(await res.arrayBuffer())
+      if (contentType.includes('application/json') || !isRiff(ab)) {
+        throw new Error('[tts] 合成失败：响应非 WAV')
+      }
+      const pcm = extractWavData(ab)
+      if (pcm.length === 0) throw new Error('[tts] 合成失败：WAV 无 data 段')
+      return pcm
+    } finally {
+      clearTimeout(timer)
+      external?.removeEventListener('abort', onAbort)
+    }
   }
 
   /** 统一附加鉴权头：有 apiKey 时带 Bearer，否则原样返回。 */

@@ -176,12 +176,10 @@ export class VoiceSessionService {
   private finalizeMaxChars = 30
   /** partial 兜底定稿的有字超时（ms）：出了字但多久仍无 final 就强制定稿，缺省 10000。 */
   private finalizeTimeoutMs = 10000
-  /** 播报单批字数上限：一句超过它就切段合成，来自设置页「对话设置」，缺省 15。 */
-  private ttsChunkChars = 15
-  /** 攒够几个逗号就成一句送 TTS（未到字数上限时），来自设置页，缺省 2。 */
-  private commaSentenceCount = 2
-  /** 逗号前至少几个字才算有效断句点（避免「你好，」碎片），来自设置页，缺省 4。 */
-  private commaMinChars = 4
+  /** 并行 TTS 合成数上限：来自设置页「播放设置」，缺省 4，防并发打满 TTS 后端。 */
+  private ttsConcurrency = 4
+  /** 活跃的播报队列（主轮+兜底可能并存）：打断/结束/超时时统一 abort 在途合成。 */
+  private readonly activeSpeechQueues = new Set<SpeechQueue>()
   /** 本轮首个有效 partial 的时间戳（有字超时兜底用），0=本轮还没有字。 */
   private firstPartialAt = 0
   /** 会话级时间预算（设置页「超时设置」下发，已按范围收敛）；缺省用 timeouts.ts 默认值。 */
@@ -409,15 +407,9 @@ export class VoiceSessionService {
         // 有字超时兜底：缺省 10000ms，合法范围 2000–60000。
         this.finalizeTimeoutMs = typeof pb?.finalizeTimeoutMs === 'number'
           ? Math.min(60000, Math.max(2000, Math.floor(pb.finalizeTimeoutMs))) : 10000
-        // 播报单批字数上限：来自设置页「对话设置」，缺省 15；合法范围 5–200，防误配
-        // （太小碎片化、太大会让单次合成变慢甚至超时）。
-        this.ttsChunkChars = typeof pb?.ttsChunkChars === 'number'
-          ? Math.min(200, Math.max(5, Math.floor(pb.ttsChunkChars))) : 15
-        // 逗号成句数 / 逗号前最少字数：来自设置页「对话设置」，缺省 2 / 4，范围防误配。
-        this.commaSentenceCount = typeof pb?.commaSentenceCount === 'number'
-          ? Math.min(10, Math.max(1, Math.floor(pb.commaSentenceCount))) : 2
-        this.commaMinChars = typeof pb?.commaMinChars === 'number'
-          ? Math.min(20, Math.max(1, Math.floor(pb.commaMinChars))) : 4
+        // 并行 TTS 合成数上限：来自设置页「播放设置」，缺省 4；合法范围 1–10，防并发打满 TTS 后端。
+        this.ttsConcurrency = typeof pb?.ttsConcurrency === 'number'
+          ? Math.min(10, Math.max(1, Math.floor(pb.ttsConcurrency))) : 4
         this.media.syncVolumeFromClient(this.defaultVolume)
         // 自动记忆开关：来自客户端设置页（session.start.memory.auto），缺省关。
         // 仅控制助手是否主动沉淀长期记忆；手动指令（记录下 / 帮我记 等）始终生效。
@@ -908,43 +900,50 @@ export class VoiceSessionService {
   /**
    * skill 直连的一整段文本切成多批、串行流水线合成（与 runTurn 的流式分批同源）。
    * 绝不整段 synthesize：整段（天气实测 1MB/20s）要等全部 WAV 返回才有第一声，
-   * 用户体感「文字早出来了、声音等很久」。改成首批 ~ttsChunkChars 字合成完立刻出声，
-   * 后续批接在链尾——上一批在播时下一批在合成，首声延迟从整段时长降到一批时长。
+   * 用户体感「文字早出来了、声音等很久」。遇标点立即切句、并行合成，首批合成完立刻出声，
+   * 后续批按断句顺序接在链尾，首声延迟从整段时长降到一句时长。
    */
   private async speakTextChunks(text: string, turn: number): Promise<void> {
     const stale = () => this.turn !== turn || this.cancelled || this.skipRequested
     let sentChars = 0
-    // 消费者：TTS 从队列串行取句合成，一句合成+下发完才取下一句（流水线）。
-    const queue = new SpeechQueue((chunk) => {
-      if (stale()) return Promise.resolve()
-      return this.speakSentence(chunk, turn)
-    })
+    // 并行合成 + 按入队顺序下发；并发上限来自设置页（ttsConcurrency）。
+    const queue = new SpeechQueue(
+      (chunk, idx, signal) => this.synthesizeSentence(chunk, idx, signal),
+      (result, idx, signal) => this.playSentence(result, idx, turn, signal),
+      this.ttsConcurrency,
+    )
+    this.activeSpeechQueues.add(queue)
+    // 首个 push 前就开保护窗：批次间隙原生误发的 playback_done 一律忽略，
+    // 否则前端提前收尾、把后续批当成新一轮而掐掉。与 runTurn 流水线同一保护。
+    this.ttsDispatching = true
     // 生产者：断出一句就入队——边断边播，不等整段切完。
     const pushChunk = (chunk: string): void => {
       sentChars += chunk.length
-      // 兜底等待延长到覆盖整轮，避免早期批次的 30s 兜底先到期提前收尾。
       this.deferPlaybackWaitForChunks(sentChars)
-      bargeDiag(`TTS-SYNTH len=${chunk.length} text="${chunk.slice(0, 20)}"`)
       queue.push(chunk)
     }
     let buf = text
-    let cut = sentenceCut(buf, this.ttsChunkChars, this.commaSentenceCount, this.commaMinChars)
+    let cut = sentenceCut(buf)
     while (cut > 0) {
       const clean = sanitizeForSpeech(buf.slice(0, cut))
       if (clean) pushChunk(clean)
       buf = buf.slice(cut)
-      cut = sentenceCut(buf, this.ttsChunkChars, this.commaSentenceCount, this.commaMinChars)
+      cut = sentenceCut(buf)
     }
     const tail = sanitizeForSpeech(buf)
     if (tail) pushChunk(tail)
 
-    // 整链下发完前保持 true：批次间隙原生误发的 playback_done 一律忽略，
-    // 否则前端提前收尾、把后续批当成新一轮而掐掉。与 runTurn 流水线同一保护。
-    this.ttsDispatching = true
     try {
       await queue.drain()
+      // 错误聚合：整轮只发一次提示、只解一次播放等待。并行多句各自 resolve 会误解除整轮。
+      if (queue.hadError && !stale()) {
+        this.deps.send({ type: 'client.cue', cue: 'tts-error' })
+        this.playbackPending = false
+        this.resolvePlayback('tts-aggregate')
+      }
     } finally {
       this.ttsDispatching = false
+      this.activeSpeechQueues.delete(queue)
     }
   }
 
@@ -1706,19 +1705,19 @@ export class VoiceSessionService {
     // 【2026-11-22 原则：边合成边读，绝不一次合成整段】
     // 9529 TTS 接口非流式（整段合成完才返回 WAV），"流式"只能在网关侧做：
     // 断句后一句一批立刻合成，批间流水线（上一批在播、下一批在合成）。
-    // 断句以标点收尾、绝不在字数上限处硬切（用户明确要求"15 字必须完整、要标点"）：
-    // 上限只作兜底触发条件——攒够 N 个逗号、或到上限后遇第 1 个逗号才切，
-    // 正常一句话就是一批。整段一次 synthesize 仍会超时（300+ 字实测 42s），
-    // 但靠标点自然断批已经把单次合成压到一句的长度。上限来自设置页，缺省 15。
-    const TTS_MAX_CHUNK_CHARS = this.ttsChunkChars
-    // TTS 消费者：整条流式路径与 skill 直连共用 SpeechQueue——串行从队首取句合成，
-    // 一句 synthesize+下发完才取下一句（流水线）。stale 时丢弃旧轮的句子。
-    const queue = new SpeechQueue((chunk) => {
-      // timedOut 也要挡：LLM 超时走 catch 后本轮已放弃、改播 mp3 兜底，
-      // delta 阶段已入队但还没轮到的句子不能再合成下发，否则与兜底 cue 撞车。
-      if (stale() || timedOut) return Promise.resolve()
-      return this.speakSentence(chunk, turn)
-    })
+    // 断句以标点收尾、绝不在字数处硬切：句末标点和逗号遇到就切，无标点继续攒到标点。
+    // 整段一次 synthesize 仍会超时（300+ 字实测 42s），靠标点自然断批把单次合成压到一句长度。
+    // TTS 消费者：并行合成 + 按入队顺序下发；stale/timedOut 的句子不下发（在途合成由 abortAll 掐断）。
+    const queue = new SpeechQueue(
+      (chunk, idx, signal) => this.synthesizeSentence(chunk, idx, signal),
+      (result, idx, signal) => {
+        // LLM 超时后本轮已放弃、改播 mp3 兜底，delta 阶段已入队的句子不能再下发，否则撞车。
+        if (timedOut) return
+        this.playSentence(result, idx, turn, signal)
+      },
+      this.ttsConcurrency,
+    )
+    this.activeSpeechQueues.add(queue)
     // 生产者：断出一句完整句子就入队（标点收尾）。首批顺带发 tts.start。
     const enqueue = (sentence: string): void => {
       const clean = sanitizeForSpeech(sentence)
@@ -1767,11 +1766,11 @@ export class VoiceSessionService {
         // 无字数闸门：llm.delta 全量下发，界面与播报都完整。
         this.deps.send({ type: 'llm.delta', text: delta })
         buffer += delta
-        let cut = sentenceCut(buffer, TTS_MAX_CHUNK_CHARS, this.commaSentenceCount, this.commaMinChars)
+        let cut = sentenceCut(buffer)
         while (cut > 0) {
           enqueue(buffer.slice(0, cut))
           buffer = buffer.slice(cut)
-          cut = sentenceCut(buffer, TTS_MAX_CHUNK_CHARS, this.commaSentenceCount, this.commaMinChars)
+          cut = sentenceCut(buffer)
         }
         // 边生成边播：断出的一句已在 enqueue 里入队，SpeechQueue 自动启动消费者立即合成，
         // 不再等整段回复生成完，也不必等队尾全部断完。
@@ -1832,6 +1831,13 @@ export class VoiceSessionService {
       bargeDiag(`TTS-SENTENCES chars=${sentChars} left=${queue.size}`)
       this.deps.send({ type: 'llm.done' })
       await queue.drain()
+      this.activeSpeechQueues.delete(queue)
+      // 错误聚合：整轮只发一次提示、只解一次播放等待。并行多句各自 resolve 会误解除整轮。
+      if (queue.hadError && !stale() && !timedOut) {
+        this.deps.send({ type: 'client.cue', cue: 'tts-error' })
+        this.playbackPending = false
+        this.resolvePlayback('tts-aggregate')
+      }
       this.ttsDispatching = false
       if (ttsStarted && !stale()) {
         this.speaking = false
@@ -1849,6 +1855,8 @@ export class VoiceSessionService {
       }
       return ttsStarted
     } catch {
+      queue.abortAll()
+      this.activeSpeechQueues.delete(queue)
       this.ttsDispatching = false
       if (stale()) return ttsStarted
       // 超时或任何 LLM 异常：主动舍弃本轮、断开下行、给友好兜底，不 sendError 技术错误。
@@ -1877,32 +1885,28 @@ export class VoiceSessionService {
    * 队列再没人消费（用户要求「TTS 也要超时兜底，不能卡死对话」）。流式合成帧间隔为毫秒级，
    * 帧间超时即判上游挂死：断开本句、已收到的帧照播，tts.end 照常收尾，对话链继续。
    */
-  private async speakSentence(sentence: string, turn: number): Promise<void> {
-    if (this.turn !== turn || this.cancelled || this.skipRequested) return
+  /**
+   * 阶段一：并行合成。只做 TTS 调用与收帧，不碰下发/AEC/播放回执——
+   * 这样多句能真正并发，且不会因某句先完成就抢播（下发顺序由 SpeechQueue 按入队序号保证）。
+   */
+  private async synthesizeSentence(sentence: string, idx: number, signal: AbortSignal): Promise<SynthResult> {
     setDiagStage('tts-synth') // 【心跳埋点·长期保留】
     this.spoken.push(sentence)
-    // 只留最近几句：回声延迟有限，太久以前的文本不该再参与比对
     if (this.spoken.length > 6) this.spoken.shift()
-    // gapMs 必须 > TTS 单次合成超时（tts/http.ts 的 TTS_TIMEOUT_MS=20s），否则长文本合成
-    // 还没返回，gap 就先判超时、误报「这段没能播报」。真机 100+ 字文本合成 7.35s，
-    // 设 30s 给足余量（含偶发抖动重试）。
+    bargeDiag(`TTS-SYNTH#${idx} len=${sentence.length} text="${sentence.slice(0, 20)}"`)
+    // gapMs 必须 > TTS 单次合成超时（tts/http.ts 的 TTS_TIMEOUT_MS=20s）。
     const gapMs = this.deps.ttsFrameGapMs ?? this.timeouts.ttsFrameGapMs
+    const frames: Uint8Array[] = []
     let iterator: AsyncIterator<Uint8Array>
     try {
-      iterator = this.tts.synthesize(sentence)[Symbol.asyncIterator]()
-    } catch {
-      // TTS 合成同步抛错：用本地 mp3 兜底（TTS 坏了不能再用 TTS 念兜底），
-      // swallow 不抛出，链继续 → 外层正常发 tts.end → 队列推进下一条。
-      bargeDiag(`TTS-FAIL synth threw, text="${sentence}"`)
-      this.deps.send({ type: 'client.cue', cue: 'tts-error' })
-      // 立即兑现播放等待：不让队列等 30s 超时才推进下一条（用户要求出错不卡队列）
-      this.playbackPending = false
-      this.resolvePlayback('tts-synth-threw')
-      return
+      iterator = this.tts.synthesize(sentence, signal)[Symbol.asyncIterator]()
+    } catch (err) {
+      bargeDiag(`TTS-FAIL#${idx} synth threw text="${sentence}"`)
+      return { frames: [], error: err }
     }
-    let gotAnyFrame = false
     try {
       for (;;) {
+        if (signal.aborted) return { frames: [], error: new Error('tts aborted') }
         let timer: ReturnType<typeof setTimeout> | null = null
         const next = await Promise.race([
           iterator.next(),
@@ -1911,45 +1915,43 @@ export class VoiceSessionService {
           }),
         ])
         if (timer) clearTimeout(timer)
-        // 帧间超时：上游挂死，断开本句（已收到的帧照播，链继续）
         if (next === 'gap-timeout' || next.done) {
-          // 一帧都没收到就超时＝TTS 真的没产出，给 mp3 提示；收到过部分帧的超时算正常截断
-          if (next === 'gap-timeout' && !gotAnyFrame) {
-            bargeDiag(`TTS-FAIL gap timeout no frame, text="${sentence}"`)
-            this.deps.send({ type: 'client.cue', cue: 'tts-error' })
-            this.playbackPending = false
-            this.resolvePlayback('tts-gap-timeout')
+          // 一帧都没收到就超时＝TTS 真没产出，记 error 由聚合层发提示；
+          // 收到过部分帧的超时算正常截断，照已有帧播。
+          if (next === 'gap-timeout' && !frames.length) {
+            bargeDiag(`TTS-FAIL#${idx} gap timeout no frame text="${sentence}"`)
+            return { frames: [], error: new Error('TTS gap timeout no frame') }
           }
           break
         }
-        const frame = next.value
-        gotAnyFrame = true
-        if (this.turn !== turn || this.cancelled || this.skipRequested) return
-        setDiagStage('tts-send-audio') // 【心跳埋点·长期保留】帧下发段
-        this.downlinkBytes += frame.byteLength
-        this.echo.onDownlink()
-        // 每下发一帧就把回声保护窗口往后挪：窗口盖住「最后一帧之后的一小段余音」。
-        // 【2026-11-23 修播报回声自激】1200ms 不够——真机铁证：新闻播完后尾音被 ASR buffer
-        // 缓存，播报结束后 8 秒才定稿出"第一条。"（播报内容），此时 echoUntil 早过期、
-        // resemblesSpoken 兜底失效 → 回声被当用户输入触发新一轮播报自激。
-        // 提到 8000ms 覆盖这个定稿延迟；resemblesSpoken 要求子串/75%重合，真人正常指令
-        // （天气/音乐/控制）不会与播报内容相似，误伤概率极低。
-        // 软件 AEC：把下发的 TTS（24k）推作远端参考；播报首帧 reset 一次，句间延续系数以覆盖回声尾。
-        if (!this.aecActive) { this.aec.reset(); this.aecActive = true }
-        this.aec.pushReference(frame)
-        this.deps.sendAudio(frame)
+        frames.push(next.value)
       }
-    } catch {
-      // TTS 合成中途抛错：本地 mp3 兜底，swallow 让链继续（外层发 tts.end、队列推进）。
-      // 不冒泡到 runAgent 的 catch——那会被误判成 LLM 失败。
-      bargeDiag(`TTS-FAIL iter threw, text="${sentence}"`)
-      this.deps.send({ type: 'client.cue', cue: 'tts-error' })
-      // 立即兑现播放等待，队列不等超时
-      this.playbackPending = false
-      this.resolvePlayback('tts-iter-threw')
+    } catch (err) {
+      bargeDiag(`TTS-FAIL#${idx} iter threw text="${sentence}"`)
+      return { frames, error: err }
     } finally {
       void iterator.return?.()
     }
+    return { frames }
+  }
+
+  /**
+   * 阶段二：按序下发。只有真正 sendAudio 时才动回声保护/字节统计/诊断阶段——
+   * 合成完成但还没轮到播放的句子绝不能碰这些，否则参考信号乱序会把真人声当回声消掉。
+   */
+  private playSentence(result: SynthResult, idx: number, turn: number, signal: AbortSignal): void {
+    if (this.turn !== turn || this.cancelled || this.skipRequested || signal.aborted) return
+    for (const frame of result.frames) {
+      if (this.turn !== turn || this.cancelled || this.skipRequested || signal.aborted) return
+      setDiagStage('tts-send-audio') // 【心跳埋点·长期保留】帧下发段
+      this.downlinkBytes += frame.byteLength
+      this.echo.onDownlink()
+      // 播报首帧 reset 一次，句间延续系数覆盖回声尾（回声保护链只在真正下发时推进）
+      if (!this.aecActive) { this.aec.reset(); this.aecActive = true }
+      this.aec.pushReference(frame)
+      this.deps.sendAudio(frame)
+    }
+    bargeDiag(`TTS-PLAYED#${idx} frames=${result.frames.length}`)
   }
 
   /**
@@ -2158,6 +2160,7 @@ export class VoiceSessionService {
     const wasPlaying = this.playbackPending || this.speaking
     this.turn += 1
     this.cancelled = true
+    for (const q of this.activeSpeechQueues) q.abortAll()
     this.processing = false
     this.speaking = false
     this.playbackPending = false
@@ -2223,6 +2226,7 @@ export class VoiceSessionService {
     this.dispatchSessionReset('end')
     this.active = false
     this.cancelled = true
+    for (const q of this.activeSpeechQueues) q.abortAll()
     this.turn += 1
     this.speaking = false
     this.playbackPending = false
@@ -2258,44 +2262,106 @@ export class VoiceSessionService {
   }
 }
 
+/** 单句合成结果：帧数组按序下发，error 由整轮聚合处理（不在这里发 cue/resolve）。 */
+interface SynthResult {
+  frames: Uint8Array[]
+  error?: unknown
+}
+
+interface SynthItem {
+  idx: number
+  text: string
+  ctrl: AbortController
+  promise?: Promise<void>
+  result: SynthResult | null
+}
+
 /**
- * 语音合成队列（生产者-消费者）：断句只负责把完整句子 push 进来，
- * TTS 消费者串行从队首取句合成——一句 synthesize+下发完才取下一句，
- * 保证「边断边播、绝不整段合成」，且上一句在播时下一句已在合成（流水线）。
+ * TTS 句队列：**并行合成 + 按断句顺序下发**。
  *
- * LLM 流式与 skill 直连两条路径共用同一个队列：生产者只 push，消费者只有这一处，
- * 不再各写一套 Promise 链。`drain()` 等队列里所有句子（含在途合成）都取完。
+ * push 时立即启动该句合成（受并发上限约束，首句不等任何人），合成结果暂存；
+ * 下发链严格按入队顺序取句——先 await 该句自己的合成结果，再逐帧下发。
+ * 因此后句先合成完也绝不抢在前面的句子之前播（用户：「先合成的先播，不能先完成的播」）。
+ * 所有句子共享取消信号，插话/打断时 abortAll 立即掐掉在途 fetch，不白跑到超时打满后端。
  */
-class SpeechQueue {
-  private items: string[] = []
+export class SpeechQueue {
+  private items: SynthItem[] = []
+  private pendingSynth: SynthItem[] = []
+  private activeSynth = 0
+  private nextIndex = 0
   private tail: Promise<void> = Promise.resolve()
-  private running = false
+  private scheduled = false
+  hadError = false
 
-  constructor(private readonly consume: (sentence: string) => Promise<void>) {}
+  constructor(
+    private readonly synth: (text: string, idx: number, signal: AbortSignal) => Promise<SynthResult>,
+    private readonly play: (result: SynthResult, idx: number, signal: AbortSignal) => Promise<void> | void,
+    private readonly maxConcurrent = 4,
+  ) {}
 
-  /** 生产者入队：断出一句就 push，队列空闲时立即启动消费者，不等整段断完。 */
-  push(sentence: string): void {
-    if (!sentence) return
-    this.items.push(sentence)
+  push(text: string): void {
+    if (!text) return
+    const item: SynthItem = { idx: this.nextIndex++, text, ctrl: new AbortController(), result: null }
+    this.items.push(item)
+    this.pendingSynth.push(item)
+    this.pumpSynth()
     this.schedule()
   }
 
+  /** 受并发上限约束地启动合成：首句立即开始，其余排队，完成一个补一个。 */
+  private pumpSynth(): void {
+    while (this.activeSynth < this.maxConcurrent && this.pendingSynth.length) {
+      const item = this.pendingSynth.shift()!
+      this.activeSynth += 1
+      item.promise = (async () => {
+        try {
+          item.result = await this.synth(item.text, item.idx, item.ctrl.signal)
+        } catch (err) {
+          item.result = { frames: [], error: err }
+          this.hadError = true
+        } finally {
+          this.activeSynth -= 1
+          this.pumpSynth()
+        }
+      })()
+    }
+  }
+
+  /** 下发链：严格按入队顺序，先等该句自己合成完再播，绝不「谁先完成谁先播」。 */
   private schedule(): void {
-    if (this.running || this.items.length === 0) return
-    this.running = true
+    if (this.scheduled || this.items.length === 0) return
+    this.scheduled = true
     this.tail = this.tail.then(async () => {
       while (this.items.length) {
-        const sentence = this.items.shift()!
-        await this.consume(sentence)
+        const item = this.items.shift()!
+        if (item.promise) await item.promise
+        if (item.ctrl.signal.aborted) continue
+        if (item.result?.error || !item.result) {
+          // synthesizeSentence 把失败作为 result 返回（不抛），这里必须置位，
+          // 否则整轮聚合收不到信号——合成失败一个提示音都不发（真 bug）。
+          if (item.result?.error) this.hadError = true
+          continue
+        }
+        try {
+          await this.play(item.result, item.idx, item.ctrl.signal)
+        } catch {
+          this.hadError = true
+        }
       }
-      this.running = false
+      this.scheduled = false
+      this.schedule()
     })
   }
 
-  /** 等队列排空（含正在合成的那句）。 */
   drain(): Promise<void> {
     this.schedule()
     return this.tail
+  }
+
+  /** 插话/打断：掐掉所有在途合成，避免白跑到超时打满 TTS 后端。 */
+  abortAll(): void {
+    for (const item of this.items) item.ctrl.abort()
+    for (const item of this.pendingSynth) item.ctrl.abort()
   }
 
   get size(): number {
@@ -2323,40 +2389,17 @@ function isEnglishSentencePeriod(text: string, i: number): boolean {
 
 /**
  * 返回一句的切分位置（含标点），用于边生成边合成。切点【永远是完整标点】，绝不拦腰截断字数。
- * 断句优先级（取最先触发的）：
- *  1. 句末标点 `[。！？；!?;\n]` 及【边界合法的英文句号 `.`】：立即切（一个完整句子就是一句，
- *     分号也算；英文句号按 isEnglishSentencePeriod 排除小数/域名/缩写/省略号）。
- *  2. 攒够 commaSentenceCount 个有效逗号：切成一句（用户：「2 个逗号算整句」），
- *     此时即便已超过字数上限也照切——超字数没关系，只要落在标点上。
- *  3. 字数已达 fallbackLen（单批上限）且遇到第 1 个有效逗号：兜底提前切，别再等够 N 个。
- * 有效逗号要求其前面至少 commaMinChars 字，避免「你好，」这种碎片也算一个。
- * 字数到了但还没有有效标点时不硬切——继续攒，靠 LLM 后续输出或本轮结束的尾巴兜底，
- * 保证每批都以标点收尾（用户：「15 字必须是要完整的、完整的标点符号」）。
+ * 遇到任意标点（句末标点 / 逗号 / 顿号 / 合法英文句号）立即切——句子更短、首字更快、并行度更高。
+ * 英文句号按 isEnglishSentencePeriod 排除小数/域名/缩写/省略号；没有标点时不硬切，继续攒到标点收尾。
  */
-function sentenceCut(
-  text: string,
-  fallbackLen = 20,
-  commaSentenceCount = 2,
-  commaMinChars = 4,
-): number {
-  // 1) 句末标点（含分号、英文问号/叹号）；英文句号单独做边界判定，避免误切小数/域名
-  const stopRe = /[。！？；!?;\n]/
+export function sentenceCut(text: string): number {
   for (let i = 0; i < text.length; i += 1) {
-    if (text[i] === '.') {
+    const ch = text[i]
+    if (ch === '.') {
       if (isEnglishSentencePeriod(text, i)) return i + 1
       continue
     }
-    if (stopRe.test(text[i])) return i + 1
-  }
-
-  // 2/3) 逗号：攒够 N 个，或字数已到上限后第 1 个 → 在该逗号后切（标点收尾、不截断）
-  const lenReached = text.length >= fallbackLen
-  let seen = 0
-  for (let i = 0; i < text.length; i += 1) {
-    if (!/[，、,]/.test(text[i])) continue
-    if (i < commaMinChars) continue // 逗号前字数不足，不算有效断句点
-    seen += 1
-    if (seen >= commaSentenceCount || lenReached) return i + 1
+    if (/[。！？；!?;，、,\n]/.test(ch)) return i + 1
   }
   return -1
 }

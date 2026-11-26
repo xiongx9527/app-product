@@ -157,9 +157,7 @@ function onResetDialog(): void {
   appConfig.general.aecEnabled = true
   appConfig.playback.finalizeMaxChars = playback.finalizeMaxChars
   appConfig.playback.finalizeTimeoutMs = playback.finalizeTimeoutMs
-  appConfig.playback.ttsChunkChars = playback.ttsChunkChars
-  appConfig.playback.commaSentenceCount = playback.commaSentenceCount
-  appConfig.playback.commaMinChars = playback.commaMinChars
+  appConfig.playback.ttsConcurrency = playback.ttsConcurrency
   appConfig.playback.autoExitMs = playback.autoExitMs
   appConfig.playback.autoExitGraceMs = playback.autoExitGraceMs
   persistConfig()
@@ -915,21 +913,11 @@ watch(
           <input class="input" type="number" v-model.number="appConfig.playback.finalizeTimeoutMs" />
           <text class="hint">{{ t('settings.playback.finalizeTimeoutMsHint') }}</text>
         </view>
-        <!-- 播报断句：字数上限 + 逗号成句数 + 逗号前最少字数 -->
+        <!-- 播报断句：遇标点即切、并行合成，限制并发数 -->
         <view class="setting-row column">
-          <text class="row-label">{{ t('settings.playback.ttsChunkChars') }}</text>
-          <input class="input" type="number" v-model.number="appConfig.playback.ttsChunkChars" />
-          <text class="hint">{{ t('settings.playback.ttsChunkCharsHint') }}</text>
-        </view>
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.playback.commaSentenceCount') }}</text>
-          <input class="input" type="number" v-model.number="appConfig.playback.commaSentenceCount" />
-          <text class="hint">{{ t('settings.playback.commaSentenceCountHint') }}</text>
-        </view>
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.playback.commaMinChars') }}</text>
-          <input class="input" type="number" v-model.number="appConfig.playback.commaMinChars" />
-          <text class="hint">{{ t('settings.playback.commaMinCharsHint') }}</text>
+          <text class="row-label">{{ t('settings.playback.ttsConcurrency') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.ttsConcurrency" />
+          <text class="hint">{{ t('settings.playback.ttsConcurrencyHint') }}</text>
         </view>
         <view class="setting-row column">
           <text class="row-label">{{ t('settings.playback.autoExitMs') }}</text>

@@ -261,18 +261,9 @@ export interface PlaybackConfig {
    */
   finalizeTimeoutMs?: number
   /**
-   * 播报单批字数上限：超过这个字数后，遇到第一个标点（逗号/整句标点）就切段合成，
-   * 到上限但没有标点不硬切（标点必须完整）。随 playback 下发网关，缺省 15，合法 5–200。
+   * 并行 TTS 合成数上限：遇标点即断句并发合成，最多同时合成几段。缺省 4，合法 1–10。
    */
-  ttsChunkChars?: number
-  /**
-   * 攒几个逗号就算一句送 TTS（未到字数上限时也可提前成句），缺省 2，合法 1–10。
-   */
-  commaSentenceCount?: number
-  /**
-   * 逗号前至少几个字才算有效断句点（避免「你好，」这种碎片），缺省 4，合法 1–20。
-   */
-  commaMinChars?: number
+  ttsConcurrency?: number
   /**
    * 自动退下：用户静默多久后播「还在吗？」（T1）。缺省 30000ms（30秒），合法 5000–300000。
    */

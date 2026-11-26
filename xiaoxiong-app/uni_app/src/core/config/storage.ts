@@ -55,9 +55,7 @@ const DEFAULT_PLAYBACK: PlaybackConfig = {
   subtitleColor: DEFAULT_SUBTITLE_COLOR,
   finalizeMaxChars: 30,
   finalizeTimeoutMs: 10000,
-  ttsChunkChars: 15,
-  commaSentenceCount: 2,
-  commaMinChars: 4,
+  ttsConcurrency: 4,
   autoExitMs: 30000,
   autoExitGraceMs: 15000,
 }
@@ -77,9 +75,7 @@ export function createDefaultPlayback(): PlaybackConfig {
     subtitleColor: DEFAULT_PLAYBACK.subtitleColor,
     finalizeMaxChars: DEFAULT_PLAYBACK.finalizeMaxChars,
     finalizeTimeoutMs: DEFAULT_PLAYBACK.finalizeTimeoutMs,
-    ttsChunkChars: DEFAULT_PLAYBACK.ttsChunkChars,
-    commaSentenceCount: DEFAULT_PLAYBACK.commaSentenceCount,
-    commaMinChars: DEFAULT_PLAYBACK.commaMinChars,
+    ttsConcurrency: DEFAULT_PLAYBACK.ttsConcurrency,
     autoExitMs: DEFAULT_PLAYBACK.autoExitMs,
     autoExitGraceMs: DEFAULT_PLAYBACK.autoExitGraceMs,
   }
@@ -339,17 +335,10 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
   const rawTimeout = Number(source.finalizeTimeoutMs)
   const finalizeTimeoutMs = Number.isFinite(rawTimeout) && rawTimeout >= 2000
     ? Math.min(60000, Math.floor(rawTimeout)) : 10000
-  // 播报单批字数上限：缺省15(5-200)，非法回退默认。
-  const rawChunk = Number(source.ttsChunkChars)
-  const ttsChunkChars = Number.isFinite(rawChunk) && rawChunk >= 5
-    ? Math.min(200, Math.floor(rawChunk)) : 15
-  // 逗号成句数缺省2(1-10)、逗号前最少字数缺省4(1-20)，非法回退默认。
-  const rawCommaCnt = Number(source.commaSentenceCount)
-  const commaSentenceCount = Number.isFinite(rawCommaCnt) && rawCommaCnt >= 1
-    ? Math.min(10, Math.floor(rawCommaCnt)) : 2
-  const rawCommaMin = Number(source.commaMinChars)
-  const commaMinChars = Number.isFinite(rawCommaMin) && rawCommaMin >= 1
-    ? Math.min(20, Math.floor(rawCommaMin)) : 4
+  // 并行 TTS 合成数上限：缺省 4（1-10），非法回退默认。
+  const rawConcurrency = Number(source.ttsConcurrency)
+  const ttsConcurrency = Number.isFinite(rawConcurrency) && rawConcurrency >= 1
+    ? Math.min(10, Math.floor(rawConcurrency)) : 4
   // 自动退下时间：T1 静默缺省30000(5000-300000)、T2 宽限缺省15000(3000-120000)。
   const rawExit = Number(source.autoExitMs)
   const autoExitMs = Number.isFinite(rawExit) && rawExit >= 5000
@@ -370,9 +359,7 @@ function normalizePlayback(raw: unknown): PlaybackConfig {
     subtitleColor,
     finalizeMaxChars,
     finalizeTimeoutMs,
-    ttsChunkChars,
-    commaSentenceCount,
-    commaMinChars,
+    ttsConcurrency,
     autoExitMs,
     autoExitGraceMs,
   }

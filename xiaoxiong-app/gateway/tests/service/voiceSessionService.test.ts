@@ -2369,19 +2369,22 @@ describe('LLM 超时兜底与队列续跑（回归：排队卡死）', () => {
     expect(h.agentCalls()).toBe(2)
   })
 
-  it('LLM 超时后：delta 阶段已入队但未开始合成的句子不再补合成（不残留到兜底之后）', async () => {
+  it('LLM 超时后：并行合成在途被中止，不再补新的合成（不残留到兜底之后）', async () => {
     const synthTexts: string[] = []
     const h = createHarness({
       replyText: '第一句话终于说完了。第二句话也说完啦。第三句话还在后面呢。',
       llmTimeoutMs: 40,
-      ttsDelayMs: 30, // 慢合成：40ms 超时时第 1 句仍在合成，第 2/3 句尚未开始
+      ttsDelayMs: 30,
       ttsSynthSpy: (t) => synthTexts.push(t),
     })
     await startDialog(h.service)
     await speakUtterance(h)
     await sleep(120) // 等超时兜底走完
-    // 超时后丢弃尚未开始合成的批次；最多只有超时前已开始的那批。
-    expect(synthTexts.length).toBeLessThan(3)
+    // 新语义：push 即启动合成（首字快），超时前 3 句都已开始。
+    // 超时走 catch → abortAll 掐断在途 fetch；之后不再补任何合成，也不下发残余句子。
+    const atTimeout = synthTexts.length
+    await sleep(120)
+    expect(synthTexts.length).toBe(atTimeout)
   })
 
   it('LLM 流式边合成边读：llm.done 之前的批次间隙 playback_done 不当整轮播完（不提前 tts.idle）', async () => {
@@ -3374,9 +3377,9 @@ describe('百科查询直连（绕开 LLM，助手框显示 + 播报）', () => 
     }
   })
 
-  it('断句：攒够 2 个有效逗号成句（默认），逗号前不足字数不算', async () => {
+  it('断句：遇逗号立即成句，逗号前不再要求字数', async () => {
     const synthTexts: string[] = []
-    // 无句末标点，靠逗号断句：第 1 个字前太短不算，之后每 2 个有效逗号切一句
+    // 无句末标点，靠逗号断句：每个逗号都立即切，句子更短、首字更快、并行度更高
     const text = '你好，这个方案我觉得，整体上还不错，细节再打磨一下，明天给你最终版本，咱们就这么定'
     const h = createHarness({
       finalizeText: '讲讲李存勖的事迹',
@@ -3392,8 +3395,8 @@ describe('百科查询直连（绕开 LLM，助手框显示 + 播报）', () => 
     for (const t of synthTexts.slice(0, -1)) {
       expect(/[，、,]$/u.test(t)).toBe(true)
     }
-    // 开头「你好，」不应单独成句（逗号前 < commaMinChars=4），应并进第一批
-    expect(synthTexts[0].length).toBeGreaterThan(4)
+    // 遇逗号即切：开头「你好，」也立即成句（不再要求逗号前字数）
+    expect(synthTexts[0]).toBe('你好，')
   })
 
   it('断句：到字数上限仍无标点时不硬切，继续攒到标点才切', async () => {
@@ -3640,5 +3643,25 @@ describe('skill 接入：生命周期钩子经 voiceSessionService 调用', () =
     expect(calls).toContain('afterSpeak')
     // 同链追问文本被拼进 llm.delta 下发
     expect(h.events.some((e) => e.type === 'llm.delta' && String((e as { text?: string }).text ?? '').includes('记'))).toBe(true)
+  })
+})
+
+describe('TTS 合成失败提示音聚合：多段失败只报一次', () => {
+  it('三句都合成失败，整轮只发一次 tts-error（不逐句报错）', async () => {
+    const h = createHarness({
+      replyText: '第一句说完了。第二句话也说完啦。第三句话还在后面呢。',
+      ttsFrames: [],           // 一帧都不吐
+      ttsFrameGapMs: 20,       // 短看门狗：各句都在 20ms 后判「无帧超时」
+      ttsStall: true,          // 之后永久挂起，确保走超时失败分支
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(300)
+    const cues = h.events.filter(
+      (e) => e.type === 'client.cue' && (e as Extract<ServerEvent, { type: 'client.cue' }>).cue === 'tts-error',
+    )
+    // 三句并行合成都失败，但 cue 整轮聚合只发一次
+    expect(cues).toHaveLength(1)
   })
 })

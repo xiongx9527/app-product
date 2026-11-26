@@ -6,7 +6,6 @@ import {
   resolveDashscopeVoice,
   listTtsVoices,
 } from '../../src/service/ttsVoices'
-import { DashScopeWsTts } from '../../src/tts/dashscopeWs'
 
 /**
  * 锁住「音色必须属于所选模型」这条官方约束，防止再出现「有回答却没播报」：
@@ -57,18 +56,6 @@ describe('百炼 TTS 音色与模型同源（避免 418 Invalid voice 静音）'
     }
   })
 
-  it('DashScopeWsTts 实例把陈旧音色收敛为默认音色（真正进 run-task 的值）', () => {
-    // 复现线上脏配置：voice=longxiang（v1 音色）、没带 model。
-    const tts = new DashScopeWsTts(
-      'https://dashscope.aliyuncs.com',
-      { voice: 'longxiang' },
-      'dummy-key',
-    )
-    // private 字段只做只读断言，验证收敛确实作用到了实例，而非只停在纯函数层。
-    const internal = tts as unknown as { model: string; voice: string }
-    expect(internal.model).toBe(DASHSCOPE_DEFAULT_MODEL)
-    expect(internal.voice).toBe(DASHSCOPE_DEFAULT_VOICE)
-  })
 })
 
 /**
