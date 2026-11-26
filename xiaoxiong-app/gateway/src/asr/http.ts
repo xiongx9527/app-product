@@ -5,8 +5,13 @@ import type { ResolvedTimeouts } from '../timeouts'
 
 /** 两次中间识别的最小间隔：太密会打满本地服务，太疏界面又会卡顿。 */
 const PARTIAL_INTERVAL_MS = TIMEOUT_DEFAULTS.asrPartialIntervalMs
-/** 音频短于约 0.4 秒时先不识别，避免半截字在界面上抖。 */
-const PARTIAL_MIN_BYTES = 12800
+/**
+ * 首次 partial 的最少音频：0.8 秒（16k/16bit=25600 字节）。
+ * 实测（TTS 真语音喂内置 SenseVoice）：0.4s 音频识别出空串、0.8s 才出第一个字
+ * （「今天天气。」）。原来 12800B(0.4s) 会让第一次识别白跑一轮、首字拖到 ~2.1s；
+ * 提到 0.8s 让首次识别就出字，首字降到 ~1.7s。仍是从头识别整段，绝不滑动窗口丢字。
+ */
+const PARTIAL_MIN_BYTES = 25600
 /**
  * 中间识别（partial）与定稿识别（finalize）用不同的超时预算，原因见 timeouts.ts：
  * partial 只负责实时字幕、失败就跳过，必须快速失败；finalize 失败等于整轮白说，必须给足。
@@ -58,10 +63,12 @@ export class HttpVoiceAsr implements AsrProvider {
   lastRms = -1
   /** 串行化识别请求：本地服务不必承受并发，定稿也不会和中间结果抢跑。 */
   private inflight: Promise<void> = Promise.resolve()
-  /** 上一次 partial 识别是否还在进行。慢上游（往返~2s）若仍按固定 600ms 提交，
-   *  请求会堆积，partial 返回时音频已过时、finalize 被拖到错位（截断/延后）。
-   *  忙碌时跳过本次 partial，自适应降频；finalize 不受限，必定拿最终整段结果。 */
+  /** 上一次 partial 识别是否还在进行；忙时不再直接丢弃，而是记 pending。 */
   private partialBusy = false
+  /** 忙期间又有新音频到达：识别一结束立即用最新整段补一次，不空等下个 600ms 间隔。
+   *  实测单次识别 ~1s > 间隔 600ms，旧实现把中途触发全丢掉 → 字幕 ~2.2s 才刷一次、卡顿。
+   *  补识别仍是从头识别整段（文本天然累积、绝不丢字），只是不等固定间隔。 */
+  private partialPending = false
 
   constructor(
     private readonly baseUrl: string,
@@ -92,13 +99,29 @@ export class HttpVoiceAsr implements AsrProvider {
       this.bufferedBytes -= dropped ? dropped.byteLength : 0
     }
 
+    return this.runPartial()
+  }
+
+  /**
+   * 启动一次中间识别（从头识别整段 buffer，文本天然累积不丢字）。
+   * 忙时只记 pending 不排队发请求；识别完由 finally 用最新 buffer 立即补一次，
+   * 让字幕刷新跟手（~1s 一次）而不是被固定间隔拖成 ~2.2s 一次。
+   */
+  private async runPartial(): Promise<string | null> {
+    if (this.partialBusy) {
+      this.partialPending = true
+      return null
+    }
     const now = Date.now()
-    if (now - this.lastPartialAt < this.partialIntervalMs) return null
-    if (this.bufferedBytes < PARTIAL_MIN_BYTES) return null
-    // 上一次 partial 没回来就跳过本次（不排队），避免慢上游请求堆积导致滞后/错位。
-    if (this.partialBusy) return null
+    // 补识别（pending）跳过间隔节流；普通触发仍按间隔。
+    if (!this.partialPending && now - this.lastPartialAt < this.partialIntervalMs) return null
+    if (this.bufferedBytes < PARTIAL_MIN_BYTES) {
+      this.partialPending = false
+      return null
+    }
 
     this.lastPartialAt = now
+    this.partialPending = false
     this.partialBusy = true
     const pcm = Buffer.concat(this.buffer)
     const run = this.inflight.then(() => this.transcribe(pcm, this.partialTimeoutMs))
@@ -114,6 +137,9 @@ export class HttpVoiceAsr implements AsrProvider {
       return text
     } finally {
       this.partialBusy = false
+      // 不在这里 fire-and-forget 补识别：它的文本没法下发给 App（本轮 push 的返回链已结束）。
+      // 帧持续进入（每 256ms），下一次 push 会看到 partialPending 并跳过间隔节流立即补识别，
+      // 文本经那次 push 的返回链正常下发。
     }
   }
 
@@ -130,13 +156,19 @@ export class HttpVoiceAsr implements AsrProvider {
     }
     this.lastRms = n > 0 ? Math.sqrt(sum / n) : 0
     this.reset()
-    const { text, speechDuration, failed } = await this.transcribe(pcm, this.finalizeTimeoutMs)
-    this.speechDuration = speechDuration
+    // finalize 是「用户说完、整段音频」的定稿识别：失败先重试 1 次（上游偶发抖动/超时），
+    // 两次都失败才抛错走 asr-error。partial 中途失败仍静默跳过（下一轮会补），不重试。
+    let result = await this.transcribe(pcm, this.finalizeTimeoutMs)
+    if (result.failed) {
+      console.warn('[asr] 定稿识别失败，重试一次')
+      result = await this.transcribe(pcm, this.finalizeTimeoutMs)
+    }
+    this.speechDuration = result.speechDuration
     // 识别失败绝不能当「用户说的话」往下走：真机 2026-11-18 实锤，ASR 上游 500 时
     // 曾把错误正文当成用户输入交给大模型，答了一轮完全不相干的内容。
-    // 抛给 finalizeUtterance 的 catch：下发 asr-error 提示音（「没听清，再说一遍」）并丢弃本轮。
-    if (failed) throw new Error('asr unavailable')
-    return text
+    // 两次都失败才抛给 finalizeUtterance 的 catch：下发 asr-error 提示音并丢弃本轮。
+    if (result.failed) throw new Error('asr unavailable')
+    return result.text
   }
 
   reset(): void {
@@ -146,6 +178,7 @@ export class HttpVoiceAsr implements AsrProvider {
     this.partialText = ''
     this.speechDuration = -1
     this.partialBusy = false
+    this.partialPending = false
   }
 
   /** 提交一段 PCM 做识别；失败返回 failed=true + 空 text（partial 层静默跳过，定稿层抛错）。
