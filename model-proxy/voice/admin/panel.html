@@ -4831,7 +4831,7 @@ async function loadUsers(page){
         '<button class="sec" data-u="'+esc(u.username)+'" data-op="role">'+t('users.changeRole')+'</button> '+
         '<button class="sec" data-u="'+esc(u.username)+'" data-op="pw">'+t('users.resetPwd')+'</button> '+
         '<button class="sec" data-u="'+esc(u.username)+'" data-op="toggle">'+(u.enabled?t('users.disable'):t('users.enable'))+'</button> '+
-        '<button class="sec" data-u="'+esc(u.username)+'" data-op="del">'+t('common.delete')+'</button>')+
+        '<button class="sec danger" data-u="'+esc(u.username)+'" data-op="del">'+t('common.delete')+'</button>')+
       '</td></tr>').join('') : '<tr><td colspan="4" class="hint">'+t('rate.empty')+'</td></tr>')+'</tbody></table>';
   box.querySelectorAll('button[data-u]').forEach(b=>{
     b.onclick=()=>userAction(b.dataset.u, b.dataset.op);
@@ -5002,7 +5002,7 @@ async function loadApiKeys(page){
       '<button class="sec" data-k="'+k.id+'" data-op="edit">'+t('common.edit')+'</button> '+
       '<button class="sec" data-k="'+k.id+'" data-op="rate">'+t('rate.title')+'</button> '+
       '<button class="sec" data-k="'+k.id+'" data-op="toggle">'+(k.enabled?t('users.disable'):t('users.enable'))+'</button> '+
-      '<button class="sec" data-k="'+k.id+'" data-op="del">'+t('common.delete')+'</button></td></tr>').join('')+'</tbody></table>';
+      '<button class="sec danger" data-k="'+k.id+'" data-op="del">'+t('common.delete')+'</button></td></tr>').join('')+'</tbody></table>';
   box.querySelectorAll('button[data-k]').forEach(b=> b.onclick=()=>apiKeyAction(Number(b.dataset.k), b.dataset.op));
   renderPager('akPager', apiKeyPage, pages, all.length, p=>loadApiKeys(p));
 }
@@ -5124,7 +5124,7 @@ async function loadRatePolicies(page){
         (p.is_builtin ? '' :
           '<button class="sec" data-p="'+p.id+'" data-op="default">'+(p.is_default?t('rate.unsetDefault'):t('rate.setDefault'))+'</button> '+
           '<button class="sec" data-p="'+p.id+'" data-op="toggle">'+(p.enabled?t('users.disable'):t('users.enable'))+'</button> '+
-          '<button class="sec" data-p="'+p.id+'" data-op="del">'+t('common.delete')+'</button>')+
+          '<button class="sec danger" data-p="'+p.id+'" data-op="del">'+t('common.delete')+'</button>')+
       '</td></tr>').join('')+'</tbody></table>';
   box.querySelectorAll('button[data-p]').forEach(b=> b.onclick=()=>ratePolicyAction(Number(b.dataset.p), b.dataset.op));
   renderPager('ratePager', ratePolicyPage, pages, filtered.length, p=>loadRatePolicies(p));
