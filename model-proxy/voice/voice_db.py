@@ -2132,15 +2132,26 @@ def mcp_acl_visible_tools(key_id: int | None) -> set[str]:
 
 
 def mcp_acl_set(key_id: int, qualified_names: list[str]) -> None:
-    """整体替换某 Key 的工具授权（qualified_names 去重）。"""
-    clean = sorted({str(x).strip() for x in (qualified_names or []) if str(x).strip()})
+    """整体替换某 Key 的工具授权（qualified_names 去重）。
+
+    key_id=0（默认工具）特殊：始终 union 所有 in_mcp=1 的「其它工具」
+    （default__{name}）。这样前端清空/重设网关工具授权时，不会误删已加入
+    MCP 的其它工具——它们的授权由 in_mcp 字段驱动，不该被整体替换冲掉。
+    """
+    clean = {str(x).strip() for x in (qualified_names or []) if str(x).strip()}
+    if key_id == 0:
+        # 其它工具的权威状态是 in_mcp=1；强制并进默认授权
+        for t in mcp_http_tools_list():
+            if t.get("in_mcp") and t.get("enabled"):
+                clean.add(f"default__{t['name']}")
+    ordered = sorted(clean)
     now = int(time.time())
     with _lock:
         c = _conn_get()
         c.execute("DELETE FROM mcp_tool_acl WHERE key_id=?", (key_id,))
         c.executemany(
             "INSERT INTO mcp_tool_acl(key_id, qualified_name, created_at) VALUES(?,?,?)",
-            [(key_id, n, now) for n in clean])
+            [(key_id, n, now) for n in ordered])
         c.commit()
 
 

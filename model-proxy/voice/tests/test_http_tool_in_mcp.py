@@ -68,5 +68,21 @@ check("禁用后 in_mcp 字段保留", voice_db.mcp_http_tool_get(t2["id"])["in_
 cur = voice_db.mcp_http_tool_get(t2["id"]) or {}
 check("可判断已加入 MCP（禁止删除依据）", bool(cur.get("in_mcp")))
 
+# 6) 清空默认 ACL 时，in_mcp=1 的其它工具授权必须保留（不被整体替换误删）
+# t2=weather 已禁用（enabled=0），先重新启用以模拟已加入 MCP 的其它工具
+voice_db.mcp_http_tool_update(t2["id"], {"enabled": 1})
+voice_db.mcp_acl_set(0, ["askdata__chat_start"])  # 模拟前端只传网关工具
+acl0 = {r["qualified_name"] for r in voice_db.mcp_acl_list(0)}
+check("清空网关工具后保留其它工具授权", "default__weather" in acl0, str(acl0))
+# 完全清空（前端传空数组）也应保留
+voice_db.mcp_acl_set(0, [])
+acl0 = {r["qualified_name"] for r in voice_db.mcp_acl_list(0)}
+check("完全清空 ACL 仍保留其它工具", "default__weather" in acl0, str(acl0))
+# 移出后（in_mcp=0）再清空，不应再保留
+voice_db.mcp_http_tool_update(t2["id"], {"in_mcp": 0})
+voice_db.mcp_acl_set(0, [])
+acl0 = {r["qualified_name"] for r in voice_db.mcp_acl_list(0)}
+check("移出后清空不再保留", "default__weather" not in acl0, str(acl0))
+
 print(f"\n== SUMMARY: {PASS}/{PASS + FAIL} passed ==")
 sys.exit(0 if FAIL == 0 else 1)
