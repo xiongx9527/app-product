@@ -139,7 +139,7 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
       resolveVoice: (voice, timeouts) => resolveCapabilityConfig(voice, config, timeouts),
       createAsr,
       createTts,
-      agentFactory: (llm, lang, timezone, locationProvider, memoryStore, memoryContext, requestLocation, getNowPlaying, autoMemory, mcpServers, autoLearnEngine, promptAddon, getDetailContext) =>
+      agentFactory: (llm, lang, timezone, locationProvider, memoryStore, memoryContext, requestLocation, getNowPlaying, autoMemory, mcpServers, mcpRetryCount, autoLearnEngine, promptAddon, getDetailContext, onReport) =>
         createAgentService(
           { llm, timeZone: timezone },
           lang,
@@ -150,9 +150,11 @@ export function createVoiceConnection(ws: WebSocket, req: IncomingMessage, deps:
           getNowPlaying,
           autoMemory,
           mcpServers,
+          mcpRetryCount,
           autoLearnEngine,
           promptAddon,
-          getDetailContext
+          getDetailContext,
+          onReport
         ),
       data,
       correctionSyncer: deps.correctionSyncer,

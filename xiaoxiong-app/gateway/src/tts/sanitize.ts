@@ -26,6 +26,13 @@ export function sanitizeForSpeech(text: string): string {
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     // 裸链接
     .replace(/https?:\/\/\S+/gi, ' ')
+    // 【2026-11-27 通用】LLM 可能把工具结果里的技术路径复述进回复（真机
+    // 「图表：/api/chart/image/xxx」）。绝对链接上面已剥；相对路径若残留，会被字符白名单
+    // 清成「apichartimage...」念出来。按文本形态剥冗长路径（至少两段含字母），不针对字段或
+    // 工具名；纯数字/日期（3/4、2026/11/27）保留。
+    .replace(/\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+/g, (token) =>
+      /[A-Za-z]/.test(token) ? ' ' : token
+    )
     // HTML 实体（&nbsp; &amp; &#39;）
     .replace(/&[a-zA-Z#0-9]+;/g, ' ')
     // 行首引用与列表符号
@@ -42,6 +49,11 @@ export function sanitizeForSpeech(text: string): string {
     if (SPEAKABLE.test(ch)) speakable += ch
   }
   out = speakable
+
+  // 【2026-11-27 真机】数字小数点明确读成「点」：TTS 引擎对 "80.27" 的 "." 常静默忽略，
+  // 用户听到「八十 二十七」丢小数点。断句层已保证小数不切，这里再把「数字.数字」转成
+  // 「数字点数字」，确保念出来（平均分/金额等场景）。
+  out = out.replace(/(\d)\.(\d)/g, '$1点$2')
 
   // 连续空白收敛成一个空格，避免 TTS 把一大段空白念成异常停顿
   out = out.replace(/\s+/g, ' ').trim()

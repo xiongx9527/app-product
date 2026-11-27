@@ -163,6 +163,8 @@ App 端后台待唤醒时长期保持 `wake` 会话；`dialog` 一轮结束（T2
 { "type": "media.detail", "kind": "deals", "items": [{ "index": 1, "title": "全棉时代婴儿棉柔巾", "image": "https://img.xxx/a.jpg", "link": "https://www.smzdm.com/p/xxx/", "fields": [{ "label": "现价", "value": "200元" }] }], "selectedIndex": 1 }
 { "type": "media.detail", "kind": "project", "items": [{ "index": 1, "title": "UIEIP", "link": "https://www.oschina.net/p/uieip", "fields": [{ "label": "定位", "value": "低代码开发平台" }, { "label": "语言", "value": "Go" }] }], "selectedIndex": 1 }
 { "type": "media.detail", "kind": "deals", "items": [], "close": true }
+{ "type": "media.report", "title": "各年级班级数和学生人数", "blocks": [{ "type": "table", "columns": [{ "name": "年级名称", "value": "年级名称" }, { "name": "班级数", "value": "班级数" }, { "name": "学生人数", "value": "学生人数" }], "rows": [{ "年级名称": "一年级", "班级数": 4, "学生人数": 39 }] }, { "type": "image", "url": "/api/chart/image/cb631f8b56c942b581051134680f0ee5" }] }
+{ "type": "media.report", "title": "", "blocks": [], "close": true }
 { "type": "client.location.request" }
 { "type": "client.cue", "cue": "asr-down" }
 { "type": "error", "code": "ASR_TIMEOUT", "message": "识别超时" }
@@ -191,6 +193,12 @@ App 端后台待唤醒时长期保持 `wake` 会话；`dialog` 一轮结束（T2
 `items` 为编号列表，`index` 从 1 开始；每项 `title` 必有，`image` / `imageLarge` / `link` / `fields` 均可缺省（不同数据源字段多少不一，客户端须容忍缺失：缺则不显示、无 `link` 时禁用复制、无 `image` 时不渲染封面块）。**列表形态**下客户端挑 `fields[]` 里较短的若干条作预览（长正文留给详情），**详情形态**逐行渲染全部 `fields[]`；两种形态都不认识字段名，纯按 label+value 展示。`selectedIndex` 省略/null 显示编号列表、为数字时切到该商品详情；`close:true` 收起面板。用户说「1」「第二个」「第三件」或点编号项都落到同一 `selectedIndex`（编号量词首/个/件/项/款/条通用）。**选号状态必须跨轮保留**（音乐候选 / 商品 / 开源项目三类列表同一套规则）：用户报编号没说清、或插了一句无关的话，网关不能清掉待选列表，否则卡片还在屏幕上、用户回头再说编号却选不中，甚至会把这句交给大模型/音乐直连答成点歌。像是在报编号却没对上时（含糊、听错、越界），网关就地口播一句重问并消费这句话，不放行到其它分支；只有成功选中、会话结束或用户明确发起新的列表查询才清除。**详情内容只展示、不朗读、不进 TTS**（同字幕口径）；选中后网关只口播一句编号确认，不复述商品内容。详情数据与语音服务来源、好价数据源解耦：客户端只认本协议快照，不从 `session.start.voice` 取商品数据；切换语音来源不下发本事件、不重置已显示的卡片。图片/链接等第三方地址只由网关下发（客户端不拼 URL）。网关可以在用户选中某件后**再抓该件的详情页**补充信息（优惠说明、品牌、权威发布时间、清晰大图）：补充信息只是让同一个 `DetailItem` 多几行 `fields[]`、`imageLarge` 有值，**事件结构与客户端渲染逻辑完全不变**，客户端不知道数据来自列表页还是详情页、来自哪个站点；抓不到就照旧用列表数据展示。
 
 **来源与占位**：`来源`（站点名）也只是 `fields[]` 里的一行——数据源在内部模型里给 `sourceKey`，网关按会话 `lang` 查表得到展示名后下发，客户端不认识这个 key，换源不改协议。用户点名的字段（如开源项目的「开发语言」「开源协议」）即使当前数据源没给值，网关也会**下发占位行**（`value` 为本地化的「暂无 / N/A」），保证字段不消失但**绝不编造具体值**；以后换到有该字段的源，映射层自然显示真值，客户端一行不用改。商品与开源项目的泛推荐都结合用户长期记忆做确定性排序（`rankByPreference`，不调 LLM），用户指定了品类时记忆不覆盖明确需求。
+
+`media.report` 是**助手框正下方的报表展示区全量快照**，与 `media.detail`（商品详情，页面底部独立面板）**完全独立、互不复用**（协议、状态、容器、组件、生命周期都分开，只共用「结构化下行 + type→渲染器」范式）。一次问数结果 = `title` + 有序 `blocks`，收到即整体替换（幂等），`close:true` 收起。客户端用**通用报表容器**按 `block.type` 查注册表分派渲染，`table`/`image` 两类块契约：
+- `table`：`columns: [{name, value}]` 为列元数据（`name` 展示表头、`value` 是取数键），`rows: [{键: 值}]` 为行数据；客户端本地铺表格（横向可滚动、数字右对齐），不认识具体列名。借鉴 SQLBot 前端 `axis`+`data` 分离的契约。
+- `image`：`url` 为后端出图的 PNG 地址，**可为相对路径**（如 `/api/chart/image/xxx`），客户端按服务地址 `httpBase` 拼绝对后展示；`title` 可选。图片由服务端出图，客户端**不在本地引入绘图库**（uni-app 逻辑层无 DOM，G2/S2 之类搬不过来）。
+
+新增块类型（text/chart/kv/webview…）＝协议加一个 `ReportBlock` 分支 + 客户端注册表加一项 + 一个小组件，**不改容器、不改网关骨架、不改状态结构**。报表内容**只展示、不朗读、不进 TTS**（同字幕/详情口径）；新一轮说话时客户端清掉上一轮报表，避免张冠李戴。网关解析问数工具结果时只做数据搬运（列名取 `data.fields`、行取 `data.data`、图片取 `image_url`、标题取 `chart.title`），**不编造、不伪造数据**；解析失败/not 问数工具则不下发。
 
 `client.location.request`：服务端**仅在位置/天气类工具被调用但本会话尚无设备位置时才下发**，客户端据此请求定位授权（manifest 已声明权限）并通过 `session.location` 上报经纬度。不在建连时主动要位置，避免冷启动就弹定位授权框打扰用户；用户没问位置相关问题时完全不触发定位。客户端若已授权/取不到位置则静默跳过，不阻断会话。
 

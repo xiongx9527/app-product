@@ -15,7 +15,7 @@ import {
 } from '@/core/config'
 import { t } from '@/core/i18n'
 import { setDuckConfig, setAecUserEnabled } from '@/core/audio/appCapture'
-import { restartGatewayViaNative, waitGatewayAlive } from '@/core/transport/gatewayControl'
+import { restartGatewayViaNative, waitGatewayAlive, fetchGatewaySkills, type GatewaySkill } from '@/core/transport/gatewayControl'
 import { refreshDuckVolume } from '@/core/audio/musicPlayer'
 import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
@@ -143,12 +143,7 @@ function onResetPlayback(): void {
   resetPlayback()
 }
 
-/** 超时设置恢复默认：改乱了就一键回默认值。 */
-function onResetTimeouts(): void {
-  resetTimeouts()
-}
-
-/** 对话设置恢复默认：只重置本组项（duck/插话/AEC/定稿/退下），不动播放源与音量；改完立即下发原生。 */
+/** 对话设置恢复默认：本组项（duck/插话/AEC/定稿/退下 + 已并入的超时预算）一起重置，不动播放源与音量。 */
 function onResetDialog(): void {
   const playback = createDefaultPlayback()
   appConfig.general.interruptDuck = true
@@ -160,6 +155,7 @@ function onResetDialog(): void {
   appConfig.playback.ttsConcurrency = playback.ttsConcurrency
   appConfig.playback.autoExitMs = playback.autoExitMs
   appConfig.playback.autoExitGraceMs = playback.autoExitGraceMs
+  resetTimeouts() // 超时项已并入对话设置，一并恢复默认
   persistConfig()
   applyDuckConfig()
   refreshDuckVolume()
@@ -224,7 +220,7 @@ function setConsolidateEvery(e: any): void {
 
 /** 设置分组手风琴：同时只展开一个，打开一个时其它自动缩回，再点已展开的则收起。
  * 各分区一律默认折叠，样式一致（标题右侧带收起/展开箭头）。 */
-type SettingsGroup = 'general' | 'voice' | 'playback' | 'dialog' | 'timeout' | 'recommend' | 'memory' | 'account' | 'mcp'
+type SettingsGroup = 'general' | 'voice' | 'dialog' | 'playback' | 'recommend' | 'memory' | 'mcp' | 'skill'
 const expanded = ref<SettingsGroup | null>(null)
 function isOpen(key: SettingsGroup): boolean {
   return expanded.value === key
@@ -424,9 +420,62 @@ function onMcpEnabledChange(e: any): void {
   appConfig.mcp.enabled = e.detail.value === true
   persistConfig()
 }
+/** MCP 固定对接 server 的传输协议：http（Streamable HTTP，默认）/ sse（长连接）。下次会话生效。 */
+const mcpTransportOptions = computed(() => [
+  { value: 'http', label: t('settings.mcp.transport.http') },
+  { value: 'sse', label: t('settings.mcp.transport.sse') },
+])
+function onMcpTransportChange(v: string): void {
+  appConfig.mcp.transport = v === 'sse' ? 'sse' : 'http'
+  persistConfig()
+}
+/** MCP 连接失败重试次数：0=不重试，最多 10 次。下次会话生效（网关按此重连 MCP server）。 */
+const mcpRetryOptions = computed(() =>
+  [0, 1, 2, 3, 5, 10].map((n) => ({
+    value: String(n),
+    label: n === 0 ? t('settings.mcp.retryNone') : t('settings.mcp.retryTimes', { count: n }),
+  }))
+)
+function onMcpRetryChange(v: string): void {
+  const n = Number(v)
+  appConfig.mcp.retryCount = Number.isInteger(n) && n >= 0 && n <= 10 ? n : 2
+  persistConfig()
+}
 /** 打开 MCP 已注册工具列表页（网关从固定 server 发现的工具清单）。 */
 function openMcpTools(): void {
   uni.navigateTo({ url: '/pages/mcptools/mcptools' })
+}
+/** Skill 动态加载总开关：关闭后下次 start 不再从 19529 拉 skill 注入 systemPrompt。 */
+function onSkillEnabledChange(e: any): void {
+  appConfig.skill.enabled = e.detail.value === true
+  persistConfig()
+}
+const skillRetryOptions = computed(() =>
+  [0, 1, 2, 3, 5, 10].map((n) => ({
+    value: String(n),
+    label: n === 0 ? t('settings.mcp.retryNone') : t('settings.mcp.retryTimes', { count: n }),
+  }))
+)
+function onSkillRetryChange(v: string): void {
+  const n = Number(v)
+  appConfig.skill.retryCount = Number.isInteger(n) && n >= 0 && n <= 10 ? n : 2
+  persistConfig()
+}
+/** 远端 skill 列表（从网关 /api/skills 拉）：进入设置页或点刷新时加载。 */
+const remoteSkills = ref<GatewaySkill[]>([])
+const skillLoading = ref(false)
+const skillError = ref('')
+const expandedSkill = ref('')
+function toggleSkillExpand(name: string): void {
+  expandedSkill.value = expandedSkill.value === name ? '' : name
+}
+async function loadRemoteSkills(): Promise<void> {
+  skillLoading.value = true
+  skillError.value = ''
+  const res = await fetchGatewaySkills()
+  remoteSkills.value = res.skills
+  if (!res.ok) skillError.value = res.error || t('settings.skill.loadFail')
+  skillLoading.value = false
 }
 /** 打开通用账号本：按 type 保存账号密码 / API Key，工具按前缀自动取用。 */
 function openAccounts(): void {
@@ -537,6 +586,7 @@ onMounted(() => {
   void loadTtsVoices()
   void loadAsrModels()
   void loadTtsModels()
+  void loadRemoteSkills()
   // 上次开了定时检查：进本页即按配置间隔续上定时器（离开页面 onUnmounted 会清）。
   startAutoCheck()
   // 播放源目前仅百度一种（隐藏选择器），旧配置若存过其它源（netease/tencent/kugou）静默回退到百度。
@@ -617,6 +667,14 @@ watch(
               <text class="swatch-label">{{ opt.label }}</text>
             </view>
           </view>
+        </view>
+        <!-- 我的账号（原账号管理分组，已并入通用设置）：按 type 保存凭据，工具按前缀取用 -->
+        <view class="entry" @tap="openAccounts">
+          <view class="row-text">
+            <text class="row-label">{{ t('settings.account.manage') }}</text>
+            <text class="hint">{{ t('settings.account.manageHint') }}</text>
+          </view>
+          <text class="entry-arrow">›</text>
         </view>
       </template>
     </view>
@@ -725,6 +783,148 @@ watch(
           <text class="detect-detail">{{ item.detail }}</text>
         </view>
       </view>
+      </template>
+    </view>
+    <!-- 对话设置：音频/定稿/断句/退下 + 超时预算，默认折叠；超时项已并入本分组，位于播放设置之前 -->
+    <view class="group">
+      <view class="group-head" @tap="toggleGroup('dialog')">
+        <text class="group-title">{{ t('settings.dialog.title') }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('dialog') }" />
+      </view>
+      <template v-if="isOpen('dialog')">
+        <!-- 音频开关放最前，展开对话设置即可见（之前在服务设置，用户以为没了） -->
+        <!-- 中断前 duck：播报中检测人声开口时压低播报/媒体给 KWS 让路（打断/插话都适用） -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.general.interruptDuck') }}</text>
+            <text class="hint">{{ t('settings.general.interruptDuckHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.interruptDuck !== false"
+            color="#6c8cff"
+            @change="(e: any) => onInterruptDuckChange(e.detail.value)"
+          />
+        </view>
+        <!-- duck 强度：三种 duck 共用的压低程度；与其它下拉一致用 sub 容器平铺 -->
+        <view class="sub">
+          <SelectRow
+            :title="t('settings.general.duckLevel')"
+            :hint="t('settings.general.duckLevelHint')"
+            :options="duckLevelOptions"
+            :model-value="appConfig.general.duckLevel ?? 'medium'"
+            @update:model-value="onDuckLevelChange"
+          />
+        </view>
+        <!-- 插话开关：默认关（播报期静音、只靠 KWS 打断）；开则恢复播报期上行+插话入队 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.general.bargeIn') }}</text>
+            <text class="hint">{{ t('settings.general.bargeInHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.bargeIn === true"
+            color="#6c8cff"
+            @change="(e: any) => onBargeInChange(e.detail.value)"
+          />
+        </view>
+        <!-- 硬件 AEC 开关：开=采集全程用系统 AEC（含播报期），默认开启；四场景实验证明不影响唤醒命中率 -->
+        <view class="setting-row">
+          <view class="setting-text">
+            <text class="row-label">{{ t('settings.playback.aecEnabled') }}</text>
+            <text class="hint">{{ t('settings.playback.aecEnabledHint') }}</text>
+          </view>
+          <switch
+            :checked="appConfig.general.aecEnabled === true"
+            color="#6c8cff"
+            @change="(e: any) => onAecChange(e.detail.value)"
+          />
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.finalizeMaxChars') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.finalizeMaxChars" />
+          <text class="hint">{{ t('settings.playback.finalizeMaxCharsHint') }}</text>
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.finalizeTimeoutMs') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.finalizeTimeoutMs" />
+          <text class="hint">{{ t('settings.playback.finalizeTimeoutMsHint') }}</text>
+        </view>
+        <!-- 播报断句：遇标点即切、并行合成，限制并发数 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.ttsConcurrency') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.ttsConcurrency" />
+          <text class="hint">{{ t('settings.playback.ttsConcurrencyHint') }}</text>
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.autoExitMs') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.autoExitMs" />
+          <text class="hint">{{ t('settings.playback.autoExitMsHint') }}</text>
+        </view>
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.playback.autoExitGraceMs') }}</text>
+          <input class="input" type="number" v-model.number="appConfig.playback.autoExitGraceMs" />
+          <text class="hint">{{ t('settings.playback.autoExitGraceMsHint') }}</text>
+        </view>
+
+        <!-- 超时设置（原独立分组，已并入对话设置） -->
+        <text class="hint">{{ t('settings.timeout.sub') }}</text>
+        <!-- 定稿识别超时：一句话说完等这么久还没出结果就按现有文字定稿，超时短了会识别不出字 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.asrFinalizeMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.asrFinalizeMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.asrFinalizeMsHint') }}</text>
+        </view>
+        <!-- 中间识别间隔：界面实时字幕多久刷新一次，越短越跟手、越费算力 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.asrPartialIntervalMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.asrPartialIntervalMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.asrPartialIntervalMsHint') }}</text>
+        </view>
+        <!-- 单轮回复超时：问完到拿到回答的上限，思考模式下另有更长预算 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.llmMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.llmMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.llmMsHint') }}</text>
+        </view>
+        <!-- 单次播报合成超时：整句合成语音的总预算，含失败重试 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.ttsMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.ttsMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.ttsMsHint') }}</text>
+        </view>
+        <!-- 播报卡顿断开：这么久没收到新的音频帧就判定卡死并收尾 -->
+        <view class="setting-row column">
+          <text class="row-label">{{ t('settings.timeout.ttsFrameGapMs') }}</text>
+          <input
+            class="input"
+            type="number"
+            v-model.number="appConfig.timeouts.ttsFrameGapMs"
+            @blur="onTimeoutBlur"
+          />
+          <text class="hint">{{ t('settings.timeout.ttsFrameGapMsHint') }}</text>
+        </view>
+
+        <button class="reset" @tap="onResetDialog">{{ t('settings.reset') }}</button>
       </template>
     </view>
     <!-- 播放设置（音乐播放源等），默认折叠 -->
@@ -849,157 +1049,6 @@ watch(
         <button class="reset" @tap="onResetPlayback">{{ t('settings.reset') }}</button>
       </template>
     </view>
-    <!-- 对话设置：识别兜底定稿 + 自动退下时间，默认折叠，位于播放设置之后 -->
-    <view class="group">
-      <view class="group-head" @tap="toggleGroup('dialog')">
-        <text class="group-title">{{ t('settings.dialog.title') }}</text>
-        <view class="group-chevron" :class="{ open: isOpen('dialog') }" />
-      </view>
-      <template v-if="isOpen('dialog')">
-        <!-- 音频开关放最前，展开对话设置即可见（之前在服务设置，用户以为没了） -->
-        <!-- 中断前 duck：播报中检测人声开口时压低播报/媒体给 KWS 让路（打断/插话都适用） -->
-        <view class="setting-row">
-          <view class="setting-text">
-            <text class="row-label">{{ t('settings.general.interruptDuck') }}</text>
-            <text class="hint">{{ t('settings.general.interruptDuckHint') }}</text>
-          </view>
-          <switch
-            :checked="appConfig.general.interruptDuck !== false"
-            color="#6c8cff"
-            @change="(e: any) => onInterruptDuckChange(e.detail.value)"
-          />
-        </view>
-        <!-- duck 强度：三种 duck 共用的压低程度；与其它下拉一致用 sub 容器平铺 -->
-        <view class="sub">
-          <SelectRow
-            :title="t('settings.general.duckLevel')"
-            :hint="t('settings.general.duckLevelHint')"
-            :options="duckLevelOptions"
-            :model-value="appConfig.general.duckLevel ?? 'medium'"
-            @update:model-value="onDuckLevelChange"
-          />
-        </view>
-        <!-- 插话开关：默认关（播报期静音、只靠 KWS 打断）；开则恢复播报期上行+插话入队 -->
-        <view class="setting-row">
-          <view class="setting-text">
-            <text class="row-label">{{ t('settings.general.bargeIn') }}</text>
-            <text class="hint">{{ t('settings.general.bargeInHint') }}</text>
-          </view>
-          <switch
-            :checked="appConfig.general.bargeIn === true"
-            color="#6c8cff"
-            @change="(e: any) => onBargeInChange(e.detail.value)"
-          />
-        </view>
-        <!-- 硬件 AEC 开关：开=采集全程用系统 AEC（含播报期），默认开启；四场景实验证明不影响唤醒命中率 -->
-        <view class="setting-row">
-          <view class="setting-text">
-            <text class="row-label">{{ t('settings.playback.aecEnabled') }}</text>
-            <text class="hint">{{ t('settings.playback.aecEnabledHint') }}</text>
-          </view>
-          <switch
-            :checked="appConfig.general.aecEnabled === true"
-            color="#6c8cff"
-            @change="(e: any) => onAecChange(e.detail.value)"
-          />
-        </view>
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.playback.finalizeMaxChars') }}</text>
-          <input class="input" type="number" v-model.number="appConfig.playback.finalizeMaxChars" />
-          <text class="hint">{{ t('settings.playback.finalizeMaxCharsHint') }}</text>
-        </view>
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.playback.finalizeTimeoutMs') }}</text>
-          <input class="input" type="number" v-model.number="appConfig.playback.finalizeTimeoutMs" />
-          <text class="hint">{{ t('settings.playback.finalizeTimeoutMsHint') }}</text>
-        </view>
-        <!-- 播报断句：遇标点即切、并行合成，限制并发数 -->
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.playback.ttsConcurrency') }}</text>
-          <input class="input" type="number" v-model.number="appConfig.playback.ttsConcurrency" />
-          <text class="hint">{{ t('settings.playback.ttsConcurrencyHint') }}</text>
-        </view>
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.playback.autoExitMs') }}</text>
-          <input class="input" type="number" v-model.number="appConfig.playback.autoExitMs" />
-          <text class="hint">{{ t('settings.playback.autoExitMsHint') }}</text>
-        </view>
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.playback.autoExitGraceMs') }}</text>
-          <input class="input" type="number" v-model.number="appConfig.playback.autoExitGraceMs" />
-          <text class="hint">{{ t('settings.playback.autoExitGraceMsHint') }}</text>
-        </view>
-
-        <button class="reset" @tap="onResetDialog">{{ t('settings.reset') }}</button>
-      </template>
-    </view>
-    <!-- 超时设置：识别/回复/合成/卡顿四项时间预算，默认折叠，位于对话设置之后 -->
-    <view class="group">
-      <view class="group-head" @tap="toggleGroup('timeout')">
-        <text class="group-title">{{ t('settings.timeout.title') }}</text>
-        <view class="group-chevron" :class="{ open: isOpen('timeout') }" />
-      </view>
-      <template v-if="isOpen('timeout')">
-        <text class="hint">{{ t('settings.timeout.sub') }}</text>
-        <!-- 定稿识别超时：一句话说完等这么久还没出结果就按现有文字定稿，超时短了会识别不出字 -->
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.timeout.asrFinalizeMs') }}</text>
-          <input
-            class="input"
-            type="number"
-            v-model.number="appConfig.timeouts.asrFinalizeMs"
-            @blur="onTimeoutBlur"
-          />
-          <text class="hint">{{ t('settings.timeout.asrFinalizeMsHint') }}</text>
-        </view>
-        <!-- 中间识别间隔：界面实时字幕多久刷新一次，越短越跟手、越费算力 -->
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.timeout.asrPartialIntervalMs') }}</text>
-          <input
-            class="input"
-            type="number"
-            v-model.number="appConfig.timeouts.asrPartialIntervalMs"
-            @blur="onTimeoutBlur"
-          />
-          <text class="hint">{{ t('settings.timeout.asrPartialIntervalMsHint') }}</text>
-        </view>
-        <!-- 单轮回复超时：问完到拿到回答的上限，思考模式下另有更长预算 -->
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.timeout.llmMs') }}</text>
-          <input
-            class="input"
-            type="number"
-            v-model.number="appConfig.timeouts.llmMs"
-            @blur="onTimeoutBlur"
-          />
-          <text class="hint">{{ t('settings.timeout.llmMsHint') }}</text>
-        </view>
-        <!-- 单次播报合成超时：整句合成语音的总预算，含失败重试 -->
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.timeout.ttsMs') }}</text>
-          <input
-            class="input"
-            type="number"
-            v-model.number="appConfig.timeouts.ttsMs"
-            @blur="onTimeoutBlur"
-          />
-          <text class="hint">{{ t('settings.timeout.ttsMsHint') }}</text>
-        </view>
-        <!-- 播报卡顿断开：这么久没收到新的音频帧就判定卡死并收尾 -->
-        <view class="setting-row column">
-          <text class="row-label">{{ t('settings.timeout.ttsFrameGapMs') }}</text>
-          <input
-            class="input"
-            type="number"
-            v-model.number="appConfig.timeouts.ttsFrameGapMs"
-            @blur="onTimeoutBlur"
-          />
-          <text class="hint">{{ t('settings.timeout.ttsFrameGapMsHint') }}</text>
-        </view>
-
-        <button class="reset" @tap="onResetTimeouts">{{ t('settings.reset') }}</button>
-      </template>
-    </view>
     <!-- 好价设置（好价商品推荐条数），默认折叠，位于播放设置之后 -->
     <view class="group">
       <view class="group-head" @tap="toggleGroup('recommend')">
@@ -1084,7 +1133,8 @@ watch(
       </template>
     </view>
     <!-- MCP 总开关：关闭则不向网关下发任何 MCP server（整体停用）。MCP 固定对接服务地址下的
-         /mcp/sse，无手动服务器列表，故这里只有一个开关；保存/下次会话生效。 -->
+         /mcp/（Streamable HTTP）或 /mcp/sse（SSE，按下面的协议选择），无手动服务器列表；
+         保存/下次会话生效。 -->
     <view class="group">
       <view class="group-head" @tap="toggleGroup('mcp')">
         <text class="group-title">{{ t('settings.mcp.title') }}</text>
@@ -1103,6 +1153,20 @@ watch(
             @change="onMcpEnabledChange"
           />
         </view>
+        <text class="row-label">{{ t('settings.mcp.transport.title') }}</text>
+        <SelectRow
+          :options="mcpTransportOptions"
+          :model-value="appConfig.mcp.transport"
+          @update:model-value="onMcpTransportChange"
+        />
+        <text class="hint">{{ t('settings.mcp.transportHint') }}</text>
+        <text class="row-label">{{ t('settings.mcp.retry.title') }}</text>
+        <SelectRow
+          :options="mcpRetryOptions"
+          :model-value="String(appConfig.mcp.retryCount)"
+          @update:model-value="onMcpRetryChange"
+        />
+        <text class="hint">{{ t('settings.mcp.retryHint') }}</text>
         <view class="entry" @tap="openMcpTools">
           <view class="row-text">
             <text class="row-label">{{ t('settings.mcp.toolsEntry') }}</text>
@@ -1112,19 +1176,51 @@ watch(
         </view>
       </template>
     </view>
-    <!-- 账号管理：系统通用能力（与 MCP 平级，不塞在 MCP 分组里）。按 type 分类的账号本入口。 -->
+    <!-- Skill 设置：动态加载 19529 上的 skill（开关 + 重试次数 + 实时列表），和 MCP 类似 -->
     <view class="group">
-      <view class="group-head" @tap="toggleGroup('account')">
-        <text class="group-title">{{ t('settings.account.title') }}</text>
-        <view class="group-chevron" :class="{ open: isOpen('account') }" />
+      <view class="group-head" @tap="toggleGroup('skill')">
+        <text class="group-title">{{ t('settings.skill.title') }}</text>
+        <view class="group-chevron" :class="{ open: isOpen('skill') }" />
       </view>
-      <template v-if="isOpen('account')">
-        <view class="entry" @tap="openAccounts">
+      <template v-if="isOpen('skill')">
+        <text class="hint">{{ t('settings.skill.sub') }}</text>
+        <view class="setting-row">
           <view class="row-text">
-            <text class="row-label">{{ t('settings.account.manage') }}</text>
-            <text class="hint">{{ t('settings.account.manageHint') }}</text>
+            <text class="row-label">{{ t('settings.skill.enabled') }}</text>
+            <text class="hint">{{ t('settings.skill.enabledHint') }}</text>
           </view>
-          <text class="entry-arrow">›</text>
+          <switch
+            class="setting-switch"
+            :checked="appConfig.skill.enabled"
+            color="#6c8cff"
+            @change="onSkillEnabledChange"
+          />
+        </view>
+        <text class="row-label">{{ t('settings.skill.retry.title') }}</text>
+        <SelectRow
+          :options="skillRetryOptions"
+          :model-value="String(appConfig.skill.retryCount)"
+          @update:model-value="onSkillRetryChange"
+        />
+        <text class="hint">{{ t('settings.skill.retryHint') }}</text>
+        <!-- 已加载的 skill 列表：从网关 /api/skills 实时拉，列出 name + 说明 -->
+        <view class="skill-list-head">
+          <text class="row-label">{{ t('settings.skill.listTitle') }}</text>
+          <text class="refresh" @tap="loadRemoteSkills">{{ t('settings.skill.refresh') }}</text>
+        </view>
+        <text v-if="skillLoading" class="hint">{{ t('settings.skill.loading') }}</text>
+        <text v-else-if="skillError" class="hint hint-err">{{ skillError }}</text>
+        <text v-else-if="!remoteSkills.length" class="hint">{{ t('settings.skill.empty') }}</text>
+        <view v-else class="skill-list">
+          <view v-for="s in remoteSkills" :key="s.name" class="skill-item">
+            <!-- 点标题行展开/收起正文（与 19529 管理页「预览正文」一致） -->
+            <view class="skill-item-head" @tap="toggleSkillExpand(s.name)">
+              <text class="skill-name">{{ s.name }}</text>
+              <text class="skill-toggle">{{ expandedSkill === s.name ? '▾' : '▸' }}</text>
+            </view>
+            <text v-if="s.description" class="skill-desc">{{ s.description }}</text>
+            <text v-if="expandedSkill === s.name" class="skill-content">{{ s.content || t('settings.skill.noContent') }}</text>
+          </view>
         </view>
       </template>
     </view>
@@ -1636,6 +1732,32 @@ picker {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Skill 设置：列表 + 刷新 */
+.skill-list-head { display: flex; flex-direction: row; align-items: center; justify-content: space-between; }
+.refresh { font-size: 12px; color: #6c8cff; }
+.hint-err { color: #ff6b9d; }
+.skill-list { display: flex; flex-direction: column; gap: 6px; }
+.skill-item { padding: 8px 10px; background: rgba(255, 255, 255, 0.05); border-radius: 8px; }
+.skill-item-head { display: flex; flex-direction: row; align-items: center; justify-content: space-between; }
+.skill-name { font-size: 12px; color: #9be8cd; font-weight: 600; }
+.skill-toggle { font-size: 12px; color: #6c8cff; }
+/* 正文：多行完整显示，和 19529 管理页「预览正文」一致 */
+.skill-content {
+  display: block; margin-top: 8px; padding: 8px; background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px; font-size: 11px; color: #b9bed6; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+/* Skill 说明：多行文本完整显示（description 可能是长句，不单行截断） */
+.skill-desc {
+  display: block;
+  font-size: 11px;
+  color: #9aa1bd;
+  margin-top: 4px;
+  line-height: 1.6;
+  white-space: normal;
+  word-break: break-all;
 }
 
 /* 横屏：确保页面铺满宽度，避免左右留白 */

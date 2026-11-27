@@ -174,9 +174,16 @@ describe('app config', () => {
     expect(normalizeConfig({ playback: { ttsConcurrency: 3 } }).playback.ttsConcurrency).toBe(3)
   })
 
-  it('默认 mcp 为空列表', () => {
+  it('默认 mcp：开启、传输 http、空列表', () => {
     const config = createDefaultConfig()
-    expect(config.mcp).toEqual({ enabled: true, servers: [] })
+    expect(config.mcp).toEqual({ enabled: true, transport: 'http', retryCount: 2, servers: [] })
+  })
+
+  it('mcp 传输协议：只认 sse / http，缺失或非法回退 http', () => {
+    expect(normalizeConfig({ mcp: { transport: 'sse' } }).mcp.transport).toBe('sse')
+    expect(normalizeConfig({ mcp: { transport: 'http' } }).mcp.transport).toBe('http')
+    expect(normalizeConfig({ mcp: { transport: 'telnet' } }).mcp.transport).toBe('http')
+    expect(normalizeConfig({ mcp: {} }).mcp.transport).toBe('http')
   })
 
   it('记忆合并阈值/频率收敛为非负整数，非法回退默认（30 / 5）', () => {
@@ -224,6 +231,14 @@ describe('app config', () => {
 
   it('normalizeMcp 对缺失/非数组回落到空列表', () => {
     const config = normalizeConfig({ mcp: 'not-an-object' })
-    expect(config.mcp).toEqual({ enabled: true, servers: [] })
+    expect(config.mcp).toEqual({ enabled: true, transport: 'http', retryCount: 2, servers: [] })
+  })
+
+  it('MCP 连接重试次数：0 合法、越界/非整数回退默认 2', () => {
+    expect(normalizeConfig({ mcp: { retryCount: 0 } }).mcp.retryCount).toBe(0)
+    expect(normalizeConfig({ mcp: { retryCount: 5 } }).mcp.retryCount).toBe(5)
+    expect(normalizeConfig({ mcp: { retryCount: 99 } }).mcp.retryCount).toBe(2)
+    expect(normalizeConfig({ mcp: { retryCount: -1 } }).mcp.retryCount).toBe(2)
+    expect(normalizeConfig({ mcp: { retryCount: 2.5 } }).mcp.retryCount).toBe(2)
   })
 })

@@ -2,6 +2,7 @@ import type { TtsProvider } from './provider'
 import type { VendorParams } from '../config'
 import { TIMEOUT_DEFAULTS } from '../timeouts'
 import type { ResolvedTimeouts } from '../timeouts'
+import { bargeDiag } from '../diagLog'
 
 /**
  * 单句合成超时（默认 25s，可被设置页覆盖）。
@@ -52,8 +53,13 @@ export class HttpVoiceTts implements TtsProvider {
       if (signal?.aborted) throw signal.reason ?? new Error('[tts] 合成已取消')
       const remaining = deadline - Date.now()
       if (remaining < 1000) break
+      // 【诊断·常驻】记录每次尝试的耗时：真机「字出来 20 秒才出声」需要区分是
+      // 单次合成慢、还是首次挂起后重试（两次共享预算）导致的双倍等待。
+      const t0 = Date.now()
+      bargeDiag(`TTS-TRY text="${text.slice(0, 12)}" len=${text.length} attempt=${attempt} budget=${remaining}ms model=${String(this.params.model ?? '')} voice=${String(this.params.voice ?? '')}`)
       try {
         const pcm = await this.fetchPcm(text, remaining, signal)
+        bargeDiag(`TTS-TRY-OK text="${text.slice(0, 12)}" attempt=${attempt} ms=${Date.now() - t0} bytes=${pcm.length}`)
         // 整段 TTS（builtin/deepseek 一次返回完整 WAV）必须切成小帧下发：
         // 原生 playPcm(String b64) 每帧 Base64.decode 后写 AudioTrack，单帧 1.2MB（base64 1.6MB）
         // 经 weex 桥传输会超限/截断 → 播不出来。切成 9600B(200ms@24k) 匹配流式播放。
@@ -65,6 +71,7 @@ export class HttpVoiceTts implements TtsProvider {
         // 已取消不再重试——插话/打断后立即释放，别让在途 fetch 继续占后端
         if (signal?.aborted) throw err
         lastErr = err
+        bargeDiag(`TTS-TRY-FAIL text="${text.slice(0, 12)}" attempt=${attempt} ms=${Date.now() - t0} err=${(err as Error).message}`)
         if (attempt === 0) console.warn('[tts] 合成失败，预算内重试一次：', err)
       }
     }
@@ -83,6 +90,7 @@ export class HttpVoiceTts implements TtsProvider {
       else external.addEventListener('abort', onAbort, { once: true })
     }
     try {
+      const t0 = Date.now()
       const res = await fetch(`${this.baseUrl}/v1/audio/speech`, {
         method: 'POST',
         headers: this.authHeaders({ 'content-type': 'application/json' }),
@@ -98,8 +106,10 @@ export class HttpVoiceTts implements TtsProvider {
         signal: ctrl.signal,
       })
       if (!res.ok || !res.body) throw new Error(`[tts] 合成失败 HTTP ${res.status}`)
+      const ttfb = Date.now() - t0
       const contentType = res.headers.get('content-type') ?? ''
       const ab = new Uint8Array(await res.arrayBuffer())
+      bargeDiag(`TTS-FETCH text="${text.slice(0, 12)}" ttfb=${ttfb}ms total=${Date.now() - t0}ms bytes=${ab.length} ct=${contentType.slice(0, 30)}`)
       if (contentType.includes('application/json') || !isRiff(ab)) {
         throw new Error('[tts] 合成失败：响应非 WAV')
       }

@@ -12,13 +12,47 @@ import {
   isTokenExpired, isTokenFormatError, bumpFailStreak,
 } from './mcpTokenCache'
 import { enhanceToolDescriptions } from './toolDescEnhancer'
-import type { DetailContext, Lang, McpServerConfig } from '../protocol'
+import { parseReportFromToolResult } from './reportParser'
+import type { DetailContext, Lang, McpServerConfig, ReportPayload } from '../protocol'
 import type { LlmConfig } from '../config'
 import { createToolkit, registerMcpServers, type LocationProvider, type MemoryStore, type McpClientHandle, type RequestLocation } from './tools'
 import type { AutoLearnEngine } from './autoLearn'
 import { ChannelSplitter } from './channelSplitter'
 import { createMemoryExtractor, type ExtractedMemory, type MemoryExtractor } from './memory'
 import type { MemoryEntry } from './dataService'
+
+/**
+ * 问数工具 ID 参数规范化（2026-11-26）。真机铁证：LLM 有时把 mcp_start 返回的整个对象
+ * 塞进 mcp_question 的 chat_id（"[object Object]"），后端 longArgOrNull 用 Long.parseLong
+ * 解析失败 → "无效的 ID 参数" → 反复刷新 token 重试十几次才出报表。这里在调用前把对象里的
+ * 真实 id 提取出来（兼容 chat_id/id/datasource_id 字段），科学计数法转整数字符串。
+ * 只处理问数类工具的 ID 字段，其它工具不动。
+ */
+function normalizeQuestionIds(toolName: string, input: Record<string, unknown>): boolean {
+  if (!/mcp_question$|question_answer$|mcp_start$/.test(toolName)) return false
+  const idKeys = ['chat_id', 'datasource_id', 'custom_model', 'oid']
+  let changed = false
+  for (const key of idKeys) {
+    const v = input[key]
+    if (v == null) continue
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      const obj = v as Record<string, unknown>
+      // 对象 → 提取真实 id（常见形态：{chat_id:123} / {id:123} / 整个 mcp_start 响应）
+      const extracted = obj[key] ?? obj.id ?? obj.chat_id ?? obj.datasource_id
+      if (typeof extracted === 'number' || (typeof extracted === 'string' && extracted.trim())) {
+        input[key] = extracted
+        changed = true
+      } else {
+        delete input[key] // 提取不出有效 id：删掉让后端按缺省逻辑建会话，比传对象强
+        changed = true
+      }
+    } else if (typeof v === 'string' && /^-?\d+(\.\d+)?e[+-]?\d+$/i.test(v.trim())) {
+      input[key] = String(Math.round(Number(v)))
+      changed = true
+    }
+  }
+  return changed
+}
 
 /** 对话智能体服务：按语言本地化系统提示，流式回传文本增量。 */
 export interface AgentService {
@@ -77,12 +111,16 @@ export async function createAgentService(
   autoMemory?: boolean,
   /** MCP 服务器列表：客户端设置页下发，网关据此连上并把其工具注册进助手工具箱。 */
   mcpServers: McpServerConfig[] = [],
+  /** MCP 连接失败重试次数（0=不重试，缺省 2）：公网偶发 fetch failed 时自动重连。 */
+  mcpRetryCount = 2,
   /** 通用自动学习引擎：有则注册 learn_correction 工具并包装所有工具（agent 只依赖此抽象）。 */
   autoLearnEngine?: AutoLearnEngine,
   /** skill 注入的提示词片段：拼进 baseSysPrompt（必须在 refreshNowPlaying 之前），缺省空。 */
   promptAddon: string = '',
   /** 当前打开的详情上下文：每轮 reply 前读最新值拼进 systemPrompt，供 LLM 介绍/围绕商品聊天。 */
-  getDetailContext?: () => DetailContext | null
+  getDetailContext?: () => DetailContext | null,
+  /** 报表下发回调：问数工具结果解析成 media.report 后由会话层下发客户端（与商品详情体系独立）。 */
+  onReport?: (payload: ReportPayload) => void
 ): Promise<AgentService> {
   if (config.llm.provider === 'stub') return new StubAgentService()
   const model = createModel(config.llm)
@@ -96,31 +134,38 @@ export async function createAgentService(
   // 若只在构造时另加会被抹掉。片段之间用换行分隔，空片段不产生多余空白。
   const addon = promptAddon.trim()
   const baseSysPrompt = m.systemPrompt + (addon ? `\n${addon}` : '') + (memoryContext ?? '')
-  // 工具箱先同步建好（保持 createToolkit 同步签名，4 个工具单测直接调用它）；
-  // MCP 连接是异步的，必须在 Agent 构造之前 await 完，否则工具在首轮对话里尚未就绪。
+  // 工具箱先同步建好（保持 createToolkit 同步签名，4 个工具单测直接调用它）。
+  // MCP 连接放后台、不 await：公网（花生壳）+ 移动网络下 initialize 往返可能 1-2s，
+  // 同步等会把唤醒卡住；Agent 每轮 reply 都从 toolkit.getJSONSchemas() 重新取工具，
+  // 后台注册完成后下一轮即生效（首轮可能还没有 MCP 工具，可接受）。
   const toolkit = createToolkit(lang, locationProvider, memoryStore, requestLocation, autoMemory ?? false, autoLearnEngine)
-  const mcpClients = await registerMcpServers(toolkit, mcpServers)
-  // 工具自己告诉 LLM 凭据怎么用：对存在 access_token 工具的服务，动态给其工具描述补一句
-  // 「先调 access_token 拿 token 再作为入参传入」。不写死业务名（前缀从工具名提取），不污染系统提示词。
-  const enhanced = enhanceToolDescriptions((toolkit as unknown as { tools: Array<{ name?: string; description?: string; inputSchema?: unknown }> }).tools ?? [])
-  if (enhanced.length) bargeDiag(`TOOL-DESC enhanced n=${enhanced.length}`)
+  const mcpClients: McpClientHandle[] = []
+  const mcpReady = registerMcpServers(toolkit, mcpServers, mcpRetryCount)
+    .then((clients) => {
+      mcpClients.push(...clients)
+      // 工具自己告诉 LLM 凭据怎么用：对存在 access_token 工具的服务，动态给其工具描述补一句
+      // 「先调 access_token 拿 token 再作为入参传入」。不写死业务名（前缀从工具名提取），不污染系统提示词。
+      const enhanced = enhanceToolDescriptions((toolkit as unknown as { tools: Array<{ name?: string; description?: string; inputSchema?: unknown }> }).tools ?? [])
+      if (enhanced.length) bargeDiag(`TOOL-DESC enhanced n=${enhanced.length}`)
+    })
+    .catch((e) => bargeDiag(`MCP-REGISTER error err=${(e as Error).message}`))
   // 【常驻诊断】记录每次工具调用（含 MCP 工具）：真机只能经 /api/diag/log 观测
   // 「LLM 到底有没有触发 MCP」。
   // 【凭据自动注入】工具名 `xxx__` 前缀 = 账号本 type（用户自定义，如 askdata）。
   // 调用时按前缀查账号本，把 username/password 或 apiKey 合并进 input（不覆盖 LLM 已填的值），
   // 让 Agent 不必知道密码也能取 token。对 LLM 透明：它只写其它参数。
   // 工具 schema 的字段表：按它过滤注入字段，避免 additionalProperties:false 的工具报错。
-  const toolSchemas = new Map<string, Set<string>>(
-    toolkit.getJSONSchemas().map((s) => [
-      s.function?.name ?? '', new Set(Object.keys(s.function?.parameters?.properties ?? {})),
-    ])
-  )
+  // MCP 工具是后台注册的，schema 必须每次调用时现取（构造时快照会漏掉后注册的工具）。
+  const schemaKeysOf = (toolName: string): string[] | undefined => {
+    const schema = toolkit.getJSONSchemas().find((s) => (s.function?.name ?? '') === toolName)
+    const props = schema?.function?.parameters?.properties
+    return props ? Object.keys(props) : undefined
+  }
   const origCallTool = toolkit.callToolFunction.bind(toolkit)
   toolkit.callToolFunction = async function* (toolCall: any) {
     const name = String(toolCall?.name ?? '')
     bargeDiag(`TOOL-CALL name=${name}`)
-    const allowed = toolSchemas.get(name)
-    const allowedKeys = allowed ? [...allowed] : undefined
+    const allowedKeys = schemaKeysOf(name)
     try {
       // 1) 系统级通用 API Key：所有工具都带（只塞 schema 里存在的字段）
       const globalKey = getGlobalApiKey()
@@ -148,6 +193,14 @@ export async function createAgentService(
             toolCall.input = JSON.stringify(input)
             bargeDiag(`TOOL-TOKEN injected prefix=${prefix}`)
           }
+        }
+        // 4) 问数 ID 参数规范化：LLM 偶发把整个 mcp_start 响应对象塞进 chat_id，
+        //    导致后端 Long.parseLong 失败反复重试。提取真实 id 后立即落回 input。
+        let idInput: Record<string, unknown> = {}
+        try { idInput = JSON.parse(toolCall.input || '{}') } catch { idInput = {} }
+        if (normalizeQuestionIds(name, idInput)) {
+          toolCall.input = JSON.stringify(idInput)
+          bargeDiag(`TOOL-ID-NORMALIZED name=${name} chat_id=${idInput.chat_id ?? ''} datasource_id=${idInput.datasource_id ?? ''}`)
         }
       }
     } catch (e) {
@@ -245,6 +298,17 @@ export async function createAgentService(
           bargeDiag(`TOOL-TOKEN cached prefix=${toolPrefix(name)}`)
         }
       }
+      // 【报表展示区】问数工具结果 → 结构化报表下发给 App 本地渲染（与 media.detail 商品详情独立）。
+      // 解析只搬运数据、失败返回 null，绝不影响工具原本返回给 LLM 的文本。
+      if (onReport) {
+        const report = parseReportFromToolResult(last)
+        if (report) {
+          const chartBlock = report.blocks.find((b) => b.type === 'chart')
+          const reportImg = chartBlock && chartBlock.type === 'chart' ? chartBlock.imageUrl ?? '' : ''
+          bargeDiag(`REPORT-SENT name=${name} title="${report.title}" blocks=${report.blocks.map((b) => b.type).join(',')} chartType=${chartBlock && chartBlock.type === 'chart' ? chartBlock.chartType ?? '' : ''} imageUrl=${reportImg}`)
+          try { onReport(report) } catch (e) { bargeDiag(`REPORT-SENT error err=${(e as Error).message}`) }
+        }
+      }
     }
     return last
   } as unknown as typeof toolkit.callToolFunction
@@ -268,6 +332,8 @@ export async function createAgentService(
   return {
     mcpClients,
     async closeMcp() {
+      // 等后台连接收尾，避免「刚连上就被丢弃」或连接中的 client 泄漏
+      await mcpReady
       // 逐个关闭 MCP 客户端（stdio 子进程 / 网络连接），忽略单个关闭错误，避免影响整体结束流程
       await Promise.all(
         mcpClients.map((c) => c.close().catch(() => undefined))

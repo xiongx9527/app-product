@@ -85,7 +85,8 @@ interface Harness {
   savedMemories: () => Array<{ key: string; value: string }>
   /** 合并（摘要）被触发的次数（验证阈值/频率配置生效） */
   consolidateCalls: () => number
-  /** 模拟工具层通过 emit 通道下发事件（如开源项目卡片） */
+  /** 模拟报表工具结果回调（验证迟到补口播） */
+  emitReport: (report: { title: string; blocks: Array<{ type: string }> }) => void
 }
 
 function createHarness(
@@ -99,8 +100,14 @@ function createHarness(
     finalizeTexts?: string[]
     /** asr.push 返回的实时草稿：驱动 handleBinary 的 asr.partial 下发条件验证 */
     partialText?: string
+    /** 注入 asr.lastRms：验证回声判定的能量门槛（高能量真人文本雷同不能当回声丢） */
+    asrLastRms?: number
     /** 始终返回 partial（不受播报窗口限制）：验证 partial 兜底定稿不抢跑 */
     partialAlways?: string
+    /** 只在第一次 push 返回 partial、之后返回 null：模拟"出字后停更"验证静音兜底 timer */
+    partialOnce?: string
+    /** reply 不产出任何文字（模拟工具调用后 LLM 无口播），用于验证报表迟到补口播 */
+    emptyReply?: boolean
     musicSourceFactory?: () => MusicSource
     candidateFetcher?: (url: string) => Promise<{ ok: boolean; json: () => Promise<unknown> }>
     /** 句末静音定稿阈值（毫秒）；默认 10ms，贴近真实长停顿测试时调大 */
@@ -162,9 +169,11 @@ function createHarness(
   const events: ServerEvent[] = []
   let calls = 0
   let frames = 0
+  let partialOnceDone = false
   let factoryCalls = 0
   let textIdx = 0
   let finish: (() => void) | null = null
+  let reportCb: ((report: { title: string; blocks: Array<{ type: string }> }) => void) | null = null
   const replyText = opts.replyText ?? '好的，我来说一句。'
   let extractCalls = 0
   let lastExtractHistory: Array<string[]> = []
@@ -185,6 +194,12 @@ function createHarness(
           resolveReply(replyText)
         }
         return pending
+      }
+      // emptyReply：LLM 只调工具、不产出文字（工具结果迟到的前提）
+      if (opts.emptyReply) {
+        return new Promise<string>((resolve) => {
+          finish = () => resolve('')
+        })
       }
       // 走与真实 agentService 相同的 ChannelSplitter，保证泄漏标记被剥离后再下发
       const sp = new ChannelSplitter(
@@ -211,12 +226,19 @@ function createHarness(
     async closeMcp() {},
   }
   const asr: AsrProvider = {
+    lastRms: opts.asrLastRms,
     async push() {
       frames += 1
       // partialText 注入：验证 handleBinary 的 asr.partial 下发条件（插话放行 / 回声抑制）。
       // 只在「播报窗口」（tts.end 已下发、playback_done 未回）生效，避免空闲监听期的
       // speakUtterance 自身上行把草稿提前刷出来干扰断言。
       if (opts.partialAlways) return opts.partialAlways
+      if (opts.partialOnce) {
+        // 第一次 asr.push（VAD started 补喂 preroll 时）返回文本，之后停更
+        if (partialOnceDone) return null
+        partialOnceDone = true
+        return opts.partialOnce
+      }
       if (!opts.partialText) return null
       const playbackWindow = events.some((e) => e.type === 'tts.end')
       if (!playbackWindow) return null
@@ -265,13 +287,18 @@ function createHarness(
     },
   } as unknown as DataService
   const deps: VoiceSessionDeps = {
-    agentFactory: (_llm, _lang, _tz, _loc, _store, memoryContext) => {
+    agentFactory: (_llm, _lang, _tz, _loc, _store, memoryContext, ...rest) => {
       factoryCalls += 1
       lastMemoryContext = memoryContext
+      // onReport 是 agentFactory 的最后一个参数（见 voiceSessionService 注入点）
+      const cb = rest[rest.length - 1]
+      if (typeof cb === 'function') reportCb = cb
       return agent
     },
     createAsr: () => asr,
     createTts: () => tts,
+    // 测试里关掉 TTS 连接预热：预热会额外 synthesize 一次「嗯」，污染「首句合成文本」断言。
+    ttsWarmup: false,
     resolveVoice: opts.resolveVoice ?? (() => ({}) as unknown as ResolvedCapabilities),
     data,
     send: (event) => events.push(event),
@@ -357,6 +384,7 @@ function createHarness(
     },
     savedMemories: () => savedMemories,
     consolidateCalls: () => consolidateCalls,
+    emitReport: (report) => reportCb?.(report),
   }
 }
 
@@ -3695,6 +3723,58 @@ describe('TTS 合成失败提示音聚合：多段失败只报一次', () => {
   })
 })
 
+describe('回声误杀与静音兜底定稿（2026-11-26 真机修复）', () => {
+  it('播报结束后：高能量(rms≈0.033)真人说的、与刚播报内容雷同的指令不被当回声丢弃', async () => {
+    // 真机铁证：用户说「统计下年级和班级的数量」rms≈0.033，与刚播报的
+    // 「统计一下年级和班级」文本相似度命中，被旧逻辑 ECHO-DROP，报表出不来。
+    // 高能量说明真人重新开口，必须放行进 LLM。
+    const h = createHarness({
+      ttsFrames: [loudFrame()],
+      finalizeTexts: ['好的，统计一下年级和班级。', '统计下年级和班级的数量。'],
+      asrLastRms: 0.033, // 高能量真人（非播报余音 0.001）
+      replyText: '好的，统计一下年级和班级。',
+    })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    h.playbackDone()
+    await sleep(30)
+    // 上一轮播报结束，spoken 里已有「统计一下年级和班级」
+    expect(h.agentCalls()).toBe(1)
+
+    // 第二轮：真人说雷同指令，高能量 → 必须放行发起新一轮
+    await speakUtterance(h)
+    await sleep(60)
+    expect(h.agentCalls()).toBe(2)
+    expect(h.events.some((e) => e.type === 'asr.final' && (e as Extract<ServerEvent, { type: 'asr.final' }>).text.includes('数量'))).toBe(true)
+  })
+
+  it('说出字后 VAD 持续 voiced 顶住端点 timer、partial 停止更新：独立兜底 timer 到点定稿', async () => {
+    // 真机：背景音乐让 vad.voiced 常真 → endpointTimer 被 armEndpoint 无限续期；
+    // partial 文本稳定后 asr.push 返回 null → maybeForceFinalizeByPartial 不再检查 timedOut。
+    // 两条路径同断 → 卡"正在听"。独立兜底 timer 只认新字，到点必定定稿。
+    const h = createHarness({
+      finalizeText: '统计下学校的年级和班级',
+      asrEndpointMs: 60000, // 模拟端点 timer 被 voiced 顶到几乎不到期
+      partialOnce: '统计下学校的年级和班级', // 首帧出字后停更
+    })
+    await startDialog(h.service)
+    // session.start 会重置 finalizeTimeoutMs，必须在 start 之后注入小值
+    ;(h.service as unknown as { finalizeTimeoutMs: number }).finalizeTimeoutMs = 200
+    // 喂一帧触发 VAD started + 首个 partial，启动兜底 timer；之后不再出字（partialAlways 未设）
+    h.service.handleBinary(loudFrame())
+    await sleep(30)
+    // 持续喂 voiced 帧续期 endpointTimer，但 partial 不再更新 → 兜底 timer 应独立到点定稿
+    for (let i = 0; i < 5; i += 1) {
+      h.service.handleBinary(loudFrame())
+      await sleep(60)
+    }
+    const finals = h.events.filter((e) => e.type === 'asr.final')
+    expect(finals.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
 describe('partial 兜底定稿：不能把一句话切成两段', () => {
   it('说话中 partial 带 ？ 也不抢先定稿（SenseVoice 会给滚动识别补标点）', async () => {
     // 复现："统计下学校的年级和班级" 被切成两段——partial 出"统计下学校的年级和？"
@@ -3748,3 +3828,57 @@ describe('partial 兜底定稿：不能把一句话切成两段', () => {
     expect(finals.length).toBeGreaterThanOrEqual(1)
   })
 })
+
+describe('报表工具结果迟到补口播（2026-11-26 真机修复）', () => {
+  const report = { title: '各年级班级数量统计', blocks: [{ type: 'chart' }, { type: 'table' }] }
+
+  it('runTurn 退出后工具结果迟到：补一句口播 + 助手框文字（llm.delta/done）', async () => {
+    const synths: string[] = []
+    const h = createHarness({ emptyReply: true, ttsSynthSpy: (t) => synths.push(t) })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    h.playbackDone() // 让本轮兜底口播播完、runTurn 退出
+    await sleep(40)
+    const doneBefore = h.events.filter((e) => e.type === 'llm.done').length
+
+    // 工具结果迟到（runTurn 已退出，processing=false）
+    h.emitReport(report)
+    await sleep(60)
+    expect(h.events.some((e) => e.type === 'media.report')).toBe(true)
+    expect(synths.some((t) => t.includes('报表已生成'))).toBe(true)
+    // 口播文字要写进助手框：补发 llm.delta + llm.done（这轮 LLM 无正文，界面 reply 是空的）
+    expect(h.events.filter((e) => e.type === 'llm.done').length).toBe(doneBefore + 1)
+    expect(h.events.some((e) => e.type === 'llm.delta' && e.text.includes('报表已生成'))).toBe(true)
+  })
+
+  it('同一轮报表回调多次触发只补一次口播', async () => {
+    const synths: string[] = []
+    const h = createHarness({ emptyReply: true, ttsSynthSpy: (t) => synths.push(t) })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    h.playbackDone()
+    await sleep(40)
+    h.emitReport(report)
+    h.emitReport(report)
+    h.emitReport(report)
+    await sleep(60)
+    expect(synths.filter((t) => t.includes('报表已生成')).length).toBe(1)
+  })
+
+  it('正常有 TTS 的轮次不额外补报表口播', async () => {
+    const synths: string[] = []
+    const h = createHarness({ ttsSynthSpy: (t) => synths.push(t) })
+    await startDialog(h.service)
+    await speakUtterance(h)
+    h.finishReply()
+    await sleep(40)
+    h.emitReport(report)
+    await sleep(60)
+    expect(synths.some((t) => t.includes('报表已生成'))).toBe(false)
+  })
+})
+

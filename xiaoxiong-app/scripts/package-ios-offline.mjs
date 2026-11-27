@@ -325,6 +325,8 @@ if (/<key>UIBackgroundModes<\/key>/.test(plist)) {
 const PRIVACY_DESCRIPTIONS = {
   NSMicrophoneUsageDescription: '需要使用麦克风持续监听唤醒词并进行语音对话',
   NSLocationWhenInUseUsageDescription: '需要获取位置以提供本地天气、附近信息与本地化服务',
+  // 报表图片「下载图片」写入相册：没有这条 iOS 会直接拒绝保存（表现为下载失败）
+  NSPhotoLibraryAddUsageDescription: '需要把报表图表保存到相册',
 }
 // 清掉壳里那条带后缀的畸形 key（连同它的 <string> 值），避免留在 plist 里混淆。
 plist = plist.replace(/<key>NSLocationWhenInUseUsageDescription\s*-\s*2<\/key>\s*<string>[\s\S]*?<\/string>\s*/g, '')
@@ -337,7 +339,7 @@ for (const [key, desc] of Object.entries(PRIVACY_DESCRIPTIONS)) {
       `\t<key>${key}</key>\n\t<string>${desc}</string>\n</dict>\n</plist>`)
   }
 }
-console.log('[ok] Info.plist 已注入麦克风 / 定位权限描述')
+console.log('[ok] Info.plist 已注入麦克风 / 定位 / 相册写权限描述')
 
 // 可选：本机 Xcode 缺配套 iOS 平台登记、ibtool 编 storyboard 报 "iOS x.x Platform Not Installed" 时启用。
 // 启动图改用 iOS14+ 纯配置 UILaunchScreen（不再引用 storyboard），让完整工程无需装平台即可 BUILD SUCCEEDED。

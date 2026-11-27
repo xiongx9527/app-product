@@ -1,5 +1,5 @@
 import { appConfig, activeVoiceConfig } from '@/core/config'
-import { DEFAULT_GATEWAY_WS_URL, MCP_ENDPOINT_PATH, MCP_SERVER_NAME } from '@/core/config/constants'
+import { DEFAULT_GATEWAY_WS_URL, MCP_ENDPOINT_PATH, MCP_SSE_ENDPOINT_PATH, MCP_SERVER_NAME } from '@/core/config/constants'
 import { getDeviceId } from '@/core/config/deviceId'
 import { getGatewayWsUrl, isEmbeddedGateway } from './gatewayBootstrap'
 import { t } from '@/core/i18n'
@@ -74,12 +74,14 @@ export function resolveGatewayHttpBase(): string {
 
 /**
  * 固定 MCP server 地址：沿用「服务设置」里的语音服务地址（协议/host/端口原样），
- * 只拼固定路径 /mcp/sse。用户在设置里改服务地址后，下次 start / 重武装即生效。
+ * 只拼固定路径 /mcp/（Streamable HTTP）。用户在设置里改服务地址后，下次 start / 重武装即生效。
  * 纯字符串处理，不依赖全局 URL（App/Harmony 的 JS 引擎未必有）。
  */
 export function resolveMcpUrl(): string {
   const base = (appConfig.voice.builtin.url || '').trim().replace(/\/+$/, '')
-  return base ? base + MCP_ENDPOINT_PATH : ''
+  if (!base) return ''
+  // 路径随设置页选的传输协议走：SSE 走 /mcp/sse（长连接），HTTP 走 /mcp/（Streamable HTTP 单端点）
+  return base + (appConfig.mcp.transport === 'sse' ? MCP_SSE_ENDPOINT_PATH : MCP_ENDPOINT_PATH)
 }
 
 /** WebSocket 最小接口：浏览器原生 WebSocket 与 uni SocketTask 适配层共用。 */
@@ -571,17 +573,22 @@ export class WebSocketTransport implements AssistantTransport {
         consolidateEvery: appConfig.memory.consolidateEvery,
       },
       // MCP 固定对接：app 不提供手动添加 MCP server 的入口，内部固定下发一个指向
-      // model-proxy 的 SSE server。地址 = 服务设置里的语音服务地址 + 固定路径 /mcp/sse，
+      // model-proxy 的 server。地址 = 服务设置里的语音服务地址 + 固定路径（按设置页选的协议），
       // 随服务地址配置变化（下次 start / 重武装即生效）。网关据此连上并把工具注册进助手工具箱。
+      // 传输默认 http（Streamable HTTP）：真机实测 SSE 长连接经公网收不到 endpoint 事件，5s 必超时；
+      // 设置页可切回 sse 供内网/自建环境使用。
       // 总开关关闭时下发空 servers（网关不连任何 MCP），下次 start / 重武装生效。
       mcp: {
+        // 连接失败重试次数（设置页 MCP 分组可配）：网关连 MCP server 失败时按此重连，
+        // 自愈公网偶发 fetch failed，免去手动重启 App。缺省 2。
+        retryCount: appConfig.mcp.retryCount,
         servers: (() => {
           if (appConfig.mcp.enabled !== true) return []
           const url = resolveMcpUrl()
           if (!url) return []
           return [{
             name: MCP_SERVER_NAME,
-            transport: 'sse' as const,
+            transport: appConfig.mcp.transport === 'sse' ? 'sse' as const : 'http' as const,
             url,
             // 鉴权请求头跟随语音服务的 apiKey（VoICE_API_KEY_AUTH=on 时网关需要 Bearer）
             headers: appConfig.voice.builtin.apiKey
@@ -589,6 +596,12 @@ export class WebSocketTransport implements AssistantTransport {
               : undefined,
           }]
         })(),
+      },
+      // Skill 动态加载：网关按此从 19529 拉 /skills 清单与正文注入 systemPrompt（规则不在 App 硬编码）。
+      // 总开关关闭时 enabled=false，网关不加载任何远端 skill。
+      skill: {
+        enabled: appConfig.skill.enabled === true,
+        retryCount: appConfig.skill.retryCount,
       },
       location: this.lastLocation ?? undefined,
       mode,

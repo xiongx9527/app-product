@@ -2,7 +2,7 @@ import type { AsrProvider } from '../asr'
 import type { TtsProvider } from '../tts'
 import type { AgentService } from './agentService'
 import type { DataService } from './dataService'
-import type { ClientMessage, DetailContext, Lang, LocationInfo, McpServerConfig, ServerEvent, ServerErrorCode } from '../protocol'
+import type { ClientMessage, DetailContext, Lang, LocationInfo, McpServerConfig, ReportPayload, ServerEvent, ServerErrorCode } from '../protocol'
 import type { GatewayConfig, AsrConfig, LlmConfig, TtsConfig } from '../config'
 import type { VoiceConfig, ResolvedCapabilities } from '../voiceConfig'
 import type {
@@ -23,6 +23,7 @@ import { AsrCorrector, type CorrectionEntry } from './asr/asrCorrector'
 import type { CorrectionSyncer } from './asrCorrectionSync'
 import type { AutoLearnEngine } from './autoLearn'
 import { skillPromptAddon, type Skill, type SkillContext } from './skills/types'
+import { fetchRemoteSkills, skillsToPromptAddon } from './remoteSkills'
 import { sanitizeForSpeech } from '../tts/sanitize'
 import { EnergyVad } from '../vad/energyVad'
 import { EchoGuard } from '../vad/echoGuard'
@@ -61,6 +62,15 @@ const DEFAULT_CONSOLIDATE_THRESHOLD = 30
 const DEFAULT_CONSOLIDATE_EVERY = 5
 
 /**
+ * 文本级回声判定的能量门槛：rms ≥ 此值时，即使文本与刚播报内容雷同，也按真人说话放行。
+ * 真机铁证（2026-11-26）：用户说「统计下年级和班级的数量」rms≈0.033，与刚播报的
+ * 「统计一下年级和班级」文本相似度命中，被当回声 ECHO-DROP，报表出不来。
+ * 真人近场说话 rms≈0.01~0.11，播报余音≈0.001，故取 0.012 留足余量：
+ * 低能量（rms<0.004，见 echoByEnergy）无论文本一律拦；高能量文本雷同判据不再单独生效。
+ */
+const ECHO_TEXT_MAX_RMS = 0.012
+
+/**
  * 真人会用的极短应答/单字指令（配合 VAD 幻觉二级判断）。这些单字虽然 VAD 语音短，
  * 但是有意义的用户输入，不能当打嗝幻觉丢弃。与 isNoise 的 FILLERS（无语义语气词）不同——
  * 这里是「有语义的单字」，宁可放行交给下游，也不误杀。
@@ -96,15 +106,21 @@ export interface VoiceSessionDeps {
     getNowPlaying?: () => { title: string; artist?: string; contentType?: string } | null,
     autoMemory?: boolean,
     mcpServers?: McpServerConfig[],
+    /** MCP 连接失败重试次数（0=不重试，缺省 2）：注册 MCP server 时按此重连。 */
+    mcpRetryCount?: number,
     autoLearnEngine?: AutoLearnEngine,
     promptAddon?: string,
-    getDetailContext?: () => DetailContext | null
+    getDetailContext?: () => DetailContext | null,
+    /** 报表下发：agentService 解析问数结果后回调，会话层转成 media.report 下发（用 deps.send，重连后指向新 socket）。 */
+    onReport?: (payload: ReportPayload) => void
   ) => AgentService | Promise<AgentService>
   /** 本次会话启用的 skill 模块；由网关按配置加载，会话 start 时各 create 一个实例。 */
   skillModules?: import('./skills/types').SkillModule[]
   /** 按解析出的能力配置构造 ASR/TTS 实例（voice 来自 session.start，故在 start 时构建） */
   createAsr: (cfg: AsrConfig) => AsrProvider
   createTts: (cfg: TtsConfig) => TtsProvider
+  /** TTS 连接预热开关（默认开）：真机首句慢在 TLS 建连，定稿即预热；测试传 false 避免污染合成断言。 */
+  ttsWarmup?: boolean
   /** 把客户端设置的语音服务配置展开成三套能力配置 */
   resolveVoice: (voice?: VoiceConfig, timeouts?: ResolvedTimeouts) => ResolvedCapabilities
   data: DataService
@@ -170,6 +186,12 @@ export class VoiceSessionService {
   /** 当前是否有一轮回答在跑（含思考、生成、播报） */
   private processing = false
   private endpointTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 独立的静音兜底定稿定时器（2026-11-26）。与 endpointTimer 分开：后者被 vad.voiced
+   * 反复续期，背景音乐下永不到期；本 timer 只随「出新字」顺延，停说后到点必定定稿。
+   * 首个有效 partial 时启动、每次出新字 clear+重设、到点直接入 finalizeChain。
+   */
+  private finalizeFallbackTimer: ReturnType<typeof setTimeout> | null = null
   /** 本轮是否已因 partial 兜底条件（完整句/字数上限）强制定稿过，防同轮重复定稿。 */
   private forcedFinalizeThisTurn = false
   /** partial 兜底定稿的字数上限：来自设置页「播放设置」，缺省 30。见 maybeForceFinalizeByPartial。 */
@@ -180,8 +202,32 @@ export class VoiceSessionService {
   private ttsConcurrency = 4
   /** 活跃的播报队列（主轮+兜底可能并存）：打断/结束/超时时统一 abort 在途合成。 */
   private readonly activeSpeechQueues = new Set<SpeechQueue>()
+  /**
+   * 报表口播（2026-11-26）：问数 MCP 工具慢，LLM 流先 done 无文字，工具结果迟到时补一句
+   * 固定口播。processing=true 时暂存 pending 交 runTurn 消费；reportCueTurn/lastReportSig 双重去重。
+   */
+  private pendingReportCue = false
+  private reportCueTurn = -1
+  private lastReportSig = ''
+  /**
+   * 【首字提速·2026-11-27】TTS 连接预热时间戳。
+   * 真机诊断铁证：首句 ttfb=3079ms、后续句仅 283ms——设备端到 TTS 服务的 TLS 建连占了首字
+   * 延迟的大头（连接池复用后立刻变快）。用户说完到播报之间 LLM 思考 1–3s 正好用来建连：
+   * 定稿即异步发一个极短合成并丢弃，正式合成时连接已就绪。失败静默、绝不影响主链。
+   */
+  private ttsWarmupAt = 0
+  /**
+   * 预热保活定时器：连接池 keep-alive 约 4s，而 LLM 思考常 5–15s（问数工具更久），
+   * 一次性预热会在正式合成前失效（实测首句仍 1249ms、ttfb 1125ms 重新建连）。
+   * 思考期间每 3s 预热一次保活，第一句真正合成时停——首句 ttfb 稳定在几百毫秒。
+   */
+  private ttsWarmupTimer: ReturnType<typeof setInterval> | null = null
+  /** 本轮预热次数：上限 20（约 60s）。问数工具可能思考很久，避免无限刷预热请求。 */
+  private ttsWarmupCount = 0
   /** 本轮首个有效 partial 的时间戳（有字超时兜底用），0=本轮还没有字。 */
   private firstPartialAt = 0
+  /** 【2026-11-27·快速出字】本轮是否已下发 asr.speech-start（VAD 开口占位）：防 preroll 多帧重复发。 */
+  private speechStartSent = false
   /** 本轮最近一次真实人声（vad.voiced）的时间戳：完整句兜底据此判断用户是否真的停说了。 */
   private lastVoicedAtMs = 0
   /** 上次下发过的 partial 文本：仅新文本才续期端点，重复文本不算"还在出字"。 */
@@ -260,6 +306,11 @@ export class VoiceSessionService {
   private agent: AgentService | null = null
   /** MCP 服务器列表：来自客户端 session.start.mcp.servers，建连时交给 agentFactory 注册进工具箱；重建/结束时据此关闭旧客户端。 */
   private mcpServers: McpServerConfig[] = []
+  /** MCP 连接失败重试次数（设置页可配，0=不重试，缺省 2）：传给 agentFactory 注册时重连。 */
+  private mcpRetryCount = 2
+  /** 【2026-11-27】远端 Skill 动态加载：设置页开关 + 重试次数（来自 session.start.skill）。 */
+  private skillEnabled = true
+  private skillRetryCount = 2
   private readonly deviceId: string | null = null
   /** 本次会话的 ASR / TTS 实例：在 start() 里按客户端设置的语音配置构建（地址/密钥/参数来自设置） */
   private asr!: AsrProvider
@@ -429,6 +480,16 @@ export class VoiceSessionService {
         // MCP 服务器列表：来自客户端设置页（session.start.mcp.servers），缺省空（不连接任何服务器）。
         // 建连会话据此连上并把工具注册进助手工具箱；单个失败不影响会话（在 agentFactory 内跳过）。
         this.mcpServers = msg.mcp?.servers ?? []
+        // MCP 连接重试次数：0-10 整数，缺省 2（老客户端未下发时也不至于不重试）；越界收敛。
+        // 0 是合法值（用户明确不重试），不能用 || 缺省，要用 Number.isInteger+范围判断。
+        const rawRetry = Number(msg.mcp?.retryCount)
+        this.mcpRetryCount = Number.isInteger(rawRetry) && rawRetry >= 0 && rawRetry <= 10
+          ? rawRetry : 2
+        // Skill 动态加载配置（设置页「Skill 设置」）：开关缺省 true，重试次数 0-10 缺省 2。
+        this.skillEnabled = msg.skill?.enabled !== false
+        const rawSkillRetry = Number(msg.skill?.retryCount)
+        this.skillRetryCount = Number.isInteger(rawSkillRetry) && rawSkillRetry >= 0 && rawSkillRetry <= 10
+          ? rawSkillRetry : 2
         // 时间预算：来自设置页「超时设置」；越界/非法值由 resolveSessionTimeouts 收敛。
         // 必须在 start() 之前，rearm 时要把这份预算带进 ASR/TTS 实例。
         this.timeouts = resolveSessionTimeouts(msg.timeouts)
@@ -669,6 +730,21 @@ export class VoiceSessionService {
   }
 
   /**
+   * 【2026-11-27 远端 Skill 动态加载】从 19529 拉 skill 清单+正文，追加到 skillPromptAddon
+   * （本地 skill 片段已在 ensureSkills 算好）。失败静默、不影响助手其余能力。
+   * @param voice 来自 session.start 的服务地址/密钥（skill 接口与语音同源）
+   */
+  private async loadRemoteSkillAddon(voice?: VoiceConfig): Promise<void> {
+    if (!this.skillEnabled) return
+    const baseUrl = (voice?.url ?? '').trim()
+    if (!baseUrl) return
+    const { skills } = await fetchRemoteSkills(baseUrl, voice?.apiKey || undefined, this.skillRetryCount)
+    const addon = skillsToPromptAddon(skills)
+    if (addon) this.skillPromptAddon = this.skillPromptAddon
+      ? `${this.skillPromptAddon}\n${addon}` : addon
+  }
+
+  /**
    * 直连意图调度：按 skill 的 priority 升序（ensureSkills 已排序）依次询问 onDirectCommand，
    * 任一 skill 返回 consumed=true 即短路，不再走后续 skill / LLM。
    * 业务规则全在各 skill 内；这里只做调度，不含任何意图识别或执行逻辑。
@@ -902,6 +978,104 @@ export class VoiceSessionService {
   }
 
   /**
+   * 报表工具结果回调（2026-11-26）：照常下发 media.report；若本轮 LLM 流已结束（工具结果迟到），
+   * 补一句固定口播。processing=true（工具在 stream 内返回）则暂存 pending 交 runTurn 消费。
+   * 按 turn + 报表签名双重去重，同一轮多次 onReport 只播一次。
+   */
+  private notifyReport(report: ReportPayload): void {
+    this.deps.send({ type: 'media.report', ...report })
+    if (!this.active || this.cancelled) return
+    const sig = `${report.title}|${report.blocks.length}`
+    if (this.reportCueTurn === this.turn || this.lastReportSig === sig) return
+    this.reportCueTurn = this.turn
+    this.lastReportSig = sig
+    if (this.processing) {
+      this.pendingReportCue = true
+      return
+    }
+    void this.speakReportCue()
+  }
+
+  /**
+   * 报表迟到补口播：空闲态（runTurn 已退出）自增 turn、自管播放等待，只合成播放固定文案，
+   * 不发 llm.delta/llm.done（前端已 replyDone，重复 done 会冲突），只走 tts.start/end/idle 既有通道。
+   */
+  private async speakReportCue(): Promise<void> {
+    if (!this.active || this.cancelled) return
+    const turn = ++this.turn
+    this.cancelled = false
+    this.reportCueTurn = turn
+    this.spoken.length = 0
+    this.downlinkBytes = 0
+    const playback = this.armPlaybackWait()
+    const cue = messages(this.lang).report.ready()
+    // 把口播文字写进助手框：这一轮 LLM 没产出正文，界面 reply 是空的，
+    // 只播声音不显示文字会让用户觉得「助手没出来」。按正常回答走 llm.delta → llm.done。
+    this.deps.send({ type: 'llm.delta', text: cue })
+    this.deps.send({ type: 'llm.done' })
+    this.speaking = true
+    this.playbackPending = true
+    this.emitTtsStart()
+    await this.speakTextChunks(cue, turn)
+    if (this.turn === turn && !this.cancelled && !this.skipRequested) {
+      this.speaking = false
+      this.deps.send({ type: 'tts.end', durationMs: this.estimatedSpeechMs() })
+    }
+    this.tightenPlaybackTimeout()
+    await playback
+  }
+
+  /**
+   * 【首字提速·2026-11-27】异步预热 TTS 连接：真机诊断显示首句 ttfb 3079ms、后续句 283ms，
+   * 差在设备端到 TTS 服务的 TLS 建连。用户说完 → LLM 思考 1–3s 期间正好建连，正式合成时
+   * 连接已在池里，首字延迟从 ~3.2s 降到 ~0.3s。
+   *
+   * 只发一个极短合成并丢弃（不进 spoken、不碰下发/AEC），3 秒内不重复；
+   * 失败静默——预热绝不能影响主链，也绝不能因为预热失败而误报 tts-error。
+   */
+  private warmupTts(): void {
+    if (!this.active || this.cancelled) return
+    // 测试环境关掉：预热会额外调一次 synthesize（"嗯"），污染「首句合成文本」类断言。
+    if (this.deps.ttsWarmup === false) return
+    const now = Date.now()
+    if (this.ttsWarmupAt && now - this.ttsWarmupAt < 3000) return
+    if (this.ttsWarmupCount >= 20) { this.stopTtsWarmup(); return }
+    this.ttsWarmupAt = now
+    this.ttsWarmupCount += 1
+    void (async () => {
+      try {
+        const it = this.tts.synthesize('嗯')[Symbol.asyncIterator]()
+        for (;;) {
+          const n = await it.next()
+          if (n.done) break
+        }
+        void it.return?.()
+        bargeDiag(`TTS-WARMUP ok ms=${Date.now() - now}`)
+      } catch (e) {
+        bargeDiag(`TTS-WARMUP fail ms=${Date.now() - now} err=${(e as Error).message}`)
+      }
+    })()
+  }
+
+  /** 开始周期预热保活：定稿即建连，之后每 3s 续一次（< 连接池 4s keep-alive），首句合成时停。 */
+  private startTtsWarmup(): void {
+    if (this.deps.ttsWarmup === false) return
+    if (this.ttsWarmupTimer) return // 已在保活，不重复起定时器
+    this.ttsWarmupCount = 0
+    this.ttsWarmupAt = 0
+    this.warmupTts()
+    this.ttsWarmupTimer = setInterval(() => this.warmupTts(), 3000)
+  }
+
+  /** 停止预热保活：第一句真正开始合成、或本轮结束/打断时调用（幂等）。 */
+  private stopTtsWarmup(): void {
+    if (this.ttsWarmupTimer) {
+      clearInterval(this.ttsWarmupTimer)
+      this.ttsWarmupTimer = null
+    }
+  }
+
+  /**
    * skill 直连的一整段文本切成多批、串行流水线合成（与 runTurn 的流式分批同源）。
    * 绝不整段 synthesize：整段（天气实测 1MB/20s）要等全部 WAV 返回才有第一声，
    * 用户体感「文字早出来了、声音等很久」。遇标点立即切句、并行合成，首批合成完立刻出声，
@@ -1086,6 +1260,25 @@ export class VoiceSessionService {
     }
     // 【2026-11-24 砍插话+duck】删 forceFeed（播报期强喂人声帧给 ASR）：插话已砍、
     // 播报期 ASR 上行静音，没有真人帧需要强喂。只喂 AEC 消除回声后的 vad.frames。
+    // 【2026-11-26 诊断·常驻】VAD 确认开口：记录 preroll 帧数/首帧能量，定位"首字偶尔丢"——
+    // 若首字丢在 VAD 层（started 前被 absFloor 挡掉、preroll 帧数偏少），这条日志能看出来。
+    if (vad.started) {
+      // 能量包络：preroll 里超过 absFloor 的帧数 + 逐帧 rms 序列。判断首字丢在哪层的关键：
+      // 若序列呈「低→高」渐强且 aboveFloor>0，说明首字起音已喂进 ASR，是模型层把"统计下"
+      // 听成"记下"；若整段都低于门限，才是 VAD/采集层没捕到首字。
+      const rmsSeq = vad.frames.map((f) => pcmRms(f))
+      const aboveFloor = rmsSeq.filter((r) => r >= ABS_FLOOR_RMS).length
+      const seq = rmsSeq.slice(0, 16).map((r) => r.toFixed(3)).join(',')
+      bargeDiag(`VAD-START prerollFrames=${vad.frames.length} aboveFloor=${aboveFloor} curRms=${frameRms.toFixed(4)} rmsSeq=[${seq}]`)
+      // 【2026-11-27·A 快速出字】VAD 确认开口（早于 ASR 出字 0.8s+）：立刻告知客户端显示
+      // 「正在识别」占位，让用户开口瞬间就有反馈，不再盯空屏等首个 partial（偶发上游 4s 时尤其明显）。
+      // 一轮只发一次；定稿/取消/新一轮由 speechStartSent=false 复位。
+      if (!this.speechStartSent) {
+        this.speechStartSent = true
+        bargeDiag('ASR-SPEECH-START sent -> client placeholder')
+        this.deps.send({ type: 'asr.speech-start' })
+      }
+    }
     for (const frame of vad.frames) {
       // 【首字保护】started 时 vad.frames 是刚确认开口时补喂的整段 preroll（前置 ~600ms）。
       // 首字起音渐强、辅音段能量低，常低于绝对下限 0.008；若 preroll 逐帧再过一遍
@@ -1122,6 +1315,9 @@ export class VoiceSessionService {
             if (newPartial !== this.lastAsrPartialText) {
               this.lastAsrPartialText = newPartial
               this.armEndpoint(false)
+              // 【静音兜底 timer 顺延】还在出新字说明用户仍在说话，顺延到点时间；
+              // 与 endpointTimer 不同，本 timer 不看 vad.voiced，背景音乐不会把它顶到永久不到期。
+              this.armFallbackFinalize()
             }
           }
           // 【partial 兜底定稿】VAD 静音端点在 iOS 上行/嘈杂环境下可能不触发（真机：
@@ -1170,11 +1366,42 @@ export class VoiceSessionService {
     const wait = this.deps.asrEndpointMs
     this.endpointTimer = setTimeout(() => {
       this.endpointTimer = null // 触发后置空，避免与 partial 兜底重复 finalize
+      // 端点正常定稿：清掉独立静音兜底 timer，避免它随后再触发一次重复 finalize。
+      this.clearFallbackFinalize()
       // 串行而非丢弃：上一句还没交给大模型时，下一句也必须在链里排队等
       this.finalizeChain = this.finalizeChain
         .then(() => this.finalizeUtterance())
         .catch(() => undefined)
     }, wait)
+  }
+
+  /**
+   * 独立静音兜底定稿 timer（2026-11-26）：只在「出新字」时顺延，不从 vad.voiced 续期。
+   * 背景音乐等持续噪声把 vad.voiced 顶成常真时，endpointTimer 会被 armEndpoint 无限续期、
+   * 永不触发；而 partial 文本稳定后 asr.push 返回 null，maybeForceFinalizeByPartial 的
+   * timedOut 检查也不再执行——两条定稿路径同时断，用户说完却卡"正在听"。
+   * 本 timer 只认新字：说完不再出新字 → finalizeTimeoutMs 到点必定定稿，补上这条断链。
+   * 长句仍在持续出新字 → 每次顺延，不误截断。
+   */
+  private armFallbackFinalize(): void {
+    this.clearFallbackFinalize()
+    this.finalizeFallbackTimer = setTimeout(() => {
+      this.finalizeFallbackTimer = null
+      if (!this.active || this.cancelled) return
+      // 兜底 timer 定稿：清掉 VAD 端点 timer，避免随后再触发一次重复 finalize。
+      if (this.endpointTimer) { clearTimeout(this.endpointTimer); this.endpointTimer = null }
+      bargeDiag(`FALLBACK-FINAL-ARM after=${this.finalizeTimeoutMs}ms text="${this.lastAsrPartialText.slice(0, 20)}"`)
+      this.finalizeChain = this.finalizeChain
+        .then(() => this.finalizeUtterance())
+        .catch(() => undefined)
+    }, this.finalizeTimeoutMs)
+  }
+
+  private clearFallbackFinalize(): void {
+    if (this.finalizeFallbackTimer) {
+      clearTimeout(this.finalizeFallbackTimer)
+      this.finalizeFallbackTimer = null
+    }
   }
 
   /**
@@ -1200,6 +1427,9 @@ export class VoiceSessionService {
       // 这里补设一个端点 timer 兜底：距首个 partial 一个 endpointMs 后定稿。
       // 用户继续说话时 vad.voiced 会按 armEndpoint 重设定时器，自然顺延，不会误截断。
       this.armEndpoint()
+      // 【2026-11-26】同时启动独立静音兜底 timer。它不看 vad.voiced，背景音乐持续 voiced
+      // 顶住 endpointTimer 时，仍能在本轮最后出字后 finalizeTimeoutMs 到点定稿。
+      this.armFallbackFinalize()
     }
     // 完整句兜底必须加「用户确实停说了足够久」前提：SenseVoice 对滚动 partial 会自己补 ？
     // （"今天天气怎么样？"），用户话没说完、甚至句中停顿时 partial 就带标点；若只看标点立即
@@ -1219,8 +1449,9 @@ export class VoiceSessionService {
     if (this.forcedFinalizeThisTurn) return // 同一轮只兜底一次，后续 partial 不再重复
     this.forcedFinalizeThisTurn = true
     bargeDiag(`FORCE-FINAL partial="${text}" len=${len} reason=${complete ? 'complete' : tooLong ? 'maxChars' : 'timeout'}`)
-    // 清掉 VAD 端点定时器，避免它与兜底定稿重复触发两次 finalize
+    // 清掉 VAD 端点定时器与独立兜底 timer，避免它们与本次兜底定稿重复触发两次 finalize
     if (this.endpointTimer) { clearTimeout(this.endpointTimer); this.endpointTimer = null }
+    this.clearFallbackFinalize()
     this.finalizeChain = this.finalizeChain
       .then(() => this.finalizeUtterance())
       .catch(() => undefined)
@@ -1277,6 +1508,9 @@ export class VoiceSessionService {
   private async finalizeUtterance(): Promise<void> {
     // 打断/关闭后串行链里可能还挂着定稿，不能让它再发 asr.final 或排队
     if (!this.active || this.cancelled) return
+    // 真正开始定稿：清掉独立兜底 timer，防止 await asr.finalize() 期间 timer 到点
+    // 再次入链造成重复 finalize（两条路径的终点都在这里汇合）。
+    this.clearFallbackFinalize()
     // 只有确认用户说完了（静音够久）才定稿；中间结果从不触发回复
     let text: string
     try {
@@ -1286,6 +1520,7 @@ export class VoiceSessionService {
       // 节流下发 asr-error 提示音（客户端本地 mp3「没听清，再说一遍」），30s 内不重复。
       this.notifyAsrFailed()
       this.firstPartialAt = 0
+      this.speechStartSent = false
       this.lastVoicedAtMs = 0
       this.lastAsrPartialText = ''
       this.forcedFinalizeThisTurn = false
@@ -1294,9 +1529,12 @@ export class VoiceSessionService {
     // 本轮音频已被 asr.finalize() 消费（它内部 reset 了 buffer），复位 partial 兜底标志，
     // 让下一轮能重新按「完整句/字数上限/有字超时」兜底定稿。
     this.firstPartialAt = 0
+    this.speechStartSent = false
     this.lastVoicedAtMs = 0
     this.lastAsrPartialText = ''
     this.forcedFinalizeThisTurn = false
+    // 新一轮真实定稿：清报表签名去重，允许「再查一次」重新播报口播
+    this.lastReportSig = ''
     // 【2026-11-24 砍插话】删 bargeInDuringPlayback 标志的读取/清除（插话已砍）。
     if (!this.active || this.cancelled) return
     // 环境杂音被 ASR 误识别出的伪文本、以及播报被收回的回声，都静默丢弃，
@@ -1322,7 +1560,17 @@ export class VoiceSessionService {
       + `foreign=${isForeignNoise(text, this.lang)} echo=${resemblesSpoken(text, this.spoken)}`
       + ` vd=${this.asr.speechDuration ?? -1} rms=${(this.asr.lastRms ?? -1).toFixed(4)}`
     )
-    if (!text || isNoise(text) || isForeignNoise(text, this.lang)) return
+    if (!text || isNoise(text) || isForeignNoise(text, this.lang)) {
+      // 【2026-11-27 保守方案】定稿为空但此前有 partial（用户确实说了话，只是 ASR 上游
+      // 返回空/噪声，真机铁证 partial「三年。」→ final text="" vd=-1）：不能静默丢弃——
+      // 那样 App 草稿一直挂着、收不到 asr.final，30s 后 T1→T2 把会话退下，用户体感「卡住」。
+      // 发 asr-error cue（客户端清草稿+重置 T1，提示音按既有 autoCheck 开关），给用户明确反馈。
+      if (this.lastAsrPartialText.trim()) {
+        bargeDiag(`ASR-EMPTY-FINAL hadPartial="${this.lastAsrPartialText.slice(0, 20)}" -> asr-error`)
+        this.notifyAsrFailed()
+      }
+      return
+    }
 
     // VAD 幻觉二级判断：短语音 + 无有效意图 → 噪声丢弃（打嗝/吸鼻子/回声脑补的单字）。
     // 内置 SenseVoice 才有 speechDuration；上游 ASR（-1）跳过此判断，行为不变。
@@ -1405,15 +1653,18 @@ export class VoiceSessionService {
     // 播放结束后的保护窗口内按回声丢弃，避免被当成用户新的一句。
     // 【2026-11-23 修播报回声自激】同上：去掉 echoUntil 时间窗口，播报结束很久后定稿的
     // 尾音回声("第一条。")一样要拦。spoken 短期记忆 + resemblesSpoken 严格匹配足够。
-    // 【2026-11-23 回声可靠判据】文本像播报内容 → 回声；或 后端VAD判无真人语音(vd<0)
-    // 且整段音频能量极低(lastRms<0.004，真人说话 rms≈0.01+，播报余音≈0.001) → 回声。
-    // 后者能拦住"第一条"这类恰好像播报内容、但文本判据以外的回声，且不误伤真人选号
-    // （真人说"第一条"时 rms 高，不会被当回声）。
+    // 【2026-11-23 回声可靠判据】后端VAD判无真人语音(vd<0) 且整段音频能量极低
+    // (lastRms<0.004，真人说话 rms≈0.01+，播报余音≈0.001) → 回声。
+    // 【2026-11-26 修回声误杀】文本级判据（resemblesSpoken）只在低能量时生效：
+    // 真机铁证——用户说「统计下年级和班级的数量」rms≈0.033（真人能量）与刚播报内容雷同，
+    // 被旧逻辑当回声 ECHO-DROP，报表出不来。高能量（rms≥ECHO_TEXT_MAX_RMS）说明真人
+    // 重新开口，即使文本雷同也必须放行，不能因"像刚播过的"就吞掉有效指令。
     const vd = this.asr.speechDuration ?? -1
     const rms = this.asr.lastRms ?? -1
     const echoByEnergy = vd < 0 && rms >= 0 && rms < 0.004
-    if (resemblesSpoken(text, this.spoken) || echoByEnergy) {
-      bargeDiag(`ECHO-DROP text="${text}" vd=${vd} rms=${rms.toFixed(4)}`)
+    const echoByText = rms >= 0 && rms < ECHO_TEXT_MAX_RMS && resemblesSpoken(text, this.spoken)
+    if (echoByText || echoByEnergy) {
+      bargeDiag(`ECHO-DROP text="${text}" vd=${vd} rms=${rms.toFixed(4)} byText=${echoByText} byEnergy=${echoByEnergy}`)
       this.echo.noteBargeIn()
       this.syncDuplex()
       return
@@ -1448,6 +1699,8 @@ export class VoiceSessionService {
     this.userSaid.push(text)
     if (this.userSaid.length > 4) this.userSaid.shift()
     this.deps.send({ type: 'asr.final', text, queueRemaining: this.queue.length })
+    // 首字提速：定稿即开始预热 TTS 连接并周期保活，趁 LLM 思考期把 TLS 建连做掉。
+    this.startTtsWarmup()
     void this.runTurn(text)
   }
 
@@ -1544,6 +1797,30 @@ export class VoiceSessionService {
           this.sendError('LLM_ERROR', (err as Error).message)
         }
         if (this.turn !== turn || this.cancelled) break
+        // 【报表迟到补口播】工具结果在 stream 内返回时会置 pendingReportCue。
+        // 若本轮无 TTS（正是问数工具慢的场景），用本轮已 arm 的 playback 播一句报表口播，
+        // 置 ttsStarted=true 走正常 await playback，不再走 turn-no-tts（否则口播被掐断）。
+        // 已有原口播则丢弃 pending，避免重复。绝不 ++turn/重 arm。
+        if (this.pendingReportCue && this.turn === turn && !this.cancelled) {
+          this.pendingReportCue = false
+          this.reportCueTurn = turn
+          if (!ttsStarted && !directHandled) {
+            ttsStarted = true
+            this.speaking = true
+            this.playbackPending = true
+            this.emitTtsStart()
+            // 【2026-11-27 真机修复】这条 runTurn 内补口播路径此前只发 TTS、没发 llm.delta，
+            // 导致「报表已生成，请看屏幕」播了但助手框空白。与 speakReportCue 一致补发文本。
+            const reportCue = messages(this.lang).report.ready()
+            this.deps.send({ type: 'llm.delta', text: reportCue })
+            this.deps.send({ type: 'llm.done' })
+            await this.speakTextChunks(reportCue, turn)
+            if (!this.skipRequested && !this.cancelled) {
+              this.speaking = false
+              this.deps.send({ type: 'tts.end', durationMs: this.estimatedSpeechMs() })
+            }
+          }
+        }
         // 必须等这一句真正播完，才轮到下一句：否则会掐掉尾音、
         // 也会让「你说」提前跳到下一句识别内容。
         if (ttsStarted || directHandled) {
@@ -1569,6 +1846,13 @@ export class VoiceSessionService {
       }
     } finally {
       this.processing = false
+      this.stopTtsWarmup()
+      // 【报表迟到兜底】工具结果晚于上面消费点到达时（runTurn 已退），processing 刚置 false，
+      // 在这里补一次口播。此时 reportCueTurn 仍是旧 turn，speakReportCue 会 ++turn 作废旧轮回调。
+      if (this.pendingReportCue && this.active && !this.cancelled) {
+        this.pendingReportCue = false
+        void this.speakReportCue()
+      }
       // 整轮播报结束：停掉软件 AEC，避免空闲期用残留的旧 TTS 参考误消环境声/下一句人声。
       if (this.aecActive) { this.aec.reset(); this.aecActive = false }
       // 队列卡死兜底（真机铁证：skip/break/await playback 提前退出后，队列还剩句子却无人消费，
@@ -1935,6 +2219,8 @@ export class VoiceSessionService {
    * 这样多句能真正并发，且不会因某句先完成就抢播（下发顺序由 SpeechQueue 按入队序号保证）。
    */
   private async synthesizeSentence(sentence: string, idx: number, signal: AbortSignal): Promise<SynthResult> {
+    // 真正开始合成：停止预热保活，避免预热请求和正式合成抢连接/占并发槽。
+    this.stopTtsWarmup()
     setDiagStage('tts-synth') // 【心跳埋点·长期保留】
     this.spoken.push(sentence)
     if (this.spoken.length > 6) this.spoken.shift()
@@ -2095,6 +2381,8 @@ export class VoiceSessionService {
     setGlobalApiKey(voice?.apiKey ?? '')
     // 构造 skill 实例与提示词片段（首次 start；重武装复用，状态由 cancel/end 清）。
     this.ensureSkills()
+    // 远端 Skill（19529 /skills）动态加载：把服务端维护的指引追加进 systemPrompt，规则不在代码硬编码。
+    await this.loadRemoteSkillAddon(voice)
     // 按客户端设置展开三套能力配置并构建实例：地址 / 密钥 / 参数一律来自设置，
     // 不再读网关硬编码。每次 start 重建（重武装也重建，状态由 reset 清空，跨轮记忆不丢）。
     const resolved = this.deps.resolveVoice(voice, this.timeouts)
@@ -2113,6 +2401,7 @@ export class VoiceSessionService {
     this.syncDuplex()
     this.asr.reset()
     this.vad.reset()
+    this.speechStartSent = false
 
     // 重新武装 vs 全新：agent 已存在即视为重武装。普通重唤醒/重连（来源未变）保留原 agent
     // （含本轮对话上下文，不丢）；仅当来源真的变了（如切到 DashScope）才重建 LLM 客户端，
@@ -2142,9 +2431,11 @@ export class VoiceSessionService {
             () => this.media.getNowPlaying(),
             this.autoMemory,
             this.mcpServers,
+            this.mcpRetryCount,
             this.deps.correctionSyncer?.engine,
             this.skillPromptAddon,
-            () => this.detailContext
+            () => this.detailContext,
+            (report) => this.notifyReport(report)
           )
       this.lastLlmKey = llmKey
       return
@@ -2155,6 +2446,10 @@ export class VoiceSessionService {
     this.dispatchSessionReset('start')
     this.recentUserTurns = []
     this.autoExtractRuns = 0
+    // 报表口播去重状态：新会话清空，允许重新查询时重新播
+    this.pendingReportCue = false
+    this.reportCueTurn = -1
+    this.lastReportSig = ''
     // 唤醒模式不需要 LLM，省掉一次模型实例构造
     // 加载该设备的长期记忆并注入系统提示（让助手「知道你的习惯」）；
     // memoryStore 同时交给工具层，供 remember/recall/forget 读写。无 deviceId 则无记忆。
@@ -2185,9 +2480,11 @@ export class VoiceSessionService {
             () => this.media.getNowPlaying(),
             this.autoMemory,
             this.mcpServers,
+            this.mcpRetryCount,
             this.deps.correctionSyncer?.engine,
             this.skillPromptAddon,
-            () => this.detailContext
+            () => this.detailContext,
+            (report) => this.notifyReport(report)
           )
     this.lastLlmKey = llmKey
     this.sessionRowId = await this.deps.data.createSession(this.deviceId, Date.now())
@@ -2205,6 +2502,10 @@ export class VoiceSessionService {
     const wasPlaying = this.playbackPending || this.speaking
     this.turn += 1
     this.cancelled = true
+    // 报表口播：丢弃待播，清去重签名（打断后重说同一句要能重新播）
+    this.pendingReportCue = false
+    this.reportCueTurn = -1
+    this.lastReportSig = ''
     for (const q of this.activeSpeechQueues) q.abortAll()
     this.processing = false
     this.speaking = false
@@ -2222,8 +2523,11 @@ export class VoiceSessionService {
     this.echo.release()
     this.syncDuplex()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
+    this.clearFallbackFinalize()
+    this.stopTtsWarmup()
     this.asr.reset()
     this.vad.reset()
+    this.speechStartSent = false
   }
 
   /**
@@ -2263,8 +2567,11 @@ export class VoiceSessionService {
     this.echo.release()
     this.syncDuplex()
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
+    this.clearFallbackFinalize()
+    this.stopTtsWarmup()
     this.asr.reset()
     this.vad.reset()
+    this.speechStartSent = false
   }
 
   private end(): void {
@@ -2280,9 +2587,12 @@ export class VoiceSessionService {
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait('session-end')
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
+    this.clearFallbackFinalize()
+    this.stopTtsWarmup()
     if (this.sessionRowId) this.deps.data.endSession(this.sessionRowId, Date.now())
     this.asr.reset()
     this.vad.reset()
+    this.speechStartSent = false
     // 会话显式结束：关掉 MCP 客户端（stdio 子进程 / 网络连接）后销毁对话记忆，
     // 下次 start 视为全新会话（不再保留历史/候选）。
     void this.agent?.closeMcp?.()
@@ -2302,8 +2612,11 @@ export class VoiceSessionService {
     this.finalizeChain = Promise.resolve()
     this.cancelPlaybackWait('close')
     if (this.endpointTimer) clearTimeout(this.endpointTimer)
+    this.clearFallbackFinalize()
+    this.stopTtsWarmup()
     this.asr.reset()
     this.vad.reset()
+    this.speechStartSent = false
   }
 }
 
@@ -2355,7 +2668,14 @@ export class SpeechQueue {
     this.schedule()
   }
 
-  /** 受并发上限约束地启动合成：首句立即开始，其余排队，完成一个补一个。 */
+  /**
+   * 受并发上限约束地启动合成：首句立即开始，其余排队，完成一个补一个。
+   *
+   * 【首句独占·2026-11-27】首句（idx=0）启动后不立刻拉起其他句，等它合成完再并发其余。
+   * 真机铁证：7 句同时发时首句 ttfb 2981ms、其余句仅 228ms——并发让 undici 把首句分到
+   * 新建连接（设备端 TLS 建连 ~3s），没复用预热好的热连接；首句单独发时 ttfb 仅 ~100ms。
+   * 首句合成完立即播放，其余句在播放期间并发合成，观感无损、首字大幅提前。
+   */
   private pumpSynth(): void {
     while (this.activeSynth < this.maxConcurrent && this.pendingSynth.length) {
       const item = this.pendingSynth.shift()!
@@ -2371,6 +2691,7 @@ export class SpeechQueue {
           this.pumpSynth()
         }
       })()
+      if (item.idx === 0) break // 首句独占热连接：合成完（finally 回调 pumpSynth）再并发其余
     }
   }
 
@@ -2432,6 +2753,10 @@ function isEnglishSentencePeriod(text: string, i: number): boolean {
   const next = i + 1 < text.length ? text[i + 1] : ''
   if (prev === '.' || next === '.') return false // 省略号 ... 不在中间切
   if (/[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next)) return false // 小数 / 域名 / 文件名
+  // 【2026-11-27 真机铁证】流式分批时 LLM 先吐「平均80.」，下一批才来「27」——
+  // 此时 prev=数字、next=''（末尾），若当句末切就会把 80.27 拆成「平均80.」+「27」，
+  // TTS 念成「平均八十」「二十七」，小数点丢失。前是数字且末尾时一律不切，继续攒。
+  if (next === '' && /[0-9]/.test(prev)) return false
   if (EN_ABBREV_BEFORE_PERIOD.test(text.slice(0, i + 1))) return false // Mr. Smith / etc. And
   return next === '' || !/[A-Za-z0-9]/.test(next)
 }
@@ -2448,7 +2773,11 @@ export function sentenceCut(text: string): number {
       if (isEnglishSentencePeriod(text, i)) return i + 1
       continue
     }
-    if (/[。！？；!?;，、,\n]/.test(ch)) return i + 1
+    // 【2026-11-26 播报首字提速】冒号（中/英）也作切分点：上游 TTS 整段返回 WAV，
+    // 合成耗时随字数线性增长（15字≈21s、6字≈8s），且下发链严格保序——首句越长，
+    // 后面所有短句都要等它。此前「各年级班级数量为：一年级4个，」15字因冒号不切而
+    // 成为首句，把首字拖到 21s。冒号切开后首句「各年级班级数量为：」9字，首字提前。
+    if (/[。！？；!?;，、,：:\n]/.test(ch)) return i + 1
   }
   return -1
 }

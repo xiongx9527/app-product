@@ -51,6 +51,7 @@ function createHarness(): Harness {
     agentFactory: () => agent,
     createAsr: () => asr,
     createTts: () => tts,
+    ttsWarmup: false,
     resolveVoice: () => ({}) as unknown as ResolvedCapabilities,
     data,
     send: () => {},

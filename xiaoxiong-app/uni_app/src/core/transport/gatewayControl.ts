@@ -10,6 +10,38 @@
 import { resolveGatewayHttpBase } from './webSocketTransport'
 import { appConfig } from '../config'
 
+/**
+ * 访问网关数据接口（/api/mcp/tools、/api/skills 等）的统一 GET：跨平台请求 + 超时只在这里写一次。
+ * apiKey 由全局 uni.request 拦截器统一注入（见 requestInterceptor.ts）：App 端所有请求自动带，
+ * 这里不再重复拼；H5 的 fetch 不受拦截器覆盖，故仅在 fetch 分支补一个头（唯一例外）。
+ * 失败返回 null，由调用方决定提示。
+ */
+function gatewayGet(path: string, timeoutMs = 10000): Promise<unknown | null> {
+  const url = `${resolveGatewayHttpBase()}${path}`
+  const req = new Promise<unknown | null>((resolve) => {
+    if (typeof uni !== 'undefined' && typeof uni.request === 'function') {
+      // App 端：apiKey 由全局拦截器统一注入，这里只给 accept
+      uni.request({
+        url, method: 'GET', header: { accept: 'application/json' },
+        success: (res) => resolve(res.data),
+        fail: () => resolve(null),
+      })
+      return
+    }
+    if (typeof fetch !== 'undefined') {
+      // H5 fetch 不走 uni.request 拦截器，唯一在此补 apiKey
+      const header: Record<string, string> = { accept: 'application/json' }
+      if (appConfig.voice.builtin.apiKey) header['x-voice-api-key'] = appConfig.voice.builtin.apiKey
+      fetch(url, { cache: 'no-store', headers: header })
+        .then((r) => r.json()).then(resolve)
+        .catch(() => resolve(null))
+      return
+    }
+    resolve(null)
+  })
+  return withTimeout(req, timeoutMs).catch(() => null)
+}
+
 /** 工具入参字段说明（与网关 /api/mcp/tools 的 params 契约一致）。 */
 export interface GatewayMcpParam {
   name: string
@@ -25,36 +57,27 @@ export interface GatewayMcpTool {
   params: GatewayMcpParam[]
 }
 
-/** 拉取 MCP 已注册工具清单：后端 token 换发透明处理，App 只带语音服务的 apiKey。 */
+/** 拉取 MCP 已注册工具清单：后端 token 换发透明处理，apiKey 由全局拦截器统一注入。 */
 export function fetchGatewayMcpTools(timeoutMs = 10000): Promise<{ ok: boolean; tools: GatewayMcpTool[]; error?: string }> {
-  const url = `${resolveGatewayHttpBase()}/api/mcp/tools`
-  const header: Record<string, string> = { accept: 'application/json' }
-  if (appConfig.voice.builtin.apiKey) header['x-voice-api-key'] = appConfig.voice.builtin.apiKey
-  const req = new Promise<{ ok: boolean; tools: GatewayMcpTool[]; error?: string }>((resolve) => {
-    const done = (d: unknown) => {
-      const obj = (d ?? {}) as { ok?: boolean; tools?: GatewayMcpTool[]; error?: string }
-      resolve({ ok: !!obj.ok, tools: Array.isArray(obj.tools) ? obj.tools : [], error: obj.error })
-    }
-    if (typeof uni !== 'undefined' && typeof uni.request === 'function') {
-      uni.request({
-        url,
-        method: 'GET',
-        header,
-        success: (res) => done(res.data),
-        fail: () => resolve({ ok: false, tools: [], error: '无法连接网关' }),
-      })
-      return
-    }
-    if (typeof fetch !== 'undefined') {
-      fetch(url, { cache: 'no-store', headers: header })
-        .then((r) => r.json())
-        .then(done)
-        .catch(() => resolve({ ok: false, tools: [], error: '无法连接网关' }))
-      return
-    }
-    resolve({ ok: false, tools: [], error: '当前环境不支持网络请求' })
+  return gatewayGet('/api/mcp/tools', timeoutMs).then((d) => {
+    const obj = (d ?? {}) as { ok?: boolean; tools?: GatewayMcpTool[]; error?: string }
+    return { ok: !!obj.ok, tools: Array.isArray(obj.tools) ? obj.tools : [], error: obj.error }
   })
-  return withTimeout(req, timeoutMs).catch(() => ({ ok: false, tools: [], error: '请求超时' }))
+}
+
+/** 远端 Skill 清单条目（与网关 /api/skills 契约一致）：content 为 markdown 正文，供设置页展开查看。 */
+export interface GatewaySkill {
+  name: string
+  description: string
+  content?: string
+}
+
+/** 拉取 19529 上的 Skill 清单（经网关 /api/skills 转发）：设置页「Skill 设置」列表用。 */
+export function fetchGatewaySkills(timeoutMs = 10000): Promise<{ ok: boolean; skills: GatewaySkill[]; error?: string }> {
+  return gatewayGet('/api/skills', timeoutMs).then((d) => {
+    const obj = (d ?? {}) as { ok?: boolean; skills?: GatewaySkill[]; error?: string }
+    return { ok: !!obj.ok, skills: Array.isArray(obj.skills) ? obj.skills : [], error: obj.error }
+  })
 }
 
 /** 带超时的 Promise 兜底：uni.request 无原生超时参数，靠它防挂死。 */

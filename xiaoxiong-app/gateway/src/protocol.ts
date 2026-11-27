@@ -56,6 +56,41 @@ export interface DetailContext {
   fields: DetailField[]
 }
 
+// ───────────────────────── 报表展示区（与商品详情详情卡片完全独立） ─────────────────────────
+// 报表走独立事件 media.report + 独立组件 features/report/，不复用 DetailItem/media.detail/features/detail。
+// 两者只是都遵循「结构化下行 + type→渲染器」范式，数据、状态、容器、生命周期都无关。
+
+/**
+ * 报表展示区的一个「可展示块」（协议层稳定契约，与客户端镜像）。
+ * 报表由多个块顺序组成，容器不感知业务字段，只按 type 查注册表渲染：
+ *   chart = 本地渲染的图表（与 table 同源数据，客户端推断 x/y 轴画柱状/条形/折线、可切明细表）；
+ *   table = 本地渲染的表格（列元数据 columns + 行数据 rows 分离，借鉴 SQLBot 前端 data/chart 契约）；
+ *   image = 后端出图的 PNG（url 可为相对路径，客户端按服务地址拼绝对后展示）。
+ * 新增类型（text/kv/webview…）只加一个分支 + 客户端注册表项，容器与网关骨架不动。
+ */
+export type ReportBlock =
+  | {
+      type: 'chart'
+      columns: Array<{ name: string; value: string }>
+      rows: Array<Record<string, string | number>>
+      /** 后端 chart.type（column/bar/line/pie/table）：决定工具栏提供哪些类型，与 PC 端一致 */
+      chartType?: string
+      /** 后端出图地址：有数据时挂在 chart 上供工具栏「下载/复制链接」，不单独下发 image 块 */
+      imageUrl?: string
+    }
+  | {
+      type: 'table'
+      columns: Array<{ name: string; value: string }>
+      rows: Array<Record<string, string | number>>
+    }
+  | { type: 'image'; url: string; title?: string }
+
+/** 报表展示区载荷：一次问数结果 = 标题 + 若干有序展示块；close=true 收起。 */
+export interface ReportPayload {
+  title: string
+  blocks: ReportBlock[]
+}
+
 export type Lang = 'zh-CN'
 
 /** 设备上报的位置：经纬度必填，address 为系统定位回调附带的可读地址（城市/街道），可选。 */
@@ -144,7 +179,10 @@ export type ClientMessage =
        * 网关在会话建连时逐个连上、把它们的工具注册进助手工具箱，使语音助手能调用 MCP 工具。
        * 单个服务器连接失败不影响会话（跳过并继续）。缺省空（不连接任何 MCP 服务器）。
        */
-      mcp?: { servers?: McpServerConfig[] }
+      /** MCP server 连接失败重试次数（设置页可配，0=不重试，缺省 2）：网关按此重连，自愈公网抖动。 */
+      mcp?: { servers?: McpServerConfig[]; retryCount?: number }
+      /** Skill 动态加载配置：网关按此从 19529 拉 skill 清单/正文注入 systemPrompt；缺省 enabled=true。 */
+      skill?: { enabled?: boolean; retryCount?: number }
       /**
        * 设备稳定标识：客户端持久化生成（一次），连接时随 WS URL query 与 payload 上报。
        * 网关据此把会话与连接解耦——同一设备的重连/重唤醒走「重新武装」复用会话，
@@ -193,6 +231,8 @@ export type ClientMessage =
 
 /** 服务端 → 客户端（文本控制帧），与契约一致 */
 export type ServerEvent =
+  /** VAD 确认用户开口（早于 ASR 出字）：客户端立刻显示「正在识别」占位，改善出字慢的体感 */
+  | { type: 'asr.speech-start' }
   | { type: 'asr.partial'; text: string }
   /** queueRemaining=网关队列此刻还剩几句；由服务端给出，客户端据此同步而不靠猜测 */
   | { type: 'asr.final'; text: string; queueRemaining: number; fromQueue?: boolean }
@@ -257,6 +297,10 @@ export type ServerEvent =
       selectedIndex?: number | null
       close?: boolean
     }
+  /** 助手框正下方的报表展示区（与 media.detail 商品详情完全独立）：一次问数结果的整体快照。
+   *  blocks 是有序展示块（table/image…），容器按 type 查注册表渲染；close=true 收起。
+   *  title 由网关按会话 lang 取报表标题；只展示不朗读、不进 TTS。 */
+  | { type: 'media.report'; title: string; blocks: ReportBlock[]; close?: boolean }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置（位置/天气类工具被调用但会话尚无位置）时才下发，

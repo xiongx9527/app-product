@@ -19,6 +19,11 @@ describe('sentenceCut：遇标点即切', () => {
     expect(sentenceCut('hello, world')).toBe('hello,'.length)
   })
 
+  it('冒号立即成句（首字提速：长首句拆短）', () => {
+    expect(sentenceCut('各年级班级数量为：一年级4个，')).toBe('各年级班级数量为：'.length)
+    expect(sentenceCut('结果如下: 3个班级')).toBe('结果如下:'.length)
+  })
+
   it('英文句号排除小数 / 域名 / 缩写 / 省略号', () => {
     expect(sentenceCut('PI is 3.14 ok')).toBe(-1)
     expect(sentenceCut('Visit example.com now')).toBe(-1)
@@ -27,6 +32,15 @@ describe('sentenceCut：遇标点即切', () => {
     expect(sentenceCut('Wait... ok')).toBe(-1)
     // 真句末英文句号照切
     expect(sentenceCut('I am fine. Next')).toBe('I am fine.'.length)
+  })
+
+  it('流式分批：数字后的小数点在末尾时不切，等小数位到齐（2026-11-27 真机）', () => {
+    // LLM 先吐「平均80.」、下一批才来「27」——小数点后没数字前不能当句末切，
+    // 否则 TTS 念成「平均八十」「二十七」，80.27 的小数点丢失。
+    expect(sentenceCut('平均80.')).toBe(-1)
+    expect(sentenceCut('平均80.27，')).toBe('平均80.27，'.length)
+    // 字母句末仍照切（英文句子 "Result." 不是小数）
+    expect(sentenceCut('The score is A.')).toBe('The score is A.'.length)
   })
 
   it('无标点不硬切，继续攒到标点收尾', () => {

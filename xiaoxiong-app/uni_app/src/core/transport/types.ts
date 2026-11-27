@@ -30,8 +30,37 @@ export interface DetailItem {
   fields?: DetailField[]
 }
 
+// ───────────────────────── 报表展示区（与商品详情详情卡片完全独立） ─────────────────────────
+// 报表走独立事件 media.report + 独立组件 features/report/，不复用 DetailItem/media.detail/features/detail。
+
+/**
+ * 报表展示区的一个「可展示块」（与网关 protocol.ts 的 ReportBlock 镜像）。
+ * 容器不感知业务字段，只按 type 查注册表分派组件：
+ *   table = 本地渲染表格（columns 列元数据 + rows 行数据分离）；
+ *   image = 后端出图的 PNG（url 可为相对路径，按服务地址拼绝对后展示）。
+ * 新增类型（text/chart/kv/webview…）只加一个分支 + 注册表项。
+ */
+export type ReportBlock =
+  | {
+      type: 'chart'
+      columns: Array<{ name: string; value: string }>
+      rows: Array<Record<string, string | number>>
+      /** 后端 chart.type（column/bar/line/pie/table）：决定工具栏提供哪些类型，与 PC 端一致 */
+      chartType?: string
+      /** 后端出图地址：有数据时挂在 chart 上供工具栏「下载/复制链接」，不单独下发 image 块 */
+      imageUrl?: string
+    }
+  | {
+      type: 'table'
+      columns: Array<{ name: string; value: string }>
+      rows: Array<Record<string, string | number>>
+    }
+  | { type: 'image'; url: string; title?: string }
+
 /** 服务端下行事件（与 contracts/README.md 保持一致） */
 export type ServerEvent =
+  /** VAD 确认用户开口（早于 ASR 出字）：客户端立刻显示「正在识别」占位 */
+  | { type: 'asr.speech-start' }
   | { type: 'asr.partial'; text: string }
   /** queueRemaining 是服务端给出的队列剩余数，客户端据此同步，不靠本地猜测 */
   | { type: 'asr.final'; text: string; queueRemaining: number; fromQueue?: boolean }
@@ -83,6 +112,9 @@ export type ServerEvent =
       selectedIndex?: number | null
       close?: boolean
     }
+  /** 助手框正下方的报表展示区（与 media.detail 商品详情完全独立）：一次问数结果的整体快照。
+   *  blocks 有序展示块，容器按 type 查注册表渲染；close=true 收起；只展示不朗读。 */
+  | { type: 'media.report'; title: string; blocks: ReportBlock[]; close?: boolean }
   /** 让客户端把音乐音量设到指定值（0–1）；语音「音量 30% / 调大 / 调小」时由网关下发 */
   | { type: 'media.volume'; volume: number }
   /** 服务端需要设备位置时才下发，客户端据此请求定位授权并上报 session.location；不在建连时主动要 */
@@ -97,6 +129,9 @@ export type ServerEvent =
 
 /** media.detail 事件负载：详情卡片的全量状态快照（供 useAssistant 持有、渲染器分派）。 */
 export type MediaDetail = Extract<ServerEvent, { type: 'media.detail' }>
+
+/** media.report 事件负载：报表展示区的全量状态快照（供 useAssistant 持有、渲染器分派）。 */
+export type MediaReport = Extract<ServerEvent, { type: 'media.report' }>
 
 export type SessionMode = 'wake' | 'dialog'
 

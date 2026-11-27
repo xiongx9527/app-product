@@ -58,7 +58,7 @@ import {
 import { usePermissions } from '@/features/assistant/usePermissions'
 import type { PermissionState } from '@/core/permission/permissionStatus'
 import { toProxiedMusicUrl } from '@/core/audio/resolveMediaUrl'
-import type { ServerEvent, SessionMode } from '@/core/transport/types'
+import type { MediaReport, ServerEvent, SessionMode } from '@/core/transport/types'
 import { DEFAULT_WAKE_WORDS } from '@/core/wake/types'
 import { matchWakeWord } from '@/core/wake/wakeWord'
 import { createWakeService, type WakeService } from '@/core/wake/wakeService'
@@ -94,6 +94,12 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   const transcript = ref('')
   /** 监听阶段实时识别的「草稿」文字，展示在页面下方；定稿后才进「你说」卡片 */
   const liveText = ref('')
+  /**
+   * 【2026-11-27·快速出字】VAD 已确认开口、但 ASR 首个字还没出（要等 0.8s 音频+上游识别）。
+   * 这段时间草稿区显示「正在识别…」占位，用户开口瞬间就有反馈，不再盯空屏。
+   * 收到真实 partial / asr.final / asr-error 时清掉。
+   */
+  const speechPending = ref(false)
   const reply = ref('')
   const thinking = ref('')
   const thinkingDone = ref(false)
@@ -191,6 +197,13 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    */
   const detailCard = ref<Extract<ServerEvent, { type: 'media.detail' }> | null>(null)
 
+  /**
+   * 报表展示区：网关 media.report 的全量状态快照（title + 有序 blocks），助手框正下方展示。
+   * 与商品详情 detailCard 完全独立（两条事件、两个 ref、两个容器、两套清理时机）。
+   * 只展示不朗读；新一轮说话时清掉，避免上一轮报表张冠李戴。
+   */
+  const reportCard = ref<MediaReport | null>(null)
+
   /** 同一轮掉线自动重连（及手动重试）的次数上限；耗尽后停自动重连，改由页面「重试连接」按钮处理 */
   const MAX_RETRY = 5
 
@@ -199,6 +212,14 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
   let t1Timer: ReturnType<typeof setTimeout> | null = null
   let t2Timer: ReturnType<typeof setTimeout> | null = null
   let closingTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * 【草稿有字不退出·2026-11-27】T1 静默到点时若草稿区还挂着识别出的字（用户说了话、
+   * 但 ASR 上游定稿慢/返回空没下发 asr.final），T1/T2 是「用户真没说话」的兜底，
+   * 不能把正在说话的用户退下。此时续一个 T1 周期等定稿，最多续 MAX 次防上游永久故障卡死。
+   * 每次真正说话（USER_SPEECH / partial）会把计数清零。
+   */
+  let t1DraftHoldCount = 0
+  const MAX_T1_DRAFT_HOLD = 2
   // 招呼语先占住“助手”卡片，等模型第一个字到了再换成真实回复
   let assistantTextStarted = false
   let capturing = false
@@ -290,17 +311,28 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
    *  中间这段最容易以为卡死。所以在 tts.start 才撤销计时，而非 llm.delta（文字一出就撤
    *  会导致"文字等声音"那段完全没提示）。每轮最多一次。 */
   const THINKING_CUE_DELAY_MS = 5_000
+  const THINKING_CUE_REPEAT_MS = 15_000
+  const THINKING_CUE_MAX = 3 // 最多提示 3 次（5s / 20s / 35s），之后等 watchdog 兜底
   function armThinkingCue(): void {
     disarmThinkingCue()
     thinkingCueFired = false
-    thinkingCueTimer = setTimeout(() => {
+    let fired = 0
+    const tick = () => {
       thinkingCueTimer = null
-      // 未开始播报（thinking/replying）时才播；tts.start 后由 disarm 撤销
-      if ((phase.value === 'thinking' || phase.value === 'replying') && !thinkingCueFired && !isSpeaking.value) {
+      // 未开始播报时才播；tts.start 后由 disarm 撤销。
+      // 条件用 assistantBusy（本轮正在处理）而非严格 phase：问数工具慢时 LLM 流可能反复
+      // 吐工具调用文本、phase 在 thinking/replying 间跳变，旧条件会漏掉提示（真机「思考
+      // 一分钟没任何反馈」）。只要本轮还在跑、还没出声，到点就给一次安抚提示。
+      if (assistantBusy && !isSpeaking.value) {
         thinkingCueFired = true
+        fired += 1
         void playPromptCue('thinking')
+        if (fired < THINKING_CUE_MAX) {
+          thinkingCueTimer = setTimeout(tick, THINKING_CUE_REPEAT_MS)
+        }
       }
-    }, THINKING_CUE_DELAY_MS)
+    }
+    thinkingCueTimer = setTimeout(tick, THINKING_CUE_DELAY_MS)
   }
 
   /** 思考结束（开始播报 / 播报中 / 完成）时撤销计时。 */
@@ -754,6 +786,10 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         + ' phase=' + phase.value + ' text=' + ((event as { text?: string }).text ?? ''))
     }
     switch (event.type) {
+      case 'asr.speech-start':
+        // VAD 确认开口（早于 ASR 出字）：立刻显示「正在识别」占位（仅 dialog 态、没草稿时）
+        if (mode === 'dialog' && !liveText.value) speechPending.value = true
+        break
       case 'asr.partial':
         // confirming（T2 倒计时）下用户一开口就要取消退下：partial 是说话过程中的流式识别，
         // 比等 asr.final（endpointMs 静音 + 识别链 2.5s+）早得多——否则 T2 先炸、话被吞
@@ -762,6 +798,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           // 刚被 KWS 消费掉的那句唤醒词，ASR 兜底链路还会再转写一遍——静默窗内直接忽略，
           // 既不写草稿区、也不当成新插话（真机实测：KWS 命中后 3.4s ASR 又把『小熊小熊』送进来）。
           if (isKwsWakeEcho(event.text)) break
+          t1DraftHoldCount = 0 // 新一句说话：重置「草稿续期」计数
           dispatch({ type: 'USER_SPEECH' })
           // 播报中 partial 命中「小熊小熊」= 用户嫌这句太长、想立刻打断：流式识别到就打断，
           // 不等 asr.final 定稿（那要再等 endpoint 1 秒 + 识别链，体感「打断很困难」）。
@@ -778,6 +815,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
           // 真正的新文字（非尾音）：取消上一句入队/定稿的延迟清空，避免刚显示的文字被误清
           cancelQueuedClear()
           cancelFinalClear()
+          speechPending.value = false // 真实字来了，撤掉「正在识别」占位
           liveText.value = event.text
           if (!assistantBusy && !queuePending.value && !isSpeaking.value && phase.value !== 'listening') {
             phase.value = 'listening'
@@ -831,6 +869,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         }
         break
       case 'asr.final':
+        speechPending.value = false // 定稿到了，撤掉占位
         // 刚被 KWS 消费掉的唤醒词，ASR 兜底链路的 final 又到了：静默窗内清掉草稿、忽略，
         // 绝不二次 reWake / 二次招呼（用户实测「喊一遍却招呼两次」「文字留在草稿区」）。
         if (isKwsWakeEcho(event.text)) {
@@ -890,6 +929,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         queueFullMsg.value = ''
         // 新一轮说话：清掉上一轮的回答与思考，等模型重新流式输出
         reply.value = ''
+        // 报表与商品详情不同：它属于「本轮回答」，新一轮说话就清掉，避免上一轮报表张冠李戴。
+        reportCard.value = null
         thinking.value = ''
         thinkingDone.value = false
         replyDone.value = false
@@ -1152,6 +1193,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 与助手回复流无关（页面里单独成块展示），后续对话不会顶掉它。
         detailCard.value = event.close ? null : { ...event }
         break
+      case 'media.report':
+        // 报表展示区（与商品详情完全独立）：close=true 收起，否则整体替换。
+        // 助手框正下方展示；新一轮说话（asr.final）会清掉，不跨轮残留。
+        reportCard.value = event.close ? null : { ...event }
+        break
       case 'client.playMode': {
         // 语音「切换播放模式」：网关只下发意图，客户端翻转/指定显示模式并落盘，
         // 让设置页开关与实际呈现同步（悬浮小圆 与 普通播放条互斥，二选一显示）。
@@ -1192,6 +1238,15 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 关（缺省）→ 不播；开 → 播。注意设置页「一键检测」是手动触发、走独立路径，不受此开关影响。
         const cuePromptAllowed = appConfig.general.autoCheck === true
         if (event.cue === 'asr-error') {
+          // 【2026-11-27 保守方案】定稿空/识别失败：清掉挂着的草稿（用户说了话但 ASR 返回空），
+          // 并重新调度 T1 让会话留在 listening 等下一句——不静默挂着被 T1/T2 退下。
+          // 提示音仍受 autoCheck 开关（缺省关），这里只做状态修正，不改提示语义。
+          cancelFinalClear()
+          cancelQueuedClear()
+          liveText.value = ''
+          speechPending.value = false
+          t1DraftHoldCount = 0
+          if (state.value === 'listening' && !assistantBusy) dispatch({ type: 'ASSISTANT_IDLE' })
           if (cuePromptAllowed) void playPromptCue('asrError')
         } else if (event.cue === 'llm-error') {
           // LLM 运行中失败：播本地 mp3（不靠 TTS，TTS 可能也坏了）
@@ -1304,6 +1359,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         assistantTextStarted = false
         assistantBusy = false
         answerHasTts = false
+        t1DraftHoldCount = 0 // 新会话：草稿续期计数归零
+        speechPending.value = false
         cancelPendingIdle()
         void enterDialog()
         break
@@ -1320,6 +1377,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         queueFullMsg.value = ''
         phase.value = 'idle'
         assistantTextStarted = false
+        t1DraftHoldCount = 0
+        speechPending.value = false
         break
       case 'cancelSession':
         cancelPendingIdle()
@@ -1335,6 +1394,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         queueFullMsg.value = ''
         setPhaseDone('endSession')
         assistantTextStarted = false
+        t1DraftHoldCount = 0
+        speechPending.value = false
         break
       case 'playGreeting': {
         // 招呼先落到界面，声音由本地提示音负责
@@ -1349,7 +1410,19 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
         // 助手还在回答时不启动静默计时，避免长回答中途触发「还在吗」
         if (assistantBusy) break
         // 静默退下时间来自设置页「播放设置」，缺省用状态机默认值
-        t1Timer = setTimeout(() => dispatch({ type: 'T1_TIMEOUT' }), appConfig.playback.autoExitMs ?? config.t1SilenceMs)
+        t1Timer = setTimeout(() => {
+          // 【草稿有字不退出·2026-11-27】草稿区还挂着识别出的字 = 用户确实说了话，只是
+          // ASR 上游定稿慢/偶发返回空（真机铁证：partial「三年。」已进草稿，final 空文本，
+          // 网关不下发 asr.final）→ 30s 后 T1 到点。T1/T2 是「用户没说话」的兜底，此时退下
+          // 用户体感就是「明明说了话却卡住然后退下」。续一个周期等定稿，最多 MAX 次。
+          if (liveText.value.trim() && t1DraftHoldCount < MAX_T1_DRAFT_HOLD && !assistantBusy) {
+            t1DraftHoldCount += 1
+            console.info(`[da] T1_HOLD draft="${liveText.value}" hold=${t1DraftHoldCount}`)
+            applyEffect('scheduleT1') // 重新武装 T1（effect 非 event，不能直接 dispatch）
+            return
+          }
+          dispatch({ type: 'T1_TIMEOUT' })
+        }, appConfig.playback.autoExitMs ?? config.t1SilenceMs)
         break
       case 'cancelT1':
         clearT1()
@@ -2029,6 +2102,11 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     transport.sendClientDetail({ action: 'close', kind: card.kind })
   }
 
+  /** 关闭报表展示区（纯本地收起，不涉及网关详情上下文，与商品详情两套）。 */
+  function closeReportCard(): void {
+    reportCard.value = null
+  }
+
   /**
    * 字幕高亮相对播放进度的时间偏移（秒）。
    * - music（歌曲）：onTimeUpdate 采样/解码滞后，给 +1s 提前量让歌词跟唱（原设计）。
@@ -2156,6 +2234,7 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     queuePending,
     queueFullMsg,
     liveText,
+    speechPending,
     errorMessage,
     gatewayPreparing,
     gatewayFailed,
@@ -2199,6 +2278,8 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
     detailCard,
     selectDetail,
     closeDetailCard,
+    reportCard,
+    closeReportCard,
     activeSubtitleIndex,
     currentSubtitleText,
     activeSubtitleSplit,

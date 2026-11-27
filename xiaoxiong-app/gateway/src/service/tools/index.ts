@@ -115,46 +115,74 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * - sse / http：按 url 走网络 endpoint（streable-http 或 SSE）。
  * 两者都需先 connect()（带 5s 超时），再 registerMCPClient 把工具挂进工具箱。
  */
+/** 单次连接一个 MCP server 并注册进工具箱；成功返回句柄，失败抛错（由重试循环接管）。 */
+async function connectOneMcpServer(
+  toolkit: Toolkit,
+  s: McpServerConfig
+): Promise<McpClientHandle> {
+  if (!s.name) throw new Error('MCP 服务器缺少 name')
+  let client: StdioMCPClient | HTTPMCPClient
+  if (s.transport === 'stdio') {
+    if (!s.command) throw new Error('stdio 传输缺少 command')
+    client = new StdioMCPClient({ name: s.name, command: s.command, args: s.args, env: s.env })
+  } else {
+    if (!s.url) throw new Error('sse/http 传输缺少 url')
+    // 鉴权：把用户填写的自定义请求头透传给底层传输层（覆盖 Bearer / API Key / 自定义头）。
+    const headers = s.headers && Object.keys(s.headers).length ? s.headers : undefined
+    client = new HTTPMCPClient({
+      name: s.name,
+      transportType: s.transport === 'sse' ? 'sse' : 'streamable-http',
+      url: s.url,
+      transportOpts: headers ? { requestInit: { headers } } : undefined,
+    })
+  }
+  // 连接超时：公网（花生壳）+ 移动网络下 initialize 往返可能 1-2s，留足余量。
+  await withTimeout(client.connect(), 12000, s.name)
+  await toolkit.registerMCPClient({
+    client,
+    enabledTools: s.enabledTools,
+    disabledTools: s.disabledTools,
+  })
+  return { name: s.name, close: () => client.close() }
+}
+
+/**
+ * 把一组 MCP 服务器连上并注册进工具箱。每个服务器独立处理，单个失败只记日志并跳过，
+ * 绝不拖垮整个会话。
+ *
+ * 【2026-11-27 重试】公网（花生壳）偶发 `fetch failed`（设备网络抖动）会让 MCP 连不上 →
+ * 工具全缺 → 问数等能力失效。按 retryCount（设置页可配，0=不重试，缺省 2）自动重连，
+ * 退避 500ms/1s/2s…（上限 5s）。注册是后台异步，不阻塞唤醒；重连只影响本轮工具是否可用。
+ */
 export async function registerMcpServers(
   toolkit: Toolkit,
-  servers: McpServerConfig[]
+  servers: McpServerConfig[],
+  retryCount = 2
 ): Promise<McpClientHandle[]> {
   const clients: McpClientHandle[] = []
-  bargeDiag(`MCP-REGISTER start servers=${servers.length}`)
+  const retries = Number.isInteger(retryCount) && retryCount >= 0 && retryCount <= 10 ? retryCount : 2
+  bargeDiag(`MCP-REGISTER start servers=${servers.length} retry=${retries}`)
   for (const s of servers) {
-    try {
-      if (!s.name) throw new Error('MCP 服务器缺少 name')
-      bargeDiag(`MCP-CONNECT name=${s.name} transport=${s.transport} url=${s.url ?? ''}`)
-      let client: StdioMCPClient | HTTPMCPClient
-      if (s.transport === 'stdio') {
-        if (!s.command) throw new Error('stdio 传输缺少 command')
-        client = new StdioMCPClient({ name: s.name, command: s.command, args: s.args, env: s.env })
-      } else {
-        if (!s.url) throw new Error('sse/http 传输缺少 url')
-        // 鉴权：把用户填写的自定义请求头透传给底层传输层（覆盖 Bearer / API Key / 自定义头）。
-        // 没有 headers 时不传，行为与之前一致。
-        const headers = s.headers && Object.keys(s.headers).length ? s.headers : undefined
-        client = new HTTPMCPClient({
-          name: s.name,
-          transportType: s.transport === 'sse' ? 'sse' : 'streamable-http',
-          url: s.url,
-          transportOpts: headers ? { requestInit: { headers } } : undefined,
-        })
+    const t0 = Date.now()
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (attempt === 0) bargeDiag(`MCP-CONNECT name=${s.name} transport=${s.transport} url=${s.url ?? ''}`)
+      try {
+        const handle = await connectOneMcpServer(toolkit, s)
+        clients.push(handle)
+        const toolCount = (toolkit as unknown as { tools?: unknown[] }).tools?.length ?? -1
+        bargeDiag(`MCP-READY name=${s.name} tools=${toolCount} ms=${Date.now() - t0} attempt=${attempt}`)
+        break
+      } catch (e) {
+        const err = (e as Error).message
+        if (attempt < retries) {
+          const backoff = Math.min(500 * 2 ** attempt, 5000)
+          bargeDiag(`MCP-RETRY name=${s.name} attempt=${attempt + 1}/${retries} backoff=${backoff}ms err=${err}`)
+          await new Promise((r) => setTimeout(r, backoff))
+        } else {
+          bargeDiag(`MCP-FAIL name=${s.name ?? '未命名'} ms=${Date.now() - t0} attempts=${attempt + 1} err=${err}`)
+          console.warn(`[mcp] 连接服务器「${s.name ?? '未命名'}」失败（重试 ${retries} 次后），已跳过：`, err)
+        }
       }
-      await withTimeout(client.connect(), 5000, s.name)
-      await toolkit.registerMCPClient({
-        client,
-        enabledTools: s.enabledTools,
-        disabledTools: s.disabledTools,
-      })
-      clients.push({ name: s.name, close: () => client.close() })
-      // 【常驻诊断】MCP 是否真连上、注册了几个工具：真机只能经 /api/diag/log 观测。
-      const toolCount = (toolkit as unknown as { tools?: unknown[] }).tools?.length ?? -1
-      bargeDiag(`MCP-READY name=${s.name} tools=${toolCount}`)
-    } catch (e) {
-      // 单个 MCP 服务器连接失败：记录但不致命，助手其余能力照常工作
-      bargeDiag(`MCP-FAIL name=${s.name ?? '未命名'} err=${(e as Error).message}`)
-      console.warn(`[mcp] 连接服务器「${s.name ?? '未命名'}」失败，已跳过：`, (e as Error).message)
     }
   }
   bargeDiag(`MCP-DONE clients=${clients.length}`)

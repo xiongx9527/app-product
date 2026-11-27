@@ -854,6 +854,7 @@ const I18N = {
     "skill.nameHint": "小写字母/数字/短横线/下划线，且以字母或数字开头；作为对外路径 /skills/{标识名}",
     "skill.description": "说明",
     "skill.descriptionHint": "一句话说明，供 agent 判断是否加载正文",
+    "skill.search": "搜索标识名 / 说明",
     "skill.content": "提示词正文（Markdown）",
     "skill.preview": "预览正文",
     "skill.previewTitle": "SKILL 正文预览",
@@ -1467,6 +1468,7 @@ const I18N = {
     "skill.nameHint": "lowercase letters/digits/hyphens/underscores, starting with a letter or digit; used as /skills/{name}",
     "skill.description": "Description",
     "skill.descriptionHint": "One-line summary for the agent to decide whether to load the content",
+    "skill.search": "Search name / description",
     "skill.content": "Prompt content (Markdown)",
     "skill.preview": "Preview content",
     "skill.previewTitle": "SKILL content preview",
@@ -4978,6 +4980,8 @@ function renderPager(containerId, page, totalPages, total, onNav){
 
 let apiKeyPage = 1;
 let mcpToolPage = 1;
+let mcpGatewayPage = 1;   // MCP 网关配置页
+let mcpOtherPage = 1;     // MCP 其他 HTTP 工具页
 let mcpToolExpanded = new Set();  // 工具页展开参数行的 qualified_name（仿热词管理）
 let mcpAddExpanded = new Set();   // 新增工具弹框内展开参数行的原始工具名
 async function loadApiKeys(page){
@@ -5472,6 +5476,7 @@ new MutationObserver(scanEyes).observe(document.documentElement,{childList:true,
 scanEyes();
 
 // ── SKILL 管理页（提示词知识型技能）────────────────────────────────
+let skillPage = 1;
 function showSkillModal(skill){
   skill=skill||null;
   const body=
@@ -5502,22 +5507,35 @@ function showSkillPreview(skill){
   showModal(t('skill.previewTitle'), body, async()=>{ return true; }, t('common.close'));
 }
 
-async function loadSkillPage(){
+async function loadSkillPage(page){
+  if(page) skillPage=page;
   const box=document.getElementById('skillBody'); if(!box) return;
+  // 搜索重绘会重建 input，先记住焦点与光标（仿 MCP 工具页）
+  const prevSearch=document.getElementById('skillSearch');
+  const hadFocus=prevSearch && document.activeElement===prevSearch;
+  const caret=prevSearch?prevSearch.selectionStart:null;
   box.innerHTML='<div class="hint">'+t('common.loadingX')+'</div>';
   try{
     const r=await api('/admin/api/skills');
     if(!r.ok){ box.innerHTML='<div class="err">'+t('common.errorPrefix')+r.status+'</div>'; return; }
-    const skills=(await r.json()).skills||[];
+    let skills=(await r.json()).skills||[];
+    // 搜索：标识名 / 说明（大小写不敏感）
+    const q=(document.getElementById('skillSearch')?.value||'').trim().toLowerCase();
+    if(q) skills=skills.filter(s=> (s.name||'').toLowerCase().includes(q) || (s.description||'').toLowerCase().includes(q));
+    const pages=Math.max(1, Math.ceil(skills.length/PAGE_SIZE));
+    if(skillPage>pages) skillPage=pages;
+    const slice=skills.slice((skillPage-1)*PAGE_SIZE, skillPage*PAGE_SIZE);
     let h='<div class="hint" style="margin-bottom:10px">'+t('skill.hint')+'</div>';
-    h+='<div class="row" style="margin-bottom:10px"><button id="skillAdd">'+t('skill.add')+'</button></div>';
+    h+='<div class="row" style="margin-bottom:10px"><button id="skillAdd">'+t('skill.add')+'</button>'
+      +'<div class="row" style="margin-left:auto"><input id="skillSearch" class="hw-input" placeholder="'+t('skill.search')+'" style="width:280px" value="'+esc(q)+'" />'
+      +'<button id="skillSearchBtn">'+t('common.search')+'</button></div></div>';
     h+='<table class="admin-table" style="width:100%"><thead><tr>'
       +'<th style="width:140px">'+t('skill.name')+'</th>'
       +'<th>'+t('skill.description')+'</th>'
       +'<th style="width:70px">'+t('common.status')+'</th>'
       +'<th style="width:150px">'+t('skill.updatedAt')+'</th>'
       +'<th style="width:150px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
-    skills.forEach(s=>{
+    slice.forEach(s=>{
       const sw='<label class="chk"><input type="checkbox" class="skill-enable-cb" data-id="'+s.id+'" '+(s.enabled?'checked':'')+' /> '+(s.enabled?t('common.enabled'):t('common.disabled'))+'</label>';
       const ts=s.updated_at?new Date(s.updated_at*1000).toLocaleString():'-';
       h+='<tr>'
@@ -5530,10 +5548,17 @@ async function loadSkillPage(){
         +'<button class="mini" data-skillpreview="'+s.id+'">'+t('skill.preview')+'</button> '
         +'<button class="mini" data-skilldel="'+s.id+'">'+t('common.delete')+'</button></td></tr>';
     });
-    if(!skills.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('skill.empty')+'</td></tr>';
-    h+='</tbody></table>';
+    if(!slice.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('skill.empty')+'</td></tr>';
+    h+='</tbody></table><div class="row" id="skillPager" style="align-items:center;margin-top:10px"></div>';
     box.innerHTML=h;
     document.getElementById('skillAdd').onclick=()=>showSkillModal();
+    const searchInput=document.getElementById('skillSearch');
+    document.getElementById('skillSearchBtn').onclick=()=>{ skillPage=1; loadSkillPage(); };
+    if(searchInput){
+      searchInput.onkeydown=(e)=>{ if(e.key==='Enter'){ skillPage=1; loadSkillPage(); } };
+      if(hadFocus){ searchInput.focus(); if(caret!=null) searchInput.setSelectionRange(caret,caret); }
+    }
+    renderPager('skillPager', skillPage, pages, skills.length, p=>loadSkillPage(p));
     box.querySelectorAll('[data-skilledit]').forEach(b=> b.onclick=()=>{
       const s=skills.find(x=>x.id===+b.dataset.skilledit); if(s) showSkillModal(s);
     });
@@ -5610,7 +5635,8 @@ function showMcpModal(server){
     out.innerHTML='<div><span class="badge b-ok">OK · '+found.length+' tools</span></div>';
   };
 }
-async function loadMcpPage(){
+async function loadMcpPage(page){
+  if(page) mcpGatewayPage=page;
   const box=document.getElementById('mcpBody'); if(!box) return;
   box.innerHTML='<div class="hint">'+t('common.loadingX')+'</div>';
   try{
@@ -5619,6 +5645,9 @@ async function loadMcpPage(){
     ]);
     const servers=(srvRes.ok?await srvRes.json():{servers:[]}).servers||[];
     const tools=toolRes.ok?Object.keys((await toolRes.json()).tools||{}):[];
+    const pages=Math.max(1, Math.ceil(servers.length/PAGE_SIZE));
+    if(mcpGatewayPage>pages) mcpGatewayPage=pages;
+    const slice=servers.slice((mcpGatewayPage-1)*PAGE_SIZE, mcpGatewayPage*PAGE_SIZE);
     let h='<div class="row" style="margin-bottom:10px"><button id="mcpAdd">'+t('mcp.add')+'</button></div>';
     h+='<table class="admin-table" style="width:100%"><thead><tr>'
       +'<th style="width:80px">'+t('mcp.name')+'</th>'
@@ -5627,7 +5656,7 @@ async function loadMcpPage(){
       +'<th style="width:160px">'+t('mcp.url')+'</th>'
       +'<th style="width:70px">'+t('common.status')+'</th>'
       +'<th style="width:90px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
-    servers.forEach(s=>{
+    slice.forEach(s=>{
       // 状态列 = 启用/停用开关（启用前必须先测试通过）；不显示测试状态徽标
       const sw='<label class="chk"><input type="checkbox" class="mcp-enable-cb" data-id="'+s.id+'" '+(s.enabled?'checked':'')+' /> '+(s.enabled?t('common.enabled'):t('common.disabled'))+'</label>';
       h+='<tr>'
@@ -5639,9 +5668,10 @@ async function loadMcpPage(){
         +'</td><td class="col-actions" style="width:90px"><button class="mini" data-mcpedit="'+s.id+'">'+t('common.edit')+'</button> '
         +'<button class="mini" data-mcpdel="'+s.id+'">'+t('common.delete')+'</button></td></tr>';
     });
-    if(!servers.length) h+='<tr><td colspan="6" class="muted" style="text-align:center">'+t('mcp.emptyGateway')+'</td></tr>';
-    h+='</tbody></table>';
+    if(!slice.length) h+='<tr><td colspan="6" class="muted" style="text-align:center">'+t('mcp.emptyGateway')+'</td></tr>';
+    h+='</tbody></table><div class="row" id="mcpPager" style="align-items:center;margin-top:10px"></div>';
     box.innerHTML=h;
+    renderPager('mcpPager', mcpGatewayPage, pages, servers.length, p=>loadMcpPage(p));
     document.getElementById('mcpAdd').onclick=()=>showMcpModal();
     box.querySelectorAll('[data-mcpedit]').forEach(b=> b.onclick=()=>{
       const srv=servers.find(x=>x.id===+b.dataset.mcpedit); if(srv) showMcpModal(srv);
@@ -5852,7 +5882,8 @@ async function loadMcpToolsPage(){
 }
 
 // ── 其他工具（HTTP 调用，走 default 网关）──────────────────────────
-async function loadMcpOtherPage(){
+async function loadMcpOtherPage(page){
+  if(page) mcpOtherPage=page;
   const box=document.getElementById('mcpOtherBody'); if(!box) return;
   box.innerHTML='<div class="hint">'+t('common.loadingX')+'</div>';
   let tools=[];
@@ -5861,13 +5892,16 @@ async function loadMcpOtherPage(){
     if(!r.ok){ box.innerHTML='<div class="err">'+t('common.loadFailed')+'</div>'; return; }
     tools=(await r.json()).tools||[];
   }catch(e){ box.innerHTML='<div class="err">'+t('common.errorPrefix')+e.message+'</div>'; return; }
+  const pages=Math.max(1, Math.ceil(tools.length/PAGE_SIZE));
+  if(mcpOtherPage>pages) mcpOtherPage=pages;
+  const slice=tools.slice((mcpOtherPage-1)*PAGE_SIZE, mcpOtherPage*PAGE_SIZE);
   let h='<div class="hint" style="margin-bottom:10px">'+t('mcp.otherHint')+'</div>'
     +'<div class="row" style="margin-bottom:10px"><button id="mcpOtherAdd">'+t('mcp.otherAdd')+'</button></div>'
     +'<table class="admin-table" style="width:100%"><thead><tr>'
     +'<th>'+t('mcp.otherName')+'</th><th style="width:70px">'+t('mcp.otherMethod')+'</th>'
     +'<th>'+t('mcp.toolDesc')+'</th><th style="width:60px">'+t('common.status')+'</th>'
     +'<th style="width:230px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
-  tools.forEach(x=>{
+  slice.forEach(x=>{
     h+='<tr><td style="word-break:break-all">default__'+esc(x.name)+'</td>'
       +'<td>'+esc(x.method)+'</td><td style="word-break:break-word;line-height:1.4">'+esc(x.description||'')+'</td>'
       +'<td>'+(x.enabled?'<span class="badge">'+t('common.enabled')+'</span>':'<span class="hint">'+t('common.disabled')+'</span>')+'</td>'
@@ -5876,9 +5910,10 @@ async function loadMcpOtherPage(){
       +'<button class="mini" data-other-toggle="'+x.id+'" data-on="'+x.enabled+'">'+(x.enabled?t('common.disable'):t('common.enable'))+'</button> '
       +'<button class="mini danger" data-other-del="'+x.id+'">'+t('common.delete')+'</button></td></tr>';
   });
-  if(!tools.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('mcp.emptyTools')+'</td></tr>';
-  h+='</tbody></table>';
+  if(!slice.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('mcp.emptyTools')+'</td></tr>';
+  h+='</tbody></table><div class="row" id="mcpOtherPager" style="align-items:center;margin-top:10px"></div>';
   box.innerHTML=h;
+  renderPager('mcpOtherPager', mcpOtherPage, pages, tools.length, p=>loadMcpOtherPage(p));
   document.getElementById('mcpOtherAdd').onclick=()=>showHttpToolModal(null);
   box.querySelectorAll('[data-other-test]').forEach(b=> b.onclick=()=>{
     const x=tools.find(y=>y.id===+b.dataset.otherTest); if(!x) return;

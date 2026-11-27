@@ -67,6 +67,30 @@ describe('WebSocketTransport.onEvent 反订阅（HMR 重挂载双音频根因回
     expect(b).toHaveBeenCalledTimes(2) // B 不受影响，仍正常收到
   })
 
+  it('media.report 报表事件原样下发（结构化 blocks 不被当成普通文本吞掉）', async () => {
+    const transport = new WebSocketTransport()
+    const seen: unknown[] = []
+    transport.onEvent((e) => seen.push(e))
+
+    const p = transport.connect('wake')
+    await new Promise((r) => setTimeout(r, 0))
+    MockWebSocket.last!.onopen!()
+    await p
+
+    const report = {
+      type: 'media.report',
+      title: '各年级统计',
+      blocks: [
+        { type: 'table', columns: [{ name: '年级', value: '年级' }], rows: [{ 年级: '一年级' }] },
+        { type: 'image', url: '/api/chart/image/abc' },
+      ],
+    }
+    MockWebSocket.last!.onmessage!({ data: JSON.stringify(report) })
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toEqual(report)
+  })
+
   it('同一传输反复「挂载→卸载」不会让事件被处理多遍', async () => {
     const transport = new WebSocketTransport()
     const seen: string[] = []
@@ -108,37 +132,55 @@ describe('resolveGatewayUrl / resolveGatewayHttpBase（网关地址，统一来�
   })
 })
 
-describe('resolveMcpUrl（固定 MCP 地址 = 服务设置地址 + /mcp/sse）', () => {
+describe('resolveMcpUrl（固定 MCP 地址 = 服务设置地址 + /mcp/ 或 /mcp/sse）', () => {
   const original = appConfig.voice.builtin.url
-  afterEach(() => { appConfig.voice.builtin.url = original })
+  const originalTransport = appConfig.mcp.transport
+  afterEach(() => {
+    appConfig.voice.builtin.url = original
+    appConfig.mcp.transport = originalTransport
+  })
 
   it('沿用配置地址的协议/host/端口，只拼固定路径', () => {
     appConfig.voice.builtin.url = 'http://127.0.0.1:9529'
-    expect(resolveMcpUrl()).toBe('http://127.0.0.1:9529/mcp/sse')
+    expect(resolveMcpUrl()).toBe('http://127.0.0.1:9529/mcp/')
   })
 
   it('公网地址同样只拼路径', () => {
     appConfig.voice.builtin.url = 'https://25946kt718.goho.co'
-    expect(resolveMcpUrl()).toBe('https://25946kt718.goho.co/mcp/sse')
+    expect(resolveMcpUrl()).toBe('https://25946kt718.goho.co/mcp/')
   })
 
   it('去掉配置地址末尾的斜杠，避免双斜杠', () => {
     appConfig.voice.builtin.url = 'https://gw.example.com/'
-    expect(resolveMcpUrl()).toBe('https://gw.example.com/mcp/sse')
+    expect(resolveMcpUrl()).toBe('https://gw.example.com/mcp/')
   })
 
   it('服务地址为空时返回空串（不下发固定 server）', () => {
     appConfig.voice.builtin.url = ''
     expect(resolveMcpUrl()).toBe('')
   })
+
+  it('传输协议切成 sse：路径改为 /mcp/sse', () => {
+    appConfig.voice.builtin.url = 'https://gw.example.com'
+    appConfig.mcp.transport = 'sse'
+    expect(resolveMcpUrl()).toBe('https://gw.example.com/mcp/sse')
+  })
+
+  it('传输协议为 http（默认）：路径为 /mcp/', () => {
+    appConfig.voice.builtin.url = 'https://gw.example.com'
+    appConfig.mcp.transport = 'http'
+    expect(resolveMcpUrl()).toBe('https://gw.example.com/mcp/')
+  })
 })
 
 describe('session.start 的 MCP server 下发随总开关', () => {
   const originalUrl = appConfig.voice.builtin.url
   const originalEnabled = appConfig.mcp.enabled
+  const originalTransport = appConfig.mcp.transport
   afterEach(() => {
     appConfig.voice.builtin.url = originalUrl
     appConfig.mcp.enabled = originalEnabled
+    appConfig.mcp.transport = originalTransport
   })
 
   async function captureStartServers(): Promise<unknown[]> {
@@ -164,12 +206,23 @@ describe('session.start 的 MCP server 下发随总开关', () => {
     return sent?.mcp?.servers ?? []
   }
 
-  it('开关开启（默认）：下发指向服务地址 /mcp/sse 的固定 server', async () => {
+  it('开关开启（默认）：下发指向服务地址 /mcp/ 的 http 固定 server', async () => {
     appConfig.voice.builtin.url = 'https://gw.example.com'
     appConfig.mcp.enabled = true
+    appConfig.mcp.transport = 'http'
     const servers = await captureStartServers()
     expect(servers).toHaveLength(1)
+    expect((servers[0] as { url: string }).url).toBe('https://gw.example.com/mcp/')
+    expect((servers[0] as { transport: string }).transport).toBe('http')
+  })
+
+  it('传输协议切成 sse：下发 /mcp/sse + transport=sse', async () => {
+    appConfig.voice.builtin.url = 'https://gw.example.com'
+    appConfig.mcp.enabled = true
+    appConfig.mcp.transport = 'sse'
+    const servers = await captureStartServers()
     expect((servers[0] as { url: string }).url).toBe('https://gw.example.com/mcp/sse')
+    expect((servers[0] as { transport: string }).transport).toBe('sse')
   })
 
   it('开关关闭：servers 为空，网关不连任何 MCP', async () => {

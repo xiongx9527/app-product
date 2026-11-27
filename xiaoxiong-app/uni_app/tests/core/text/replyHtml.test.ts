@@ -70,6 +70,32 @@ describe('toReplyHtml 清理模型残留', () => {
   })
 })
 
+describe('toReplyHtml 通用技术路径清洗（2026-11-27）', () => {
+  it('剥掉 LLM 复述出来的裸图片路径，助手框不再显示', () => {
+    const html = toReplyHtml('一年级学生人数：1班9人。图表：/api/chart/image/2ff1cf2a874940f2846cf16998547169')
+    expect(html).not.toContain('chart/image')
+    expect(html).not.toContain('2ff1cf')
+    expect(html).toContain('一年级学生人数：1班9人。图表：')
+  })
+
+  it('裸 URL 与接口路径按文本形态剥离，不针对特定工具', () => {
+    const html = toReplyHtml('详见 https://example.com/a/b 与 /voice/v1/audio/voices')
+    expect(html).not.toContain('example.com')
+    expect(html).not.toContain('voice/v1')
+  })
+
+  it('markdown 图片地址保留给正常渲染，不被剥掉', () => {
+    // 需传 imageBase，相对路径才能解析成可渲染的绝对地址（既有行为）
+    expect(toReplyHtml('![图表](/api/chart/image/abc)', 'https://example.com')).toContain('<img')
+  })
+
+  it('纯数字日期与分数不当路径，照常保留', () => {
+    const html = toReplyHtml('日期 2026/11/27，比例 3/4')
+    expect(html).toContain('2026/11/27')
+    expect(html).toContain('3/4')
+  })
+})
+
 describe('sanitizeHtml', () => {
   it('移除 iframe 与 style 块', () => {
     const html = sanitizeHtml('<style>body{}</style><iframe src="x"></iframe><p>正文</p>')

@@ -12,7 +12,7 @@ import {
   DEFAULT_DUCK_LEVEL,
 } from './constants'
 import { FLOAT_POSITION_PRESETS, type FloatPositionKey } from '../adaptation/floatLayer'
-import type { AppConfig, GeneralConfig, MemoryConfig, McpConfig, McpServerConfig, McpTransport, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, TimeoutsConfig, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
+import type { AppConfig, GeneralConfig, MemoryConfig, McpConfig, McpServerConfig, McpTransport, PlaybackConfig, PlaybackSource, RecommendConfig, ServiceMode, SkillConfig, TimeoutsConfig, VoiceProviderKind, VoiceProviderSettings, VoiceServiceConfig } from './types'
 
 export const CONFIG_STORAGE_KEY = 'app-product.config.v1'
 
@@ -54,7 +54,9 @@ const DEFAULT_PLAYBACK: PlaybackConfig = {
   subtitleFontSize: DEFAULT_SUBTITLE_FONT_SIZE,
   subtitleColor: DEFAULT_SUBTITLE_COLOR,
   finalizeMaxChars: 30,
-  finalizeTimeoutMs: 10000,
+  // 说完话后的静音兜底定稿超时：5s 到点必定稿（配合网关独立兜底 timer，不受背景音乐
+  // 顶住 VAD 影响）。曾为 10s，体感「说完迟迟不定稿」，2026-11-26 调到 5s。
+  finalizeTimeoutMs: 5000,
   ttsConcurrency: 4,
   autoExitMs: 30000,
   autoExitGraceMs: 15000,
@@ -125,7 +127,13 @@ export function createDefaultConfig(): AppConfig {
     general: createDefaultGeneral(),
     memory: createDefaultMemory(),
     mcp: createDefaultMcp(),
+    skill: createDefaultSkill(),
   }
+}
+
+/** Skill 动态加载默认：总开关开（19529 配了 skill 即生效），失败重试 2 次。 */
+function createDefaultSkill(): SkillConfig {
+  return { enabled: true, retryCount: DEFAULT_MCP_RETRY_COUNT }
 }
 
 /** 通用设置默认值：自动连接网关默认开启（开屏即连网关进入待唤醒，免去手动点开关）；定时检查默认关闭。 */
@@ -187,9 +195,13 @@ function normalizeMemory(raw: unknown): MemoryConfig {
   }
 }
 
+/** MCP 连接失败重试次数缺省值：真机偶发 fetch failed（设备网络抖动），重试 2 次自愈。 */
+const DEFAULT_MCP_RETRY_COUNT = 2
+
 /** MCP 服务器列表默认值：总开关默认开启（保持与历史行为一致：列表里有启用项即连接），列表为空。 */
 function createDefaultMcp(): McpConfig {
-  return { enabled: true, servers: [] }
+  // 传输协议默认 Streamable HTTP：单端点 POST，无 SSE 长连接，公网/移动网络下握手更稳。
+  return { enabled: true, transport: 'http', retryCount: DEFAULT_MCP_RETRY_COUNT, servers: [] }
 }
 
 const MCP_TRANSPORTS: McpTransport[] = ['stdio', 'sse', 'http']
@@ -238,9 +250,25 @@ function normalizeMcpServer(raw: unknown): McpServerConfig | null {
 function normalizeMcp(raw: unknown): McpConfig {
   const source = isRecord(raw) ? raw : {}
   const enabled = typeof source.enabled === 'boolean' ? source.enabled : true
+  // 固定对接的传输协议：只认 sse / http，其它值（含旧配置缺失）回退默认 http。
+  const transport: 'sse' | 'http' = source.transport === 'sse' ? 'sse' : 'http'
+  // 连接重试次数：0-10 的整数，非法值回退默认 2（公网偶发抖动需要重试自愈）。
+  const rawRetry = Number(source.retryCount)
+  const retryCount = Number.isInteger(rawRetry) && rawRetry >= 0 && rawRetry <= 10
+    ? rawRetry : DEFAULT_MCP_RETRY_COUNT
   const list = Array.isArray(source.servers) ? source.servers : []
   const servers = list.map(normalizeMcpServer).filter((s): s is McpServerConfig => s !== null)
-  return { enabled, servers }
+  return { enabled, transport, retryCount, servers }
+}
+
+/** 归一化 Skill 动态加载配置：开关 boolean、重试次数 0-10 整数，非法回退默认。 */
+function normalizeSkill(raw: unknown): SkillConfig {
+  const source = isRecord(raw) ? raw : {}
+  const enabled = typeof source.enabled === 'boolean' ? source.enabled : true
+  const rawRetry = Number(source.retryCount)
+  const retryCount = Number.isInteger(rawRetry) && rawRetry >= 0 && rawRetry <= 10
+    ? rawRetry : DEFAULT_MCP_RETRY_COUNT
+  return { enabled, retryCount }
 }
 
 function normalizeProviderSettings(
@@ -420,8 +448,9 @@ export function normalizeConfig(
   const general = normalizeGeneral(source.general ?? base.general)
   const memory = normalizeMemory(source.memory ?? base.memory)
   const mcp = normalizeMcp(source.mcp ?? base.mcp)
+  const skill = normalizeSkill(source.skill ?? base.skill)
 
-  return { version: 1, mode, language, timezone, voice, playback, recommend, timeouts, general, memory, mcp }
+  return { version: 1, mode, language, timezone, voice, playback, recommend, timeouts, general, memory, mcp, skill }
 }
 
 function hasStorage(): boolean {

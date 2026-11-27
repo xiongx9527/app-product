@@ -153,6 +153,10 @@ export interface Messages {
   sources: Record<string, string>
   /** 大模型整句都不可念（泄漏控制符 / 空回复 / 只剩符号）时的兜底口播：不念垃圾，给一句让人能重说的 */
   llmFallthrough: () => string
+  /** 报表展示区：问数工具结果迟到（LLM 流已结束）时补一句口播，只展示不念数据的场景 */
+  report: {
+    ready: () => string
+  }
   /** 长期记忆：把该设备已记住的内容注入系统提示，让助手「知道你的习惯」 */
   memory: {
     /** items 是已格式化的「- 话题：内容」清单；空串表示还没记忆 */
@@ -343,6 +347,9 @@ const zhCN: Messages = {
   },
   sources: { smzdm: '什么值得买' },
   llmFallthrough: () => '抱歉，我刚才没反应过来，能再说一遍吗？',
+  report: {
+    ready: () => '报表已生成，请看屏幕。',
+  },
   memory: {
     context: (items) =>
       items
@@ -529,6 +536,9 @@ const en: Messages = {
     none: (activity) => `No almanac day for ${activity} in the coming month. Try another activity or ask again later.`,
   },
   llmUnavailable: () => "I couldn't connect this time. Could you ask me again in a moment?",
+  report: {
+    ready: () => 'Your report is ready. Please take a look at the screen.',
+  },
 }
 
 const catalogs: Record<string, Messages> = {

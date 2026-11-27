@@ -2,6 +2,7 @@ import type { AsrProvider } from './provider'
 import type { VendorParams } from '../config'
 import { TIMEOUT_DEFAULTS } from '../timeouts'
 import type { ResolvedTimeouts } from '../timeouts'
+import { bargeDiag } from '../diagLog'
 
 /** 两次中间识别的最小间隔：太密会打满本地服务，太疏界面又会卡顿。 */
 const PARTIAL_INTERVAL_MS = TIMEOUT_DEFAULTS.asrPartialIntervalMs
@@ -10,8 +11,13 @@ const PARTIAL_INTERVAL_MS = TIMEOUT_DEFAULTS.asrPartialIntervalMs
  * 实测（TTS 真语音喂内置 SenseVoice）：0.4s 音频识别出空串、0.8s 才出第一个字
  * （「今天天气。」）。原来 12800B(0.4s) 会让第一次识别白跑一轮、首字拖到 ~2.1s；
  * 提到 0.8s 让首次识别就出字，首字降到 ~1.7s。仍是从头识别整段，绝不滑动窗口丢字。
+ *
+ * 【2026-11-27 调到 0.6s】真机出字慢审计：上游中位 468ms，稳定态首字 648-774ms，
+ * 0.8s 音频窗口占了首字延迟的相当一部分。降到 0.6s(19200B) 争取 ~200ms；
+ * 0.4s 的历史坑（出空串白跑）由 C「空返回立即补识别」兜底——0.6s 出空时下一帧立刻补，
+ * 不会像原来那样白等一轮。若真机反现首字丢/空串，回退到 25600(0.8s)。
  */
-const PARTIAL_MIN_BYTES = 25600
+const PARTIAL_MIN_BYTES = 19200
 /**
  * 中间识别（partial）与定稿识别（finalize）用不同的超时预算，原因见 timeouts.ts：
  * partial 只负责实时字幕、失败就跳过，必须快速失败；finalize 失败等于整轮白说，必须给足。
@@ -69,6 +75,10 @@ export class HttpVoiceAsr implements AsrProvider {
    *  实测单次识别 ~1s > 间隔 600ms，旧实现把中途触发全丢掉 → 字幕 ~2.2s 才刷一次、卡顿。
    *  补识别仍是从头识别整段（文本天然累积、绝不丢字），只是不等固定间隔。 */
   private partialPending = false
+  /** 【2026-11-26 诊断·常驻】本轮开说时刻 / 首个非空 partial 的耗时与文本，用于定位
+   *  "出字慢 / 首字偶尔丢"：对比 partial 首字与 finalize 首字，落在哪一层一目了然。 */
+  private utteranceStartAt = 0
+  private firstPartialDiag = false
 
   constructor(
     private readonly baseUrl: string,
@@ -91,6 +101,8 @@ export class HttpVoiceAsr implements AsrProvider {
   }
 
   async push(chunk: Uint8Array): Promise<string | null> {
+    // 本轮首次收到上行音频：记录开说时刻（reset 时清零），供首个 partial 出字耗时诊断。
+    if (this.utteranceStartAt === 0) this.utteranceStartAt = Date.now()
     this.buffer.push(Buffer.from(chunk))
     this.bufferedBytes += chunk.byteLength
     // 异常长音频防爆：超过上限丢最旧帧（正常句子不触发）
@@ -131,8 +143,19 @@ export class HttpVoiceAsr implements AsrProvider {
     )
     try {
       const { text } = await run
+      // 【2026-11-27·C 快速出字】首个 partial 还没出、本次上游返回空（真机偶发 4s 空返回）：
+      // 标记 pending，让下一帧（256ms 后）跳过间隔节流立即补一次识别，而不是按 600ms 节流
+      // 慢慢等。把「空返回后的空窗」从 ~600ms 缩到 ~256ms。已出首字后的空返回不再补，
+      // 避免上游持续吐空时每帧都打请求。
+      if (!text && !this.firstPartialDiag) this.partialPending = true
       // 文本没变化就不重复下发，减少界面无意义的刷新
       if (!text || text === this.partialText) return null
+      // 【诊断·常驻】首个非空 partial：记录距开说耗时与首字，定位"出字慢/首字丢"。
+      if (!this.firstPartialDiag) {
+        this.firstPartialDiag = true
+        const latency = this.utteranceStartAt > 0 ? Date.now() - this.utteranceStartAt : -1
+        bargeDiag(`ASR-FIRST-PARTIAL latency=${latency}ms len=${Array.from(text).length} text="${text.slice(0, 20)}"`)
+      }
       this.partialText = text
       return text
     } finally {
@@ -155,6 +178,9 @@ export class HttpVoiceAsr implements AsrProvider {
       sum += s * s
     }
     this.lastRms = n > 0 ? Math.sqrt(sum / n) : 0
+    // 【诊断·常驻】reset() 会清空 partialText，先存首字快照供下方 finalize 对比。
+    const pFirst = Array.from(this.partialText)[0] ?? ''
+    const firstPartialSeen = this.firstPartialDiag
     this.reset()
     // finalize 是「用户说完、整段音频」的定稿识别：失败先重试 1 次（上游偶发抖动/超时），
     // 两次都失败才抛错走 asr-error。partial 中途失败仍静默跳过（下一轮会补），不重试。
@@ -168,6 +194,10 @@ export class HttpVoiceAsr implements AsrProvider {
     // 曾把错误正文当成用户输入交给大模型，答了一轮完全不相干的内容。
     // 两次都失败才抛给 finalizeUtterance 的 catch：下发 asr-error 提示音并丢弃本轮。
     if (result.failed) throw new Error('asr unavailable')
+    // 【诊断·常驻】定稿首字对比首个 partial 首字：两者不同（尤其 partial 首字在 finalize 里
+    // 消失）说明首字丢失发生在 ASR 模型层；相同则是 VAD/喂帧层的问题。
+    const fFirst = Array.from(result.text)[0] ?? ''
+    bargeDiag(`ASR-FINAL-COMPARE partialFirst="${pFirst}" finalFirst="${fFirst}" same=${pFirst === fFirst} firstPartialSeen=${firstPartialSeen}`)
     return result.text
   }
 
@@ -176,6 +206,8 @@ export class HttpVoiceAsr implements AsrProvider {
     this.bufferedBytes = 0
     this.lastPartialAt = 0
     this.partialText = ''
+    this.utteranceStartAt = 0
+    this.firstPartialDiag = false
     this.speechDuration = -1
     this.partialBusy = false
     this.partialPending = false
@@ -185,6 +217,10 @@ export class HttpVoiceAsr implements AsrProvider {
    *  speechDuration 是 9529 用 Silero VAD 判出的真语音秒数（-1=无数据），供幻觉二级判断。
    *  timeoutMs：partial 与 finalize 用不同预算，见文件头两个常量的说明。 */
   private async transcribe(pcm: Buffer, timeoutMs: number): Promise<TranscribeResult> {
+    // 【常驻诊断·2026-11-27】上游 ASR 请求耗时：真机「出字慢/卡住」时区分是攒字节等待、
+    // 还是上游转写慢。kind 由调用方传：partial 只影响字幕可快速失败，final 为空等于整轮白说。
+    const t0 = Date.now()
+    const kind = timeoutMs === this.finalizeTimeoutMs ? 'final' : 'partial'
     try {
       const sampleRate = Number(this.params.sampleRate ?? 16000)
       const wav = pcmToWav(pcm, Number.isFinite(sampleRate) ? sampleRate : 16000)
@@ -209,17 +245,29 @@ export class HttpVoiceAsr implements AsrProvider {
       // 当成用户说的话往下走（否则会送进大模型答非所问）。
       if (!res.ok) throw new Error(`ASR HTTP ${res.status}`)
       const text = await res.text()
+      const outText = (() => {
+        try {
+          const parsed = JSON.parse(text) as { text?: string; speech_duration?: number }
+          return typeof parsed.text === 'string' ? parsed.text.trim() : text.trim()
+        } catch {
+          return text.trim()
+        }
+      })()
+      // 【常驻诊断】bytes=本次送去识别的音频大小、ttfb/耗时=上游转写耗时；
+      // 与 ASR-FIRST-PARTIAL latency 对比可拆出「攒字节等待」vs「上游慢」。
+      bargeDiag(`ASR-HTTP kind=${kind} bytes=${pcm.byteLength} ms=${Date.now() - t0} text="${outText.slice(0, 16)}"`)
       try {
         const parsed = JSON.parse(text) as { text?: string; speech_duration?: number }
         const sd = typeof parsed.speech_duration === 'number' && Number.isFinite(parsed.speech_duration)
           ? parsed.speech_duration : -1
-        return { text: typeof parsed.text === 'string' ? parsed.text.trim() : text.trim(), speechDuration: sd, failed: false }
+        return { text: outText, speechDuration: sd, failed: false }
       } catch {
-        return { text: text.trim(), speechDuration: -1, failed: false }
+        return { text: outText, speechDuration: -1, failed: false }
       }
     } catch (err) {
       // 超时/断连：舍弃这次识别，partial 静默跳过，定稿抛错走 asr-error 提示，绝不把会话挂死。
       // 带上 timeoutMs 以便区分是 partial(6s) 还是定稿(12s) 超时——排障时不用猜。
+      bargeDiag(`ASR-HTTP kind=${kind} bytes=${pcm.byteLength} ms=${Date.now() - t0} FAILED`)
       console.error(`[asr] 调用本地语音服务失败（已 abort 断开，timeoutMs=${timeoutMs}）：`, err)
       return { text: '', speechDuration: -1, failed: true }
     }

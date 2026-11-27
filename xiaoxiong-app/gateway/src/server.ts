@@ -16,6 +16,7 @@ import { createVoiceConnection } from './controller/voiceController'
 import { loadSkillModules } from './service/skills/loader'
 import { buildHealth, clearProbeCache } from './service/health'
 import { fetchMcpTools } from './service/mcpToolCatalog'
+import { fetchRemoteSkills } from './service/remoteSkills'
 import { setCredentialGetter } from './service/credentialStore'
 import type { VoiceConfig } from './voiceConfig'
 import { encryptWithPublicKey, decryptWithPrivateKey } from './crypto'
@@ -148,6 +149,20 @@ export function createGateway(config: GatewayConfig = loadConfig()): Gateway {
         const result = await fetchMcpTools(config.voiceBuiltinUrl, apiKey)
         writeJson(res, 200, { ok: !result.error, tools: result.tools, error: result.error },
           { 'access-control-allow-origin': '*', 'cache-control': 'no-store' })
+        return
+      }
+      // 远端 Skill 清单：App 设置页「Skill 设置」列表用。从 19529 /skills 拉，响应不加密。
+      // 服务地址用网关配置（与语音同源），API-Key 可由 x-voice-api-key 头带上。
+      if (url.pathname === '/api/skills') {
+        const keyHeader = req.headers['x-voice-api-key']
+        const apiKey = typeof keyHeader === 'string' ? keyHeader : undefined
+        const result = await fetchRemoteSkills(config.voiceBuiltinUrl, apiKey, 0)
+        writeJson(res, 200, {
+          ok: !result.error,
+          // 返回正文：App 设置页 skill 项展开后展示完整指引正文（与 19529 管理页「预览正文」一致）
+          skills: result.skills.map((s) => ({ name: s.name, description: s.description, content: s.content })),
+          error: result.error,
+        }, { 'access-control-allow-origin': '*', 'cache-control': 'no-store' })
         return
       }
       if (url.pathname === '/api/health' || url.pathname === '/health') {

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { onLaunch } from '@dcloudio/uni-app'
+import { installRequestInterceptor } from '@/core/transport/requestInterceptor'
 
 onLaunch(() => {
+  // 全局请求拦截器：一处给所有 uni.request 带上语音服务 apiKey（网关数据接口需要）。
+  installRequestInterceptor()
   // 应用启动基础初始化；主题由各页面根元素的 :style 响应式绑定驱动，无需在此操作 document。
   console.log('[app-product] launch')
 })

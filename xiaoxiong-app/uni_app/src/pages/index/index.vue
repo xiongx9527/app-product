@@ -6,6 +6,8 @@ import { appConfig, persistConfig } from '@/core/config'
 import { DEFAULT_SUBTITLE_FONT_SIZE, DEFAULT_SUBTITLE_COLOR } from '@/core/config/constants'
 import FloatLayer from '@/components/FloatLayer.vue'
 import DetailRenderer from '@/components/DetailRenderer.vue'
+import ReportPanel from '@/features/report/ReportPanel.vue'
+import ReportBlocks from '@/features/report/ReportBlocks.vue'
 import { useAssistant } from '@/features/assistant/useAssistant'
 import { captureRecommendation } from '@/features/recommend/recommendStore'
 import { toDisplayText } from '@/core/text/displayText'
@@ -37,6 +39,7 @@ const {
   queuePending,
   queueFullMsg,
   liveText,
+  speechPending,
   errorMessage,
   gatewayPreparing,
   gatewayFailed,
@@ -81,6 +84,8 @@ const {
   detailCard,
   selectDetail,
   closeDetailCard,
+  reportCard,
+  closeReportCard,
 } = useAssistant()
 
 /**
@@ -501,6 +506,8 @@ function onOrbTap(): void {
            - !justReady：刚就绪那 2.5s 正显示"网关已就绪"提示，此时也不挂胶囊，等提示结束再显示。 -->
       <text v-if="state !== 'idle' && !gatewayPreparing && !gatewayFailed && !justReady" class="phase" :class="phase">{{ phaseLabel }}</text>
       <text v-if="liveText" class="live-text">{{ liveText }}</text>
+      <!-- VAD 已开口、ASR 首字未出：显示占位，用户开口瞬间就有反馈，不盯空屏等 0.8s+识别 -->
+      <text v-else-if="speechPending" class="live-text live-pending">{{ t('hint.recognizing') }}</text>
       <!-- 网关启动是正常过程，不显示「网关启动中」：启动阶段静默等待，确认连不上才播报 -->
       <text v-if="errorMessage" class="error">{{ errorMessage }}</text>
     </view>
@@ -534,6 +541,16 @@ function onOrbTap(): void {
         </view>
         <rich-text class="card-text reply-rich" :nodes="replyHtml" />
       </view>
+      <!-- 报表展示区：助手框正下方，与商品详情详情卡片（页面底部）完全独立。
+           网关 media.report → reportCard；只展示不朗读、新一轮说话清空。 -->
+      <ReportPanel
+        v-if="reportCard"
+        :title="reportCard.title"
+        :has-chart="reportCard.blocks.some((b) => b.type === 'chart')"
+        @close="closeReportCard"
+      >
+        <ReportBlocks :blocks="reportCard.blocks" />
+      </ReportPanel>
     </view>
 
     <!-- 音量面板展开时的全屏透明遮罩：App 端事件冒泡不可靠，点面板以外任何地方都由遮罩收起。
@@ -922,6 +939,15 @@ function onOrbTap(): void {
   text-align: center;
   min-height: 20px;
   word-break: break-word;
+}
+.live-pending {
+  color: #6c8cff;
+  font-size: 12px;
+  animation: recognize-pulse 1.2s ease-in-out infinite;
+}
+@keyframes recognize-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }
 
 .thinking-text {

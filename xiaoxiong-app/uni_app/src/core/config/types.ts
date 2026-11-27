@@ -86,6 +86,20 @@ export interface AppConfig {
    * server，不暴露手动列表）；这里的 enabled 是设置页的总开关，关闭则不下发任何 server。
    */
   mcp: McpConfig
+  /**
+   * Skill 配置：动态加载 19529 上的 skill（GET /skills 清单 + GET /skills/{name} 正文），
+   * 网关按此把 skill 正文注入 systemPrompt。enabled 总开关、retryCount 加载失败重试次数；
+   * skill 列表本身从服务端实时拉取，不存本地。
+   */
+  skill: SkillConfig
+}
+
+/** Skill 动态加载配置（设置页「Skill 设置」：开关 + 重试次数，列表实时拉取） */
+export interface SkillConfig {
+  /** 总开关（默认开）：关闭则不向网关下发 skill 加载配置，助手不加载 19529 的 skill。 */
+  enabled: boolean
+  /** 拉取 skill 清单/正文失败的重试次数（0=不重试，默认 2），公网偶发抖动自愈。 */
+  retryCount: number
 }
 
 /** 推荐设置：好价商品每次推荐的条数，独立于语音服务 */
@@ -209,6 +223,14 @@ export interface McpServerConfig {
 export interface McpConfig {
   /** 总开关（设置页「MCP设置」）：关闭时不把任何 MCP server 下发给网关，整体停用 MCP。 */
   enabled: boolean
+  /**
+   * 固定对接（服务地址 + /mcp）的传输协议，设置页可选：
+   * - http：Streamable HTTP（默认，单端点 POST，无长连接，公网/移动网络更稳）
+   * - sse：Server-Sent Events（长连接，部分网络环境下握手收不到 endpoint 事件会超时）
+   */
+  transport: 'sse' | 'http'
+  /** MCP 连接失败重试次数（0=不重试）：公网偶发 fetch failed 时自动重连，默认 2。下次会话生效。 */
+  retryCount: number
   servers: McpServerConfig[]
 }
 

@@ -41,7 +41,14 @@ PBX="$SDK/HBuilder-Hello.xcodeproj/project.pbxproj"
 SCHEME="HBuilder"
 CONFIG="Debug"
 IOS_DEPLOY="${IOS_DEPLOY:-/usr/local/bin/ios-deploy}"
-IPA_OUT="${IPA_OUT:-$HOME/Downloads/HBuilder-signed.ipa}"
+# IPA 产物路径：build.local 的 IPA_OUT（相对本脚本目录），或环境变量覆盖；缺省落到 native/ios/build/
+IPA_OUT="${IPA_OUT:-build/HBuilder-signed.ipa}"
+case "$IPA_OUT" in
+  /*) ;;
+  ~*)  IPA_OUT="${IPA_OUT/#\~/$HOME}" ;;
+  *)   IPA_OUT="$SCRIPT_DIR/$IPA_OUT" ;;
+esac
+mkdir -p "$(dirname "$IPA_OUT")"
 
 if [ ! -d "$WORKSPACE" ]; then echo "找不到 workspace: $WORKSPACE"; exit 1; fi
 if [ ! -x "$IOS_DEPLOY" ]; then echo "找不到 brew 版 ios-deploy: $IOS_DEPLOY"; exit 1; fi

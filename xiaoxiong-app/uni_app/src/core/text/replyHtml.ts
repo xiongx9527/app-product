@@ -1,3 +1,5 @@
+import { resolveImageUrl } from './imageUrl'
+
 /**
  * 把模型回复转成 `rich-text` 能渲染的 HTML。
  *
@@ -21,6 +23,38 @@ const ANY_TAG =
 const COLOR_TEXT = '#e8eaf6'
 const COLOR_MUTED = '#9aa1bd'
 const COLOR_ACCENT = '#6c8cff'
+
+/**
+ * 通用「技术路径」清洗（2026-11-27）。不针对任何工具/字段：LLM 可能把工具结果里的
+ * 图片或接口路径复述进回复（真机「图表：/api/chart/image/xxx」），助手框是口播文字的
+ * 呈现，不该出现裸路径。按文本形态剥离，对所有场景一视同仁。
+ *
+ * - 裸 URL（https?://）整段剥掉；
+ * - 绝对路径 token（至少两段、且含字母）剥掉，如 /api/chart/image/xxx；
+ * - 纯数字/日期（2026/11/27、3/4）保留，不当路径；
+ * - markdown 图片/链接 `![alt](url)` 的语法整体保留，交 inline() 正常渲染。
+ */
+function cleanPathSegment(s: string): string {
+  let out = s.replace(/https?:\/\/[^\s，。！？、；'"）)\]]+/gi, '')
+  out = out.replace(/\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+/g, (token) =>
+    /[A-Za-z]/.test(token) ? '' : token
+  )
+  return out
+}
+
+export function stripTechnicalPaths(raw: string): string {
+  const md = /!?\[[^\]]*\]\([^)]+\)/g
+  let out = ''
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = md.exec(raw)) !== null) {
+    out += cleanPathSegment(raw.slice(last, m.index))
+    out += m[0] // markdown 语法原样保留
+    last = m.index + m[0].length
+  }
+  out += cleanPathSegment(raw.slice(last))
+  return out
+}
 
 const ESCAPES: Record<string, string> = {
   '&': '&amp;',
@@ -46,23 +80,8 @@ export function sanitizeHtml(html: string): string {
     )
 }
 
-/**
- * 把图片地址规范成可加载的绝对 URL。
- * - 工具返回的图表是相对路径（如 /api/chart/image/xxx），拼到服务地址上；
- * - 已经是 http(s) 绝对地址的原样保留；
- * - javascript:/data:/vbscript: 等协议一律拒绝（安全），返回空串。
- */
-function resolveImageUrl(url: string, imageBase: string): string {
-  const u = (url ?? '').trim()
-  if (!u || /^(javascript|data|vbscript):/i.test(u)) return ''
-  if (/^https?:\/\//i.test(u)) return u
-  // 相对路径：以服务地址为 base（服务地址本身已是 http(s)）
-  const base = (imageBase ?? '').trim().replace(/\/+$/, '')
-  if (!/^https?:\/\//i.test(base)) return ''
-  return `${base}${u.startsWith('/') ? '' : '/'}${u}`
-}
-
-/** 图片基址：由 toReplyHtml 的 imageBase 参数设置（服务地址），用于把相对图片 URL 拼成绝对地址。 */
+/** 图片基址：由 toReplyHtml 的 imageBase 参数设置（服务地址），用于把相对图片 URL 拼成绝对地址。
+ *  解析规则见 core/text/imageUrl.ts，与报表图片块共用。 */
 let currentImageBase = ''
 
 /** 行内标记：代码、加粗、斜体、删除线、链接、图片。入参必须是已转义的文本。 */
@@ -242,5 +261,7 @@ export function toReplyHtml(raw: string, imageBase = ''): string {
     return BLOCK_TAG.test(safe) ? safe : safe.replace(/\n/g, '<br/>')
   }
 
-  return renderMarkdown(src)
+  // Markdown 分支：先剥掉 LLM 复述出来的裸路径/URL（口播文字不该出现技术路径），
+  // 再渲染。HTML 分支不带这段——那里的 src 要留给图片正常渲染。
+  return renderMarkdown(stripTechnicalPaths(src))
 }

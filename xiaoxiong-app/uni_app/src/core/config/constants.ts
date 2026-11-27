@@ -64,9 +64,14 @@ export const DEFAULT_GATEWAY_WS_URL = `ws://${DEFAULT_GATEWAY_HOST}:${DEFAULT_GA
 /**
  * 固定对接的 MCP 服务：地址沿用「服务设置」里的语音服务地址（协议/host/端口），
  * 只拼下面这段固定路径。app 不提供手动添加 MCP server 的入口，内部只下发这一个。
- * model-proxy 对外同时支持 /mcp/sse（SSE）与 /mcp/（Streamable HTTP），这里选 SSE。
+ * model-proxy 对外同时支持 /mcp/sse（SSE）与 /mcp/（Streamable HTTP）。
+ * 选 Streamable HTTP：单端点 POST，无需 SSE 长连接。真机实测 SSE 长连接在设备端
+ * 经公网（花生壳）迟迟收不到 endpoint 事件，5s 内必超时导致 MCP 工具一个都注册不上；
+ * 同一网络下 Streamable HTTP 的 initialize+tools/list 只要 0.3s（/api/mcp/tools 同路径）。
  */
-export const MCP_ENDPOINT_PATH = '/mcp/sse'
+export const MCP_ENDPOINT_PATH = '/mcp/'
+/** SSE 传输的握手路径（设置页把传输协议切成 SSE 时使用；与 MCP_ENDPOINT_PATH 二选一） */
+export const MCP_SSE_ENDPOINT_PATH = '/mcp/sse'
 /** 固定 MCP server 的显示名（下发网关仅作标识，不影响工具名） */
 export const MCP_SERVER_NAME = 'model-proxy'
 
