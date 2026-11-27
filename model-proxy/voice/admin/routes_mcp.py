@@ -16,6 +16,17 @@ import voice_db
 # 内置 default 网关前缀（其他工具专用），其他网关禁止占用。
 DEFAULT_TOOL_PREFIX = "default"
 
+
+def _discovered_source_type(name: str) -> str:
+    """读发现工具的来源类型枚举（source_type: mcp网关 / 其它工具）。
+
+    对外 MCP 暴露的工具名就是 _upstream_tools 的 key（qualified_name），
+    可直接查到 source_type。查不到默认视为 mcp网关。
+    """
+    import mcp_gateway
+    meta = (getattr(mcp_gateway, "_upstream_tools", {}) or {}).get(name) or {}
+    return meta.get("source_type") or "mcp网关"
+
 # 参数位置推断：MCP 的 inputSchema 本身不标注 header/body/query，按参数名模式推断，
 # 仅用于管理面板展示（真实调用所有参数都作为 JSON body 透传给上游）。
 _HEADER_NAMES = {"authorization", "token", "access_token", "api_key", "apikey",
@@ -340,8 +351,11 @@ def build_router() -> APIRouter:
             try:
                 async with await mcp_gateway._make_client(s) as client:
                     tools = await client.list_tools()
-                # 去掉工具名已有的网关前缀，避免自引用场景下重复前缀
-                plain = [t.name.split("__", 1)[1] if "__" in t.name else t.name for t in tools]
+                # 排除「其它工具」（按来源类型）并去掉网关前缀：带前缀会导致
+                # 面板再拼一次前缀而重复。
+                plain = [t.name.split("__", 1)[1] if "__" in t.name else t.name
+                         for t in tools
+                         if _discovered_source_type(t.name) != "其它工具"]
                 results.append({"id": s["id"], "name": s["name"],
                                 "url": s["url"], "ok": True, "tools": plain})
             except Exception as exc:
@@ -367,6 +381,10 @@ def build_router() -> APIRouter:
                 tools = await client.list_tools()
             out_tools = []
             for t in tools:
+                # 排除「其它工具」：按来源类型判断（非名字前缀）。其它工具由 in_mcp
+                # 路径独立管理，不该出现在「网关发现工具」列表。
+                if _discovered_source_type(t.name) == "其它工具":
+                    continue
                 # 去掉上游工具名已有的网关前缀（__ 前的一段）：网关指向本代理自身时，
                 # 发现的工具已带前缀，面板勾选后又拼一次前缀会变成 askdata__askdata__xxx。
                 raw_name = t.name.split("__", 1)[1] if "__" in t.name else t.name
