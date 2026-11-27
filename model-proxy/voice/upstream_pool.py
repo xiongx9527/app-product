@@ -489,6 +489,11 @@ async def _probe_reach(entry: dict) -> tuple[bool, Optional[str]]:
 
     用于已在轮询中的健康账号，成本低；连不通才把它摘掉进入冷却 + 待深度探测。
     """
+    if _is_builtin_entry(entry):
+        # 本地引擎（CrossEncoder 等）没有网络地址，空 base_url 发请求必抛
+        # UnsupportedProtocol。若照网络探测，它会被误标不健康、进冷却，面板
+        # 状态就会显示重排/向量不可用，而实际调用是好的。进程内引擎恒可用。
+        return True, None
     try:
         async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT) as c:
             await c.get(entry["base_url"])
@@ -546,6 +551,9 @@ async def _probe_useful(entry: dict) -> tuple[bool, Optional[str]]:
     避免 chat 挂起但 tags 正常导致的「假健康」。
     """
     vendor = (entry.get("vendor") or llm_protocols.protocol_vendor(entry.get("protocol")) or "").lower()
+    if _is_builtin_entry(entry):
+        # 同 _probe_reach：本地引擎没有可探的地址，冷却结束后也不该被判死。
+        return True, None
     if vendor == "ollama":
         return await _probe_ollama_chat(entry)
     url, headers = _probe_target(entry)

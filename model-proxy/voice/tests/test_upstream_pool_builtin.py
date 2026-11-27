@@ -7,6 +7,7 @@
 - 非 builtin 的空 base_url 条目仍被过滤，避免放宽过度。
 - 分组写法（{"builtin": {...}}）里的 builtin 同样进池。
 """
+import asyncio
 import json
 import os
 import sys
@@ -77,6 +78,24 @@ pool2 = up.load_pool("RERANK")
 check("分组写法 builtin 进池", any(
     (x.get("vendor") or "").lower() == "builtin" and (x.get("protocol") or "").lower() == "builtin"
     for x in pool2), str(pool2))
+
+# 5) 健康探测：本地引擎恒可用
+# 后台探测线程对池里每个入口做网络探测；builtin 的 base_url 为空，若照网络探测
+# 必抛 UnsupportedProtocol → 被误标不健康并进冷却，管理面板会显示该能力不可用，
+# 而实际调用是好的。这里锁住 builtin 不参与网络探测、非 builtin 仍正常探测。
+builtin_entry = up._normalize_entry(
+    {"vendor": "builtin", "protocol": "builtin", "model": "bge-reranker", "base_url": ""}
+)
+ok, err = asyncio.run(up._probe_reach(builtin_entry))
+check("builtin 存活探测恒可用", ok is True and err is None, f"{ok} {err}")
+ok, err = asyncio.run(up._probe_useful(builtin_entry))
+check("builtin 可用性探测恒可用", ok is True and err is None, f"{ok} {err}")
+
+http_entry = up._normalize_entry(
+    {"vendor": "dashscope", "protocol": "dashscope", "base_url": "http://127.0.0.1:9/v1", "api_key": ""}
+)
+ok, err = asyncio.run(up._probe_reach(http_entry))
+check("非 builtin 仍走网络探测", ok is False, f"{ok} {err}")
 
 print(f"\n== SUMMARY: {PASS}/{PASS + FAIL} passed ==")
 sys.exit(0 if FAIL == 0 else 1)
