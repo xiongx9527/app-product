@@ -15,7 +15,7 @@ import {
 } from '@/core/config'
 import { t } from '@/core/i18n'
 import { setDuckConfig, setAecUserEnabled } from '@/core/audio/appCapture'
-import { restartGatewayViaNative, waitGatewayAlive, fetchGatewaySkills, type GatewaySkill } from '@/core/transport/gatewayControl'
+import { restartGatewayViaNative, waitGatewayAlive } from '@/core/transport/gatewayControl'
 import { refreshDuckVolume } from '@/core/audio/musicPlayer'
 import { secureRequest } from '@/core/transport/secureRequest'
 import { resolveGatewayHttpBase } from '@/core/transport/webSocketTransport'
@@ -461,21 +461,9 @@ function onSkillRetryChange(v: string): void {
   appConfig.skill.retryCount = Number.isInteger(n) && n >= 0 && n <= 10 ? n : 2
   persistConfig()
 }
-/** 远端 skill 列表（从网关 /api/skills 拉）：进入设置页或点刷新时加载。 */
-const remoteSkills = ref<GatewaySkill[]>([])
-const skillLoading = ref(false)
-const skillError = ref('')
-const expandedSkill = ref('')
-function toggleSkillExpand(name: string): void {
-  expandedSkill.value = expandedSkill.value === name ? '' : name
-}
-async function loadRemoteSkills(): Promise<void> {
-  skillLoading.value = true
-  skillError.value = ''
-  const res = await fetchGatewaySkills()
-  remoteSkills.value = res.skills
-  if (!res.ok) skillError.value = res.error || t('settings.skill.loadFail')
-  skillLoading.value = false
+/** 打开已加载 Skill 列表页（与 MCP 工具一样，独立页查看 name/说明/正文）。 */
+function openSkillTools(): void {
+  uni.navigateTo({ url: '/pages/skilltools/skilltools' })
 }
 /** 打开通用账号本：按 type 保存账号密码 / API Key，工具按前缀自动取用。 */
 function openAccounts(): void {
@@ -586,7 +574,6 @@ onMounted(() => {
   void loadTtsVoices()
   void loadAsrModels()
   void loadTtsModels()
-  void loadRemoteSkills()
   // 上次开了定时检查：进本页即按配置间隔续上定时器（离开页面 onUnmounted 会清）。
   startAutoCheck()
   // 播放源目前仅百度一种（隐藏选择器），旧配置若存过其它源（netease/tencent/kugou）静默回退到百度。
@@ -1203,24 +1190,13 @@ watch(
           @update:model-value="onSkillRetryChange"
         />
         <text class="hint">{{ t('settings.skill.retryHint') }}</text>
-        <!-- 已加载的 skill 列表：从网关 /api/skills 实时拉，列出 name + 说明 -->
-        <view class="skill-list-head">
-          <text class="row-label">{{ t('settings.skill.listTitle') }}</text>
-          <text class="refresh" @tap="loadRemoteSkills">{{ t('settings.skill.refresh') }}</text>
-        </view>
-        <text v-if="skillLoading" class="hint">{{ t('settings.skill.loading') }}</text>
-        <text v-else-if="skillError" class="hint hint-err">{{ skillError }}</text>
-        <text v-else-if="!remoteSkills.length" class="hint">{{ t('settings.skill.empty') }}</text>
-        <view v-else class="skill-list">
-          <view v-for="s in remoteSkills" :key="s.name" class="skill-item">
-            <!-- 点标题行展开/收起正文（与 19529 管理页「预览正文」一致） -->
-            <view class="skill-item-head" @tap="toggleSkillExpand(s.name)">
-              <text class="skill-name">{{ s.name }}</text>
-              <text class="skill-toggle">{{ expandedSkill === s.name ? '▾' : '▸' }}</text>
-            </view>
-            <text v-if="s.description" class="skill-desc">{{ s.description }}</text>
-            <text v-if="expandedSkill === s.name" class="skill-content">{{ s.content || t('settings.skill.noContent') }}</text>
+        <!-- 已加载 Skill 列表入口（与 MCP 工具一样，跳独立页查看） -->
+        <view class="entry" @tap="openSkillTools">
+          <view class="row-text">
+            <text class="row-label">{{ t('settings.skill.toolsEntry') }}</text>
+            <text class="hint">{{ t('settings.skill.toolsEntryHint') }}</text>
           </view>
+          <text class="entry-arrow">›</text>
         </view>
       </template>
     </view>
@@ -1734,31 +1710,6 @@ picker {
   }
 }
 
-/* Skill 设置：列表 + 刷新 */
-.skill-list-head { display: flex; flex-direction: row; align-items: center; justify-content: space-between; }
-.refresh { font-size: 12px; color: #6c8cff; }
-.hint-err { color: #ff6b9d; }
-.skill-list { display: flex; flex-direction: column; gap: 6px; }
-.skill-item { padding: 8px 10px; background: rgba(255, 255, 255, 0.05); border-radius: 8px; }
-.skill-item-head { display: flex; flex-direction: row; align-items: center; justify-content: space-between; }
-.skill-name { font-size: 12px; color: #9be8cd; font-weight: 600; }
-.skill-toggle { font-size: 12px; color: #6c8cff; }
-/* 正文：多行完整显示，和 19529 管理页「预览正文」一致 */
-.skill-content {
-  display: block; margin-top: 8px; padding: 8px; background: rgba(0, 0, 0, 0.2);
-  border-radius: 6px; font-size: 11px; color: #b9bed6; line-height: 1.6;
-  white-space: pre-wrap; word-break: break-word;
-}
-/* Skill 说明：多行文本完整显示（description 可能是长句，不单行截断） */
-.skill-desc {
-  display: block;
-  font-size: 11px;
-  color: #9aa1bd;
-  margin-top: 4px;
-  line-height: 1.6;
-  white-space: normal;
-  word-break: break-all;
-}
 
 /* 横屏：确保页面铺满宽度，避免左右留白 */
 @media (orientation: landscape) {
