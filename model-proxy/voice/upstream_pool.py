@@ -112,6 +112,18 @@ def _legacy_single(cap: str) -> Optional[dict]:
     }
 
 
+def _is_builtin_entry(e: dict, group_protocol: str | None = None) -> bool:
+    """builtin 条目是进程内运行的本地引擎（如 CrossEncoder），不需要网络地址。
+
+    group_protocol 为分组写法的分组键（如 {"builtin": [...]}），同样代表本地引擎。
+    """
+    return (
+        (e.get("protocol") or "").strip().lower() == "builtin"
+        or (e.get("vendor") or "").strip().lower() == "builtin"
+        or (group_protocol or "").strip().lower() == "builtin"
+    )
+
+
 def _normalize_entry(
     e: dict,
     group_protocol: str | None = None,
@@ -126,15 +138,21 @@ def _normalize_entry(
     等），用于决定 baseUrl 路径变体。group_* 来自「按提供商分组」的键与分组级 model。
 
     入口自己的 protocol / vendor / model 优先级最高，可覆盖分组默认值。
+
+    builtin 是例外：它是本地引擎标识而非线协议，不能被收敛成 openai_chat_completions，
+    否则调用方识别不到、误以为要发网络请求。这里原样保留 protocol/vendor=builtin。
     """
     raw_proto = (e.get("protocol") or group_protocol or "openai").strip() or "openai"
-    proto = llm_protocols.normalize_protocol(raw_proto)
+    is_builtin = _is_builtin_entry(e) or raw_proto.strip().lower() == "builtin"
+    proto = "builtin" if is_builtin else llm_protocols.normalize_protocol(raw_proto)
     vendor = (
         e.get("vendor")
         or group_vendor
         or llm_protocols.protocol_vendor(raw_proto)
         or ""
     ).strip().lower()
+    if is_builtin and not vendor:
+        vendor = "builtin"
     model = (e.get("model") or group_model or "").strip()
     return {
         "base_url": (e.get("base_url") or "").strip(),
@@ -176,7 +194,7 @@ def load_pool(cap: str) -> list[dict]:
                     group_vendor = llm_protocols.protocol_vendor(provider)
                     if isinstance(spec, list):
                         for e in spec:
-                            if isinstance(e, dict) and (e.get("base_url") or "").strip():
+                            if isinstance(e, dict) and ((e.get("base_url") or "").strip() or _is_builtin_entry(e, provider)):
                                 entries.append(
                                     _normalize_entry(
                                         e, group_protocol=provider, group_vendor=group_vendor
@@ -187,7 +205,7 @@ def load_pool(cap: str) -> list[dict]:
                         accts = spec.get("accounts") or spec.get("entries") or []
                         if isinstance(accts, list):
                             for e in accts:
-                                if isinstance(e, dict) and (e.get("base_url") or "").strip():
+                                if isinstance(e, dict) and ((e.get("base_url") or "").strip() or _is_builtin_entry(e, provider)):
                                     entries.append(
                                         _normalize_entry(
                                             e,
@@ -198,7 +216,7 @@ def load_pool(cap: str) -> list[dict]:
                                     )
             elif isinstance(arr, list):
                 for e in arr:
-                    if isinstance(e, dict) and (e.get("base_url") or "").strip():
+                    if isinstance(e, dict) and ((e.get("base_url") or "").strip() or _is_builtin_entry(e)):
                         entries.append(_normalize_entry(e))
     except Exception:
         entries = []

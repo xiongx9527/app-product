@@ -3477,17 +3477,6 @@ def rerank_catalog() -> list[model_catalog.ModelInfo]:
 
     for e in upstream_pool.load_pool("RERANK"):
         add(e)
-    # 内置引擎条目 base_url 为空（走本地 CrossEncoder），会被 load_pool 的"base_url 非空"
-    # 规则过滤掉；这里从原始配置补回，让 /llm/v1/models 能列出内置重排模型。
-    try:
-        raw = config_value("RERANK_UPSTREAM_POOL", "") or ""
-        arr = json.loads(raw) if raw else []
-        if isinstance(arr, list):
-            for e in arr:
-                if isinstance(e, dict) and (e.get("vendor") or "").lower() == "builtin":
-                    add(e)
-    except (ValueError, TypeError):
-        pass
     return list(models.values())
 
 
@@ -4216,12 +4205,13 @@ async def rerank(request: Request):
     req_protocol = body.get("protocol") if isinstance(body.get("protocol"), str) else None
     req_base_url = body.get("base_url") if isinstance(body.get("base_url"), str) else None
 
-    # ── 内置引擎：protocol=builtin 走本地 CrossEncoder，不依赖 LLM/RERANK 池 ──
+    # ── 内置引擎：protocol/vendor=builtin 走本地 CrossEncoder，不依赖网络地址 ──
     use_builtin = (req_protocol or "").strip().lower() == "builtin"
     if not use_builtin and req_vendor:
         use_builtin = req_vendor.strip().lower() == "builtin"
     if not use_builtin and not req_protocol and not req_base_url:
-        # 未指定任何上游且池里第一条是 builtin → 用内置
+        # 请求未指定上游（问数等调用方只 POST query/documents）：池里有 builtin 引擎
+        # 就用它。load_pool 已保留 base_url 为空的 builtin 条目，这里能命中。
         builtin_entries = [e for e in upstream_pool.load_pool("RERANK")
                            if (e.get("protocol") or "").lower() == "builtin" or (e.get("vendor") or "").lower() == "builtin"]
         use_builtin = bool(builtin_entries)
