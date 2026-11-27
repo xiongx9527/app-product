@@ -474,18 +474,22 @@ async def refresh() -> dict[str, Any]:
             pdef = props.get(pn) or {}
             ptype = type_map.get((pdef.get("type") or "string").lower(), "str")
             pdesc = (pdef.get("description") or "").replace('"', '\\"')
-            ann = f'Annotated[{ptype}, Field(description="{pdesc}")]'
+            # 【2026-11-27 修复】可选参数必须用 Optional[T]：否则签名是 `x: int = None`，
+            # Pydantic 把默认值 None 当 int 校验 → `workspaceId should be int, got None`，
+            # 问数工具全部参数校验失败。Optional[T] 让 None 合法、schema 也正确标 nullable。
+            ann_type = f"Optional[{ptype}]" if opt else ptype
+            ann = f'Annotated[{ann_type}, Field(description="{pdesc}")]'
             sig_parts.append(f"{sp}: {ann}" + (" = None" if opt else ""))
         sig = ", ".join(sig_parts)
         argmap = "{" + ", ".join(f'"{orig_p}": {sp}' for orig_p, sp, _ in params) + "}"
         fn_name = q.replace("__", "_").replace("-", "_")
         src = (f"async def {fn_name}({sig}):\n"
                f"    return await __call_upstream({q!r}, {argmap})\n")
-        from typing import Annotated, Any
+        from typing import Annotated, Any, Optional
         from pydantic import Field
         ns = {"__call_upstream": _call_upstream, "Annotated": Annotated,
               "Field": Field, "str": str, "int": int, "float": float,
-              "bool": bool, "list": list, "dict": dict, "Any": Any}
+              "bool": bool, "list": list, "dict": dict, "Any": Any, "Optional": Optional}
         exec(src, ns)
         fn = ns[fn_name]
         fn.__doc__ = desc or f"forward to upstream {orig}"
