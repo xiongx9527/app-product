@@ -1233,21 +1233,18 @@ export function useAssistant(config: AssistantConfig = DEFAULT_ASSISTANT_CONFIG)
       case 'client.cue':
         // 能力不可用提示音统一由本地 health 报告驱动（watch health 里的 playPromptCueSequence）。
         // 网关这条 client.cue 在真机上时有时无，不能作为唯一触发源；此处刻意不播，避免与 health 双份叠音。
-        // 例外：asr-error 是「运行中识别失败/超时」的瞬时提示（health 不覆盖），按网关节流触发播放。
-        // 【定时检查开关】这些中途失败提示音受 appConfig.general.autoCheck 控制：
-        // 关（缺省）→ 不播；开 → 播。注意设置页「一键检测」是手动触发、走独立路径，不受此开关影响。
+        // 例外：asr-error 是「运行中识别失败/超时」的即时反馈（用户说了话却没识别出来），
+        // 与 autoCheck「定时检查」开关无关，必须无条件播——否则用户完全不知道识别失败了。
         const cuePromptAllowed = appConfig.general.autoCheck === true
         if (event.cue === 'asr-error') {
-          // 【2026-11-27 保守方案】定稿空/识别失败：清掉挂着的草稿（用户说了话但 ASR 返回空），
-          // 并重新调度 T1 让会话留在 listening 等下一句——不静默挂着被 T1/T2 退下。
-          // 提示音仍受 autoCheck 开关（缺省关），这里只做状态修正，不改提示语义。
+          // 定稿空/识别失败：清掉挂着的草稿 + 重新调度 T1 留在 listening，并播本地提示音告知失败。
           cancelFinalClear()
           cancelQueuedClear()
           liveText.value = ''
           speechPending.value = false
           t1DraftHoldCount = 0
           if (state.value === 'listening' && !assistantBusy) dispatch({ type: 'ASSISTANT_IDLE' })
-          if (cuePromptAllowed) void playPromptCue('asrError')
+          void playPromptCue('asrError')
         } else if (event.cue === 'llm-error') {
           // LLM 运行中失败：播本地 mp3（不靠 TTS，TTS 可能也坏了）
           if (cuePromptAllowed) void playPromptCue('llmError')

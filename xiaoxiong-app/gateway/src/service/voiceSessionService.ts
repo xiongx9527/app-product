@@ -1561,14 +1561,12 @@ export class VoiceSessionService {
       + ` vd=${this.asr.speechDuration ?? -1} rms=${(this.asr.lastRms ?? -1).toFixed(4)}`
     )
     if (!text || isNoise(text) || isForeignNoise(text, this.lang)) {
-      // 【2026-11-27 保守方案】定稿为空但此前有 partial（用户确实说了话，只是 ASR 上游
-      // 返回空/噪声，真机铁证 partial「三年。」→ final text="" vd=-1）：不能静默丢弃——
-      // 那样 App 草稿一直挂着、收不到 asr.final，30s 后 T1→T2 把会话退下，用户体感「卡住」。
-      // 发 asr-error cue（客户端清草稿+重置 T1，提示音按既有 autoCheck 开关），给用户明确反馈。
-      if (this.lastAsrPartialText.trim()) {
-        bargeDiag(`ASR-EMPTY-FINAL hadPartial="${this.lastAsrPartialText.slice(0, 20)}" -> asr-error`)
-        this.notifyAsrFailed()
-      }
+      // 【2026-11-27 真机修复】定稿为空/噪声：无论此前有没有 partial 都要给反馈。
+      // 此前只在有 partial 时发 cue，但「上游全失败」时 partial 也全失败、lastAsrPartialText 为空，
+      // 导致用户说了话却完全没提示（真机铁证：partial/final 全 FAILED + FINAL text="" 无任何 cue）。
+      // 发 asr-error cue：客户端清草稿+重置 T1+播本地提示音，明确告知「没听清，请再说一遍」。
+      bargeDiag(`ASR-EMPTY-FINAL hadPartial=${!!this.lastAsrPartialText.trim()} -> asr-error`)
+      this.notifyAsrFailed()
       return
     }
 

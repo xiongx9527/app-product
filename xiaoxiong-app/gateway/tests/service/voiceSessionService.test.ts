@@ -3481,8 +3481,10 @@ describe('百科查询直连（绕开 LLM，助手框显示 + 播报）', () => 
 
     it('小数 3.14 中的点不切，整句到 dollars. 才成句', async () => {
       const chunks = await synthChunksOf('The price is 3.14 dollars today. Thanks.')
-      expect(chunks.some((t) => t.includes('3.14') && t.endsWith('today.'))).toBe(true)
-      expect(chunks.some((t) => t.includes('3.14') && t.endsWith('3.'))).toBe(false)
+      // 小数点在 TTS 文本里转成中文「点」（3点14），避免引擎把 "." 静默吞掉；
+      // 断句层仍按 3.14 整体不切，到 today. 才成句。
+      expect(chunks.some((t) => t.includes('3点14') && t.endsWith('today.'))).toBe(true)
+      expect(chunks.some((t) => t.includes('3点14') && t.endsWith('3.'))).toBe(false)
     })
 
     it('域名 example.com / 文件名 file.txt 中的点不切', async () => {
