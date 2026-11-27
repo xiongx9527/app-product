@@ -207,10 +207,21 @@ def build_router() -> APIRouter:
     @router.patch("/admin/api/mcp/http-tools/{tid}", dependencies=[Depends(require_admin)])
     def mcp_http_tool_update(tid: int, body: dict[str, Any]):
         from fastapi import HTTPException
-        if not voice_db.mcp_http_tool_get(tid):
+        cur = voice_db.mcp_http_tool_get(tid)
+        if not cur:
             raise HTTPException(404, "工具不存在")
         fields = {k: body[k] for k in ("name", "description", "url", "method", "headers_json",
-                                       "params_json", "enabled", "timeout_sec") if k in body}
+                                       "params_json", "enabled", "in_mcp", "timeout_sec") if k in body}
+        # 加入 MCP 清单 prior：必须处于启用状态（禁用时自动从清单移除，不能加入）
+        if fields.get("in_mcp") and not cur.get("enabled"):
+            raise HTTPException(400, "请先启用该工具，再加入 MCP 工具清单")
+        # 名字变更时，ACL 里的旧工具名要跟着迁移
+        old_name = cur.get("name") or ""
+        new_name = fields.get("name") or old_name
+        if old_name and old_name != new_name:
+            voice_db.mcp_acl_remove_default([f"default__{old_name}"])
+            if cur.get("in_mcp", fields.get("in_mcp", 0)):
+                voice_db.mcp_acl_add_default([f"default__{new_name}"])
         for key in ("headers_json", "params_json"):
             if key in fields:
                 try:
@@ -222,10 +233,23 @@ def build_router() -> APIRouter:
             old = voice_db.mcp_http_tool_get(tid) or {}
             fields["headers_json"] = old.get("headers_json") or "{}"
         voice_db.mcp_http_tool_update(tid, fields)
+        # in_mcp 变化时同步 key_id=0 默认授权：面板工具列表与调用方都从这里取
+        if "in_mcp" in fields or "enabled" in fields or "name" in fields:
+            final = voice_db.mcp_http_tool_get(tid) or {}
+            qn = f"default__{final.get('name') or ''}"
+            if final.get("in_mcp") and final.get("enabled"):
+                voice_db.mcp_acl_add_default([qn])
+            else:
+                voice_db.mcp_acl_remove_default([qn])
         return {"ok": True}
 
     @router.delete("/admin/api/mcp/http-tools/{tid}", dependencies=[Depends(require_admin)])
     def mcp_http_tool_delete(tid: int):
+        from fastapi import HTTPException
+        cur = voice_db.mcp_http_tool_get(tid) or {}
+        # 已加入 MCP 清单的工具不允许直接删除：先「移出MCP工具」再删除
+        if cur.get("in_mcp"):
+            raise HTTPException(400, "该工具已加入 MCP 工具清单，请先移出后再删除")
         voice_db.mcp_http_tool_delete(tid)
         return {"ok": True}
 
@@ -285,9 +309,15 @@ def build_router() -> APIRouter:
             params = _build_params(schema, orig)
             # 工具说明覆盖（面板编辑）：key = 原始工具名|__desc__
             desc = overrides.get(f"{orig}|__desc__") or (meta.get("description") or "")
+            source_type = meta.get("source_type") or ("其它工具" if meta["server_id"] == 0 else "mcp网关")
+            source_id = meta.get("source_id") or (0 if meta["server_id"] == 0 else meta["server_id"])
+            # 来源名称：网关工具显示网关名，其他工具显示工具自身名
+            source_name = srv.get("name") if source_type == "mcp网关" else (meta.get("name") or orig)
             tools[q] = {"server_id": meta["server_id"], "name": orig,
                         "server": srv.get("name") or "", "description": desc,
-                        "input_schema": schema, "params": params}
+                        "input_schema": schema, "params": params,
+                        "source_type": source_type, "source_id": source_id,
+                        "source_name": source_name or ""}
         return {"tools": tools}
 
     @router.get("/admin/api/mcp/acl", dependencies=[Depends(require_admin)])
@@ -310,8 +340,10 @@ def build_router() -> APIRouter:
             try:
                 async with await mcp_gateway._make_client(s) as client:
                     tools = await client.list_tools()
+                # 去掉工具名已有的网关前缀，避免自引用场景下重复前缀
+                plain = [t.name.split("__", 1)[1] if "__" in t.name else t.name for t in tools]
                 results.append({"id": s["id"], "name": s["name"],
-                                "url": s["url"], "ok": True, "tools": [t.name for t in tools]})
+                                "url": s["url"], "ok": True, "tools": plain})
             except Exception as exc:
                 results.append({"id": s["id"], "name": s["name"],
                                 "url": s["url"], "ok": False, "error": str(exc)[:300]})
@@ -335,9 +367,12 @@ def build_router() -> APIRouter:
                 tools = await client.list_tools()
             out_tools = []
             for t in tools:
+                # 去掉上游工具名已有的网关前缀（__ 前的一段）：网关指向本代理自身时，
+                # 发现的工具已带前缀，面板勾选后又拼一次前缀会变成 askdata__askdata__xxx。
+                raw_name = t.name.split("__", 1)[1] if "__" in t.name else t.name
                 schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
-                params = _build_params(schema, t.name)
-                out_tools.append({"name": t.name, "description": getattr(t, "description", "") or "",
+                params = _build_params(schema, raw_name)
+                out_tools.append({"name": raw_name, "description": getattr(t, "description", "") or "",
                                   "params": params})
             return {"ok": True, "tools": out_tools}
         except Exception as exc:

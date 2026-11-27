@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -152,6 +152,12 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         "enabled 启停），对外 GET /skills 清单 / GET /skills/{name} 正文渐进披露，所有 Key 共享", []),
     26: ("新增 mcp_discovered_tools 表：缓存从上游发现的工具元数据（qualified_name/server_id/原始工具名/"
         "描述/inputSchema），上游临时不可用时工具仍保留在对外清单，避免工具全消失", []),
+    27: ("mcp_http_tools 加 in_mcp 列（是否加入 MCP 工具清单，默认0需手动选）；"
+        "mcp_discovered_tools 加 source_type(mcp网关/其它工具) 与 source_id(网关id/其他工具id)，"
+        "其他工具也落库到发现表以统一记录来源",
+        ["col:mcp_http_tools:in_mcp:INTEGER DEFAULT 0",
+         "col:mcp_discovered_tools:source_type:TEXT DEFAULT 'mcp网关'",
+         "col:mcp_discovered_tools:source_id:INTEGER DEFAULT 0"]),
 }
 
 def ensure_schema() -> None:
@@ -314,6 +320,7 @@ def ensure_schema() -> None:
             headers_json  TEXT NOT NULL DEFAULT '{}',
             params_json   TEXT NOT NULL DEFAULT '{}',
             enabled       INTEGER NOT NULL DEFAULT 1,
+            in_mcp        INTEGER NOT NULL DEFAULT 0,  -- 是否加入 MCP 工具清单（需手动选）
             timeout_sec   INTEGER NOT NULL DEFAULT 30,
             created_at    INTEGER NOT NULL,
             updated_at    INTEGER NOT NULL
@@ -323,6 +330,8 @@ def ensure_schema() -> None:
         CREATE TABLE IF NOT EXISTS mcp_discovered_tools (
             qualified_name  TEXT PRIMARY KEY,
             server_id       INTEGER NOT NULL,
+            source_type     TEXT NOT NULL DEFAULT 'mcp网关',  -- mcp网关 / 其它工具
+            source_id       INTEGER NOT NULL DEFAULT 0,       -- 网关 id / 其他工具 id
             orig_name       TEXT NOT NULL,
             description     TEXT NOT NULL DEFAULT '',
             input_schema    TEXT NOT NULL DEFAULT '{}',
@@ -2121,6 +2130,32 @@ def mcp_acl_set(key_id: int, qualified_names: list[str]) -> None:
         c.commit()
 
 
+def mcp_acl_add_default(qualified_names: list[str]) -> None:
+    """把工具加入 key_id=0 默认授权（所有 Key 自动拥有），已存在则忽略。"""
+    names = [str(x).strip() for x in (qualified_names or []) if str(x).strip()]
+    if not names:
+        return
+    now = int(time.time())
+    with _lock:
+        c = _conn_get()
+        for n in names:
+            c.execute("INSERT OR IGNORE INTO mcp_tool_acl(key_id, qualified_name, created_at) "
+                      "VALUES(0,?,?)", (n, now))
+        c.commit()
+
+
+def mcp_acl_remove_default(qualified_names: list[str]) -> None:
+    """从 key_id=0 默认授权移除工具（移出 MCP 清单时调用）。"""
+    names = [str(x).strip() for x in (qualified_names or []) if str(x).strip()]
+    if not names:
+        return
+    with _lock:
+        c = _conn_get()
+        for n in names:
+            c.execute("DELETE FROM mcp_tool_acl WHERE key_id=0 AND qualified_name=?", (n,))
+        c.commit()
+
+
 def mcp_acl_prune(valid_names: set[str]) -> int:
     """清理已失效的工具授权（上游改名/删除后），返回清理条数。"""
     rows = _conn_get().execute("SELECT id, qualified_name FROM mcp_tool_acl").fetchall()
@@ -2153,16 +2188,17 @@ def mcp_http_tool_get_by_name(name: str) -> dict[str, Any] | None:
 
 def mcp_http_tool_add(name: str, url: str, description: str = "", method: str = "POST",
                       headers_json: str = "{}", params_json: str = "{}",
-                      enabled: int = 1, timeout_sec: int = 30) -> dict[str, Any]:
+                      enabled: int = 1, timeout_sec: int = 30,
+                      in_mcp: int = 0) -> dict[str, Any]:
     now = int(time.time())
     with _lock:
         c = _conn_get()
         cur = c.execute(
             "INSERT INTO mcp_http_tools(name, description, url, method, headers_json, params_json, "
-            "enabled, timeout_sec, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "enabled, in_mcp, timeout_sec, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             ((name or "").strip(), (description or "").strip(), (url or "").strip(),
              (method or "POST").strip().upper(), headers_json or "{}", params_json or "{}",
-             enabled, timeout_sec, now, now))
+             enabled, in_mcp, timeout_sec, now, now))
         c.commit()
         tid = cur.lastrowid
     return mcp_http_tool_get(tid)  # type: ignore[return-value]
@@ -2170,7 +2206,7 @@ def mcp_http_tool_add(name: str, url: str, description: str = "", method: str = 
 
 def mcp_http_tool_update(tid: int, fields: dict[str, Any]) -> dict[str, Any] | None:
     allowed = ("name", "description", "url", "method", "headers_json", "params_json",
-               "enabled", "timeout_sec")
+               "enabled", "in_mcp", "timeout_sec")
     sets, vals = [], []
     for k, v in fields.items():
         if k in allowed:
@@ -2275,7 +2311,8 @@ def skill_public_get(name: str) -> dict[str, str] | None:
 
 def mcp_discovered_list() -> list[dict[str, Any]]:
     rows = _conn_get().execute(
-        "SELECT qualified_name, server_id, orig_name, description, input_schema, updated_at "
+        "SELECT qualified_name, server_id, source_type, source_id, orig_name, description, "
+        "input_schema, updated_at "
         "FROM mcp_discovered_tools ORDER BY qualified_name").fetchall()
     out = []
     for r in rows:
@@ -2292,7 +2329,7 @@ def mcp_discovered_by_server(sid: int) -> list[dict[str, Any]]:
     """取某 server 缓存的工具（含 input_schema dict）。"""
     rows = _conn_get().execute(
         "SELECT qualified_name, orig_name, description, input_schema FROM mcp_discovered_tools "
-        "WHERE server_id=?", (sid,)).fetchall()
+        "WHERE server_id=? AND source_type='mcp网关'", (sid,)).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -2305,11 +2342,11 @@ def mcp_discovered_by_server(sid: int) -> list[dict[str, Any]]:
 
 
 def mcp_discovered_replace_server(sid: int, tools: list[dict[str, Any]]) -> None:
-    """原子替换某 server 的工具缓存（refresh 成功时用）。"""
+    """原子替换某 server 的工具缓存（refresh 成功时用）。source_type=mcp网关，source_id=网关id。"""
     now = int(time.time())
     with _lock:
         c = _conn_get()
-        c.execute("DELETE FROM mcp_discovered_tools WHERE server_id=?", (sid,))
+        c.execute("DELETE FROM mcp_discovered_tools WHERE server_id=? AND source_type='mcp网关'", (sid,))
         for t in tools:
             qn = str(t.get("qualified_name") or "").strip()
             if not qn:
@@ -2317,10 +2354,30 @@ def mcp_discovered_replace_server(sid: int, tools: list[dict[str, Any]]) -> None
             schema = t.get("input_schema") or {}
             c.execute(
                 "INSERT OR REPLACE INTO mcp_discovered_tools"
-                "(qualified_name, server_id, orig_name, description, input_schema, updated_at) "
-                "VALUES(?,?,?,?,?,?)",
-                (qn, sid, str(t.get("orig_name") or ""), str(t.get("description") or ""),
-                 json.dumps(schema, ensure_ascii=False), now))
+                "(qualified_name, server_id, source_type, source_id, orig_name, description, input_schema, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (qn, sid, "mcp网关", sid, str(t.get("orig_name") or ""),
+                 str(t.get("description") or ""), json.dumps(schema, ensure_ascii=False), now))
+        c.commit()
+
+
+def mcp_discovered_replace_http_tools(tools: list[dict[str, Any]]) -> None:
+    """原子替换「其它工具」的工具缓存。source_type=其它工具，source_id=其他工具表 id。"""
+    now = int(time.time())
+    with _lock:
+        c = _conn_get()
+        c.execute("DELETE FROM mcp_discovered_tools WHERE source_type='其它工具'")
+        for t in tools:
+            qn = str(t.get("qualified_name") or "").strip()
+            if not qn:
+                continue
+            schema = t.get("input_schema") or {}
+            c.execute(
+                "INSERT OR REPLACE INTO mcp_discovered_tools"
+                "(qualified_name, server_id, source_type, source_id, orig_name, description, input_schema, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (qn, 0, "其它工具", int(t.get("source_id") or 0), str(t.get("orig_name") or ""),
+                 str(t.get("description") or ""), json.dumps(schema, ensure_ascii=False), now))
         c.commit()
 
 

@@ -364,7 +364,9 @@ async def refresh() -> dict[str, Any]:
     for dead_sid in cached_ids - live_ids:
         conn.execute("DELETE FROM mcp_discovered_tools WHERE server_id=?", (dead_sid,))
     conn.commit()
-    discovered: list[tuple[str, str, int, str, dict]] = []  # (qualified, orig, sid, desc, schema)
+    # (qualified, orig, server_id, desc, schema, source_type, source_id)
+    # source_type: mcp网关 / 其它工具；source_id: 网关id / 其他工具id
+    discovered: list[tuple[str, str, int, str, dict, str, int]] = []
     failed: set[int] = set()
     for s in servers:
         try:
@@ -373,15 +375,28 @@ async def refresh() -> dict[str, Any]:
                 tools = await client.list_tools()
             fresh: list[dict[str, Any]] = []
             for t in tools:
+                # 跳过「其它工具」：它们由 in_mcp 路径独立注册。网关若指向本代理
+                # 自身（自引用），会把它们再发现一遍并加前缀，变成
+                # askdata__default__xxx 这种双前缀。这里按工具名里含 __default__
+                # 片段过滤（无论前面已带什么前缀），避免重复注册。
+                if t.name.startswith("default__") or "__default__" in t.name:
+                    continue
                 prefix = (s.get('tool_prefix') or '').strip() or s['name']
                 # 工具前缀规范化：只允许 [A-Za-z0-9_.-]，避免中文网关名产生非法工具名
                 import re as _re
                 prefix = _re.sub(r'[^A-Za-z0-9_.-]', '_', prefix)
-                q = f"{prefix}__{t.name}"
+                # 工具名已带该前缀（如网关指向本代理自身的自引用场景）则不重复拼，
+                # 避免出现 askdata__askdata__xxx 这种重复前缀。
+                tname = t.name
+                if tname.startswith(prefix + "__"):
+                    q = tname
+                else:
+                    q = f"{prefix}__{tname}"
                 # MCP SDK v2 将 inputSchema 重命名为 input_schema；优先读新字段，兼容旧版回退。
                 schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
                 schema = _fill_schema_desc(schema, t.name)
-                discovered.append((q, t.name, s["id"], getattr(t, "description", "") or "", schema))
+                discovered.append((q, t.name, s["id"], getattr(t, "description", "") or "",
+                                   schema, "mcp网关", s["id"]))
                 fresh.append({"qualified_name": q, "orig_name": t.name,
                               "description": getattr(t, "description", "") or "",
                               "input_schema": schema})
@@ -394,10 +409,13 @@ async def refresh() -> dict[str, Any]:
             # 发现失败：保留上次缓存的工具，让工具仍在对外清单（调用时才报上游不可用）
             for cached in voice_db.mcp_discovered_by_server(s["id"]):
                 discovered.append((cached["qualified_name"], cached["orig_name"], s["id"],
-                                   cached["description"], cached["input_schema"]))
-    # 其他工具（直接 HTTP 调用）：走内置 default 网关，server_id=0 标记。
+                                   cached["description"], cached["input_schema"],
+                                   "mcp网关", s["id"]))
+    # 其他工具：仅 in_mcp=1（手动选入）且 enabled=1 的加入 MCP 清单。
+    # 自身名字不带前缀；进入 MCP 清单后加 default__ 前缀，避免与网关工具重名。
+    http_fresh = []
     for t in voice_db.mcp_http_tools_list():
-        if not t.get("enabled"):
+        if not t.get("enabled") or not t.get("in_mcp"):
             continue
         try:
             params = json.loads(t.get("params_json") or "[]") or []
@@ -412,75 +430,115 @@ async def refresh() -> dict[str, Any]:
             if p.get("required"):
                 required.append(p["name"])
         schema = {"type": "object", "properties": props, "required": required}
-        discovered.append((f"default__{t['name']}", t["name"], 0,
-                           t.get("description") or "", schema))
+        q = f"default__{t['name']}"
+        discovered.append((q, t["name"], 0, t.get("description") or "", schema,
+                           "其它工具", t["id"]))
+        http_fresh.append({"qualified_name": q, "orig_name": t["name"],
+                           "description": t.get("description") or "",
+                           "input_schema": schema, "source_id": t["id"]})
+    # 原子替换其它工具缓存（禁用/移出的自动从缓存与清单消失）
+    voice_db.mcp_discovered_replace_http_tools(http_fresh)
     # 清理失效工具授权：用 DB 缓存的全部工具名（含失败 server 的旧缓存），
     # 避免上游临时挂掉时把授权也清掉。
     voice_db.mcp_acl_prune(voice_db.mcp_discovered_names() | {d[0] for d in discovered})
     # 构建 FastMCP Server。对外同时提供 SSE 与 Streamable-HTTP 两种 transport，
     # 但必须用两个独立实例：同一实例的多个 http_app 会各自进入 server lifespan，
     # 造成 FastMCP 源码明确警告的 double-stack。工具在两个实例上各注册一份。
-    def _register_tools(server):
+    #
+    # 关键（v27）：必须复用已挂载的实例、原地增删工具，不能重建实例——
+    # 启动时 /mcp 挂载的 ASGI app 持有实例引用，重建后对外看到的仍是旧工具清单。
+    def _make_tool_fn(q, orig, desc, schema):
+        # FastMCP 从函数签名生成 inputSchema，不接受 **kwargs；
+        # 按上游 inputSchema 动态生成固定签名函数，每个参数透传给 _call_upstream。
+        props = (schema or {}).get("properties", {}) or {}
+        required = set((schema or {}).get("required", []) or [])
+        params = []
+        seen = set()
+        for pn in props.keys():
+            safe = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in pn)
+            if not safe or safe[0].isdigit():
+                safe = "_" + safe
+            while safe in seen:
+                safe = safe + "_" + str(len(seen))
+            seen.add(safe)
+            params.append((pn, safe, pn not in required))
+        # Python 签名不允许「有默认值参数」出现在「必填参数」之前，
+        # 上游 properties 顺序不保证 required 在前，这里强制 required 优先。
+        params.sort(key=lambda x: x[2])
+        # 生成带类型注解 + Field 描述的签名，让 FastMCP 推断出正确的
+        # 参数类型与说明（否则客户端看到的类型都是 any、说明为空）。
+        type_map = {"string": "str", "integer": "int", "number": "float",
+                    "boolean": "bool", "array": "list", "object": "dict"}
+        sig_parts = []
+        for pn, sp, opt in params:
+            pdef = props.get(pn) or {}
+            ptype = type_map.get((pdef.get("type") or "string").lower(), "str")
+            pdesc = (pdef.get("description") or "").replace('"', '\\"')
+            ann = f'Annotated[{ptype}, Field(description="{pdesc}")]'
+            sig_parts.append(f"{sp}: {ann}" + (" = None" if opt else ""))
+        sig = ", ".join(sig_parts)
+        argmap = "{" + ", ".join(f'"{orig_p}": {sp}' for orig_p, sp, _ in params) + "}"
+        fn_name = q.replace("__", "_").replace("-", "_")
+        src = (f"async def {fn_name}({sig}):\n"
+               f"    return await __call_upstream({q!r}, {argmap})\n")
+        from typing import Annotated, Any
+        from pydantic import Field
+        ns = {"__call_upstream": _call_upstream, "Annotated": Annotated,
+              "Field": Field, "str": str, "int": int, "float": float,
+              "bool": bool, "list": list, "dict": dict, "Any": Any}
+        exec(src, ns)
+        fn = ns[fn_name]
+        fn.__doc__ = desc or f"forward to upstream {orig}"
+        return fn
+
+    async def _sync_tools(server, first_time):
+        """原地同步工具：删除不再存在的、添加新的；复用 server 实例引用。"""
         registered = []
-        for q, orig, sid, desc, schema in discovered:
-            # FastMCP 从函数签名生成 inputSchema，不接受 **kwargs；
-            # 按上游 inputSchema 动态生成固定签名函数，每个参数透传给 _call_upstream。
-            props = (schema or {}).get("properties", {}) or {}
-            required = set((schema or {}).get("required", []) or [])
-            params = []
-            seen = set()
-            for pn in props.keys():
-                safe = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in pn)
-                if not safe or safe[0].isdigit():
-                    safe = "_" + safe
-                while safe in seen:
-                    safe = safe + "_" + str(len(seen))
-                seen.add(safe)
-                params.append((pn, safe, pn not in required))
-            # Python 签名不允许「有默认值参数」出现在「必填参数」之前，
-            # 上游 properties 顺序不保证 required 在前，这里强制 required 优先。
-            params.sort(key=lambda x: x[2])
-            # 生成带类型注解 + Field 描述的签名，让 FastMCP 推断出正确的
-            # 参数类型与说明（否则客户端看到的类型都是 any、说明为空）。
-            type_map = {"string": "str", "integer": "int", "number": "float",
-                        "boolean": "bool", "array": "list", "object": "dict"}
-            sig_parts = []
-            for pn, sp, opt in params:
-                pdef = props.get(pn) or {}
-                ptype = type_map.get((pdef.get("type") or "string").lower(), "str")
-                pdesc = (pdef.get("description") or "").replace('"', '\\"')
-                ann = f'Annotated[{ptype}, Field(description="{pdesc}")]'
-                sig_parts.append(f"{sp}: {ann}" + (" = None" if opt else ""))
-            sig = ", ".join(sig_parts)
-            argmap = "{" + ", ".join(f'"{orig_p}": {sp}' for orig_p, sp, _ in params) + "}"
-            fn_name = q.replace("__", "_").replace("-", "_")
-            src = (f"async def {fn_name}({sig}):\n"
-                   f"    return await __call_upstream({q!r}, {argmap})\n")
-            from typing import Annotated, Any
-            from pydantic import Field
-            ns = {"__call_upstream": _call_upstream, "Annotated": Annotated,
-                  "Field": Field, "str": str, "int": int, "float": float,
-                  "bool": bool, "list": list, "dict": dict, "Any": Any}
-            try:
-                exec(src, ns)
-                fn = ns[fn_name]
-                fn.__doc__ = desc or f"forward to upstream {orig}"
-                server.tool(name=q, description=desc or None)(fn)
-                registered.append((q, orig, sid, desc))
-            except Exception as exc:
-                # 极端参数名导致生成失败：跳过该工具，不影响其它；但必须留痕便于排查
-                print(f"[mcp-gateway] 注册工具 {q} 失败：{exc}", flush=True)
-        server.add_middleware(_ToolACL())
+        try:
+            provider = server._local_provider
+            desired = {d[0] for d in discovered}
+            # 删除已不在目标清单里的旧工具（禁用/移出/上游消失都走这里）
+            current = {t.name for t in await provider.list_tools()}
+            for name in current - desired:
+                try:
+                    provider.remove_tool(name)
+                except Exception:
+                    pass
+            # 注册/更新工具：同名先删再注册（保证 schema/描述刷新）
+            for q, orig, sid, desc, schema, source_type, source_id in discovered:
+                try:
+                    if q in current:
+                        provider.remove_tool(q)
+                    fn = _make_tool_fn(q, orig, desc, schema)
+                    server.tool(name=q, description=desc or None)(fn)
+                    registered.append((q, orig, sid, desc))
+                except Exception as exc:
+                    print(f"[mcp-gateway] 注册工具 {q} 失败：{exc}", flush=True)
+            if first_time:
+                server.add_middleware(_ToolACL())
+            else:
+                # 通知客户端工具清单已变化（SSE/Streamable 的 tools/list 会刷新）
+                try:
+                    server.notify_tools_changed()
+                except Exception:
+                    pass
+        except Exception as exc:
+            print(f"[mcp-gateway] 同步工具失败：{exc}", flush=True)
         return registered
 
-    sse_server = FastMCP("app-product-gateway-sse")
-    http_server = FastMCP("app-product-gateway-http")
-    registered = _register_tools(sse_server)      # 以 SSE 实例的注册结果为准（两实例逻辑相同）
-    _register_tools(http_server)
-    for q, orig, sid, desc, schema in discovered:
-        # 带上 inputSchema，供管理面板「工具」页展开查看参数说明。
+    first_time = _gateway_server is None or _stream_server is None
+    if first_time:
+        sse_server = FastMCP("app-product-gateway-sse")
+        http_server = FastMCP("app-product-gateway-http")
+    else:
+        sse_server, http_server = _gateway_server, _stream_server
+    registered = await _sync_tools(sse_server, first_time)   # 以 SSE 实例为准（两实例逻辑相同）
+    await _sync_tools(http_server, first_time)
+    for q, orig, sid, desc, schema, source_type, source_id in discovered:
+        # 带上来源类型/id 与 inputSchema，供面板「工具」页展示来源与参数说明。
         _upstream_tools[q] = {"server_id": sid, "name": orig, "description": desc,
-                              "input_schema": schema or {}}
+                              "input_schema": schema or {},
+                              "source_type": source_type, "source_id": source_id}
     _gateway_server = sse_server
     _stream_server = http_server
     return {"servers": len(servers), "tools": len(registered),

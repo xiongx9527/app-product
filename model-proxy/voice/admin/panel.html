@@ -808,7 +808,7 @@ const I18N = {
     "mcp.hint": "工具名格式：前缀__工具名；支持 SSE / Streamable HTTP",
     "mcp.tabGateway": "MCP网关",
     "mcp.tabOther": "其他工具",
-    "mcp.otherHint": "直接 HTTP 调用的工具，走内置 default 网关，工具名为 default__工具名。新增/修改后需刷新才生效。",
+    "mcp.otherHint": "",
     "mcp.otherAdd": "新增工具",
     "mcp.otherName": "工具名",
     "mcp.otherMethod": "方法",
@@ -835,7 +835,12 @@ const I18N = {
     "mcp.paramAuto": "自动注入",
     "mcp.editDescTitle": "编辑说明",
     "mcp.editDescHint": "留空则恢复默认说明",
-    "mcp.ownerGateway": "所属网关",
+    "mcp.ownerGateway": "来源类型",
+    "mcp.sourceGateway": "MCP网关",
+    "mcp.sourceOther": "其它工具",
+    "mcp.sourceName": "来源名称",
+    "mcp.addToMcp": "加入MCP工具",
+    "mcp.removeFromMcp": "移出MCP工具",
     "mcp.searchTools": "搜索工具名称 / 标识 / 网关",
     "mcp.tabTools": "MCP 工具",
     "mcp.test": "测试",
@@ -1422,7 +1427,7 @@ const I18N = {
     "mcp.hint": "Tool name format: prefix__tool; supports SSE / Streamable HTTP",
     "mcp.tabGateway": "MCP Gateway",
     "mcp.tabOther": "Other tools",
-    "mcp.otherHint": "Tools calling HTTP directly via the built-in default gateway (name: default__toolname). Refresh after add/edit.",
+    "mcp.otherHint": "",
     "mcp.otherAdd": "Add tool",
     "mcp.otherName": "Tool name",
     "mcp.otherMethod": "Method",
@@ -1449,7 +1454,12 @@ const I18N = {
     "mcp.paramAuto": "Auto-injected",
     "mcp.editDescTitle": "Edit description",
     "mcp.editDescHint": "Empty to restore default description",
-    "mcp.ownerGateway": "Gateway",
+    "mcp.ownerGateway": "Source Type",
+    "mcp.sourceGateway": "MCP Gateway",
+    "mcp.sourceOther": "Other Tool",
+    "mcp.sourceName": "Source Name",
+    "mcp.addToMcp": "Add to MCP",
+    "mcp.removeFromMcp": "Remove from MCP",
     "mcp.searchTools": "Search tool name / ID / gateway",
     "mcp.tabTools": "MCP Tools",
     "mcp.test": "Test",
@@ -5821,21 +5831,27 @@ async function loadMcpToolsPage(){
     let h='<div class="row" style="margin-bottom:10px"><button id="mcpToolAdd">'+t('mcp.addTool')+'</button>'
       +'<div class="row" style="margin-left:auto"><input id="mcpToolSearch" class="hw-input" placeholder="'+t('mcp.searchTools')+'" style="width:280px" value="'+esc(q)+'" />'
       +'<button id="mcpToolSearchBtn">'+t('common.search')+'</button></div></div>';
-    h+='<table class="admin-table" style="width:100%"><thead><tr><th style="width:28px"></th><th style="width:140px">'+t('mcp.toolId')+'</th><th style="width:80px">'+t('mcp.ownerGateway')+'</th><th style="width:300px">'+t('mcp.toolDesc')+'</th><th style="width:70px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
+    h+='<table class="admin-table" style="width:100%"><thead><tr><th style="width:28px"></th><th style="width:140px">'+t('mcp.toolId')+'</th><th style="width:90px">'+t('mcp.ownerGateway')+'</th><th style="width:110px">'+t('mcp.sourceName')+'</th><th style="width:300px">'+t('mcp.toolDesc')+'</th><th style="width:70px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
     slice.forEach(q=>{
       const prefix=(q||'').split('__')[0];
       const gw=servers.find(x=> (x.tool_prefix||x.name)===prefix);
       const meta=toolMeta[q]||{};
       const desc=meta.description||'';
       const open=mcpToolExpanded.has(q);
+      const stype=meta.source_type||(meta.server_id===0?'其它工具':'mcp网关');
+      const sname=meta.source_name||(stype==='其它工具'?(meta.name||prefix):(gw?gw.name:prefix));
+      const srcTypeLabel=stype==='其它工具'?t('mcp.sourceOther'):t('mcp.sourceGateway');
+      const srcBadge=stype==='其它工具'?'<span class="hint">'+srcTypeLabel+'</span>':'<span class="badge">'+srcTypeLabel+'</span>';
       h+='<tr><td class="row-act"><button class="mini" data-mcptool-expand="'+esc(q)+'">'+(open?'−':'+')+'</button></td>'
-        +'<td style="width:140px;min-width:0;word-break:break-all">'+esc(q)+'</td><td style="width:80px;min-width:0;word-break:break-all">'+esc(gw?gw.name:prefix)+'</td>'
+        +'<td style="width:140px;min-width:0;word-break:break-all" title="'+esc(q)+'">'+esc(q.includes('__')?q.substring(q.indexOf('__')+2):q)+'</td>'
+        +'<td style="width:90px;min-width:0;word-break:break-all">'+srcBadge+'</td>'
+        +'<td style="width:110px;min-width:0;word-break:break-all">'+esc(sname)+'</td>'
         +'<td style="width:300px;min-width:0;word-break:break-word;line-height:1.4">'+esc(desc)+'</td>'
         +'<td class="col-actions" style="width:110px"><button class="mini" data-mcp-edit-desc="'+esc(meta.name||'')+'" data-param="" data-desc="'+esc(desc)+'" title="'+t('mcp.editDescHint')+'">'+t('common.edit')+'</button> '
         +'<button class="mini danger" data-mcptool-del="'+esc(q)+'">'+t('common.delete')+'</button></td></tr>';
       if(open){
         const params=meta.params||[];
-        h+='<tr><td colspan="5" style="padding:0;background:#0f1115"><table class="cfg-table" style="margin:0"><thead><tr>'
+        h+='<tr><td colspan="6" style="padding:0;background:#0f1115"><table class="cfg-table" style="margin:0"><thead><tr>'
           +'<th>'+t('mcp.paramName')+'</th><th style="width:80px">'+t('mcp.paramType')+'</th>'
           +'<th style="width:70px">'+t('mcp.paramIn')+'</th><th style="width:50px">'+t('mcp.paramRequired')+'</th>'
           +'<th>'+t('mcp.paramDesc')+'</th><th style="width:50px">'+t('common.action')+'</th></tr></thead><tbody>';
@@ -5851,7 +5867,7 @@ async function loadMcpToolsPage(){
         h+='</tbody></table></td></tr>';
       }
     });
-    if(!names.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('mcp.emptyTools')+'</td></tr>';
+    if(!names.length) h+='<tr><td colspan="6" class="muted" style="text-align:center">'+t('mcp.emptyTools')+'</td></tr>';
     h+='</tbody></table><div class="row" id="mcpToolPager" style="margin-top:8px"></div>';
     box.innerHTML=h;
     renderPager('mcpToolPager', mcpToolPage, pages, names.length, p=>{ mcpToolPage=p; loadMcpToolsPage(); });
@@ -5870,6 +5886,13 @@ async function loadMcpToolsPage(){
       const r=await api('/admin/api/mcp/acl/0',{method:'PUT',headers:{'content-type':'application/json'},
         body:JSON.stringify({tools:remain})});
       if(!r.ok){ alert(t('common.failPrefix')+r.status); return; }
+      // 根据来源类型判断：若是「其它工具」，同步把 in_mcp 置 0，使其他工具列表状态联动
+      const meta=toolMeta[tool]||{};
+      if(meta.source_type==='其它工具' && meta.source_id){
+        await api('/admin/api/mcp/http-tools/'+meta.source_id,{method:'PATCH',
+          headers:{'content-type':'application/json'}, body:JSON.stringify({in_mcp:0})});
+        await api('/admin/api/mcp/refresh',{method:'POST'});
+      }
       loadMcpToolsPage();
     });
     // 展开参数（仿热词管理）：切换 Set 后重绘，展开行嵌子表显示参数的位置/类型/必填/说明
@@ -5895,20 +5918,22 @@ async function loadMcpOtherPage(page){
   const pages=Math.max(1, Math.ceil(tools.length/PAGE_SIZE));
   if(mcpOtherPage>pages) mcpOtherPage=pages;
   const slice=tools.slice((mcpOtherPage-1)*PAGE_SIZE, mcpOtherPage*PAGE_SIZE);
-  let h='<div class="hint" style="margin-bottom:10px">'+t('mcp.otherHint')+'</div>'
-    +'<div class="row" style="margin-bottom:10px"><button id="mcpOtherAdd">'+t('mcp.otherAdd')+'</button></div>'
+  let h='<div class="row" style="margin-bottom:10px"><button id="mcpOtherAdd">'+t('mcp.otherAdd')+'</button></div>'
     +'<table class="admin-table" style="width:100%"><thead><tr>'
     +'<th>'+t('mcp.otherName')+'</th><th style="width:70px">'+t('mcp.otherMethod')+'</th>'
     +'<th>'+t('mcp.toolDesc')+'</th><th style="width:60px">'+t('common.status')+'</th>'
-    +'<th style="width:230px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
+    +'<th style="width:310px;text-align:right">'+t('common.action')+'</th></tr></thead><tbody>';
   slice.forEach(x=>{
-    h+='<tr><td style="word-break:break-all">default__'+esc(x.name)+'</td>'
+    const inMcp=!!x.in_mcp;
+    h+='<tr><td style="word-break:break-all">'+esc(x.name)+'</td>'
       +'<td>'+esc(x.method)+'</td><td style="word-break:break-word;line-height:1.4">'+esc(x.description||'')+'</td>'
       +'<td>'+(x.enabled?'<span class="badge">'+t('common.enabled')+'</span>':'<span class="hint">'+t('common.disabled')+'</span>')+'</td>'
       +'<td class="col-actions" style="text-align:right;white-space:nowrap"><button class="mini" data-other-test="'+x.id+'">'+t('common.test')+'</button> '
       +'<button class="mini" data-other-edit="'+x.id+'">'+t('common.edit')+'</button> '
+      +((x.enabled && !inMcp)?'<button class="mini" data-other-inmcp="'+x.id+'" data-on="1">'+t('mcp.addToMcp')+'</button> '
+        :(inMcp?'<button class="mini" data-other-inmcp="'+x.id+'" data-on="0">'+t('mcp.removeFromMcp')+'</button> ':''))
       +'<button class="mini" data-other-toggle="'+x.id+'" data-on="'+x.enabled+'">'+(x.enabled?t('common.disable'):t('common.enable'))+'</button> '
-      +'<button class="mini danger" data-other-del="'+x.id+'">'+t('common.delete')+'</button></td></tr>';
+      +(inMcp?'':'<button class="mini danger" data-other-del="'+x.id+'">'+t('common.delete')+'</button>')+'</td></tr>';
   });
   if(!slice.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('mcp.emptyTools')+'</td></tr>';
   h+='</tbody></table><div class="row" id="mcpOtherPager" style="align-items:center;margin-top:10px"></div>';
@@ -5943,6 +5968,13 @@ async function loadMcpOtherPage(page){
   });
   box.querySelectorAll('[data-other-edit]').forEach(b=> b.onclick=()=>{
     const x=tools.find(y=>y.id===+b.dataset.otherEdit); if(x) showHttpToolModal(x);
+  });
+  box.querySelectorAll('[data-other-inmcp]').forEach(b=> b.onclick=async ()=>{
+    const id=+b.dataset.otherInmcp, on=b.dataset.on==='1'?1:0;
+    const r=await api('/admin/api/mcp/http-tools/'+id,{method:'PATCH',headers:{'content-type':'application/json'},
+      body:JSON.stringify({in_mcp:on})});
+    if(!r.ok){ alert(t('common.failPrefix')+r.status); return; }
+    await api('/admin/api/mcp/refresh',{method:'POST'}); loadMcpOtherPage();
   });
   box.querySelectorAll('[data-other-toggle]').forEach(b=> b.onclick=async ()=>{
     const id=+b.dataset.otherToggle, on=b.dataset.on==='1'?0:1;
