@@ -35,7 +35,7 @@ voice_db.set_auto_seed(False)
 voice_db.ensure_schema()
 
 # 1) schema v27 + in_mcp 默认 0
-check("版本 v27", voice_db.SCHEMA_VERSION == 27)
+check("版本 v28", voice_db.SCHEMA_VERSION == 28)
 t1 = voice_db.mcp_http_tool_add("amap", "http://x", "周边查询", in_mcp=0)
 check("in_mcp 默认 0", voice_db.mcp_http_tool_get(t1["id"])["in_mcp"] == 0)
 t2 = voice_db.mcp_http_tool_add("weather", "http://y", "天气", in_mcp=1)
@@ -50,15 +50,15 @@ voice_db.mcp_discovered_replace_server(4, [
     {"qualified_name": "askdata__chat", "orig_name": "chat", "description": "d", "input_schema": {}}
 ])
 rows = {r["qualified_name"]: r for r in voice_db.mcp_discovered_list()}
-check("其他工具来源类型", rows["default__weather"]["source_type"] == "其它工具"
+check("其他工具来源类型", rows["default__weather"]["source_type"] == voice_db.SOURCE_HTTP_TOOL
       and rows["default__weather"]["source_id"] == t2["id"], str(rows.get("default__weather")))
-check("网关工具来源类型", rows["askdata__chat"]["source_type"] == "mcp网关"
+check("网关工具来源类型", rows["askdata__chat"]["source_type"] == voice_db.SOURCE_GATEWAY
       and rows["askdata__chat"]["source_id"] == 4, str(rows.get("askdata__chat")))
 
 # 3) 原子替换：其他工具移除后缓存清空
 voice_db.mcp_discovered_replace_http_tools([])
 check("移出后其他工具缓存清空", not any(
-    r["source_type"] == "其它工具" for r in voice_db.mcp_discovered_list()))
+    r["source_type"] == voice_db.SOURCE_HTTP_TOOL for r in voice_db.mcp_discovered_list()))
 
 # 4) 禁用再启用的 in_mcp 保持
 voice_db.mcp_http_tool_update(t2["id"], {"enabled": 0})

@@ -25,7 +25,7 @@ def _discovered_source_type(name: str) -> str:
     """
     import mcp_gateway
     meta = (getattr(mcp_gateway, "_upstream_tools", {}) or {}).get(name) or {}
-    return meta.get("source_type") or "mcp网关"
+    return meta.get("source_type") or voice_db.SOURCE_GATEWAY
 
 # 参数位置推断：MCP 的 inputSchema 本身不标注 header/body/query，按参数名模式推断，
 # 仅用于管理面板展示（真实调用所有参数都作为 JSON body 透传给上游）。
@@ -320,10 +320,10 @@ def build_router() -> APIRouter:
             params = _build_params(schema, orig)
             # 工具说明覆盖（面板编辑）：key = 原始工具名|__desc__
             desc = overrides.get(f"{orig}|__desc__") or (meta.get("description") or "")
-            source_type = meta.get("source_type") or ("其它工具" if meta["server_id"] == 0 else "mcp网关")
+            source_type = meta.get("source_type") or (voice_db.SOURCE_HTTP_TOOL if meta["server_id"] == 0 else voice_db.SOURCE_GATEWAY)
             source_id = meta.get("source_id") or (0 if meta["server_id"] == 0 else meta["server_id"])
             # 来源名称：网关工具显示网关名，其他工具显示工具自身名
-            source_name = srv.get("name") if source_type == "mcp网关" else (meta.get("name") or orig)
+            source_name = srv.get("name") if source_type == voice_db.SOURCE_GATEWAY else (meta.get("name") or orig)
             tools[q] = {"server_id": meta["server_id"], "name": orig,
                         "server": srv.get("name") or "", "description": desc,
                         "input_schema": schema, "params": params,
@@ -355,7 +355,7 @@ def build_router() -> APIRouter:
                 # 面板再拼一次前缀而重复。
                 plain = [t.name.split("__", 1)[1] if "__" in t.name else t.name
                          for t in tools
-                         if _discovered_source_type(t.name) != "其它工具"]
+                         if _discovered_source_type(t.name) != voice_db.SOURCE_HTTP_TOOL]
                 results.append({"id": s["id"], "name": s["name"],
                                 "url": s["url"], "ok": True, "tools": plain})
             except Exception as exc:
@@ -383,7 +383,7 @@ def build_router() -> APIRouter:
             for t in tools:
                 # 排除「其它工具」：按来源类型判断（非名字前缀）。其它工具由 in_mcp
                 # 路径独立管理，不该出现在「网关发现工具」列表。
-                if _discovered_source_type(t.name) == "其它工具":
+                if _discovered_source_type(t.name) == voice_db.SOURCE_HTTP_TOOL:
                     continue
                 # 去掉上游工具名已有的网关前缀（__ 前的一段）：网关指向本代理自身时，
                 # 发现的工具已带前缀，面板勾选后又拼一次前缀会变成 askdata__askdata__xxx。

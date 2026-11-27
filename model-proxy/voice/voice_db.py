@@ -91,7 +91,11 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
+
+# MCP 工具来源类型枚举（存库用稳定英文值，显示层再做 i18n 翻译）
+SOURCE_GATEWAY = "gateway"      # mcp网关发现的工具
+SOURCE_HTTP_TOOL = "http_tool"  # 其它工具（HTTP 直调）
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -153,11 +157,15 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
     26: ("新增 mcp_discovered_tools 表：缓存从上游发现的工具元数据（qualified_name/server_id/原始工具名/"
         "描述/inputSchema），上游临时不可用时工具仍保留在对外清单，避免工具全消失", []),
     27: ("mcp_http_tools 加 in_mcp 列（是否加入 MCP 工具清单，默认0需手动选）；"
-        "mcp_discovered_tools 加 source_type(mcp网关/其它工具) 与 source_id(网关id/其他工具id)，"
+        "mcp_discovered_tools 加 source_type(来源类型) 与 source_id(网关id/其他工具id)，"
         "其他工具也落库到发现表以统一记录来源",
         ["col:mcp_http_tools:in_mcp:INTEGER DEFAULT 0",
-         "col:mcp_discovered_tools:source_type:TEXT DEFAULT 'mcp网关'",
+         "col:mcp_discovered_tools:source_type:TEXT DEFAULT 'gateway'",
          "col:mcp_discovered_tools:source_id:INTEGER DEFAULT 0"]),
+    28: ("source_type 改用稳定英文枚举 gateway/http_tool（原中文值无法国际化显示），"
+        "存量中文值转为英文枚举",
+        ["sql:UPDATE mcp_discovered_tools SET source_type='gateway' WHERE source_type IN ('mcp网关','mcp-gateway','gateway')",
+         "sql:UPDATE mcp_discovered_tools SET source_type='http_tool' WHERE source_type IN ('其它工具','其他工具','http_tool')"]),
 }
 
 def ensure_schema() -> None:
@@ -330,7 +338,7 @@ def ensure_schema() -> None:
         CREATE TABLE IF NOT EXISTS mcp_discovered_tools (
             qualified_name  TEXT PRIMARY KEY,
             server_id       INTEGER NOT NULL,
-            source_type     TEXT NOT NULL DEFAULT 'mcp网关',  -- mcp网关 / 其它工具
+            source_type     TEXT NOT NULL DEFAULT 'gateway',  -- gateway / http_tool
             source_id       INTEGER NOT NULL DEFAULT 0,       -- 网关 id / 其他工具 id
             orig_name       TEXT NOT NULL,
             description     TEXT NOT NULL DEFAULT '',
@@ -429,7 +437,13 @@ def _has_column(table: str, col: str) -> bool:
 
 
 def _apply_change_ddl(c: sqlite3.Connection, instruction: str) -> None:
-    """执行一条幂等的迁移指令：col:表:列:类型（补列）/ dropcol:表:列（删列）。"""
+    """执行一条幂等的迁移指令：
+      col:表:列:类型（补列）/ dropcol:表:列（删列）/ sql:原始SQL（靠 WHERE 条件保证幂等）。
+    """
+    parts = instruction.split(":", 1)
+    if len(parts) == 2 and parts[0] == "sql":
+        c.execute(parts[1])
+        return
     parts = instruction.split(":")
     if len(parts) == 4 and parts[0] == "col":
         _, table, column, decl = parts
@@ -2329,7 +2343,7 @@ def mcp_discovered_by_server(sid: int) -> list[dict[str, Any]]:
     """取某 server 缓存的工具（含 input_schema dict）。"""
     rows = _conn_get().execute(
         "SELECT qualified_name, orig_name, description, input_schema FROM mcp_discovered_tools "
-        "WHERE server_id=? AND source_type='mcp网关'", (sid,)).fetchall()
+        "WHERE server_id=? AND source_type='gateway'", (sid,)).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -2346,7 +2360,7 @@ def mcp_discovered_replace_server(sid: int, tools: list[dict[str, Any]]) -> None
     now = int(time.time())
     with _lock:
         c = _conn_get()
-        c.execute("DELETE FROM mcp_discovered_tools WHERE server_id=? AND source_type='mcp网关'", (sid,))
+        c.execute("DELETE FROM mcp_discovered_tools WHERE server_id=? AND source_type='gateway'", (sid,))
         for t in tools:
             qn = str(t.get("qualified_name") or "").strip()
             if not qn:
@@ -2356,7 +2370,7 @@ def mcp_discovered_replace_server(sid: int, tools: list[dict[str, Any]]) -> None
                 "INSERT OR REPLACE INTO mcp_discovered_tools"
                 "(qualified_name, server_id, source_type, source_id, orig_name, description, input_schema, updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?)",
-                (qn, sid, "mcp网关", sid, str(t.get("orig_name") or ""),
+                (qn, sid, SOURCE_GATEWAY, sid, str(t.get("orig_name") or ""),
                  str(t.get("description") or ""), json.dumps(schema, ensure_ascii=False), now))
         c.commit()
 
@@ -2366,7 +2380,7 @@ def mcp_discovered_replace_http_tools(tools: list[dict[str, Any]]) -> None:
     now = int(time.time())
     with _lock:
         c = _conn_get()
-        c.execute("DELETE FROM mcp_discovered_tools WHERE source_type='其它工具'")
+        c.execute("DELETE FROM mcp_discovered_tools WHERE source_type='http_tool'")
         for t in tools:
             qn = str(t.get("qualified_name") or "").strip()
             if not qn:
@@ -2376,7 +2390,7 @@ def mcp_discovered_replace_http_tools(tools: list[dict[str, Any]]) -> None:
                 "INSERT OR REPLACE INTO mcp_discovered_tools"
                 "(qualified_name, server_id, source_type, source_id, orig_name, description, input_schema, updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?)",
-                (qn, 0, "其它工具", int(t.get("source_id") or 0), str(t.get("orig_name") or ""),
+                (qn, 0, SOURCE_HTTP_TOOL, int(t.get("source_id") or 0), str(t.get("orig_name") or ""),
                  str(t.get("description") or ""), json.dumps(schema, ensure_ascii=False), now))
         c.commit()
 

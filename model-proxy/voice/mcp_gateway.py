@@ -396,7 +396,7 @@ async def refresh() -> dict[str, Any]:
                 schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
                 schema = _fill_schema_desc(schema, t.name)
                 discovered.append((q, t.name, s["id"], getattr(t, "description", "") or "",
-                                   schema, "mcp网关", s["id"]))
+                                   schema, voice_db.SOURCE_GATEWAY, s["id"]))
                 fresh.append({"qualified_name": q, "orig_name": t.name,
                               "description": getattr(t, "description", "") or "",
                               "input_schema": schema})
@@ -410,7 +410,7 @@ async def refresh() -> dict[str, Any]:
             for cached in voice_db.mcp_discovered_by_server(s["id"]):
                 discovered.append((cached["qualified_name"], cached["orig_name"], s["id"],
                                    cached["description"], cached["input_schema"],
-                                   "mcp网关", s["id"]))
+                                   voice_db.SOURCE_GATEWAY, s["id"]))
     # 其他工具：仅 in_mcp=1（手动选入）且 enabled=1 的加入 MCP 清单。
     # 自身名字不带前缀；进入 MCP 清单后加 default__ 前缀，避免与网关工具重名。
     http_fresh = []
@@ -432,7 +432,7 @@ async def refresh() -> dict[str, Any]:
         schema = {"type": "object", "properties": props, "required": required}
         q = f"default__{t['name']}"
         discovered.append((q, t["name"], 0, t.get("description") or "", schema,
-                           "其它工具", t["id"]))
+                           voice_db.SOURCE_HTTP_TOOL, t["id"]))
         http_fresh.append({"qualified_name": q, "orig_name": t["name"],
                            "description": t.get("description") or "",
                            "input_schema": schema, "source_id": t["id"]})

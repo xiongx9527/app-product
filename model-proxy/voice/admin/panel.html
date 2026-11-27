@@ -5838,10 +5838,10 @@ async function loadMcpToolsPage(){
       const meta=toolMeta[q]||{};
       const desc=meta.description||'';
       const open=mcpToolExpanded.has(q);
-      const stype=meta.source_type||(meta.server_id===0?'其它工具':'mcp网关');
-      const sname=meta.source_name||(stype==='其它工具'?(meta.name||prefix):(gw?gw.name:prefix));
-      const srcTypeLabel=stype==='其它工具'?t('mcp.sourceOther'):t('mcp.sourceGateway');
-      const srcBadge=stype==='其它工具'?'<span class="hint">'+srcTypeLabel+'</span>':'<span class="badge">'+srcTypeLabel+'</span>';
+      const stype=meta.source_type||(meta.server_id===0?'http_tool':'gateway');
+      const sname=meta.source_name||(stype==='http_tool'?(meta.name||prefix):(gw?gw.name:prefix));
+      const srcTypeLabel=stype==='http_tool'?t('mcp.sourceOther'):t('mcp.sourceGateway');
+      const srcBadge=stype==='http_tool'?'<span class="hint">'+srcTypeLabel+'</span>':'<span class="badge">'+srcTypeLabel+'</span>';
       h+='<tr><td class="row-act"><button class="mini" data-mcptool-expand="'+esc(q)+'">'+(open?'−':'+')+'</button></td>'
         +'<td style="width:140px;min-width:0;word-break:break-all">'+esc(q)+'</td>'
         +'<td style="width:90px;min-width:0;word-break:break-all">'+srcBadge+'</td>'
@@ -5888,7 +5888,7 @@ async function loadMcpToolsPage(){
       if(!r.ok){ alert(t('common.failPrefix')+r.status); return; }
       // 根据来源类型判断：若是「其它工具」，同步把 in_mcp 置 0，使其他工具列表状态联动
       const meta=toolMeta[tool]||{};
-      if(meta.source_type==='其它工具' && meta.source_id){
+      if(meta.source_type==='http_tool' && meta.source_id){
         await api('/admin/api/mcp/http-tools/'+meta.source_id,{method:'PATCH',
           headers:{'content-type':'application/json'}, body:JSON.stringify({in_mcp:0})});
         await api('/admin/api/mcp/refresh',{method:'POST'});
