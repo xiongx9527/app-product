@@ -5843,7 +5843,7 @@ async function loadMcpToolsPage(){
       const srcTypeLabel=stype==='其它工具'?t('mcp.sourceOther'):t('mcp.sourceGateway');
       const srcBadge=stype==='其它工具'?'<span class="hint">'+srcTypeLabel+'</span>':'<span class="badge">'+srcTypeLabel+'</span>';
       h+='<tr><td class="row-act"><button class="mini" data-mcptool-expand="'+esc(q)+'">'+(open?'−':'+')+'</button></td>'
-        +'<td style="width:140px;min-width:0;word-break:break-all" title="'+esc(q)+'">'+esc(q.includes('__')?q.substring(q.indexOf('__')+2):q)+'</td>'
+        +'<td style="width:140px;min-width:0;word-break:break-all">'+esc(q)+'</td>'
         +'<td style="width:90px;min-width:0;word-break:break-all">'+srcBadge+'</td>'
         +'<td style="width:110px;min-width:0;word-break:break-all">'+esc(sname)+'</td>'
         +'<td style="width:300px;min-width:0;word-break:break-word;line-height:1.4">'+esc(desc)+'</td>'
