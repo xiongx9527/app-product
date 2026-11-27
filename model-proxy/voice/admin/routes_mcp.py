@@ -331,7 +331,7 @@ def build_router() -> APIRouter:
         if not tmp["url"].lower().startswith(("http://", "https://")):
             return {"ok": False, "error": "URL 必须是 http(s) 地址"}
         try:
-            async with await mcp_gateway._make_client(tmp, for_discovery=True) as client:
+            async with await mcp_gateway._make_client(tmp) as client:
                 tools = await client.list_tools()
             out_tools = []
             for t in tools:
