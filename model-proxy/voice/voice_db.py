@@ -91,7 +91,7 @@ def _conn_get() -> sqlite3.Connection:
 SESSION_TTL = 3600 * 8
 
 # 当前 schema 版本；新增表 / 列时 +1，并在 SCHEMA_CHANGES 里登记这次变更。
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 # 每次表结构变更的留痕：version -> (变更说明, DDL 指令列表)。
 # 指令 "col:表:列:类型" 表示 ALTER TABLE ADD COLUMN（先判断是否已存在，幂等）；
@@ -150,6 +150,8 @@ SCHEMA_CHANGES: dict[int, tuple[str, list[str]]] = {
         "代码层不再按业务类型分流", ["dropcol:mcp_servers:biz_type"]),
     25: ("新增 skills 表：提示词知识型 Skill（name 唯一标识 + description 摘要 + markdown 正文 content + "
         "enabled 启停），对外 GET /skills 清单 / GET /skills/{name} 正文渐进披露，所有 Key 共享", []),
+    26: ("新增 mcp_discovered_tools 表：缓存从上游发现的工具元数据（qualified_name/server_id/原始工具名/"
+        "描述/inputSchema），上游临时不可用时工具仍保留在对外清单，避免工具全消失", []),
 }
 
 def ensure_schema() -> None:
@@ -316,6 +318,17 @@ def ensure_schema() -> None:
             created_at    INTEGER NOT NULL,
             updated_at    INTEGER NOT NULL
         );
+        -- MCP 工具缓存（v26）：从上游发现的工具元数据落库。上游临时不可用时工具仍在对外清单，
+        -- 调用时才报上游不可用；refresh 成功才替换该 server 的记录，失败的保留旧缓存。
+        CREATE TABLE IF NOT EXISTS mcp_discovered_tools (
+            qualified_name  TEXT PRIMARY KEY,
+            server_id       INTEGER NOT NULL,
+            orig_name       TEXT NOT NULL,
+            description     TEXT NOT NULL DEFAULT '',
+            input_schema    TEXT NOT NULL DEFAULT '{}',
+            updated_at      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mcp_discovered_server ON mcp_discovered_tools(server_id);
         -- Skills（v25）：提示词知识型技能。name 唯一标识（英文短横线），description 一句话摘要
         -- 供 agent 判断是否加载，content 为 markdown 正文。全部落库，重启即可用。
         CREATE TABLE IF NOT EXISTS skills (
@@ -2255,3 +2268,70 @@ def skill_public_get(name: str) -> dict[str, str] | None:
     if not r:
         return None
     return {"name": r["name"], "description": r["description"] or "", "content": r["content"] or ""}
+
+
+# ── MCP 工具缓存（v26）：发现的工具元数据落库 ────────────────────────
+# input_schema 以 JSON 文本存；对外/面板仍按 dict 消费。
+
+def mcp_discovered_list() -> list[dict[str, Any]]:
+    rows = _conn_get().execute(
+        "SELECT qualified_name, server_id, orig_name, description, input_schema, updated_at "
+        "FROM mcp_discovered_tools ORDER BY qualified_name").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["input_schema"] = json.loads(d.get("input_schema") or "{}")
+        except (ValueError, TypeError):
+            d["input_schema"] = {}
+        out.append(d)
+    return out
+
+
+def mcp_discovered_by_server(sid: int) -> list[dict[str, Any]]:
+    """取某 server 缓存的工具（含 input_schema dict）。"""
+    rows = _conn_get().execute(
+        "SELECT qualified_name, orig_name, description, input_schema FROM mcp_discovered_tools "
+        "WHERE server_id=?", (sid,)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["input_schema"] = json.loads(d.get("input_schema") or "{}")
+        except (ValueError, TypeError):
+            d["input_schema"] = {}
+        out.append(d)
+    return out
+
+
+def mcp_discovered_replace_server(sid: int, tools: list[dict[str, Any]]) -> None:
+    """原子替换某 server 的工具缓存（refresh 成功时用）。"""
+    now = int(time.time())
+    with _lock:
+        c = _conn_get()
+        c.execute("DELETE FROM mcp_discovered_tools WHERE server_id=?", (sid,))
+        for t in tools:
+            qn = str(t.get("qualified_name") or "").strip()
+            if not qn:
+                continue
+            schema = t.get("input_schema") or {}
+            c.execute(
+                "INSERT OR REPLACE INTO mcp_discovered_tools"
+                "(qualified_name, server_id, orig_name, description, input_schema, updated_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (qn, sid, str(t.get("orig_name") or ""), str(t.get("description") or ""),
+                 json.dumps(schema, ensure_ascii=False), now))
+        c.commit()
+
+
+def mcp_discovered_clear() -> None:
+    """清空所有缓存（一般不用；仅手动重置时）。"""
+    with _lock:
+        _conn_get().execute("DELETE FROM mcp_discovered_tools")
+        _conn_get().commit()
+
+
+def mcp_discovered_names() -> set[str]:
+    """所有缓存工具名（供 ACL prune 用：不应因上游临时挂了就清掉授权）。"""
+    return {r["qualified_name"] for r in _conn_get().execute(
+        "SELECT qualified_name FROM mcp_discovered_tools").fetchall()}

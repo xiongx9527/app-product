@@ -5546,7 +5546,7 @@ async function loadSkillPage(page){
         +'<td class="col-actions" style="width:150px">'
         +'<button class="mini" data-skilledit="'+s.id+'">'+t('common.edit')+'</button> '
         +'<button class="mini" data-skillpreview="'+s.id+'">'+t('skill.preview')+'</button> '
-        +'<button class="mini" data-skilldel="'+s.id+'">'+t('common.delete')+'</button></td></tr>';
+        +'<button class="mini danger" data-skilldel="'+s.id+'">'+t('common.delete')+'</button></td></tr>';
     });
     if(!slice.length) h+='<tr><td colspan="5" class="muted" style="text-align:center">'+t('skill.empty')+'</td></tr>';
     h+='</tbody></table><div class="row" id="skillPager" style="align-items:center;margin-top:10px"></div>';
@@ -5666,7 +5666,7 @@ async function loadMcpPage(page){
         +'<td style="width:160px;min-width:0;word-break:break-all">'+esc(s.url)+'</td>'
         +'<td style="width:70px;min-width:0">'+sw
         +'</td><td class="col-actions" style="width:90px"><button class="mini" data-mcpedit="'+s.id+'">'+t('common.edit')+'</button> '
-        +'<button class="mini" data-mcpdel="'+s.id+'">'+t('common.delete')+'</button></td></tr>';
+        +'<button class="mini danger" data-mcpdel="'+s.id+'">'+t('common.delete')+'</button></td></tr>';
     });
     if(!slice.length) h+='<tr><td colspan="6" class="muted" style="text-align:center">'+t('mcp.emptyGateway')+'</td></tr>';
     h+='</tbody></table><div class="row" id="mcpPager" style="align-items:center;margin-top:10px"></div>';
@@ -5832,7 +5832,7 @@ async function loadMcpToolsPage(){
         +'<td style="width:140px;min-width:0;word-break:break-all">'+esc(q)+'</td><td style="width:80px;min-width:0;word-break:break-all">'+esc(gw?gw.name:prefix)+'</td>'
         +'<td style="width:300px;min-width:0;word-break:break-word;line-height:1.4">'+esc(desc)+'</td>'
         +'<td class="col-actions" style="width:110px"><button class="mini" data-mcp-edit-desc="'+esc(meta.name||'')+'" data-param="" data-desc="'+esc(desc)+'" title="'+t('mcp.editDescHint')+'">'+t('common.edit')+'</button> '
-        +'<button class="mini" data-mcptool-del="'+esc(q)+'">'+t('common.delete')+'</button></td></tr>';
+        +'<button class="mini danger" data-mcptool-del="'+esc(q)+'">'+t('common.delete')+'</button></td></tr>';
       if(open){
         const params=meta.params||[];
         h+='<tr><td colspan="5" style="padding:0;background:#0f1115"><table class="cfg-table" style="margin:0"><thead><tr>'

@@ -354,7 +354,16 @@ async def refresh() -> dict[str, Any]:
     if FastMCP is None:
         return {"error": f"mcp SDK unavailable: {_IMPORT_ERR}"}
     _upstream_tools = {}
-    servers = [s for s in voice_db.mcp_servers_list() if s.get("enabled")]
+    all_servers = voice_db.mcp_servers_list()
+    servers = [s for s in all_servers if s.get("enabled")]
+    # 清理已删除或被禁用 server 的缓存（避免它们的工具永远留在清单里）
+    live_ids = {s["id"] for s in servers}
+    conn = voice_db._conn_get()
+    cached_ids = {r[0] for r in conn.execute(
+        "SELECT DISTINCT server_id FROM mcp_discovered_tools").fetchall()}
+    for dead_sid in cached_ids - live_ids:
+        conn.execute("DELETE FROM mcp_discovered_tools WHERE server_id=?", (dead_sid,))
+    conn.commit()
     discovered: list[tuple[str, str, int, str, dict]] = []  # (qualified, orig, sid, desc, schema)
     failed: set[int] = set()
     for s in servers:
@@ -362,6 +371,7 @@ async def refresh() -> dict[str, Any]:
             # 发现工具时才执行管理员脚本动态获取 token；tools/call 不执行
             async with await _make_client(s) as client:
                 tools = await client.list_tools()
+            fresh: list[dict[str, Any]] = []
             for t in tools:
                 prefix = (s.get('tool_prefix') or '').strip() or s['name']
                 # 工具前缀规范化：只允许 [A-Za-z0-9_.-]，避免中文网关名产生非法工具名
@@ -372,10 +382,19 @@ async def refresh() -> dict[str, Any]:
                 schema = getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}
                 schema = _fill_schema_desc(schema, t.name)
                 discovered.append((q, t.name, s["id"], getattr(t, "description", "") or "", schema))
+                fresh.append({"qualified_name": q, "orig_name": t.name,
+                              "description": getattr(t, "description", "") or "",
+                              "input_schema": schema})
+            # 发现成功：原子替换该 server 的工具缓存（v26）
+            voice_db.mcp_discovered_replace_server(s["id"], fresh)
             voice_db.mcp_server_health(s["id"], True)
         except Exception as exc:
             failed.add(s["id"])
             voice_db.mcp_server_health(s["id"], False, str(exc)[:500])
+            # 发现失败：保留上次缓存的工具，让工具仍在对外清单（调用时才报上游不可用）
+            for cached in voice_db.mcp_discovered_by_server(s["id"]):
+                discovered.append((cached["qualified_name"], cached["orig_name"], s["id"],
+                                   cached["description"], cached["input_schema"]))
     # 其他工具（直接 HTTP 调用）：走内置 default 网关，server_id=0 标记。
     for t in voice_db.mcp_http_tools_list():
         if not t.get("enabled"):
@@ -395,8 +414,9 @@ async def refresh() -> dict[str, Any]:
         schema = {"type": "object", "properties": props, "required": required}
         discovered.append((f"default__{t['name']}", t["name"], 0,
                            t.get("description") or "", schema))
-    # 清理失效工具授权
-    voice_db.mcp_acl_prune({d[0] for d in discovered})
+    # 清理失效工具授权：用 DB 缓存的全部工具名（含失败 server 的旧缓存），
+    # 避免上游临时挂掉时把授权也清掉。
+    voice_db.mcp_acl_prune(voice_db.mcp_discovered_names() | {d[0] for d in discovered})
     # 构建 FastMCP Server。对外同时提供 SSE 与 Streamable-HTTP 两种 transport，
     # 但必须用两个独立实例：同一实例的多个 http_app 会各自进入 server lifespan，
     # 造成 FastMCP 源码明确警告的 double-stack。工具在两个实例上各注册一份。
