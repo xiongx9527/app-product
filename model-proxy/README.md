@@ -161,11 +161,13 @@ model-proxy/
 - STT / TTS 提供商：`builtin`（SenseVoice / edge-tts）、`dashscope`、`deepseek`；
 - 语音协议：`http`（同步）、`ws`（实时流式）、`http-async`（录音文件异步转写）；
 - LLM 线协议（对齐 Java 工程 `fw-plus-ai-native` 的 `LlmProtocol`）：
-  - `openai_chat_completions`（OpenAI / DeepSeek / DashScope / Ollama 兼容端点都走它）
+  - `openai_chat_completions`（OpenAI / DeepSeek / DashScope / Ollama 的 `/v1` 兼容端点都走它）
   - `azure_openai_chat_completions`
   - `openai_responses`
   - `anthropic_messages`
   - `gemini`
+  - `ollama`（Ollama 原生 `/api/chat`，NDJSON；支持 `think:false` 真正关闭思考、
+    并支持 `tools` 工具调用。需要可控思考 / 工具调用时用它，而不是 `/v1` 兼容端点）
 
 **协议是「线协议」，与厂商严格分开**：厂商由 `vendor` 表达，协议只写调用形态。
 模型目录（STT / TTS 的模型 + 协议、各家音色）存放在 `voice/seed/*.json`，
@@ -341,7 +343,15 @@ token 数用字符估算（CJK 1 字≈1 token、其它 4 字符≈1 token），
 - 流式请求逐块翻译为 OpenAI SSE；
 - 思考开关对外固定用请求头 `X-Proxy-Think: 1|0`，代理按厂商翻译成上游原生参数
   （不落库、不透传）；
-- 上游可以是任意 OpenAI 兼容服务（OpenAI / DeepSeek / 通义 / Ollama 的 `/v1` 等）。
+- 混合推理模型（qwen3 / deepseek 等）把思考链以 `<think>...</think>` 嵌在正文
+  `content` 时，代理在响应侧自动把它移到标准 `reasoning_content` 字段，正文只留
+  回答；上游原生就返回 `reasoning_content` 的（如 deepseek-reasoner）原样透传。
+  内容驱动，不依赖 vendor / 端口 / think 开关判断；没有 `<think>` 的响应字节级透传。
+- 工具调用：`tools` / `tool_choice` 对 OpenAI 兼容端点原样透传；对 Ollama 原生
+  `/api/chat` 协议也会透传，并把上游 `tool_calls` 转成 OpenAI 格式
+  （`arguments` 对象转 JSON 字符串、`finish_reason=tool_calls`）。
+- 上游可以是任意 OpenAI 兼容服务（OpenAI / DeepSeek / 通义 / Ollama 的 `/v1` 等），
+  或 Ollama 原生 `/api/chat`（见「Ollama」章节）。
 
 上游地址与密钥在管理面板的 LLM / Embedding 池里配置，或首次播种进 `voice.db`；
 `voice.conf` 不写任何 `*_UPSTREAM_*` 业务配置。
@@ -507,14 +517,57 @@ powershell -ExecutionPolicy Bypass -File .\model-proxy\pull-ollama-models.ps1 -D
 `gpt-oss:20b`（约 13GB），内存较小的机器可改用清单里的 `qwen3:8b`。云端模型
 （如 `gpt-oss:120b-cloud`）不占本地磁盘，但需要先执行 `ollama login`。
 
+> 注意：`qwen3:8b` 官方旧模板不支持思考控制 / 工具调用。需要这两项能力时用
+> `qwen3:8b-think`（见下方「模型能力与思考控制」）。
+
 下载脚本在服务未启动时会自动后台拉起 `ollama serve`；`OLLAMA_HOST` 指向远端时
 不会本地启动，只检查连通性。
 
 ### 接入方式
 
-推荐把 Ollama 当成 19529 的普通 LLM 上游：在管理面板的 LLM 池里新增一条
-`http://127.0.0.1:11434/v1`，协议选 `openai_chat_completions`，即可被网关经
-`/llm/v1` 使用，不需要改客户端配置。
+Ollama 跑在宿主、19529 网关跑在 docker 容器里，容器内的 `127.0.0.1` 指向自己、
+连不上宿主 Ollama。地址按运行形态选：
+
+- **容器（默认部署）**：`http://host.docker.internal:11434`（管理面板 LLM 池的地址
+  用这个，不要用 `127.0.0.1`）；
+- **宿主直跑**：`http://127.0.0.1:11434`。
+
+两种协议可选：
+
+- `openai_chat_completions` + 地址带 `/v1`：通用 OpenAI 兼容端点，适合不需要
+  思考控制 / 工具调用的模型；
+- `ollama`（原生 `/api/chat`）+ 地址**不带** `/v1`：**需要可控思考或工具调用时用它**。
+  原生 `think:false` 能真正关闭 qwen3 等混合推理模型的思考（省推理 token、响应快），
+  `tools` 工具调用也走这条路径。
+
+在管理面板 LLM 池配置好即可被网关经 `/llm/v1` 使用，不需要改客户端配置。
+
+### 模型能力与思考控制
+
+| 模型 | 能力 | 说明 |
+|---|---|---|
+| `qwen3:8b`（Ollama 官方旧模板） | completion | 模板无 thinking 分支，`think:false` / `chat_template_kwargs` 都无效，每次都思考、思考链混在正文；**不支持工具调用** |
+| `qwen3:8b-think`（本项目用官方新模板创建，复用 qwen3:8b 权重） | completion + thinking + tools | 模板带 `{{ .Thinking }}` 分支，`think:false` 真正关闭思考（只回 2 token），`think:true` 思考内容进 `reasoning_content`；支持 `tools` 工具调用 |
+
+创建 `qwen3:8b-think`（复用已下载权重，不重新下载 5GB）：
+
+```bash
+# 模板取 Ollama 官方 qwen3:8b 新版模板（含 .Thinking / .Tools 分支），
+# FROM 指向本地 qwen3:8b 的权重 blob，再用 ollama create 覆盖模板。
+ollama show qwen3:8b --modelfile | grep '^FROM'   # 取 FROM 那行的 blob 路径
+# 用该 blob 路径 + 官方新模板写 Modelfile，然后：
+ollama create qwen3:8b-think -f /path/to/Modelfile
+ollama show qwen3:8b-think                         # Capabilities 应含 tools + thinking
+```
+
+思考控制对外统一用 `X-Proxy-Think: 1|0`：
+
+- 默认（不传或 `0`）：`think:false`，模型不思考，正文干净、响应快；
+- `1`：开启思考，思考内容在 `reasoning_content`（OpenAI SSE 为 `delta.reasoning_content`），
+  不污染正文。
+
+> 注意：配置页「模型测试」弹窗的协议下拉已包含 `ollama` 原生选项。对 ollama 账号，
+> 选中 `ollama` 后测试走原生 `/api/chat`，否则走 `/v1` 兼容端点会因 think 无效而变慢。
 
 ## 与网关的配置对应
 
