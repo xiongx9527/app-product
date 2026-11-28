@@ -975,7 +975,7 @@ def prepare_embeddings(
     if wire == "gemini":
         return _build_gemini_embeddings(base, api_key, model_override or body.get("model") or "", body), gemini_embed_to_openai
     # 其余 OpenAI 兼容（含 dashscope / deepseek / openai / ollama 的 /v1/embeddings）
-    # base 已带 /v1（如 ollama 默认 http://127.0.0.1:11434/v1）时只补 /embeddings，
+    # base 已带 /v1（如 ollama 默认 http://host.docker.internal:11434/v1）时只补 /embeddings，
     # 避免拼成 /v1/v1/embeddings；dashscope 走它固定的 /compatible-mode/v1 变体。
     path = "/compatible-mode/v1/embeddings" if vendor == "dashscope" else _openai_embeddings_path(base)
     req = _build_openai_embeddings(base, api_key, model_override, body, path)

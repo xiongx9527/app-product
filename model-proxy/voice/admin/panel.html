@@ -2742,7 +2742,8 @@ async function renderPoolTable(wrapId, prefix){
       if (g) return { vendor: v, protocol: g.protocol||'', models: g.models||[], accounts: g.accounts||[] };
       if (v === 'builtin') return { vendor:'builtin', protocol:'builtin', models:[], accounts:[{ base_url:'本地 bge-reranker（见 install-rerank.sh）', api_key:'' }] };
       if (v === 'dashscope') return { vendor:'dashscope', protocol:'dashscope', models:[], accounts:[{ base_url:'https://<workspace>.cn-beijing.maas.aliyuncs.com', api_key:'' }] };
-      if (v === 'ollama') return { vendor:'ollama', protocol:'openai_chat_completions', models:[], accounts:[{ base_url:'http://127.0.0.1:11434/v1', api_key:'' }] };
+      // ollama 跑在宿主，容器内 127.0.0.1 指向自己连不上；用 host.docker.internal 才可达宿主 ollama。
+      if (v === 'ollama') return { vendor:'ollama', protocol:'openai_chat_completions', models:[], accounts:[{ base_url:'http://host.docker.internal:11434/v1', api_key:'' }] };
       return { vendor:'自定义', protocol:'openai_chat_completions', models:[], accounts:[{ base_url:'', api_key:'' }] };
     });
     // 每个账号补上协议字段（后端只给组级 protocol），默认沿用组协议
