@@ -549,15 +549,88 @@ Ollama 跑在宿主、19529 网关跑在 docker 容器里，容器内的 `127.0.
 | `qwen3:8b`（Ollama 官方旧模板） | completion | 模板无 thinking 分支，`think:false` / `chat_template_kwargs` 都无效，每次都思考、思考链混在正文；**不支持工具调用** |
 | `qwen3:8b-think`（本项目用官方新模板创建，复用 qwen3:8b 权重） | completion + thinking + tools | 模板带 `{{ .Thinking }}` 分支，`think:false` 真正关闭思考（只回 2 token），`think:true` 思考内容进 `reasoning_content`；支持 `tools` 工具调用 |
 
-创建 `qwen3:8b-think`（复用已下载权重，不重新下载 5GB）：
+创建 `qwen3:8b-think`（复用已下载权重，不重新下载 5GB）。先取本地 `qwen3:8b` 的权重 blob 路径：
 
 ```bash
-# 模板取 Ollama 官方 qwen3:8b 新版模板（含 .Thinking / .Tools 分支），
-# FROM 指向本地 qwen3:8b 的权重 blob，再用 ollama create 覆盖模板。
-ollama show qwen3:8b --modelfile | grep '^FROM'   # 取 FROM 那行的 blob 路径
-# 用该 blob 路径 + 官方新模板写 Modelfile，然后：
-ollama create qwen3:8b-think -f /path/to/Modelfile
-ollama show qwen3:8b-think                         # Capabilities 应含 tools + thinking
+ollama show qwen3:8b --modelfile | grep '^FROM'   # 形如 FROM /Users/xxx/.ollama/models/blobs/sha256-...
+```
+
+把下面内容存为 `Modelfile`（`FROM` 换成上面取到的路径），然后创建：
+
+```dockerfile
+FROM <上一步取到的 blob 路径，如 /Users/xxx/.ollama/models/blobs/sha256-...>
+TEMPLATE """{{- $lastUserIdx := -1 -}}
+{{- range $idx, $msg := .Messages -}}
+{{- if eq $msg.Role "user" }}{{ $lastUserIdx = $idx }}{{ end -}}
+{{- end }}
+{{- if or .System .Tools }}<|im_start|>system
+{{ if .System }}
+{{ .System }}
+{{- end }}
+{{- if .Tools }}
+# Tools
+You may call one or more functions to assist with the user query.
+You are provided with function signatures within <tools></tools> XML tags:
+<tools>
+{{- range .Tools }}
+{"type": "function", "function": {{ .Function }}}
+{{- end }}
+</tools>
+For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
+<tool_call>
+{"name": <function-name>, "arguments": <args-json-object>}
+</tool_call>
+{{- end -}}
+<|im_end|>
+{{ end }}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}
+{{- if and $.IsThinkSet (eq $i $lastUserIdx) }}
+{{- if $.Think -}}
+{{- " "}}/think
+{{- else -}}
+{{- " "}}/no_think
+{{- end -}}
+{{- end }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if (and $.IsThinkSet (and .Thinking (or $last (gt $i $lastUserIdx)))) -}}
+<think>{{ .Thinking }}</think>
+{{ end -}}
+{{ if .Content }}{{ .Content }}
+{{- else if .ToolCalls }}<tool_call>
+{{ range .ToolCalls }}{"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}}
+{{ end }}</tool_call>
+{{- end }}{{ if not $last }}<|im_end|>
+{{ end }}
+{{- else if eq .Role "tool" }}<|im_start|>user
+<tool_response>
+{{ .Content }}
+</tool_response><|im_end|>
+{{ end }}
+{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant
+{{ if and $.IsThinkSet (not $.Think) -}}
+<think>
+</think>
+{{ end -}}
+{{ end }}
+{{- end }}"""
+PARAMETER num_ctx 8192
+PARAMETER stop <|im_end|>
+PARAMETER stop <|im_start|>
+PARAMETER temperature 0.6
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+```
+
+关键：模板里 `{{- if $.Think -}}/think{{- else -}}/no_think` 对应 think 开关；
+`{{ .Thinking }}` 把思考放进独立字段；`# Tools` / `<tool_call>` / `<tool_response>`
+三段提供工具调用能力。缺少这些的旧模板会导致 think 无效、工具调用丢失。
+
+```bash
+ollama create qwen3:8b-think -f Modelfile
+ollama show qwen3:8b-think                         # Capabilities 应含 completion / tools / thinking
 ```
 
 思考控制对外统一用 `X-Proxy-Think: 1|0`：
