@@ -100,5 +100,39 @@ check("流式思考进 reasoning_content",
       d3.get("content") == "答案" and d3.get("reasoning_content") == "推理",
       repr(d3))
 
+# 8) 其他模型透传：无 <think> 的 SSE 流字节级原样（含 usage 尾帧、[DONE]、多帧拆分）
+frames = [
+    {"choices": [{"delta": {"content": ""}}]},
+    {"choices": [{"delta": {"content": "你好"}}]},
+    {"choices": [{"delta": {"content": "，世界"}}]},
+    {"choices": [{"delta": {}, "finish_reason": "stop"}],
+     "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}},
+]
+raw = b"".join(b"data: " + json.dumps(f, ensure_ascii=False).encode() + b"\n\n" for f in frames)
+raw += b"data: [DONE]\n\n"
+t2 = lp.ThinkFilterStream("deepseek-flash")
+out2 = b""
+for i in range(0, len(raw), 17):  # 模拟任意分块
+    out2 += t2.feed(raw[i:i + 17])
+out2 += t2.finish()
+check("其他模型无think字节级透传", out2 == raw, f"in={len(raw)} out={len(out2)}")
+check("其他模型usage不受影响", t2.usage == {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+      str(t2.usage))
+
+# 9) 上游原生 reasoning_content（deepseek-reasoner 风格）不被改写
+obj4 = {"choices": [{"delta": {"content": "2", "reasoning_content": "上游原生思考"}}]}
+t3 = lp.ThinkFilterStream("deepseek-reasoner")
+frame4 = 'data: ' + json.dumps(obj4, ensure_ascii=False) + '\n'
+res4 = t3.feed(frame4.encode())
+d4 = json.loads(res4.strip()[5:])["choices"][0]["delta"]
+check("上游原生reasoning_content透传",
+      d4.get("content") == "2" and d4.get("reasoning_content") == "上游原生思考",
+      repr(d4))
+# 非流式同样不改原生 reasoning_content
+obj5 = {"choices": [{"message": {"content": "2", "reasoning_content": "原生"}}]}
+out5 = lp.strip_think_response(json.loads(json.dumps(obj5)))
+m5 = out5["choices"][0]["message"]
+check("非流式不覆盖原生reasoning", m5.get("reasoning_content") == "原生", repr(m5))
+
 print(f"\n== SUMMARY: {PASS}/{PASS + FAIL} passed ==")
 sys.exit(0 if FAIL == 0 else 1)
