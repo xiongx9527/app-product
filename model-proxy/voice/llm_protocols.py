@@ -248,6 +248,104 @@ class StreamTranslator:
         return b""
 
 
+class ThinkFilterStream(StreamTranslator):
+    """OpenAI SSE 透传 + 剥离 delta.content 里的 <think>...</think> 段。
+
+    混合推理模型（qwen3 等）把思考链嵌在 content，ollama 0.12.x 的 think:false
+    对它无效，只能在代理侧按状态机剥离：<think> 开始丢弃，</think> 结束恢复。
+    标签可能被拆到多个 SSE 帧，用 _carry 保留尾部可能的前缀。
+    """
+    def __init__(self, model: str) -> None:
+        super().__init__(model)
+        self._sse_buf = b""       # 输入字节缓冲（拼接不完整帧）
+        self._in_think = False
+        self._carry = ""          # 跨帧残留（可能是 <think>/</think> 的前缀）
+
+    def _filter_text(self, text: str) -> tuple[str, str]:
+        """返回 (保留正文, 本次剥出的思考内容)。标签可能跨帧，_carry 保留前缀。"""
+        s = self._carry + text
+        self._carry = ""
+        kept: list[str] = []
+        thought: list[str] = []
+        i = 0
+        while i < len(s):
+            if self._in_think:
+                j = s.find(_THINK_CLOSE, i)
+                if j < 0:
+                    # 思考未闭合：保留尾部可能是 </think> 前缀的字符，其余是思考
+                    tail = i
+                    for k in range(min(len(_THINK_CLOSE) - 1, len(s) - tail), 0, -1):
+                        if s.endswith(_THINK_CLOSE[:k]):
+                            self._carry = s[-k:]
+                            s = s[:-k]
+                            break
+                    thought.append(s[i:])
+                    break
+                thought.append(s[i:j])
+                i = j + len(_THINK_CLOSE)
+                self._in_think = False
+            else:
+                j = s.find(_THINK_OPEN, i)
+                if j < 0:
+                    # 无开标签：保留尾部可能是 <think> 前缀的字符
+                    tail = i
+                    for k in range(min(len(_THINK_OPEN) - 1, len(s) - tail), 0, -1):
+                        if s.endswith(_THINK_OPEN[:k]):
+                            self._carry = s[-k:]
+                            s = s[:-k]
+                            break
+                    kept.append(s[i:])
+                    break
+                kept.append(s[i:j])
+                i = j + len(_THINK_OPEN)
+                self._in_think = True
+        return "".join(kept), "".join(thought)
+
+    def feed(self, chunk: bytes) -> bytes:
+        self._scan_openai_usage(chunk)
+        self._sse_buf += chunk
+        out = b""
+        while b"\n" in self._sse_buf:
+            line, self._sse_buf = self._sse_buf.split(b"\n", 1)
+            raw = line.strip()
+            if not raw.startswith(b"data:") or raw[5:].strip() == b"[DONE]":
+                out += line + b"\n"
+                continue
+            try:
+                obj = json.loads(raw[5:].strip())
+                changed = False
+                for ch in obj.get("choices") or []:
+                    delta = ch.get("delta") or {}
+                    seg = delta.get("content")
+                    if isinstance(seg, str):
+                        kept, thought = self._filter_text(seg)
+                        if kept != seg:
+                            delta["content"] = kept
+                            changed = True
+                        if thought:
+                            # 思考内容移到标准字段，正文只留回答
+                            delta["reasoning_content"] = (delta.get("reasoning_content") or "") + thought
+                            changed = True
+                if changed:
+                    out += b"data: " + json.dumps(obj, ensure_ascii=False).encode() + b"\n"
+                else:
+                    out += line + b"\n"
+            except (ValueError, UnicodeDecodeError):
+                out += line + b"\n"
+        return out
+
+    def finish(self) -> bytes:
+        self._scan_openai_usage(b"\n")
+        tail = self._sse_buf
+        self._sse_buf = b""
+        # 残留的 _carry 若是正常文本前缀（未进入 think），补发出去
+        if self._carry and not self._in_think:
+            obj = {"choices": [{"delta": {"content": self._carry}}]}
+            tail += b"data: " + json.dumps(obj, ensure_ascii=False).encode() + b"\n\n"
+            self._carry = ""
+        return tail
+
+
 class OllamaStream(StreamTranslator):
     """Ollama 原生 /api/chat 的 NDJSON 流式 -> OpenAI SSE。
 
@@ -439,6 +537,60 @@ class GeminiStream(StreamTranslator):
 
 # ── 非流式响应翻译：上游 JSON -> OpenAI 兼容 JSON ────────────────────────
 def _identity(obj: dict) -> dict:
+    return obj
+
+
+# 混合推理模型（如 qwen3、deepseek）把思考链以 <think>...</think> 嵌在 content 里。
+# ollama 0.12.x 的 think:false / chat_template_kwargs 对 qwen3 无效，只能代理侧剥离。
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def strip_think(text: str) -> tuple[str, str]:
+    """剥离文本里的 <think>...</think> 段，返回 (保留正文, 思考链)。
+
+    支持跨多次调用的状态由调用方维护（流式）；这里处理单段完整文本。未闭合的
+    <think>（流中途）会被视为思考内容丢弃到结束。
+    """
+    kept: list[str] = []
+    thought: list[str] = []
+    rest = text
+    while rest:
+        i = rest.find(_THINK_OPEN)
+        if i < 0:
+            # 不在思考块：全部是正文
+            kept.append(rest)
+            break
+        kept.append(rest[:i])
+        rest = rest[i + len(_THINK_OPEN):]
+        j = rest.find(_THINK_CLOSE)
+        if j < 0:
+            # 思考块未闭合：剩余全是思考内容
+            thought.append(rest)
+            break
+        thought.append(rest[:j])
+        rest = rest[j + len(_THINK_CLOSE):]
+    return "".join(kept), "".join(thought)
+
+
+def strip_think_response(obj: dict) -> dict:
+    """非流式：把 content 里的 <think> 段移到标准 reasoning_content 字段。
+
+    内容驱动，不依赖 think 开关：<think> 混在正文里本就不该展示，思考内容放到
+    reasoning_content 供需要的客户端读取。无 <think> 的响应原样透传。
+    """
+    try:
+        for ch in obj.get("choices") or []:
+            msg = ch.get("message") or {}
+            content = msg.get("content")
+            if isinstance(content, str) and _THINK_OPEN in content:
+                kept, thought = strip_think(content)
+                msg["content"] = kept
+                if thought:
+                    prev = msg.get("reasoning_content") or ""
+                    msg["reasoning_content"] = prev + thought
+    except Exception:
+        pass
     return obj
 
 
@@ -810,6 +962,12 @@ def prepare(
         path = "/compatible-mode/v1/chat/completions" if vendor == "dashscope" else _openai_chat_path(base)
         req = _build_openai(base, api_key, model_override, body, path)
         stream_cls, resp_transform = StreamTranslator, _identity
+        # 混合推理模型（qwen3 / deepseek 等）可能把思考链以 <think>...</think>
+        # 嵌在 content 里；ollama 0.12.x 的 think:false 对 qwen3 无效。这里用
+        # 内容驱动的方式处理：所有 OpenAI 兼容端点统一在响应侧识别 <think> 段，
+        # 正文只保留回答，思考内容移到标准 reasoning_content 字段。没有 <think>
+        # 的响应原样透传。不依赖 vendor / 端口 / think 开关等外部标志。
+        stream_cls, resp_transform = ThinkFilterStream, strip_think_response
 
     # 统一收口：思考开关按厂商翻译 + 剔除代理内部字段（_build_openai 用了 dict(body)）
     apply_think(req.payload, body, wire, vendor, native_ollama=uses_ollama_native(protocol))

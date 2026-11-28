@@ -36,12 +36,13 @@ def main() -> int:
           lp.uses_ollama_native("openai_chat_completions") is False)
     check("uses_ollama_native(None)=False", lp.uses_ollama_native(None) is False)
 
-    # 2) 贴 ollama 标签但走 OpenAI 兼容线协议：必须命 /v1/chat/completions + StreamTranslator
+    # 2) 贴 ollama 标签但走 OpenAI 兼容线协议：必须命 /v1/chat/completions
+    #    OpenAI 兼容端点统一走 ThinkFilterStream（内容驱动剥离 <think>，无标签时透明透传）
     req, stream_cls, _ = prep("openai_chat_completions", "https://api.deepseek.com/v1", "ollama")
     check("vendor=ollama + openai 协议 -> /v1/chat/completions",
           req.url == "https://api.deepseek.com/v1/chat/completions", f"url={req.url}")
-    check("vendor=ollama + openai 协议 -> StreamTranslator",
-          stream_cls is lp.StreamTranslator, f"{stream_cls.__name__}")
+    check("vendor=ollama + openai 协议 -> ThinkFilterStream",
+          stream_cls is lp.ThinkFilterStream, f"{stream_cls.__name__}")
     check("vendor=ollama + openai 协议 -> 不发 ollama 原生 think 字段",
           "think" not in req.payload, f"keys={list(req.payload)}")
 
