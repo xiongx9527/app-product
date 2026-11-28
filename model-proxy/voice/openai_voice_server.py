@@ -1118,6 +1118,84 @@ async def client_ip_audit_middleware(request: Request, call_next):
     return response
 
 
+# ── 管理接口写操作防抖（1 秒内相同请求只执行一次）─────────────────────────
+# 覆盖 /admin/api/ 下所有 POST/PUT/PATCH/DELETE（含 test/probe/refresh）。
+# 语义：相同请求（会话 + 方法 + 路径 + body）在窗口内——
+#   - 已完成：回放上次响应（幂等，前端不报错）；
+#   - 进行中：返回 429，挡住并发重复提交。
+# 只缓存已完成且带 body 的响应（JSON 等），流式响应不缓存。
+_ADMIN_DEBOUNCE_WINDOW = 1.0          # 秒
+_ADMIN_DEBOUNCE_MAX = 512             # 缓存上限，防内存泄漏
+_admin_debounce_cache: OrderedDict[str, tuple[float, int, bytes, str | None]] = OrderedDict()
+_admin_debounce_inflight: set[str] = set()
+_admin_debounce_lock = asyncio.Lock()
+
+
+def _admin_debounce_key(request: Request, body: bytes) -> str:
+    import hashlib
+    tok = request.cookies.get(admin_panel.SESSION_COOKIE) or ""
+    digest = hashlib.sha256(body).hexdigest()[:16]
+    return f"{tok}|{request.method}|{request.url.path}|{request.url.query}|{digest}"
+
+
+@app.middleware("http")
+async def admin_write_debounce_middleware(request: Request, call_next):
+    """管理写接口 1 秒防抖：相同请求只执行一次，重复请求回放结果或 429。"""
+    path = request.url.path
+    if not (path.startswith("/admin/api/") and request.method in ("POST", "PUT", "PATCH", "DELETE")):
+        return await call_next(request)
+    try:
+        body = await request.body()
+    except Exception:
+        body = b""
+    key = _admin_debounce_key(request, body)
+    now = time.monotonic()
+    async with _admin_debounce_lock:
+        # 清理过期缓存
+        expired = [k for k, v in _admin_debounce_cache.items() if now - v[0] >= _ADMIN_DEBOUNCE_WINDOW]
+        for k in expired:
+            _admin_debounce_cache.pop(k, None)
+        if len(_admin_debounce_cache) > _ADMIN_DEBOUNCE_MAX:
+            for k in list(_admin_debounce_cache)[:len(_admin_debounce_cache) - _ADMIN_DEBOUNCE_MAX]:
+                _admin_debounce_cache.pop(k, None)
+        hit = _admin_debounce_cache.get(key)
+        if hit is not None:
+            _, status, resp_body, media_type = hit
+            logging.getLogger("uvicorn.error").info(
+                "[admin-debounce] 回放 %s %s -> %d", request.method, path, status)
+            return Response(content=resp_body, status_code=status, media_type=media_type,
+                            headers={"X-Admin-Debounce": "replay"})
+        if key in _admin_debounce_inflight:
+            logging.getLogger("uvicorn.error").info(
+                "[admin-debounce] 拦截重复提交 %s %s", request.method, path)
+            return JSONResponse(status_code=429,
+                                content={"detail": "请求正在处理中，请勿重复提交"},
+                                headers={"X-Admin-Debounce": "inflight"})
+        _admin_debounce_inflight.add(key)
+    try:
+        response = await call_next(request)
+        # call_next 返回 StreamingResponse（无 .body），从 body_iterator 收集字节
+        # 再重建 Response，既能回放也能缓存。管理写接口都是 JSON，非流式，安全。
+        chunks: list[bytes] = []
+        try:
+            async for chunk in response.body_iterator:
+                chunks.append(chunk if isinstance(chunk, bytes) else str(chunk).encode())
+        except Exception:
+            chunks = []
+        resp_body = b"".join(chunks)
+        status = response.status_code
+        media_type = response.media_type
+        headers = {k: v for k, v in response.headers.items()
+                   if k.lower() not in ("content-length", "content-encoding", "transfer-encoding")}
+        if resp_body:
+            async with _admin_debounce_lock:
+                _admin_debounce_cache[key] = (time.monotonic(), status, resp_body, media_type)
+        return Response(content=resp_body, status_code=status, media_type=media_type, headers=headers)
+    finally:
+        async with _admin_debounce_lock:
+            _admin_debounce_inflight.discard(key)
+
+
 # OpenAI 风格音色名 -> edge-tts 中文神经音色，方便直接填 openai/alloy 之类的值。
 VOICE_ALIASES = {
     "alloy": "zh-CN-XiaoxiaoNeural",
