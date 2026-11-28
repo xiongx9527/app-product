@@ -377,13 +377,20 @@ class OllamaStream(StreamTranslator):
                 delta["content"] = content
             if thinking:
                 delta["reasoning_content"] = thinking
+            tool_calls = _ollama_tool_calls_to_openai(msg.get("tool_calls"))
+            finish = None
+            if tool_calls:
+                delta["tool_calls"] = tool_calls
+                finish = "tool_calls"
             if delta:
-                out += _openai_chunk(self.model, delta)
+                out += _openai_chunk(self.model, delta, finish)
             if obj.get("done"):
                 # Ollama done 行带 prompt_eval_count / eval_count（token 数），旁路抓取
                 self.note_usage(_normalize_usage(
                     obj.get("prompt_eval_count"), obj.get("eval_count")
                 ))
+                if not tool_calls:
+                    out += _openai_chunk(self.model, {}, "stop")
                 out += OPENAI_SSE_DONE.encode()
         return out
 
@@ -404,8 +411,13 @@ class OllamaStream(StreamTranslator):
                     delta["content"] = content
                 if thinking:
                     delta["reasoning_content"] = thinking
+                tool_calls = _ollama_tool_calls_to_openai(msg.get("tool_calls"))
+                finish = None
+                if tool_calls:
+                    delta["tool_calls"] = tool_calls
+                    finish = "tool_calls"
                 if delta:
-                    out += _openai_chunk(self.model, delta)
+                    out += _openai_chunk(self.model, delta, finish)
                 if obj.get("done"):
                     self.note_usage(_normalize_usage(
                         obj.get("prompt_eval_count"), obj.get("eval_count")
@@ -601,6 +613,25 @@ def attach_usage(out: dict, usage: dict[str, int] | None) -> dict:
     return out
 
 
+def _ollama_tool_calls_to_openai(raw: Any) -> list[dict[str, Any]]:
+    """ollama 的 tool_calls（function.arguments 为对象）-> OpenAI 格式（arguments 为 JSON 字符串）。"""
+    out: list[dict[str, Any]] = []
+    for i, tc in enumerate(raw or []):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") or {}
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            args = json.dumps(args or {}, ensure_ascii=False)
+        out.append({
+            "index": i,
+            "id": tc.get("id") or f"call_{i}",
+            "type": "function",
+            "function": {"name": fn.get("name") or "", "arguments": args},
+        })
+    return out
+
+
 def ollama_to_openai(obj: dict) -> dict:
     msg = obj.get("message", {}) or {}
     content = msg.get("content", "")
@@ -608,11 +639,15 @@ def ollama_to_openai(obj: dict) -> dict:
     message: dict[str, Any] = {"role": "assistant", "content": content}
     if reasoning:
         message["reasoning_content"] = reasoning
+    tool_calls = _ollama_tool_calls_to_openai(msg.get("tool_calls"))
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    finish = "tool_calls" if tool_calls else "stop"
     return attach_usage({
         "id": "chatcmpl-proxy",
         "object": "chat.completion",
         "model": obj.get("model", ""),
-        "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
     }, _normalize_usage(obj.get("prompt_eval_count"), obj.get("eval_count")))
 
 
@@ -703,6 +738,11 @@ def _build_ollama(base: str, api_key: str, model_override: str, body: dict) -> U
         "stream": bool(body.get("stream", False)),
         "options": {k: body[k] for k in ("temperature", "top_p", "seed") if k in body},
     }
+    # 工具调用：OpenAI 的 tools 格式与 ollama 原生 /api/chat 一致，原样透传。
+    # tool_choice 同理（ollama 0.12.x 支持 required / specific function）。
+    for k in ("tools", "tool_choice"):
+        if k in body:
+            payload[k] = body[k]
     # 思考开关由 prepare 末尾的 apply_think() 统一翻译，这里不再重复处理。
     url = base.rstrip("/") + "/api/chat"
     headers = {"Content-Type": "application/json", **_bearer(api_key)}
