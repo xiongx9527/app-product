@@ -2287,7 +2287,8 @@ let rerankDefModels = {};  // 重排按提供商维度的默认模型 {vendor: m
 // 5 个线协议（与 llm_protocols.WIRE_PROTOCOLS 对齐）
 const LLM_PROTOCOLS = [
   'openai_chat_completions', 'azure_openai_chat_completions',
-  'openai_responses', 'anthropic_messages', 'gemini'
+  'openai_responses', 'anthropic_messages', 'gemini',
+  'ollama'  // 原生 /api/chat：think:false 能真正关闭 qwen3 等混合推理模型的思考
 ];
 
 // 每个 prefix 一套完全独立的上游池：结构（vendor/model/base_url/api_key/protocol）与 LLM 一致，
@@ -2567,7 +2568,10 @@ function runModalTest(){
   // 测试直接用该提供商账号当前填的地址/key（可能尚未保存），与「刷新模型」同一口径；
   // 弹窗单独填的 Key 优先，否则用账号里保存的 Key。
   const acc=g.accounts[0]||{};
-  const directUrl=acc.base_url||'';
+  let directUrl=acc.base_url||'';
+  // ollama 原生协议走 /api/chat，账号地址若带 /v1（OpenAI 兼容路径）要去掉，
+  // 否则拼成 /v1/api/chat 报错；同时原生端点 think:false 能真正关闭思考（快）。
+  if(proto==='ollama') directUrl=directUrl.replace(/\/v1\/?$/,'');
   const directKey=authKey||acc.api_key||'';
   if(runBtn){ runBtn.disabled=true; runBtn.textContent=t('common.loading'); }
   const opts={ vendor:g.vendor, model:m, protocol:proto, stream, think:needThink, bypassCatalog:true, kind:'modal', authKey,
