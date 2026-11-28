@@ -3745,8 +3745,14 @@ async def chat_completions(request: Request):
     resp_headers = (
         {"X-Proxy-Model-Fallback": fallback_note} if fallback_note else {}
     )
+    # 线协议由上游配置决定，调用方 body 里的 protocol 只在配置未指定时生效。
+    # 否则调用方误传 openai_chat_completions 会把 ollama 原生模型（qwen3 等）
+    # 劫持到 /v1/chat/completions，导致 think:false 失效、思考链混进正文。
+    entry_protocol = (entry.get("protocol") or "").lower() if isinstance(entry, dict) else ""
+    _proto_raw = (entry_protocol if llm_protocols.uses_ollama_native(entry_protocol)
+                  else (req_protocol or entry_protocol or "")).lower()
     req, stream_cls, resp_transform = llm_protocols.prepare(
-        req_protocol or entry["protocol"] or "openai_chat_completions", entry["base_url"], entry["api_key"],
+        _proto_raw or "openai_chat_completions", entry["base_url"], entry["api_key"],
         effective_model, llm_api_version(), body, entry.get("vendor"),
     )
     # 客户端自带的自定义请求头透传到上游（不落存储，每次请求各带各的）
@@ -3760,7 +3766,6 @@ async def chat_completions(request: Request):
     # 让上游在流末多吐一帧 usage（token 数）。客户端显式带 stream_options 时尊重其设置，
     # 不覆盖——测试页可显式关掉。其余协议（anthropic/gemini/ollama/responses）的 usage
     # 走各自翻译器旁路抓取，不需要也不认识 stream_options。
-    _proto_raw = (req_protocol or entry["protocol"] or "").lower()
     # 注意 ollama 旧别名虽 normalize 成 openai，但原生 /api/chat 不认 stream_options，
     # 用 uses_ollama_native 排除；其 usage 由 OllamaStream 旁路抓 done 行。
     wire_for_usage = llm_protocols.normalize_protocol(_proto_raw)

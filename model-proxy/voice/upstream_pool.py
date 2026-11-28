@@ -141,10 +141,19 @@ def _normalize_entry(
 
     builtin 是例外：它是本地引擎标识而非线协议，不能被收敛成 openai_chat_completions，
     否则调用方识别不到、误以为要发网络请求。这里原样保留 protocol/vendor=builtin。
+    ollama 原生协议同样是例外：必须保留 "ollama" 让 uses_ollama_native() 能识别，
+    否则被收敛成 openai_chat_completions 后走 /v1/chat/completions，think:false 失效
+    （qwen3 等混合推理模型思考链会混进正文）。
     """
     raw_proto = (e.get("protocol") or group_protocol or "openai").strip() or "openai"
     is_builtin = _is_builtin_entry(e) or raw_proto.strip().lower() == "builtin"
-    proto = "builtin" if is_builtin else llm_protocols.normalize_protocol(raw_proto)
+    is_ollama_native = llm_protocols.uses_ollama_native(raw_proto)
+    if is_builtin:
+        proto = "builtin"
+    elif is_ollama_native:
+        proto = "ollama"  # 保留原生标识，不被 normalize 收敛
+    else:
+        proto = llm_protocols.normalize_protocol(raw_proto)
     vendor = (
         e.get("vendor")
         or group_vendor
