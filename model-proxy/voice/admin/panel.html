@@ -3058,14 +3058,19 @@ function buildUpstreamModelPick(kind, readonly, nameLabel){
                 : av === 'err' ? '<span class="badge b-err">'+t('common.unavailable')+'</span>'
                 : av === 'testing' ? '<span class="badge b-mut"><span class="spinner"></span>'+t('common.detecting')+'</span>'
                 : '<span class="badge b-mut">'+t('common.notTested')+'</span>';
+    // 测试按钮与状态徽标统一：testing 时都显示带 spinner 的「检测中…」，文案与样式一致。
+    const btnLabel = av === 'testing'
+      ? '<span class="spinner"></span>'+t('common.detecting')
+      : t('common.testShort');
+    const btnDis = av === 'testing' ? ' disabled' : '';
     const testBtn = noDefault ? '' :
       (kind === 'sttBuiltin'
-        ? `<button class="mini asr-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('asr.detectingTitle')}">${t('common.testShort')}</button>`
+        ? `<button class="mini asr-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('asr.detectingTitle')}"${btnDis}>${btnLabel}</button>`
         : kind === 'ttsBuiltin'
-        ? `<button class="mini tts-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('tts.synthTitle')}">${t('common.testShort')}</button>`
+        ? `<button class="mini tts-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('tts.synthTitle')}"${btnDis}>${btnLabel}</button>`
         : kind === 'ocrBuiltin'
-        ? `<button class="mini ocr-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('ocr.testTitle')}">${t('common.testShort')}</button>`
-        : `<button class="mini up-test" data-kind="${kind}" data-m="${escapeAttr(m)}" data-provider="${kind.endsWith('Deepseek') ? 'deepseek' : 'dashscope'}" title="${t('llm.testAvail')}">${t('common.testShort')}</button>`);
+        ? `<button class="mini ocr-builtin-test" data-builtin-model="${escapeAttr(m)}" title="${t('ocr.testTitle')}"${btnDis}>${btnLabel}</button>`
+        : `<button class="mini up-test" data-kind="${kind}" data-m="${escapeAttr(m)}" data-provider="${kind.endsWith('Deepseek') ? 'deepseek' : 'dashscope'}" title="${t('llm.testAvail')}"${btnDis}>${btnLabel}</button>`);
     const opCell = noDefault ? '' : `<td class="row-act">${testBtn}</td>`;
     const stCell = noDefault ? '' : `<td>${badge}</td>`;
     const protoTag = (noDefault ? '' :
@@ -3169,9 +3174,9 @@ document.addEventListener('click', (ev) => {
 // 内置按需检测：真正加载模型并跑一次推理，启动阶段不做，只在这里点按钮时验证。
 // 结果只翻「状态」列的徽标（builtin 子表的 状态 列），不写额外文字。
 async function testAsrBuiltin(){
-  const wrap=document.getElementById('asrTableWrap');
-  const btn=wrap && wrap.querySelector('.asr-builtin-test');
-  if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
+  // 测试按钮与状态徽标统一由 avail='testing' 渲染「检测中…」
+  (provEdit.sttBuiltin.cands||[]).forEach(m => { (provEdit.sttBuiltin.avail=provEdit.sttBuiltin.avail||{})[m] = 'testing'; });
+  paintAsrTable();
   try{
     const r=await fetch('/admin/api/stt-builtin-test',{method:'POST',credentials:'same-origin'});
     const d=await r.json().catch(()=>({}));
@@ -3267,6 +3272,7 @@ function paintOcrTable(){
 }
 
 // OCR 内置行「测试可用」：用一张最小中文图走 /ocr/v1/ocr（内置）识别，验证 PaddleOCR 是否就绪。
+// 按钮与状态徽标的 loading 由 avail='testing' 统一渲染（见 buildUpstreamModelPick）。
 async function testOcrBuiltin(model){
   const e=provEdit.ocrBuiltin;
   const setAv=(av)=>{ (e.avail=e.avail||{})[model]=av; paintOcrTable(); };
@@ -3292,10 +3298,8 @@ async function testOcrUpstream(model){
 // TTS 内置按需检测：按 model（edge-tts / kokoro）真实合成一句，启动阶段不做。
 // 结果只翻对应模型「状态」列徽标，不写额外文字。
 async function testTtsBuiltin(model){
-  const wrap=document.getElementById('ttsTableWrap');
-  const btn=wrap && wrap.querySelector(`.tts-builtin-test[data-builtin-model="${model||''}"]`);
-  if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
   const setAv=(av)=>{ if(model){ (provEdit.ttsBuiltin.avail=provEdit.ttsBuiltin.avail||{})[model]=av; } };
+  setAv('testing'); paintTtsTable();  // 按钮与状态徽标统一渲染「检测中…」
   try{
     const r=await fetch('/admin/api/tts-builtin-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:model||''})});
     const d=await r.json().catch(()=>({}));
@@ -3313,8 +3317,7 @@ async function testAsrUpstream(model, provider){
   const e = provSlot('stt', pv);
   const m = model || e.def || '';
   if(!m){ return; }
-  const btn=document.querySelector(`.up-test[data-kind="${pv==='deepseek'?'sttDeepseek':'stt'}"][data-m="${m}"]`);
-  if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
+  e.avail = e.avail || {}; e.avail[m] = 'testing'; paintAsrTable();
   try{
     const r=await fetch('/admin/api/stt-upstream-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:m, provider:pv})});
     const d=await r.json().catch(()=>({}));
@@ -3331,8 +3334,7 @@ async function testTtsUpstream(model, provider){
   const e = provSlot('tts', pv);
   const m = model || e.def || '';
   if(!m){ return; }
-  const btn=document.querySelector(`.up-test[data-kind="tts"][data-m="${m}"]`);
-  if(btn){ btn.disabled=true; btn.textContent=t('common.detecting'); }
+  e.avail = e.avail || {}; e.avail[m] = 'testing'; paintTtsTable();
   try{
     const r=await fetch('/admin/api/tts-upstream-test',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({model:m, provider:pv})});
     const d=await r.json().catch(()=>({}));
